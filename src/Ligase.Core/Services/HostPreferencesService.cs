@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Ligase.Host.Core.Models;
 using Microsoft.Win32;
 
@@ -11,7 +12,8 @@ public sealed class HostPreferencesService(LigasePaths paths)
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        WriteIndented = true
+        WriteIndented = true,
+        Converters = { new JsonStringEnumConverter() }
     };
 
     private readonly SemaphoreSlim _gate = new(1, 1);
@@ -87,6 +89,30 @@ public sealed class HostPreferencesService(LigasePaths paths)
             _gate.Release();
         }
     }
+
+    public async Task SetLanguageAsync(
+        HostLanguage language,
+        CancellationToken cancellationToken = default)
+    {
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            Current.Language = language;
+            await WriteCoreAsync(cancellationToken);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public static string GetPrimaryLanguageOverride(HostLanguage language) =>
+        language switch
+        {
+            HostLanguage.SimplifiedChinese => "zh-CN",
+            HostLanguage.English => "en-US",
+            _ => string.Empty
+        };
 
     internal static string BuildStartupCommand(string executablePath) =>
         $"\"{executablePath}\" --minimized";

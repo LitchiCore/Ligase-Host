@@ -178,6 +178,25 @@ public sealed class ApplicationLibraryTests
                 @"C:\Program Files\Ligase Host\Ligase.Host.Desktop.exe"));
     }
 
+    [TestMethod]
+    public async Task LanguagePreferencePersistsAndMapsToWinUiLanguageTag()
+    {
+        var paths = new LigasePaths(_temporaryDirectory);
+        var preferences = new HostPreferencesService(paths);
+
+        await preferences.SetLanguageAsync(HostLanguage.English);
+        var reloaded = new HostPreferencesService(paths);
+        await reloaded.InitializeAsync();
+
+        Assert.AreEqual(HostLanguage.English, reloaded.Current.Language);
+        Assert.AreEqual(
+            "en-US",
+            HostPreferencesService.GetPrimaryLanguageOverride(reloaded.Current.Language));
+        Assert.AreEqual(
+            string.Empty,
+            HostPreferencesService.GetPrimaryLanguageOverride(HostLanguage.System));
+    }
+
     private sealed class RecordingAppsWriter : IApolloAppsWriter
     {
         public int WriteCount { get; private set; }

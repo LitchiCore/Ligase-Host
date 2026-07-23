@@ -4,6 +4,7 @@ using Ligase.Host.Core.Services;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.UI.Xaml;
+using Windows.Globalization;
 
 namespace Ligase.Host.Desktop;
 
@@ -51,6 +52,8 @@ public partial class App : Application
         await _host.StartAsync();
         var preferences = _host.Services.GetRequiredService<HostPreferencesService>();
         await preferences.InitializeAsync();
+        ApplicationLanguages.PrimaryLanguageOverride =
+            HostPreferencesService.GetPrimaryLanguageOverride(preferences.Current.Language);
         var library = await _host.Services.GetRequiredService<IApplicationLibrary>().LoadAsync();
         await _host.Services.GetRequiredService<IApolloAppsWriter>().WriteAsync(library.Items);
         await _host.Services.GetRequiredService<ApolloInstanceManager>().StartAsync();

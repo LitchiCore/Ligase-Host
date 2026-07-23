@@ -8,13 +8,15 @@
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
             <StackPanel Spacing="6">
                 <TextBlock Style="{StaticResource LigaseEyebrowTextStyle}" Text="HOST BEHAVIOR" />
-                <TextBlock Style="{StaticResource LigasePageTitleStyle}" Text="设置" />
+                <TextBlock x:Uid="SettingsTitle" Style="{StaticResource LigasePageTitleStyle}" Text="设置" />
                 <TextBlock
+                    x:Uid="SettingsDescription"
                     Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                    Text="控制 Ligase Host 的后台运行和 Windows 启动行为。" />
+                    Text="控制 Ligase Host 的后台运行、Windows 启动行为和显示语言。" />
             </StackPanel>
 
             <Border Grid.Row="1" Style="{StaticResource LigaseCardStyle}">
@@ -25,13 +27,15 @@
                             <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
                         <StackPanel Spacing="4">
-                            <TextBlock FontSize="16" FontWeight="SemiBold" Text="关闭窗口后在后台运行" />
+                            <TextBlock x:Uid="CloseToTrayTitle" FontSize="16" FontWeight="SemiBold" Text="关闭窗口后在后台运行" />
                             <TextBlock
+                                x:Uid="CloseToTrayDescription"
                                 Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                                 Text="点击关闭按钮时隐藏到系统托盘，并保持 Apollo 串流核心运行。"
                                 TextWrapping="Wrap" />
                         </StackPanel>
                         <ToggleSwitch
+                            x:Uid="CloseToTrayToggle"
                             x:Name="CloseToTrayToggle"
                             Grid.Column="1"
                             AutomationProperties.Name="关闭窗口后在后台运行"
@@ -44,13 +48,15 @@
                             <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
                         <StackPanel Spacing="4">
-                            <TextBlock FontSize="16" FontWeight="SemiBold" Text="开机自动启动" />
+                            <TextBlock x:Uid="StartWithWindowsTitle" FontSize="16" FontWeight="SemiBold" Text="开机自动启动" />
                             <TextBlock
+                                x:Uid="StartWithWindowsDescription"
                                 Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                                 Text="登录 Windows 后自动在托盘启动 Ligase Host，不弹出主窗口。"
                                 TextWrapping="Wrap" />
                         </StackPanel>
                         <ToggleSwitch
+                            x:Uid="StartWithWindowsToggle"
                             x:Name="StartWithWindowsToggle"
                             Grid.Column="1"
                             AutomationProperties.Name="开机自动启动"
@@ -60,6 +66,32 @@
             </Border>
 
             <Border Grid.Row="2" Style="{StaticResource LigaseCardStyle}">
+                <Grid Padding="4,8" ColumnSpacing="20">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="240" />
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Spacing="4">
+                        <TextBlock x:Uid="LanguageTitle" FontSize="16" FontWeight="SemiBold" Text="显示语言" />
+                        <TextBlock
+                            x:Uid="LanguageDescription"
+                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                            Text="选择 Ligase Host 界面使用的语言。更改将在下次启动时生效。"
+                            TextWrapping="Wrap" />
+                    </StackPanel>
+                    <ComboBox
+                        x:Name="LanguageComboBox"
+                        Grid.Column="1"
+                        HorizontalAlignment="Stretch"
+                        SelectionChanged="OnLanguageSelectionChanged">
+                        <ComboBoxItem x:Uid="LanguageSystem" Content="跟随系统" />
+                        <ComboBoxItem x:Uid="LanguageChinese" Content="简体中文" />
+                        <ComboBoxItem x:Uid="LanguageEnglish" Content="English" />
+                    </ComboBox>
+                </Grid>
+            </Border>
+
+            <Border Grid.Row="3" Style="{StaticResource LigaseCardStyle}">
                 <Grid ColumnSpacing="12">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto" />
@@ -71,8 +103,9 @@
                         Foreground="{ThemeResource LigaseAccentTextBrush}"
                         Glyph="&#xE74E;" />
                     <StackPanel Grid.Column="1" Spacing="3">
-                        <TextBlock FontWeight="SemiBold" Text="如何彻底退出" />
+                        <TextBlock x:Uid="ExitTitle" FontWeight="SemiBold" Text="如何彻底退出" />
                         <TextBlock
+                            x:Uid="ExitDescription"
                             Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                             Text="右键任务栏通知区域的 Ligase Host 图标，选择“退出 Ligase Host”。彻底退出会停止 Ligase 的独立 Apollo 核心。"
                             TextWrapping="Wrap" />
@@ -82,6 +115,7 @@
                             Style="{StaticResource LigaseCaptionTextStyle}" />
                     </StackPanel>
                     <Button
+                        x:Uid="ExitButton"
                         Grid.Column="2"
                         VerticalAlignment="Center"
                         AutomationProperties.Name="彻底退出 Ligase Host"
