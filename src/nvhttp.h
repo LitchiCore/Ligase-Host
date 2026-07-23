@@ -125,6 +125,8 @@ namespace nvhttp {
      * @brief used as a security measure to prevent out of order calls
      */
     PAIR_PHASE last_phase = PAIR_PHASE::NONE;
+    std::string attended_request_id = {};
+    std::uint64_t attended_generation = 0;
   };
 
   /**

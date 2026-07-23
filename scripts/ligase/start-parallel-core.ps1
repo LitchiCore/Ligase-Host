@@ -10,13 +10,13 @@ $binary = Join-Path $DeployDirectory "sunshine.exe"
 $configDirectory = Join-Path $DeployDirectory "config"
 $configFile = Join-Path $configDirectory "ligase-parallel.conf"
 $ports = @(
-    $BasePort - 5,
+    ($BasePort - 5),
     $BasePort,
-    $BasePort + 1,
-    $BasePort + 9,
-    $BasePort + 10,
-    $BasePort + 11,
-    $BasePort + 21
+    ($BasePort + 1),
+    ($BasePort + 9),
+    ($BasePort + 10),
+    ($BasePort + 11),
+    ($BasePort + 21)
 )
 
 if (-not (Test-Path -LiteralPath $binary)) {
@@ -47,7 +47,10 @@ pkey = $DeployDirectory\config\cakey.pem
 cert = $DeployDirectory\config\cacert.pem
 log_path = $DeployDirectory\config\sunshine.log
 "@
-Set-Content -LiteralPath $configFile -Value $configuration -Encoding UTF8
+[IO.File]::WriteAllText(
+    $configFile,
+    $configuration,
+    [Text.UTF8Encoding]::new($false))
 
 $stdout = Join-Path $configDirectory "process.stdout.log"
 $stderr = Join-Path $configDirectory "process.stderr.log"

@@ -7,6 +7,7 @@
 
 // standard includes
 #include <cctype>
+#include <cstdlib>
 #include <filesystem>
 #include <format>
 #include <fstream>
@@ -26,6 +27,8 @@
 
 // local includes
 #include "config.h"
+#include "attended_pairing_http.h"
+#include "attended_pairing_service.h"
 #include "display_device.h"
 #include "file_handler.h"
 #include "globals.h"
@@ -155,11 +158,86 @@ namespace nvhttp {
   std::unordered_map<std::string, pair_session_t> map_id_sess;
   client_t client_root;
   std::atomic<uint32_t> session_id_counter;
+  std::unique_ptr<attended_pairing::pairing_service> attended_pairing_service;
+  std::unique_ptr<attended_pairing::http::router> attended_pairing_router;
+
+  class attended_legacy_adapter final:
+      public attended_pairing::legacy_pairing_adapter {
+  public:
+    attended_legacy_adapter(std::string unique_id, std::string request_id):
+        unique_id_(std::move(unique_id)),
+        request_id_(std::move(request_id)) {
+    }
+
+    void approve(
+      std::span<const std::uint8_t> ascii_pin,
+      std::uint64_t generation
+    ) override {
+      const auto found = map_id_sess.find(unique_id_);
+      if (found == map_id_sess.end()) {
+        throw std::runtime_error("held pair session unavailable");
+      }
+      auto &session = found->second;
+      if (session.last_phase != PAIR_PHASE::NONE
+          || session.async_insert_pin.salt.size() < 32) {
+        throw std::runtime_error("held pair session is not usable");
+      }
+      session.attended_generation = generation;
+      pt::ptree tree;
+      getservercert(
+        session,
+        tree,
+        std::string(ascii_pin.begin(), ascii_pin.end())
+      );
+      std::ostringstream data;
+      pt::write_xml(data, tree);
+      auto &async_response = session.async_insert_pin.response;
+      if (async_response.has_left() && async_response.left()) {
+        async_response.left()->write(data.str());
+      } else {
+        throw std::runtime_error("held pair response unavailable");
+      }
+      async_response = std::decay_t<decltype(async_response.left())>();
+    }
+
+    void cancel(std::uint64_t) noexcept override {
+      const auto found = map_id_sess.find(unique_id_);
+      if (found == map_id_sess.end()) return;
+      auto &async_response = found->second.async_insert_pin.response;
+      if (async_response.has_left() && async_response.left()) {
+        pt::ptree tree;
+        tree.put("root.paired", 0);
+        tree.put("root.<xmlattr>.status_code", 409);
+        tree.put("root.<xmlattr>.status_message", "Pairing request ended");
+        std::ostringstream data;
+        pt::write_xml(data, tree);
+        async_response.left()->write(data.str());
+      }
+      map_id_sess.erase(found);
+    }
+
+    [[nodiscard]] const std::string &request_id() const noexcept {
+      return request_id_;
+    }
+
+  private:
+    std::string unique_id_;
+    std::string request_id_;
+  };
+
+  std::unordered_map<std::string, std::unique_ptr<attended_legacy_adapter>>
+    attended_legacy_adapters;
 
   using resp_https_t = std::shared_ptr<typename SimpleWeb::ServerBase<SunshineHTTPS>::Response>;
   using req_https_t = std::shared_ptr<typename SimpleWeb::ServerBase<SunshineHTTPS>::Request>;
   using resp_http_t = std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTP>::Response>;
   using req_http_t = std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTP>::Request>;
+
+  namespace {
+    attended_pairing::source_identity attended_source(
+      const boost::asio::ip::address &address);
+    attended_pairing::bytes host_certificate_der(std::string_view pem);
+  }
 
   enum class op_e {
     ADD,  ///< Add certificate
@@ -647,11 +725,6 @@ namespace nvhttp {
       named_cert_p->allow_client_commands = true;
       named_cert_p->always_use_virtual_display = false;
 
-      auto it = map_id_sess.find(client.uniqueID);
-      if (it != map_id_sess.end()) {
-        map_id_sess.erase(it);
-      }
-
       add_authorized_client(named_cert_p);
     } else {
       tree.put("root.paired", 0);
@@ -764,6 +837,56 @@ namespace nvhttp {
 
         ptr->second.async_insert_pin.salt = std::move(get_arg(args, "salt"));
 
+        const auto attended_id = args.find("ligasepairingrequestid");
+        if (attended_id != args.end()) {
+          if (args.count("ligasepairingrequestid") != 1) {
+            tree.put("root.<xmlattr>.status_code", 400);
+            tree.put("root.<xmlattr>.status_message", "Invalid pairing request");
+            map_id_sess.erase(ptr);
+            return;
+          }
+          if constexpr (!std::is_same_v<T, SimpleWeb::HTTP>) {
+            tree.put("root.<xmlattr>.status_code", 400);
+            tree.put("root.<xmlattr>.status_message", "Invalid pairing request");
+            map_id_sess.erase(ptr);
+            return;
+          } else {
+            if (!attended_pairing_service) {
+              tree.put("root.<xmlattr>.status_code", 503);
+              tree.put("root.<xmlattr>.status_message", "Pairing unavailable");
+              map_id_sess.erase(ptr);
+              return;
+            }
+            try {
+              const auto request_id = attended_id->second;
+              ptr->second.attended_request_id = request_id;
+              auto adapter = std::make_unique<attended_legacy_adapter>(
+                ptr->second.client.uniqueID, request_id);
+              auto *adapter_pointer = adapter.get();
+              attended_legacy_adapters[ptr->second.client.uniqueID] =
+                std::move(adapter);
+              const auto client_der =
+                host_certificate_der(ptr->second.client.cert);
+              attended_pairing_service->bind_held_getservercert(
+                request_id,
+                attended_pairing::sha256(client_der),
+                attended_source(request->remote_endpoint().address()),
+                *adapter_pointer,
+                attended_pairing::pairing_service::steady_clock::now()
+              );
+              ptr->second.async_insert_pin.response = std::move(response);
+              fg.disable();
+              return;
+            } catch (const std::exception &) {
+              attended_legacy_adapters.erase(ptr->second.client.uniqueID);
+              map_id_sess.erase(ptr);
+              tree.put("root.<xmlattr>.status_code", 409);
+              tree.put("root.<xmlattr>.status_message", "Pairing request rejected");
+              return;
+            }
+          }
+        }
+
         auto it = args.find("otpauth");
         if (it != std::end(args)) {
           if (one_time_pin.empty() || (std::chrono::steady_clock::now() - otp_creation_time > OTP_EXPIRE_DURATION)) {
@@ -826,18 +949,68 @@ namespace nvhttp {
       return;
     }
 
+    if (args.contains("ligasepairingrequestid")) {
+      tree.put("root.<xmlattr>.status_code", 400);
+      tree.put("root.<xmlattr>.status_message", "Invalid pairing request");
+      if (!sess_it->second.attended_request_id.empty()
+          && attended_pairing_service) {
+        const auto attended_unique_id = sess_it->second.client.uniqueID;
+        attended_pairing_service->fail_pairing(
+          sess_it->second.attended_request_id,
+          sess_it->second.attended_generation,
+          "legacyPairingFailed",
+          attended_pairing::pairing_service::steady_clock::now()
+        );
+        attended_legacy_adapters.erase(attended_unique_id);
+      }
+      return;
+    }
+
+    const auto attended_request_id = sess_it->second.attended_request_id;
+    const auto attended_generation = sess_it->second.attended_generation;
+    const auto attended_unique_id = sess_it->second.client.uniqueID;
+    auto fail_attended = [&]() {
+      if (attended_request_id.empty() || !attended_pairing_service) return;
+      attended_pairing_service->fail_pairing(
+        attended_request_id,
+        attended_generation,
+        "legacyPairingFailed",
+        attended_pairing::pairing_service::steady_clock::now()
+      );
+      attended_legacy_adapters.erase(attended_unique_id);
+    };
+
     if (it = args.find("clientchallenge"); it != std::end(args)) {
       auto challenge = util::from_hex_vec(it->second, true);
       clientchallenge(sess_it->second, tree, challenge);
+      if (tree.get<int>("root.paired", 0) != 1) fail_attended();
     } else if (it = args.find("serverchallengeresp"); it != std::end(args)) {
       auto encrypted_response = util::from_hex_vec(it->second, true);
       serverchallengeresp(sess_it->second, tree, encrypted_response);
+      if (tree.get<int>("root.paired", 0) != 1) fail_attended();
     } else if (it = args.find("clientpairingsecret"); it != std::end(args)) {
       auto pairingsecret = util::from_hex_vec(it->second, true);
       clientpairingsecret(sess_it->second, tree, pairingsecret);
+      if (!attended_request_id.empty()
+          && tree.get<int>("root.paired", 0) == 1) {
+        try {
+          attended_pairing_service->commit_paired(
+            attended_request_id,
+            attended_generation
+          );
+          attended_legacy_adapters.erase(attended_unique_id);
+        } catch (const std::exception &) {
+          tree.put("root.paired", 0);
+          tree.put("root.<xmlattr>.status_code", 409);
+          tree.put("root.<xmlattr>.status_message", "Pairing request ended");
+        }
+      } else if (tree.get<int>("root.paired", 0) != 1) {
+        fail_attended();
+      }
     } else {
       tree.put("root.<xmlattr>.status_code", 404);
       tree.put("root.<xmlattr>.status_message", "Invalid pairing request");
+      fail_attended();
     }
   }
 
@@ -922,6 +1095,10 @@ namespace nvhttp {
     tree.put("root.LigaseSyncVersion", 1);
     tree.put("root.LigaseSyncPath", "/ligase/v1/sync");
     tree.put("root.LigaseHdrEncodingSupported", video::active_hevc_mode == 3 ? 1 : 0);
+    tree.put("root.LigaseAttendedPairingVersion", 1);
+    tree.put(
+      "root.LigaseAttendedPairingPath",
+      "/ligase/v1/pairing/requests");
 
     // Only include the MAC address for requests sent from paired clients over HTTPS.
     // For HTTP requests, use a placeholder MAC address that Moonlight knows to ignore.
@@ -1161,6 +1338,93 @@ namespace nvhttp {
       headers.emplace("Cache-Control", "no-store");
       response->write(status, document.dump(), headers);
       response->close_connection_after_response = true;
+    }
+
+    SimpleWeb::StatusCode attended_status(int status) {
+      switch (status) {
+        case 200: return SimpleWeb::StatusCode::success_ok;
+        case 201: return SimpleWeb::StatusCode::success_created;
+        case 202: return SimpleWeb::StatusCode::success_accepted;
+        case 204: return SimpleWeb::StatusCode::success_no_content;
+        case 400: return SimpleWeb::StatusCode::client_error_bad_request;
+        case 401: return SimpleWeb::StatusCode::client_error_unauthorized;
+        case 404: return SimpleWeb::StatusCode::client_error_not_found;
+        case 409: return SimpleWeb::StatusCode::client_error_conflict;
+        case 410: return SimpleWeb::StatusCode::client_error_gone;
+        case 415: return SimpleWeb::StatusCode::client_error_unsupported_media_type;
+        case 429: return SimpleWeb::StatusCode::client_error_too_many_requests;
+        default: return SimpleWeb::StatusCode::server_error_service_unavailable;
+      }
+    }
+
+    attended_pairing::source_identity attended_source(
+      const boost::asio::ip::address &address
+    ) {
+      if (address.is_v4()) {
+        return {address.to_v4().to_string(), 0};
+      }
+      auto v6 = address.to_v6();
+      if (v6.is_v4_mapped()) {
+        const auto bytes = v6.to_bytes();
+        boost::asio::ip::address_v4::bytes_type v4 {
+          bytes[12], bytes[13], bytes[14], bytes[15]
+        };
+        return {boost::asio::ip::address_v4(v4).to_string(), 0};
+      }
+      const auto scope_id = v6.is_link_local() ? v6.scope_id() : 0;
+      v6.scope_id(0);
+      return {v6.to_string(), scope_id};
+    }
+
+    void attended_route(resp_http_t response, req_http_t request) {
+      if (!attended_pairing_router) {
+        send_ligase_json(
+          response,
+          SimpleWeb::StatusCode::server_error_service_unavailable,
+          {{"code", "pairingUnavailable"}}
+        );
+        return;
+      }
+      const auto source = attended_source(request->remote_endpoint().address());
+      const bool source_loopback =
+        request->remote_endpoint().address().is_loopback()
+        || source.address.starts_with("127.");
+      attended_pairing::http::request input {
+        .method = request->method,
+        .path = request->path,
+        .source = source,
+        .loopback = source_loopback
+      };
+      for (const auto &[name, value] : request->header) {
+        input.headers.emplace_back(name, value);
+      }
+      const auto body = request->content.string();
+      input.body.assign(body.begin(), body.end());
+      const auto output = attended_pairing_router->handle(
+        input,
+        attended_pairing::pairing_service::steady_clock::now(),
+        attended_pairing::pairing_service::wall_clock::now()
+      );
+      SimpleWeb::CaseInsensitiveMultimap headers;
+      for (const auto &[name, value] : output.headers) headers.emplace(name, value);
+      response->write(
+        attended_status(output.status),
+        std::string(output.body.begin(), output.body.end()),
+        headers
+      );
+      response->close_connection_after_response = true;
+    }
+
+    attended_pairing::bytes host_certificate_der(std::string_view pem) {
+      auto certificate = crypto::x509(std::string(pem));
+      const auto length = i2d_X509(certificate.get(), nullptr);
+      if (length <= 0) throw std::runtime_error("Host certificate DER unavailable");
+      attended_pairing::bytes result(static_cast<std::size_t>(length));
+      auto *cursor = result.data();
+      if (i2d_X509(certificate.get(), &cursor) != length) {
+        throw std::runtime_error("Host certificate DER conversion failed");
+      }
+      return result;
     }
 
     bool ligase_authorized(resp_https_t response, req_https_t request) {
@@ -2309,6 +2573,36 @@ namespace nvhttp {
     auto pkey = file_handler::read_file(config::nvhttp.pkey.c_str());
     auto cert = file_handler::read_file(config::nvhttp.cert.c_str());
     setup(pkey, cert);
+    const auto attended_internal =
+      std::getenv("LIGASE_ATTENDED_PAIRING_INTERNAL");
+    const bool attended_test_mode =
+      attended_internal != nullptr
+      && std::string_view(attended_internal) == "1";
+    const bool attended_enabled = true;
+    if (attended_enabled) {
+      attended_pairing::service_config attended_config {
+        .host_unique_id = http::unique_id,
+        .host_certificate_der = host_certificate_der(cert)
+      };
+      if (const auto value = attended_test_mode
+            ? std::getenv("LIGASE_ATTENDED_PAIRING_TEST_LIFETIME_SECONDS")
+            : nullptr) {
+        const auto seconds = std::clamp(std::atoi(value), 1, 120);
+        attended_config.request_lifetime = std::chrono::seconds(seconds);
+      }
+      if (const auto value = attended_test_mode
+            ? std::getenv("LIGASE_ATTENDED_PAIRING_TEST_RATE_LIMIT")
+            : nullptr) {
+        attended_config.rate_limit =
+          static_cast<std::size_t>(std::clamp(std::atoi(value), 1, 64));
+      }
+      attended_pairing_service =
+        std::make_unique<attended_pairing::pairing_service>(
+          std::move(attended_config));
+      attended_pairing_router =
+        std::make_unique<attended_pairing::http::router>(
+          *attended_pairing_service);
+    }
 
     // resume doesn't always get the parameter "localAudioPlayMode"
     // launch will store it in host_audio
@@ -2403,6 +2697,15 @@ namespace nvhttp {
     http_server.resource["^/ligase/v1/session/cancel$"]["POST"] = ligase_cancel_session_local;
     http_server.resource["^/ligase/v1/authority/readback$"]["POST"] = ligase_authority_readback_local;
     http_server.resource["^/ligase/v1/authority/reload$"]["POST"] = ligase_authority_reload_local;
+    if (attended_enabled) {
+      http_server.resource["^/ligase/v1/pairing/requests$"]["POST"] = attended_route;
+      http_server.resource["^/ligase/v1/pairing/requests$"]["GET"] = attended_route;
+      http_server.resource["^/ligase/v1/pairing/requests/[^/]+$"]["GET"] = attended_route;
+      http_server.resource["^/ligase/v1/pairing/requests/[^/]+$"]["DELETE"] = attended_route;
+      http_server.resource["^/ligase/v1/pairing/requests/[^/]+/envelope$"]["PUT"] = attended_route;
+      http_server.resource["^/ligase/v1/pairing/requests/[^/]+/allow$"]["POST"] = attended_route;
+      http_server.resource["^/ligase/v1/pairing/requests/[^/]+/reject$"]["POST"] = attended_route;
+    }
 
     http_server.config.reuse_address = true;
     http_server.config.address = net::af_to_any_address_string(address_family);
@@ -2428,6 +2731,10 @@ namespace nvhttp {
     // Wait for any event
     shutdown_event->view();
 
+    if (attended_pairing_service) attended_pairing_service->clear_for_restart();
+    attended_pairing_router.reset();
+    attended_pairing_service.reset();
+    attended_legacy_adapters.clear();
     map_id_sess.clear();
 
     https_server.stop();
