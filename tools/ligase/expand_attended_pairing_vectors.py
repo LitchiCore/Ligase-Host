@@ -20,6 +20,7 @@ REQUEST_ID = "9dbbb480-9ef1-4e9e-bb1f-0c1d42dff8e4"
 SOURCE = {"address": "192.0.2.10", "scopeId": 0}
 EMPTY_SOURCE = {"present": False, "address": "", "scopeId": 0}
 STORED_SOURCE = {"present": True, **SOURCE}
+STATUS_EXPIRES_AT = "2026-07-23T07:30:00Z"
 
 CREATE_RULES = [
     "strictHttpOrder", "strictJsonFirstError", "canonicalUuid",
@@ -69,7 +70,9 @@ def context(
     **changes,
 ) -> dict:
     live = state not in {"empty", "evicted"}
-    ready = state == "approved" or (state == "pending" and envelope and held)
+    ready = state in {"approved", "paired"} or (
+        state == "pending" and envelope and held
+    )
     paired = state == "paired"
     accepted_envelope = envelope or state in {"approved", "paired"}
     value = {
@@ -85,6 +88,8 @@ def context(
         "state": state,
         "readyForApproval": ready,
         "generation": generation,
+        "statusExpiresAt": STATUS_EXPIRES_AT if live else "",
+        "failure": "legacyPairingFailed" if state == "failed" else None,
         "canonicalCreateJcsBase64url": positive["createRequestJcsBase64url"] if live else "",
         "incomingSource": copy.deepcopy(SOURCE),
         "storedExactSource": copy.deepcopy(STORED_SOURCE if live else EMPTY_SOURCE),
@@ -95,7 +100,7 @@ def context(
         "replayCanonicalEnvelopeHashBase64url": positive["envelopeCanonicalHashBase64url"] if accepted_envelope else "",
         "fullEncryptedEnvelopePresent": accepted_envelope and state == "pending",
         "validatedEnvelope": accepted_envelope,
-        "heldGetservercert": held or state in {"approved", "paired"},
+        "heldGetservercert": held or state == "approved",
         "certificateFingerprintMatched": held or state in {"approved", "paired"},
         "readyEventEmitted": ready or paired,
         "pairedDeviceCommitted": paired,
@@ -108,13 +113,15 @@ def context(
 
 def post(state: str, *, envelope: bool = False, generation: int = 1, **changes) -> dict:
     terminal = state in {"paired", "rejected", "cancelled", "expired", "failed"}
-    ready = state == "approved"
+    ready = state in {"approved", "paired"}
     accepted_envelope = envelope or state in {"approved", "paired"}
     value = {
         "requestExists": state not in {"empty", "evicted"},
         "state": state,
         "readyForApproval": ready,
         "generation": generation,
+        "statusExpiresAt": STATUS_EXPIRES_AT if state not in {"empty", "evicted"} else "",
+        "failure": "legacyPairingFailed" if state == "failed" else None,
         "heldPair": state == "approved",
         "tokenBytesPresent": state in {"pending", "approved"},
         "tokenHashPresent": state not in {"empty", "evicted"},
@@ -133,18 +140,80 @@ def post(state: str, *, envelope: bool = False, generation: int = 1, **changes) 
     return value
 
 
-def cleanup(value: bool) -> dict:
+def retain_ready_history(post_value: dict, ctx: dict) -> dict:
+    if (
+        post_value["state"] in {"paired", "rejected", "cancelled", "expired", "failed"}
+        and ctx["readyEventEmitted"]
+    ):
+        post_value.update({
+            "readyForApproval": True,
+            "validatedEnvelope": True,
+            "certificateFingerprintMatched": True,
+            "domainEventCount": 1,
+            "envelopeStorage": "digestOnly",
+        })
+    return post_value
+
+
+SECRET_OWNER_FIELDS = (
+    "pin", "bearerTokenBytes", "privateKey", "sharedSecret",
+    "pairingKey", "nonce", "plaintext", "fullCiphertext",
+)
+
+
+def owner_for_context(ctx: dict) -> dict:
+    state = ctx["state"]
+    if not ctx["requestPresent"] or state in {"empty", "evicted"}:
+        return {
+            **{field: "notOwned" for field in SECRET_OWNER_FIELDS},
+            "poll": "notOwned",
+            "heldOperation": "notOwned",
+        }
+    if state in {"paired", "rejected", "cancelled", "expired", "failed"}:
+        return {
+            **{field: "cleared" for field in SECRET_OWNER_FIELDS},
+            "poll": "cancelled",
+            "heldOperation": "completed" if state == "paired" else "cancelled",
+        }
+    has_envelope = ctx["validatedEnvelope"]
     return {
-        "pinCleared": value,
-        "bearerTokenBytesCleared": value,
-        "privateKeyCleared": value,
-        "sharedSecretCleared": value,
-        "pairingKeyCleared": value,
-        "plaintextCleared": value,
-        "fullCiphertextCleared": value,
-        "pollCancelled": value,
-        "heldOperationCancelled": value,
+        "pin": "present",
+        "bearerTokenBytes": "present",
+        "privateKey": "present",
+        "sharedSecret": "present" if has_envelope else "notOwned",
+        "pairingKey": "present" if has_envelope else "notOwned",
+        "nonce": "present" if has_envelope else "notOwned",
+        "plaintext": "cleared" if has_envelope else "notOwned",
+        "fullCiphertext": (
+            "present" if ctx["fullEncryptedEnvelopePresent"]
+            else "cleared" if has_envelope
+            else "notOwned"
+        ),
+        "poll": "active",
+        "heldOperation": "active" if ctx["heldGetservercert"] else "notOwned",
     }
+
+
+def owner_after_post(initial: dict, post_value: dict) -> dict:
+    result = copy.deepcopy(initial)
+    if post_value["state"] in {"paired", "rejected", "cancelled", "expired", "failed"}:
+        for field in SECRET_OWNER_FIELDS:
+            if result[field] == "present":
+                result[field] = "cleared"
+        if result["poll"] == "active":
+            result["poll"] = "cancelled"
+        if result["heldOperation"] == "active":
+            result["heldOperation"] = (
+                "completed" if post_value["state"] == "paired" else "cancelled"
+            )
+    return result
+
+
+def cleanup_checkpoints(initial: dict, final: dict, final_step: int) -> list:
+    return [
+        {"afterStep": 0, "expectedOwnerState": copy.deepcopy(initial)},
+        {"afterStep": final_step, "expectedOwnerState": copy.deepcopy(final)},
+    ]
 
 
 def http(method: str, path: str, body: bytes = b"", headers=None) -> dict:
@@ -185,15 +254,19 @@ def behavior(
     case_id, operation, rules, ctx, request, status, state, response_body=b"",
     cleaned=False, **post_changes
 ):
+    post_value = retain_ready_history(post(state, **post_changes), ctx)
+    initial_owner = owner_for_context(ctx)
+    final_owner = owner_after_post(initial_owner, post_value)
     return {
         "id": case_id,
         "operation": operation,
         "validationRules": rules,
         "context": ctx,
+        "initialOwnerState": initial_owner,
         "input": request,
         "expectedHttp": expected(status, response_body),
-        "expectedPostState": post(state, **post_changes),
-        "expectedCleanupMetadata": cleanup(cleaned),
+        "expectedPostState": post_value,
+        "cleanupCheckpoints": cleanup_checkpoints(initial_owner, final_owner, 1),
     }
 
 
@@ -542,7 +615,7 @@ def main() -> None:
         "readyForApproval": False,
         "requestId": REQUEST_ID,
         "safetyCode": positive["safetyCode"],
-        "sourceAddress": SOURCE,
+        "sourceAddress": {"address": SOURCE["address"]},
         "state": "pending",
     }
     list_path = "/ligase/v1/pairing/requests"
@@ -553,6 +626,17 @@ def main() -> None:
         ("multi-sorted", [
             pending_item,
             {**pending_item, "requestId": "adbbb480-9ef1-4e9e-bb1f-0c1d42dff8e4"},
+        ]),
+        ("created-at-primary", [
+            {
+                **pending_item,
+                "createdAt": "2026-07-23T07:27:00Z",
+                "requestId": "fdbbb480-9ef1-4e9e-bb1f-0c1d42dff8e4",
+            },
+            {
+                **pending_item,
+                "requestId": "0dbbb480-9ef1-4e9e-bb1f-0c1d42dff8e4",
+            },
         ]),
     ]:
         cases.append(behavior(
@@ -627,25 +711,36 @@ def main() -> None:
         initial = context(
             positive, "approved", envelope=True, held=True, generation=2
         ) if "pair" in case_id else ready_ctx
+        final_post = retain_ready_history(post(
+            final_state, envelope=initial["validatedEnvelope"], generation=final_gen
+        ), initial)
+        initial_owner = owner_for_context(initial)
+        final_owner = owner_after_post(initial_owner, final_post)
+        actor_for = {
+            "cancel": "publicClient",
+            "allow": "loopbackUi",
+            "reject": "loopbackUi",
+            "commitPaired": "nvhttpAdapter",
+        }
         cases.append({
             "id": case_id,
             "operation": "race",
             "validationRules": RACE_RULES,
             "context": initial,
+            "initialOwnerState": initial_owner,
             "schedule": [
-                race_step(1, "publicClient" if first == "cancel" else "loopbackUi",
+                race_step(1, actor_for[first],
                           first, "underLock",
                           "paired" if first == "commitPaired" else
                           "approved" if first == "allow" else
                           "cancelled" if first == "cancel" else "rejected",
                           first_gen),
-                race_step(2, "nvhttpAdapter" if second == "commitPaired" else "loopbackUi",
+                race_step(2, actor_for[second],
                           second, "underLock", final_state, final_gen),
             ],
-            "expectedPostState": post(
-                final_state, envelope=initial["validatedEnvelope"], generation=final_gen),
-            "expectedCleanupMetadata": cleanup(
-                final_state in {"cancelled", "rejected"}),
+            "expectedPostState": final_post,
+            "cleanupCheckpoints": cleanup_checkpoints(
+                initial_owner, final_owner, 2),
         })
     for suffix, action, final_state in [
         ("success", "bindHeldGetservercert", "pending"),
@@ -660,102 +755,172 @@ def main() -> None:
         if "stale" in suffix:
             initial = context(positive, "cancelled", envelope=True, generation=2)
         final_generation = initial["generation"] + (1 if final_state == "failed" else 0)
+        final_post = retain_ready_history(post(
+            final_state,
+            envelope=True,
+            generation=final_generation,
+            **({
+                "readyForApproval": True,
+                "heldPair": True,
+                "certificateFingerprintMatched": True,
+                "domainEventCount": 1,
+            } if suffix == "success" else {})), initial)
+        initial_owner = owner_for_context(initial)
+        final_owner = owner_after_post(initial_owner, final_post)
         cases.append({
             "id": f"getservercert-{suffix}",
             "operation": "race",
             "validationRules": RACE_RULES,
             "context": initial,
+            "initialOwnerState": initial_owner,
             "schedule": [
-                race_step(1, "nvhttpAdapter", action, "underLock",
+                race_step(
+                    1,
+                    "nvhttpAdapter" if action == "bindHeldGetservercert"
+                    else "coordinator",
+                    action,
+                    "underLock",
                           final_state, final_generation),
-                race_step(2, "coordinator", "materializeExpiry", "afterCommit",
+                race_step(2, "coordinator", "materializeExpiry", "underLock",
                           final_state, final_generation),
             ],
-            "expectedPostState": post(
-                final_state,
-                envelope=True,
-                generation=final_generation,
-                **({
-                    "readyForApproval": True,
-                    "heldPair": True,
-                    "certificateFingerprintMatched": True,
-                    "domainEventCount": 1,
-                } if suffix == "success" else {})),
-            "expectedCleanupMetadata": cleanup(final_state != "pending"),
+            "expectedPostState": final_post,
+            "cleanupCheckpoints": cleanup_checkpoints(
+                initial_owner, final_owner, 2),
         })
 
     # Android DELETE + exactly-one authenticated status probe outcomes.
     android_outcomes = [
-        ("cancelled", "cancelled", 200, None),
-        ("paired", "paired", 200, None),
-        ("rejected", "rejected", 200, None),
-        ("expired", "expired", 200, None),
-        ("failed", "failed", 200, None),
-        ("unauthorized", "unknown", 401, None),
-        ("not-found", "unknown", 404, None),
-        ("gone", "unknown", 410, None),
-        ("transport-timeout", "unknown", 0, "timeout"),
+        ("cancelled", "cancelled", 200, None, "none"),
+        ("paired", "paired", 200, None, "none"),
+        ("rejected", "rejected", 200, None, "none"),
+        ("expired", "expired", 200, None, "none"),
+        ("failed", "failed", 200, None, "none"),
+        ("unauthorized", "unknown", 401, None, "invalidBearer"),
+        ("not-found", "unknown", 404, None, "terminalCacheEvicted"),
+        ("gone", "unknown", 410, None, "unexpectedHttp410"),
+        ("transport-timeout", "unknown", 0, "timeout", "timeout"),
+        ("transport-connection-reset", "unknown", 0, "connectionReset", "connectionReset"),
+        ("transport-tls-failure", "unknown", 0, "tlsFailure", "tlsFailure"),
+        ("unexpected-live-status", "protocolError", 200, None, "unexpectedLiveStatus"),
     ]
-    for suffix, outcome, status_code, transport_error in android_outcomes:
-        terminal = outcome if outcome != "unknown" else "approved"
-        generation = 3 if outcome in {
-            "cancelled", "paired", "rejected", "expired", "failed"
-        } else 2
-        if outcome == "cancelled":
+    for suffix, outcome, status_code, transport_error, fault in android_outcomes:
+        if outcome in {"rejected", "expired", "failed"}:
             initial = context(
-                positive, "approved", envelope=True, held=True, generation=2)
-        elif outcome in {"paired", "rejected", "expired", "failed"}:
-            initial = context(
-                positive,
-                outcome,
-                envelope=outcome == "paired",
-                held=False,
-                generation=3,
-            )
-        elif status_code == 404:
-            initial = context(positive, "evicted", generation=0)
-            terminal = "evicted"
-            generation = 0
-        elif status_code == 410:
-            initial = context(positive, "expired", generation=3)
-            terminal = "expired"
-            generation = 3
+                positive, outcome, envelope=True, held=False, generation=3)
+            after_delete_state = outcome
+            after_delete_generation = 3
         else:
             initial = context(
                 positive, "approved", envelope=True, held=True, generation=2)
-        probe = (
-            {"kind": "transportError", "transportError": transport_error}
-            if transport_error else
-            {
+            after_delete_state = "paired" if outcome == "paired" else "cancelled"
+            after_delete_generation = 3
+
+        after_delete = retain_ready_history(post(
+            after_delete_state,
+            envelope=True,
+            generation=after_delete_generation,
+        ), initial)
+        initial_owner = owner_for_context(initial)
+        initial_owner["bearerTokenBytes"] = "present"
+        initial_owner["poll"] = "active"
+        step1_owner = copy.deepcopy(initial_owner)
+        if after_delete_state == "paired":
+            step1_owner["heldOperation"] = "completed"
+        step2_owner = copy.deepcopy(step1_owner)
+        for field in SECRET_OWNER_FIELDS:
+            if field == "bearerTokenBytes":
+                continue
+            if step2_owner[field] == "present":
+                step2_owner[field] = "cleared"
+        if step2_owner["poll"] == "active":
+            step2_owner["poll"] = "cancelled"
+        if step2_owner["heldOperation"] == "active":
+            step2_owner["heldOperation"] = "cancelled"
+        step3_owner = copy.deepcopy(step2_owner)
+        step4_owner = copy.deepcopy(step3_owner)
+        step4_owner["bearerTokenBytes"] = "cleared"
+
+        if fault == "terminalCacheEvicted":
+            after_probe = post("evicted", generation=after_delete_generation)
+        else:
+            after_probe = copy.deepcopy(after_delete)
+        final_post = copy.deepcopy(after_probe)
+
+        if transport_error:
+            probe = {"kind": "transportError", "transportError": transport_error}
+        elif status_code == 200:
+            probe_state = (
+                "pending"
+                if fault == "unexpectedLiveStatus"
+                else after_probe["state"]
+            )
+            probe = {
                 "kind": "http",
-                **expected(
-                    status_code,
-                    status_body(
-                        terminal,
-                        "legacyPairingFailed" if terminal == "failed" else None,
-                    ) if status_code == 200 else
-                    error(
-                        "invalidRequestToken" if status_code == 401 else
-                        "requestNotFound" if status_code == 404 else
-                        "requestExpired")),
+                **expected(status_code, status_body(
+                    probe_state,
+                    None if probe_state != "failed" else after_probe["failure"],
+                )),
             }
-        )
+        else:
+            error_code = (
+                "invalidRequestToken" if status_code == 401
+                else "requestNotFound" if status_code == 404
+                else "requestExpired"
+            )
+            probe = {"kind": "http", **expected(status_code, error(error_code))}
+
         cases.append({
             "id": f"android-cancel-probe-{suffix}",
             "operation": "androidCancel",
             "validationRules": RACE_RULES,
             "context": initial,
+            "initialOwnerState": initial_owner,
             "deleteInput": http("DELETE", status_path, headers=token_header),
             "deleteExpectedHttp": expected(204),
             "statusProbeInput": http("GET", status_path, headers=token_header),
             "statusProbeExpected": probe,
+            "hostConformance": (
+                "injectedProtocolViolation"
+                if fault in {"unexpectedHttp410", "unexpectedLiveStatus"}
+                else "conformant"
+            ),
+            "schedule": [
+                {
+                    "step": 1,
+                    "phase": "afterDelete",
+                    "expectedPostState": after_delete,
+                    "expectedOwnerState": step1_owner,
+                },
+                {
+                    "step": 2,
+                    "phase": "afterPreProbeCleanup",
+                    "expectedPostState": after_delete,
+                    "expectedOwnerState": step2_owner,
+                },
+                {
+                    "step": 3,
+                    "phase": "afterStatusProbe",
+                    "probeFault": fault,
+                    "expectedPostState": after_probe,
+                    "expectedOwnerState": step3_owner,
+                },
+                {
+                    "step": 4,
+                    "phase": "afterFinalCleanup",
+                    "expectedPostState": final_post,
+                    "expectedOwnerState": step4_owner,
+                },
+            ],
             "expectedAndroidOutcome": outcome,
-            "expectedPostState": post(
-                terminal,
-                envelope=initial["validatedEnvelope"],
-                generation=generation),
-            "expectedCleanupMetadata": cleanup(True),
+            "expectedPostState": final_post,
         })
+
+    for case in cases:
+        if case.get("operation") == "race":
+            for step in case["schedule"]:
+                step["expectedPostState"] = retain_ready_history(
+                    step["expectedPostState"], case["context"])
 
     cases.sort(key=lambda item: item["id"].encode("utf-8"))
     output = {

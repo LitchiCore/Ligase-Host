@@ -545,11 +545,22 @@ def validate_http_authority(case: dict, value: dict) -> None:
             f"{case['id']}: status body differs from Host authority",
         )
         if operation == "status":
+            context = case["context"]
+            materialized_expiry = (
+                context["state"] in {"pending", "approved"}
+                and post["state"] == "expired"
+                and context["nowMonotonicMs"] >= context["deadlineMonotonicMs"]
+                and post["generation"] == context["generation"] + 1
+            )
+            unchanged = (
+                post["state"] == context["state"]
+                and post["generation"] == context["generation"]
+            )
             require(
-                post["state"] == case["context"]["state"]
-                and post["statusExpiresAt"] == case["context"]["statusExpiresAt"]
-                and post["failure"] == case["context"]["failure"],
-                f"{case['id']}: pure status mutated authority",
+                (unchanged or materialized_expiry)
+                and post["statusExpiresAt"] == context["statusExpiresAt"]
+                and post["failure"] == context["failure"],
+                f"{case['id']}: status authority transition mismatch",
             )
 
 
@@ -1232,6 +1243,48 @@ def contract_self_test() -> None:
         "created-after-expiry",
         lambda item: item.update(createdAt="2026-07-24T00:03:00Z"),
     )
+
+    fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    unexpected_live = next(
+        case for case in fixture["cases"]
+        if case["id"] == "android-cancel-probe-unexpected-live-status"
+    )
+    validate_android_cancel(unexpected_live)
+
+    live_as_conformant = json.loads(json.dumps(unexpected_live))
+    live_as_conformant["hostConformance"] = "conformant"
+    expect_rejected(
+        "unexpected live status marked conformant",
+        lambda: validate_android_cancel(live_as_conformant),
+    )
+
+    live_wrong_outcome = json.loads(json.dumps(unexpected_live))
+    live_wrong_outcome["expectedAndroidOutcome"] = "cancelled"
+    expect_rejected(
+        "unexpected live status wrong Android outcome",
+        lambda: validate_android_cancel(live_wrong_outcome),
+    )
+
+    live_terminal_body = json.loads(json.dumps(unexpected_live))
+    terminal_body = json.loads(
+        decode(live_terminal_body["statusProbeExpected"]["body"]).decode("utf-8")
+    )
+    terminal_body["state"] = "rejected"
+    compact_terminal = json.dumps(
+        terminal_body,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    live_terminal_body["statusProbeExpected"]["body"] = (
+        base64.urlsafe_b64encode(compact_terminal)
+        .rstrip(b"=")
+        .decode("ascii")
+    )
+    expect_rejected(
+        "unexpected live status terminal body",
+        lambda: validate_android_cancel(live_terminal_body),
+    )
     print("VECTOR_CONTRACT_SELF_TEST_OK")
 
 
@@ -1251,6 +1304,19 @@ def main() -> None:
     require(required == authority, "coverage manifest differs from authority")
     require(ids == authority, "actual cases differ from coverage authority")
     require(len(ids) == len(set(ids)), "duplicate case id")
+    injected = [
+        (case["id"], case["schedule"][2]["probeFault"])
+        for case in cases
+        if case.get("operation") == "androidCancel"
+        and case.get("hostConformance") == "injectedProtocolViolation"
+    ]
+    require(
+        injected == [
+            ("android-cancel-probe-gone", "unexpectedHttp410"),
+            ("android-cancel-probe-unexpected-live-status", "unexpectedLiveStatus"),
+        ],
+        "defensive protocol-violation coverage mismatch",
+    )
 
     for case in cases:
         case_id = case["id"]

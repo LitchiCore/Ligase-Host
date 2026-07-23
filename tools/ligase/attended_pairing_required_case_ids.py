@@ -23,6 +23,7 @@ REQUIRED_CASE_IDS = (
     "android-cancel-probe-transport-timeout",
     "android-cancel-probe-transport-tls-failure",
     "android-cancel-probe-unauthorized",
+    "android-cancel-probe-unexpected-live-status",
     "create-content-encoding",
     "create-content-type",
     "create-different-object-conflict",
