@@ -5,8 +5,6 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
-using System.Runtime.InteropServices;
-using Windows.Graphics;
 using WinRT.Interop;
 
 namespace Ligase.Host.Desktop;
@@ -33,7 +31,6 @@ public sealed partial class MainWindow : Window
         var windowHandle = WindowNative.GetWindowHandle(this);
         var windowId = Microsoft.UI.Win32Interop.GetWindowIdFromWindow(windowHandle);
         _appWindow = AppWindow.GetFromWindowId(windowId);
-        PlaceOnSecondaryDisplay();
         _appWindow.Closing += OnWindowClosing;
         _trayIcon.OpenRequested += ShowWindow;
         _trayIcon.ExitRequested += OnExitRequested;
@@ -49,49 +46,6 @@ public sealed partial class MainWindow : Window
     {
         _appWindow.Show();
         Activate();
-    }
-
-    private void PlaceOnSecondaryDisplay()
-    {
-        var displays = EnumerateDisplays();
-        var target = displays.FirstOrDefault(display => !display.IsPrimary)
-            ?? displays.FirstOrDefault(display => display.IsPrimary);
-
-        if (target is null || target.WorkArea.Width <= 0 || target.WorkArea.Height <= 0) return;
-
-        const int horizontalInset = 80;
-        const int verticalInset = 56;
-        const int preferredWidth = 1560;
-        const int preferredHeight = 920;
-        var width = Math.Min(preferredWidth, Math.Max(640, target.WorkArea.Width - horizontalInset * 2));
-        var height = Math.Min(preferredHeight, Math.Max(480, target.WorkArea.Height - verticalInset * 2));
-        _appWindow.MoveAndResize(new RectInt32(
-            target.WorkArea.X + horizontalInset,
-            target.WorkArea.Y + verticalInset,
-            width,
-            height));
-    }
-
-    private static IReadOnlyList<DisplayWorkArea> EnumerateDisplays()
-    {
-        var displays = new List<DisplayWorkArea>();
-        EnumDisplayMonitors(IntPtr.Zero, IntPtr.Zero, (monitor, _, _, _) =>
-        {
-            var info = new MonitorInfo { Size = Marshal.SizeOf<MonitorInfo>() };
-            if (GetMonitorInfo(monitor, ref info))
-            {
-                displays.Add(new DisplayWorkArea(
-                    new RectInt32(
-                        info.WorkArea.Left,
-                        info.WorkArea.Top,
-                        info.WorkArea.Right - info.WorkArea.Left,
-                        info.WorkArea.Bottom - info.WorkArea.Top),
-                    (info.Flags & MonitorInfoPrimary) != 0));
-            }
-
-            return true;
-        }, IntPtr.Zero);
-        return displays;
     }
 
     public void NavigateToAddApplication()
@@ -178,43 +132,5 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private const uint MonitorInfoPrimary = 1;
 
-    private sealed record DisplayWorkArea(RectInt32 WorkArea, bool IsPrimary);
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct NativeRect
-    {
-        public int Left;
-        public int Top;
-        public int Right;
-        public int Bottom;
-    }
-
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Auto)]
-    private struct MonitorInfo
-    {
-        public int Size;
-        public NativeRect Monitor;
-        public NativeRect WorkArea;
-        public uint Flags;
-    }
-
-    private delegate bool MonitorEnumProcedure(
-        IntPtr monitor,
-        IntPtr deviceContext,
-        IntPtr monitorRect,
-        IntPtr data);
-
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool EnumDisplayMonitors(
-        IntPtr deviceContext,
-        IntPtr clipRect,
-        MonitorEnumProcedure callback,
-        IntPtr data);
-
-    [DllImport("user32.dll", CharSet = CharSet.Auto)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool GetMonitorInfo(IntPtr monitor, ref MonitorInfo monitorInfo);
 }
