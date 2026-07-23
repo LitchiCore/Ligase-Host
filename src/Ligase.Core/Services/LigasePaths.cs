@@ -9,6 +9,8 @@ public sealed class LigasePaths
 
     public string RootDirectory { get; }
     public string LibraryFile => Path.Combine(RootDirectory, "library.json");
+    public string StreamingSettingsFile => Path.Combine(RootDirectory, "streaming.json");
+    public string SyncFile => Path.Combine(RootDirectory, "ligase-sync.json");
     public string PreferencesFile => Path.Combine(RootDirectory, "preferences.json");
     public string ApolloDirectory => Path.Combine(RootDirectory, "apollo");
     public string ApolloConfigFile => Path.Combine(ApolloDirectory, "sunshine.conf");

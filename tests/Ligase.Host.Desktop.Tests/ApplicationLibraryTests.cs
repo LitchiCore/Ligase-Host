@@ -197,6 +197,126 @@ public sealed class ApplicationLibraryTests
             HostPreferencesService.GetPrimaryLanguageOverride(HostLanguage.System));
     }
 
+    [TestMethod]
+    public async Task AppResolutionOverridesGlobalAndCanReturnToGlobal()
+    {
+        var paths = new LigasePaths(_temporaryDirectory);
+        var service = new StreamingSettingsService(paths);
+        var appId = Guid.NewGuid();
+
+        var global = await service.SetGlobalResolutionAsync(new StreamResolution(2560, 1440));
+        var overridden = await service.SetAppResolutionAsync(
+            appId,
+            new StreamResolution(1280, 720),
+            global.Revision);
+
+        Assert.AreEqual(new StreamResolution(1280, 720), overridden.GetEffectiveResolution(appId));
+
+        var inherited = await service.SetAppResolutionAsync(
+            appId,
+            null,
+            overridden.Revision);
+
+        Assert.AreEqual(new StreamResolution(2560, 1440), inherited.GetEffectiveResolution(appId));
+        Assert.IsFalse(inherited.Apps.ContainsKey(appId));
+    }
+
+    [TestMethod]
+    public async Task StreamingSettingsRejectStaleRevision()
+    {
+        var paths = new LigasePaths(_temporaryDirectory);
+        var service = new StreamingSettingsService(paths);
+        var first = await service.SetGlobalResolutionAsync(new StreamResolution(1920, 1200));
+
+        var exception = await Assert.ThrowsExceptionAsync<RevisionConflictException>(() =>
+            service.SetGlobalResolutionAsync(
+                new StreamResolution(3840, 2160),
+                first.Revision - 1));
+
+        Assert.AreEqual(first.Revision - 1, exception.ExpectedRevision);
+        Assert.AreEqual(first.Revision, exception.ActualRevision);
+    }
+
+    [TestMethod]
+    public async Task SyncDocumentContainsSafeLibraryMetadataAndStreamingSettings()
+    {
+        var paths = new LigasePaths(_temporaryDirectory);
+        var writer = new LigaseSyncDocumentWriter(paths);
+        var appId = Guid.NewGuid();
+        var library = new LibraryState
+        {
+            Revision = 7,
+            SortMode = LibrarySortMode.LastPlayedNewest,
+            Items =
+            [
+                new LibraryItem
+                {
+                    Id = appId,
+                    Kind = LibraryItemKind.Executable,
+                    Name = "Private Tool",
+                    ExecutablePath = @"C:\Secret\Tool.exe",
+                    WorkingDirectory = @"C:\Secret"
+                }
+            ]
+        };
+        var streaming = new StreamingSettingsState
+        {
+            Revision = 3,
+            GlobalResolution = new StreamResolution(2560, 1440),
+            Apps =
+            {
+                [appId] = new AppStreamingSettings
+                {
+                    Resolution = new StreamResolution(1920, 1080)
+                }
+            }
+        };
+
+        await writer.WriteAsync(library, streaming);
+
+        using var json = JsonDocument.Parse(await File.ReadAllTextAsync(paths.SyncFile));
+        var root = json.RootElement;
+        Assert.AreEqual(7, root.GetProperty("library").GetProperty("revision").GetInt64());
+        Assert.AreEqual(
+            "lastPlayedNewest",
+            root.GetProperty("library").GetProperty("sortMode").GetString());
+        Assert.AreEqual(
+            1920,
+            root.GetProperty("streaming").GetProperty("apps")
+                .GetProperty(appId.ToString()).GetProperty("resolution")
+                .GetProperty("width").GetInt32());
+        var serialized = root.GetRawText();
+        Assert.IsFalse(serialized.Contains("executablePath", StringComparison.OrdinalIgnoreCase));
+        Assert.IsFalse(serialized.Contains(@"C:\Secret", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [TestMethod]
+    public void ApolloDeviceSnapshotMapsCoreFieldNames()
+    {
+        const string json = """
+            {
+              "schemaVersion": 1,
+              "devices": [{
+                "name": "V2353A",
+                "uuid": "device-uuid",
+                "display_mode": "2560x1440x120",
+                "perm": 119480064,
+                "allow_client_commands": true,
+                "always_use_virtual_display": false,
+                "connected": true
+              }]
+            }
+            """;
+
+        var device = ApolloDeviceService.DeserializeSnapshot(json).Devices.Single();
+
+        Assert.AreEqual("V2353A", device.Name);
+        Assert.AreEqual("2560x1440x120", device.DisplayMode);
+        Assert.AreEqual(119480064u, device.Permissions);
+        Assert.IsTrue(device.AllowClientCommands);
+        Assert.IsTrue(device.Connected);
+    }
+
     private sealed class RecordingAppsWriter : IApolloAppsWriter
     {
         public int WriteCount { get; private set; }

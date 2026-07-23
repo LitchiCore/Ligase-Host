@@ -5,7 +5,9 @@ namespace Ligase.Host.Core.Services;
 
 public sealed class ApplicationLibrary(
     LigasePaths paths,
-    IApolloAppsWriter apolloAppsWriter) : IApplicationLibrary
+    IApolloAppsWriter apolloAppsWriter,
+    StreamingSettingsService? streamingSettings = null,
+    LigaseSyncDocumentWriter? syncWriter = null) : IApplicationLibrary
 {
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -112,6 +114,13 @@ public sealed class ApplicationLibrary(
             state.UpdatedAt = DateTimeOffset.UtcNow;
             await WriteCoreAsync(state, cancellationToken);
             await apolloAppsWriter.WriteAsync(state.Items, cancellationToken);
+            if (syncWriter is not null)
+            {
+                var streaming = streamingSettings is null
+                    ? new StreamingSettingsState()
+                    : await streamingSettings.LoadAsync(cancellationToken);
+                await syncWriter.WriteAsync(state, streaming, cancellationToken);
+            }
             return result;
         }
         finally
@@ -126,6 +135,7 @@ public sealed class ApplicationLibrary(
         {
             var initialState = new LibraryState();
             EnsureSystemEntries(initialState);
+            await WriteCoreAsync(initialState, cancellationToken);
             return initialState;
         }
 

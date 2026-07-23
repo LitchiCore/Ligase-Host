@@ -9,10 +9,11 @@ It is not a WebView wrapper around Apollo's existing configuration site.
   games, and guided configuration.
 - Apollo remains the streaming engine and the source of truth for active
   sessions, encoders, input, audio, and GameStream compatibility.
-- The desktop process will communicate with Apollo through a narrow,
-  versioned local API. It must not edit `apps.json` concurrently with Apollo.
+- The desktop process communicates with Apollo through narrow, versioned
+  Ligase routes. It must not edit `apps.json` concurrently with Apollo.
 - Artemis/TouchKit remains a separate Android client. Host/client capabilities
-  will be negotiated later; this slice does not modify the Android project.
+  are synchronized through the paired GameStream HTTPS channel; this repository
+  does not modify the Android project.
 
 ## Navigation
 
@@ -23,13 +24,47 @@ dictionaries, dependency injection, and page-scoped view models.
 | --- | --- |
 | Overview | Service health, streaming readiness, guided fixes |
 | Game library | Discover, search, import, and maintain launch entries |
-| Devices | Pairing, permissions, capabilities, last-seen state |
-| Settings | Background lifetime, Windows startup, and later host configuration |
+| Devices | Read-only paired-device identity, permissions, display policy, and connection state |
+| Settings | Background lifetime, Windows startup, and display language |
 
 The current vertical slice includes Steam discovery, non-Steam applications,
-persistent library sorting, physical/virtual desktop entries, an isolated
-Apollo process, and a low-frame-rate desktop monitor. Placeholder areas remain
-intentional where a stable Apollo control API does not yet exist.
+persistent library sorting, physical/virtual desktop entries, per-application
+resolution settings, an isolated Apollo process, a read-only Devices page, and
+a low-frame-rate desktop monitor.
+
+## Runtime data
+
+All Ligase-owned files live below `%LOCALAPPDATA%\Ligase Host`:
+
+| File | Authority and contents |
+| --- | --- |
+| `library.json` | Host-owned application collection, sort mode, timestamps, and revision |
+| `streaming.json` | Global resolution and UUID-keyed application overrides |
+| `ligase-sync.json` | Sanitized Android snapshot; excludes paths, commands, and working directories |
+| `preferences.json` | Desktop lifetime, startup, and language preferences |
+| `apollo/apps.json` | Generated Apollo launch entries |
+| `apollo/state.json` | Apollo identity and paired-client state |
+
+`streaming.json` defaults to 1920×1080. An application inherits that global
+resolution unless its UUID has an entry under `apps`. Clearing the application
+entry restores inheritance. Both streaming and library documents use monotonic
+revision numbers for optimistic concurrency.
+
+Apollo advertises `LigaseSyncVersion` and `LigaseSyncPath` in `serverinfo`.
+Paired Android clients use the GameStream HTTPS port for the versioned sync
+API. The desktop Devices page uses the loopback-only
+`GET /ligase/v1/devices` endpoint on the Ligase HTTP base port. See
+[`android-sync-contract.md`](android-sync-contract.md) for the wire format.
+
+## Devices page
+
+- Reads paired clients from Apollo instead of maintaining a second device
+  database.
+- Displays name, stable device UUID, connected/paired state, display policy,
+  permission mask, and whether client commands are allowed.
+- The local endpoint rejects non-loopback callers.
+- The first version is intentionally read-only. Disconnecting or unpairing a
+  device will require a separate destructive-action confirmation flow.
 
 ## Background lifetime
 
@@ -45,6 +80,8 @@ intentional where a stable Apollo control API does not yet exist.
   login startup does not display the main window.
 - Runtime preferences are stored under `%LOCALAPPDATA%\Ligase Host` and never
   share state or ports with an existing Apollo installation.
+- The display language supports system default, Simplified Chinese, and
+  English. Language changes are persisted and applied on the next launch.
 
 ## Build and probe
 
@@ -58,6 +95,17 @@ dotnet run --project tools/Ligase.SteamProbe/Ligase.SteamProbe.csproj
 
 The probe is read-only and prints the discovered library as JSON. It is useful
 for diagnosing Steam discovery without starting the desktop UI.
+
+## Documentation discipline
+
+Every product change must update its affected documentation in the same commit:
+
+- user-visible desktop behavior belongs in this document;
+- Host/Android fields, routes, revisions, and fallback rules belong in
+  `android-sync-contract.md`;
+- build or verification changes belong in the build section above;
+- a code change is not considered complete if the documented behavior or
+  protocol no longer matches the implementation.
 
 ## Steam discovery contract
 
@@ -74,5 +122,6 @@ The current Windows implementation:
 6. Skips an inaccessible or transiently corrupt manifest without discarding
    healthy libraries.
 
-The next slice should add an Apollo-owned import endpoint with an idempotency
-key derived from `steam:<appid>`, then enable the **Add** action.
+Steam and non-Steam additions are Host-owned. Android receives their sanitized
+metadata through the sync snapshot and does not submit Windows paths or
+commands.

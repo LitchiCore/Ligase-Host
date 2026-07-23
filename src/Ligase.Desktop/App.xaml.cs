@@ -29,12 +29,16 @@ public partial class App : Application
                 services.AddSingleton<ApolloPortAllocator>();
                 services.AddSingleton<ApolloInstanceManager>();
                 services.AddSingleton<HostPreferencesService>();
+                services.AddSingleton<LigaseSyncDocumentWriter>();
+                services.AddSingleton<StreamingSettingsService>();
+                services.AddSingleton<ApolloDeviceService>();
                 services.AddSingleton<IDesktopPreviewService, GdiDesktopPreviewService>();
                 services.AddSingleton<SingleInstanceService>();
                 services.AddSingleton<WindowsTrayIconService>();
                 services.AddTransient<GameLibraryViewModel>();
                 services.AddTransient<AddApplicationViewModel>();
                 services.AddTransient<StreamMonitorViewModel>();
+                services.AddTransient<DevicesViewModel>();
                 services.AddSingleton<MainWindow>();
             })
             .Build();
@@ -55,6 +59,9 @@ public partial class App : Application
         ApplicationLanguages.PrimaryLanguageOverride =
             HostPreferencesService.GetPrimaryLanguageOverride(preferences.Current.Language);
         var library = await _host.Services.GetRequiredService<IApplicationLibrary>().LoadAsync();
+        var streaming = await _host.Services.GetRequiredService<StreamingSettingsService>().LoadAsync();
+        await _host.Services.GetRequiredService<LigaseSyncDocumentWriter>()
+            .WriteAsync(library, streaming);
         await _host.Services.GetRequiredService<IApolloAppsWriter>().WriteAsync(library.Items);
         await _host.Services.GetRequiredService<ApolloInstanceManager>().StartAsync();
         var window = _host.Services.GetRequiredService<MainWindow>();

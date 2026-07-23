@@ -8,9 +8,12 @@
 // standard includes
 #include <filesystem>
 #include <format>
+#include <fstream>
+#include <iomanip>
+#include <mutex>
+#include <sstream>
 #include <string>
 #include <utility>
-#include <string>
 
 // lib includes
 #include <boost/asio/ssl/context.hpp>
@@ -40,6 +43,7 @@
 #include "zwpad.h"
 
 #ifdef _WIN32
+  #include <windows.h>
   #include "platform/windows/virtual_display.h"
 #endif
 
@@ -906,6 +910,8 @@ namespace nvhttp {
     tree.put("root.HttpsPort", net::map_port(PORT_HTTPS));
     tree.put("root.ExternalPort", net::map_port(PORT_HTTP));
     tree.put("root.MaxLumaPixelsHEVC", video::active_hevc_mode > 1 ? "1869449984" : "0");
+    tree.put("root.LigaseSyncVersion", 1);
+    tree.put("root.LigaseSyncPath", "/ligase/v1/sync");
 
     // Only include the MAC address for requests sent from paired clients over HTTPS.
     // For HTTP requests, use a placeholder MAC address that Moonlight knows to ignore.
@@ -1064,6 +1070,408 @@ namespace nvhttp {
     }
 
     return named_cert_nodes;
+  }
+
+  namespace {
+    std::mutex ligase_sync_mutex;
+
+    fs::path ligase_root_path() {
+      return fs::path(config::stream.file_apps).parent_path().parent_path();
+    }
+
+    fs::path ligase_sync_path() {
+      return ligase_root_path() / "ligase-sync.json";
+    }
+
+    fs::path ligase_streaming_path() {
+      return ligase_root_path() / "streaming.json";
+    }
+
+    fs::path ligase_library_path() {
+      return ligase_root_path() / "library.json";
+    }
+
+    std::string ligase_timestamp() {
+      const auto now = std::chrono::system_clock::now();
+      const auto value = std::chrono::system_clock::to_time_t(now);
+      std::tm utc {};
+    #ifdef _WIN32
+      gmtime_s(&utc, &value);
+    #else
+      gmtime_r(&value, &utc);
+    #endif
+      std::ostringstream output;
+      output << std::put_time(&utc, "%Y-%m-%dT%H:%M:%SZ");
+      return output.str();
+    }
+
+    nlohmann::json read_ligase_json(const fs::path &path) {
+      std::ifstream input(path);
+      if (!input.is_open()) {
+        throw std::runtime_error("Ligase sync file is not available");
+      }
+      return nlohmann::json::parse(input);
+    }
+
+    void write_ligase_json(const fs::path &path, const nlohmann::json &document) {
+      const auto temporary = fs::path(path.string() + ".tmp");
+      {
+        std::ofstream output(temporary, std::ios::trunc);
+        if (!output.is_open()) {
+          throw std::runtime_error("Cannot create Ligase sync temporary file");
+        }
+        output << document.dump(2);
+      }
+
+    #ifdef _WIN32
+      if (!MoveFileExW(
+            temporary.c_str(),
+            path.c_str(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        fs::remove(temporary);
+        throw std::runtime_error("Cannot replace Ligase sync file");
+      }
+    #else
+      fs::rename(temporary, path);
+    #endif
+    }
+
+    template<class Response>
+    void send_ligase_json(
+      std::shared_ptr<Response> response,
+      SimpleWeb::StatusCode status,
+      const nlohmann::json &document
+    ) {
+      SimpleWeb::CaseInsensitiveMultimap headers;
+      headers.emplace("Content-Type", "application/json");
+      headers.emplace("Cache-Control", "no-store");
+      response->write(status, document.dump(), headers);
+      response->close_connection_after_response = true;
+    }
+
+    bool ligase_authorized(resp_https_t response, req_https_t request) {
+      auto named_cert_p = get_verified_cert(request);
+      if (!!(named_cert_p->perm & PERM::_all_actions)) {
+        return true;
+      }
+
+      send_ligase_json(
+        response,
+        SimpleWeb::StatusCode::client_error_forbidden,
+        {{"error", "permissionDenied"}}
+      );
+      return false;
+    }
+
+    bool valid_ligase_resolution(const nlohmann::json &resolution) {
+      if (!resolution.is_object() ||
+          !resolution.contains("width") ||
+          !resolution.contains("height") ||
+          !resolution["width"].is_number_integer() ||
+          !resolution["height"].is_number_integer()) {
+        return false;
+      }
+      const auto width = resolution["width"].get<int>();
+      const auto height = resolution["height"].get<int>();
+      return width >= 320 && width <= 16384 && height >= 240 && height <= 16384;
+    }
+
+    std::optional<nlohmann::json> parse_ligase_request(
+      resp_https_t response,
+      req_https_t request
+    ) {
+      try {
+        std::stringstream body;
+        body << request->content.rdbuf();
+        return nlohmann::json::parse(body.str());
+      } catch (const std::exception &error) {
+        send_ligase_json(
+          response,
+          SimpleWeb::StatusCode::client_error_bad_request,
+          {{"error", "invalidJson"}, {"message", error.what()}}
+        );
+        return std::nullopt;
+      }
+    }
+
+    void send_ligase_revision_conflict(
+      resp_https_t response,
+      std::int64_t current_revision
+    ) {
+      send_ligase_json(
+        response,
+        SimpleWeb::StatusCode::client_error_conflict,
+        {
+          {"error", "revisionConflict"},
+          {"currentRevision", current_revision}
+        }
+      );
+    }
+
+    void apply_ligase_resolution(
+      const std::string &app_uuid,
+      rtsp_stream::launch_session_t &session
+    ) {
+      if (app_uuid.empty()) {
+        return;
+      }
+
+      try {
+        std::scoped_lock lock(ligase_sync_mutex);
+        const auto sync = read_ligase_json(ligase_sync_path());
+        const auto &streaming = sync.at("streaming");
+        const auto &apps = streaming.at("apps");
+        const nlohmann::json *resolution = &streaming.at("globalResolution");
+        if (apps.is_object() && apps.contains(app_uuid)) {
+          const auto &candidate = apps.at(app_uuid);
+          if (candidate.is_object() &&
+              candidate.contains("resolution") &&
+              !candidate.at("resolution").is_null()) {
+            resolution = &candidate.at("resolution");
+          }
+        }
+
+        if (!valid_ligase_resolution(*resolution)) {
+          BOOST_LOG(warning) << "Ignoring invalid Ligase resolution for app UUID [" << app_uuid << "]";
+          return;
+        }
+
+        session.width = resolution->at("width").get<int>();
+        session.height = resolution->at("height").get<int>();
+        BOOST_LOG(info) << "Applied Ligase resolution " << session.width << 'x' << session.height
+                        << " for app UUID [" << app_uuid << "]";
+      } catch (const std::exception &error) {
+        BOOST_LOG(debug) << "Ligase resolution override unavailable: " << error.what();
+      }
+    }
+  }
+
+  void ligase_sync(resp_https_t response, req_https_t request) {
+    print_req<SunshineHTTPS>(request);
+    if (!ligase_authorized(response, request)) {
+      return;
+    }
+
+    try {
+      std::scoped_lock lock(ligase_sync_mutex);
+      send_ligase_json(
+        response,
+        SimpleWeb::StatusCode::success_ok,
+        read_ligase_json(ligase_sync_path())
+      );
+    } catch (const std::exception &error) {
+      send_ligase_json(
+        response,
+        SimpleWeb::StatusCode::client_error_not_found,
+        {{"error", "syncUnavailable"}, {"message", error.what()}}
+      );
+    }
+  }
+
+  void ligase_update_streaming(resp_https_t response, req_https_t request) {
+    print_req<SunshineHTTPS>(request);
+    if (!ligase_authorized(response, request)) {
+      return;
+    }
+    const auto request_json = parse_ligase_request(response, request);
+    if (!request_json) {
+      return;
+    }
+
+    try {
+      std::scoped_lock lock(ligase_sync_mutex);
+      auto sync = read_ligase_json(ligase_sync_path());
+      auto state = read_ligase_json(ligase_streaming_path());
+      const auto current_revision = state.value("revision", std::int64_t {0});
+      if (!request_json->contains("baseRevision") ||
+          !request_json->at("baseRevision").is_number_integer()) {
+        send_ligase_json(
+          response,
+          SimpleWeb::StatusCode::client_error_bad_request,
+          {{"error", "baseRevisionRequired"}}
+        );
+        return;
+      }
+      if (request_json->at("baseRevision").get<std::int64_t>() != current_revision) {
+        send_ligase_revision_conflict(response, current_revision);
+        return;
+      }
+
+      bool changed = false;
+      if (request_json->contains("globalResolution")) {
+        if (!valid_ligase_resolution(request_json->at("globalResolution"))) {
+          send_ligase_json(
+            response,
+            SimpleWeb::StatusCode::client_error_bad_request,
+            {{"error", "invalidResolution"}}
+          );
+          return;
+        }
+        state["globalResolution"] = request_json->at("globalResolution");
+        changed = true;
+      }
+
+      if (request_json->contains("app")) {
+        const auto &app = request_json->at("app");
+        if (!app.is_object() ||
+            !app.contains("id") ||
+            !app.at("id").is_string() ||
+            !app.contains("resolution")) {
+          send_ligase_json(
+            response,
+            SimpleWeb::StatusCode::client_error_bad_request,
+            {{"error", "invalidAppOverride"}}
+          );
+          return;
+        }
+        const auto app_id = app.at("id").get<std::string>();
+        const auto &items = sync.at("library").at("items");
+        const auto known_app = std::any_of(
+          items.begin(),
+          items.end(),
+          [&app_id](const auto &item) {
+            return item.is_object() &&
+                   item.value("id", std::string {}) == app_id;
+          }
+        );
+        if (!known_app) {
+          send_ligase_json(
+            response,
+            SimpleWeb::StatusCode::client_error_not_found,
+            {{"error", "appNotFound"}}
+          );
+          return;
+        }
+        if (app.at("resolution").is_null()) {
+          state["apps"].erase(app_id);
+        } else {
+          if (!valid_ligase_resolution(app.at("resolution"))) {
+            send_ligase_json(
+              response,
+              SimpleWeb::StatusCode::client_error_bad_request,
+              {{"error", "invalidResolution"}}
+            );
+            return;
+          }
+          state["apps"][app_id] = {{"resolution", app.at("resolution")}};
+        }
+        changed = true;
+      }
+
+      if (!changed) {
+        send_ligase_json(
+          response,
+          SimpleWeb::StatusCode::client_error_bad_request,
+          {{"error", "noChanges"}}
+        );
+        return;
+      }
+
+      state["revision"] = current_revision + 1;
+      state["updatedAt"] = ligase_timestamp();
+      write_ligase_json(ligase_streaming_path(), state);
+
+      sync["streaming"] = state;
+      write_ligase_json(ligase_sync_path(), sync);
+      send_ligase_json(response, SimpleWeb::StatusCode::success_ok, state);
+    } catch (const std::exception &error) {
+      send_ligase_json(
+        response,
+        SimpleWeb::StatusCode::server_error_internal_server_error,
+        {{"error", "streamingUpdateFailed"}, {"message", error.what()}}
+      );
+    }
+  }
+
+  void ligase_update_library_sort(resp_https_t response, req_https_t request) {
+    print_req<SunshineHTTPS>(request);
+    if (!ligase_authorized(response, request)) {
+      return;
+    }
+    const auto request_json = parse_ligase_request(response, request);
+    if (!request_json) {
+      return;
+    }
+
+    static const std::unordered_map<std::string, int> sort_modes {
+      {"nameAscending", 0},
+      {"nameDescending", 1},
+      {"addedNewest", 2},
+      {"addedOldest", 3},
+      {"lastPlayedNewest", 4}
+    };
+
+    try {
+      std::scoped_lock lock(ligase_sync_mutex);
+      auto library = read_ligase_json(ligase_library_path());
+      const auto current_revision = library.value("revision", std::int64_t {0});
+      if (!request_json->contains("baseRevision") ||
+          !request_json->at("baseRevision").is_number_integer() ||
+          !request_json->contains("sortMode") ||
+          !request_json->at("sortMode").is_string()) {
+        send_ligase_json(
+          response,
+          SimpleWeb::StatusCode::client_error_bad_request,
+          {{"error", "baseRevisionAndSortModeRequired"}}
+        );
+        return;
+      }
+      if (request_json->at("baseRevision").get<std::int64_t>() != current_revision) {
+        send_ligase_revision_conflict(response, current_revision);
+        return;
+      }
+
+      const auto sort_mode = request_json->at("sortMode").get<std::string>();
+      const auto mode = sort_modes.find(sort_mode);
+      if (mode == sort_modes.end()) {
+        send_ligase_json(
+          response,
+          SimpleWeb::StatusCode::client_error_bad_request,
+          {{"error", "invalidSortMode"}}
+        );
+        return;
+      }
+
+      const auto updated_at = ligase_timestamp();
+      library["sortMode"] = mode->second;
+      library["revision"] = current_revision + 1;
+      library["updatedAt"] = updated_at;
+      write_ligase_json(ligase_library_path(), library);
+
+      auto sync = read_ligase_json(ligase_sync_path());
+      sync["library"]["sortMode"] = sort_mode;
+      sync["library"]["revision"] = current_revision + 1;
+      sync["library"]["updatedAt"] = updated_at;
+      write_ligase_json(ligase_sync_path(), sync);
+      send_ligase_json(response, SimpleWeb::StatusCode::success_ok, sync["library"]);
+    } catch (const std::exception &error) {
+      send_ligase_json(
+        response,
+        SimpleWeb::StatusCode::server_error_internal_server_error,
+        {{"error", "libraryUpdateFailed"}, {"message", error.what()}}
+      );
+    }
+  }
+
+  void ligase_devices_local(resp_http_t response, req_http_t request) {
+    print_req<SimpleWeb::HTTP>(request);
+    if (!request->remote_endpoint().address().is_loopback()) {
+      send_ligase_json(
+        response,
+        SimpleWeb::StatusCode::client_error_forbidden,
+        {{"error", "loopbackOnly"}}
+      );
+      return;
+    }
+
+    send_ligase_json(
+      response,
+      SimpleWeb::StatusCode::success_ok,
+      {
+        {"schemaVersion", 1},
+        {"devices", get_all_clients()}
+      }
+    );
   }
 
   void applist(resp_https_t response, req_https_t request) {
@@ -1239,6 +1647,17 @@ namespace nvhttp {
 
     host_audio = util::from_view(get_arg(args, "localAudioPlayMode"));
     auto launch_session = make_launch_session(host_audio, is_input_only, args, named_cert_p);
+    std::string resolved_app_uuid = appuuid_str;
+    if (resolved_app_uuid.empty() && appid > 0) {
+      const auto &apps = proc::proc.get_apps();
+      const auto app = std::find_if(apps.begin(), apps.end(), [&appid_str](const auto &candidate) {
+        return candidate.id == appid_str;
+      });
+      if (app != apps.end()) {
+        resolved_app_uuid = app->uuid;
+      }
+    }
+    apply_ligase_resolution(resolved_app_uuid, *launch_session);
 
     auto encryption_mode = net::encryption_mode_for_address(request->remote_endpoint().address());
     if (!launch_session->rtsp_cipher && encryption_mode == config::ENCRYPTION_MODE_MANDATORY) {
@@ -1718,6 +2137,9 @@ namespace nvhttp {
     https_server.resource["^/serverinfo$"]["GET"] = serverinfo<SunshineHTTPS>;
     https_server.resource["^/pair$"]["GET"] = pair<SunshineHTTPS>;
     https_server.resource["^/applist$"]["GET"] = applist;
+    https_server.resource["^/ligase/v1/sync$"]["GET"] = ligase_sync;
+    https_server.resource["^/ligase/v1/streaming$"]["POST"] = ligase_update_streaming;
+    https_server.resource["^/ligase/v1/library/sort$"]["POST"] = ligase_update_library_sort;
     https_server.resource["^/appasset$"]["GET"] = appasset;
     https_server.resource["^/launch$"]["GET"] = [&host_audio](auto resp, auto req) {
       launch(host_audio, resp, req);
@@ -1736,6 +2158,7 @@ namespace nvhttp {
     http_server.default_resource["GET"] = not_found<SimpleWeb::HTTP>;
     http_server.resource["^/serverinfo$"]["GET"] = serverinfo<SimpleWeb::HTTP>;
     http_server.resource["^/pair$"]["GET"] = pair<SimpleWeb::HTTP>;
+    http_server.resource["^/ligase/v1/devices$"]["GET"] = ligase_devices_local;
 
     http_server.config.reuse_address = true;
     http_server.config.address = net::af_to_any_address_string(address_family);

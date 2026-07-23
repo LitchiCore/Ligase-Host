@@ -86,11 +86,11 @@ public sealed partial class MainWindow : Window
             "library" => typeof(GameLibraryPage),
             "add" => typeof(AddApplicationPage),
             "monitor" => typeof(StreamMonitorPage),
+            "devices" => typeof(DevicesPage),
             _ => typeof(PlaceholderPage)
         }, tag switch
         {
             "overview" => "概览",
-            "devices" => "设备",
             _ => null
         });
     }
