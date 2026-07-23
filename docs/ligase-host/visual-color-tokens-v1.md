@@ -148,14 +148,26 @@ Deterministic Material 3 mapping:
 | `primaryContainer` | `selected` |
 | `onPrimaryContainer` | `textPrimary` |
 | `inversePrimary` | `brandPrimary` |
+| `primaryFixed` | `brandPrimary` |
+| `primaryFixedDim` | `brandPrimary` |
+| `onPrimaryFixed` | `surface` |
+| `onPrimaryFixedVariant` | `surface` |
 | `secondary` | `brandSecondary` |
 | `onSecondary` | `surface` |
 | `secondaryContainer` | `surfaceVariant` |
 | `onSecondaryContainer` | `textPrimary` |
+| `secondaryFixed` | `brandSecondary` |
+| `secondaryFixedDim` | `brandSecondary` |
+| `onSecondaryFixed` | `surface` |
+| `onSecondaryFixedVariant` | `surface` |
 | `tertiary` | `brandSecondary` |
 | `onTertiary` | `surface` |
 | `tertiaryContainer` | `surfaceVariant` |
 | `onTertiaryContainer` | `textPrimary` |
+| `tertiaryFixed` | `brandSecondary` |
+| `tertiaryFixedDim` | `brandSecondary` |
+| `onTertiaryFixed` | `surface` |
+| `onTertiaryFixedVariant` | `surface` |
 | `background` | `background` |
 | `onBackground` | `textPrimary` |
 | `surface` | `surface` |
@@ -172,7 +184,6 @@ Deterministic Material 3 mapping:
 | `outline` | `border` |
 | `outlineVariant` | `border` |
 | `scrim` | light: `textPrimary`; dark: `background` |
-| `shadow` | light: `textPrimary`; dark: `background` |
 | `surfaceBright` | `surface` |
 | `surfaceDim` | `background` |
 | `surfaceContainerLowest` | `surface` |
@@ -185,10 +196,12 @@ If the installed Material 3 version adds another `ColorScheme` slot, Android
 must map it explicitly to an existing reviewed token or return the contract to
 review. It must not inherit the factory default.
 
-`scrim` and `shadow` are mode-specific, alpha-bearing platform overlay
-primitives: light mode uses `textPrimary` (`#20232C`) and dark mode uses
-`background` (`#15171D`). They are not body-text contrast pairs, and neither
-slot may fall back to a Material factory default.
+In Material 3 Android 1.4.0, `scrim` is a `ColorScheme` slot and uses the
+mode-specific mapping above. `shadow` is not a `ColorScheme` slot in that
+version; Ligase treats it as a custom alpha-bearing overlay primitive with the
+same mode-specific mapping: light uses `textPrimary` (`#20232C`) and dark uses
+`background` (`#15171D`). Neither is a body-text contrast pair, and neither may
+fall back to a Material factory default.
 
 Solid `primary`, `secondary`, and `error` containers use their specified
 `on*` token above. Selected application containers use `selected` with
