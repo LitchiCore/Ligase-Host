@@ -673,7 +673,7 @@ and content, it is a draft and has no frozen SHA-256. The inventory below names
 required material but is not the fixture JSON shape. The mechanically
 authoritative draft shape is
 [`attended-pairing-v1-vectors.schema.json`](attended-pairing-v1-vectors.schema.json):
-its root is `{schemaVersion,draft,cases}`, and every case is an
+its root is `{schemaVersion,draft,coverageManifest,cases}`, and every case is an
 `operation`-discriminated closed object. The JSON block below is an inventory
 of required cryptographic material only; it is not a second case schema.
 
@@ -756,12 +756,19 @@ addresses use the frozen structured form.
 Primitive cases have stable `id`, an authoritative RFC section in `source`,
 exact inputs, and exact outputs.
 
-Every negative case has exactly `id`, `operation`, `context`, `input`,
-`expectedHttpStatus`, `expectedResponseBody`, `expectedPostState`, and
-`expectedCleanupMetadata`. State cases add a deterministic `schedule`; every
-step has a named linearization action and exact expected state/generation.
+`coverageManifest` is the closed object
+`{"version":1,"requiredIds":[...]}`. `requiredIds` is non-empty, unique,
+canonical case IDs in unsigned UTF-8 ordinal order. The runner derives actual
+IDs only from `cases[].id` and rejects the file unless every case ID is unique,
+the cases use the same order, and the derived set exactly equals
+`requiredIds`; there is no second ID list or category-array source.
+
+Every behavior case contains its schema-required closed `context`, `input`,
+`expectedHttp`, `expectedPostState`, and `expectedCleanupMetadata`. State cases
+add a deterministic `schedule`; every step has a named linearization action
+and exact expected state/generation.
 Invalid UTF-8 and duplicate-property cases are represented only by
-`input.requestUtf8Base64url`, never by a JSON object. Race cases declare an
+raw `input.body` base64url bytes, never by a parsed JSON object. Race cases declare an
 exact step schedule and winner rather than relying on thread timing. Cases
 cover DELETE in every live/terminal/cache state,
 allow/reject/cancel/pair commit winners, exact/different create source and token
@@ -769,6 +776,18 @@ replay, rate ordering, IPv4-mapped/IPv6/link-local identity, validation pointer
 ordering, all three envelope replay branches, and post-cleanup replay
 decisions. RFC primitive vectors remain separate from the Ligase end-to-end
 vector.
+
+Expected HTTP responses preserve ordered headers and raw body bytes. Status
+204 has exactly an empty body. Every non-204 response has a non-empty
+base64url body; the runner decodes it, rejects trailing bytes, parses strict
+JSON, and validates the fixed route success/error/status/list shape. JSON
+responses use the same compact canonical property ordering throughout the
+fixture and include their expected `Content-Type`. An Android cancel one-shot
+probe uses `statusProbeExpected` as a strict union: either
+`{kind:"http",status,headers,bodyEncoding:"base64url",body}` with the same
+204/non-204 body rule, or
+`{kind:"transportError",transportError:"timeout"|"connectionReset"|"tlsFailure"}`
+with no HTTP response fields.
 
 Every HTTP/race context is a closed, inline coordinator snapshot. Behavior and
 race cases never resolve fixture, source, token, nonce, or hash references from
