@@ -1,0 +1,95 @@
+<Page
+    x:Class="Ligase.Host.Desktop.Pages.SettingsPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <ScrollViewer>
+        <Grid Margin="32,28,32,40" RowSpacing="18">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+            <StackPanel Spacing="6">
+                <TextBlock Style="{StaticResource LigaseEyebrowTextStyle}" Text="HOST BEHAVIOR" />
+                <TextBlock Style="{StaticResource LigasePageTitleStyle}" Text="设置" />
+                <TextBlock
+                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                    Text="控制 Ligase Host 的后台运行和 Windows 启动行为。" />
+            </StackPanel>
+
+            <Border Grid.Row="1" Style="{StaticResource LigaseCardStyle}">
+                <StackPanel Spacing="4">
+                    <Grid Padding="4,8" ColumnSpacing="20">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Spacing="4">
+                            <TextBlock FontSize="16" FontWeight="SemiBold" Text="关闭窗口后在后台运行" />
+                            <TextBlock
+                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                Text="点击关闭按钮时隐藏到系统托盘，并保持 Apollo 串流核心运行。"
+                                TextWrapping="Wrap" />
+                        </StackPanel>
+                        <ToggleSwitch
+                            x:Name="CloseToTrayToggle"
+                            Grid.Column="1"
+                            AutomationProperties.Name="关闭窗口后在后台运行"
+                            Toggled="OnCloseToTrayToggled" />
+                    </Grid>
+                    <Rectangle Height="1" Margin="4,8" Fill="{ThemeResource LigaseCardStrokeBrush}" />
+                    <Grid Padding="4,8" ColumnSpacing="20">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Spacing="4">
+                            <TextBlock FontSize="16" FontWeight="SemiBold" Text="开机自动启动" />
+                            <TextBlock
+                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                Text="登录 Windows 后自动在托盘启动 Ligase Host，不弹出主窗口。"
+                                TextWrapping="Wrap" />
+                        </StackPanel>
+                        <ToggleSwitch
+                            x:Name="StartWithWindowsToggle"
+                            Grid.Column="1"
+                            AutomationProperties.Name="开机自动启动"
+                            Toggled="OnStartWithWindowsToggled" />
+                    </Grid>
+                </StackPanel>
+            </Border>
+
+            <Border Grid.Row="2" Style="{StaticResource LigaseCardStyle}">
+                <Grid ColumnSpacing="12">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <FontIcon
+                        FontSize="22"
+                        Foreground="{ThemeResource LigaseAccentTextBrush}"
+                        Glyph="&#xE74E;" />
+                    <StackPanel Grid.Column="1" Spacing="3">
+                        <TextBlock FontWeight="SemiBold" Text="如何彻底退出" />
+                        <TextBlock
+                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                            Text="右键任务栏通知区域的 Ligase Host 图标，选择“退出 Ligase Host”。彻底退出会停止 Ligase 的独立 Apollo 核心。"
+                            TextWrapping="Wrap" />
+                        <TextBlock
+                            x:Name="SaveStatusText"
+                            Foreground="{ThemeResource LigaseSuccessBrush}"
+                            Style="{StaticResource LigaseCaptionTextStyle}" />
+                    </StackPanel>
+                    <Button
+                        Grid.Column="2"
+                        VerticalAlignment="Center"
+                        AutomationProperties.Name="彻底退出 Ligase Host"
+                        Click="OnExitApplication"
+                        Content="退出 Ligase Host"
+                        Style="{StaticResource LigaseSecondaryButtonStyle}" />
+                </Grid>
+            </Border>
+        </Grid>
+    </ScrollViewer>
+</Page>

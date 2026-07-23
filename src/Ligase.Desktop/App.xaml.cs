@@ -10,6 +10,7 @@ namespace Ligase.Host.Desktop;
 public partial class App : Application
 {
     private readonly IHost _host;
+    private bool _isExiting;
     public IServiceProvider Services => _host.Services;
 
     public App()
@@ -26,7 +27,10 @@ public partial class App : Application
                 services.AddSingleton<IApplicationLibrary, ApplicationLibrary>();
                 services.AddSingleton<ApolloPortAllocator>();
                 services.AddSingleton<ApolloInstanceManager>();
+                services.AddSingleton<HostPreferencesService>();
                 services.AddSingleton<IDesktopPreviewService, GdiDesktopPreviewService>();
+                services.AddSingleton<SingleInstanceService>();
+                services.AddSingleton<WindowsTrayIconService>();
                 services.AddTransient<GameLibraryViewModel>();
                 services.AddTransient<AddApplicationViewModel>();
                 services.AddTransient<StreamMonitorViewModel>();
@@ -37,10 +41,36 @@ public partial class App : Application
 
     protected override async void OnLaunched(LaunchActivatedEventArgs args)
     {
+        var singleInstance = _host.Services.GetRequiredService<SingleInstanceService>();
+        if (!singleInstance.TryAcquire())
+        {
+            Exit();
+            return;
+        }
+
         await _host.StartAsync();
+        var preferences = _host.Services.GetRequiredService<HostPreferencesService>();
+        await preferences.InitializeAsync();
         var library = await _host.Services.GetRequiredService<IApplicationLibrary>().LoadAsync();
         await _host.Services.GetRequiredService<IApolloAppsWriter>().WriteAsync(library.Items);
         await _host.Services.GetRequiredService<ApolloInstanceManager>().StartAsync();
-        _host.Services.GetRequiredService<MainWindow>().Activate();
+        var window = _host.Services.GetRequiredService<MainWindow>();
+        window.Activate();
+        if (Environment.GetCommandLineArgs().Any(argument =>
+                string.Equals(argument, "--minimized", StringComparison.OrdinalIgnoreCase)))
+        {
+            window.HideToTray();
+        }
+    }
+
+    public async Task ExitAsync()
+    {
+        if (_isExiting) return;
+        _isExiting = true;
+        Services.GetRequiredService<WindowsTrayIconService>().Dispose();
+        await Services.GetRequiredService<ApolloInstanceManager>().StopAsync();
+        Services.GetRequiredService<SingleInstanceService>().Dispose();
+        await _host.StopAsync();
+        Exit();
     }
 }

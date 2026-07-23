@@ -169,6 +169,15 @@ public sealed class ApplicationLibraryTests
             ApolloPortAllocator.ExpandPortFamily(48989).ToArray());
     }
 
+    [TestMethod]
+    public void StartupCommandQuotesExecutableAndStartsMinimized()
+    {
+        Assert.AreEqual(
+            "\"C:\\Program Files\\Ligase Host\\Ligase.Host.Desktop.exe\" --minimized",
+            HostPreferencesService.BuildStartupCommand(
+                @"C:\Program Files\Ligase Host\Ligase.Host.Desktop.exe"));
+    }
+
     private sealed class RecordingAppsWriter : IApolloAppsWriter
     {
         public int WriteCount { get; private set; }

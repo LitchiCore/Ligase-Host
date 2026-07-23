@@ -24,10 +24,27 @@ dictionaries, dependency injection, and page-scoped view models.
 | Overview | Service health, streaming readiness, guided fixes |
 | Game library | Discover, search, import, and maintain launch entries |
 | Devices | Pairing, permissions, capabilities, last-seen state |
-| Settings | Encoder, display, network, audio, input, maintenance |
+| Settings | Background lifetime, Windows startup, and later host configuration |
 
-Only game discovery is functional in the first vertical slice. Disabled UI is
-intentional where an Apollo write API does not yet exist.
+The current vertical slice includes Steam discovery, non-Steam applications,
+persistent library sorting, physical/virtual desktop entries, an isolated
+Apollo process, and a low-frame-rate desktop monitor. Placeholder areas remain
+intentional where a stable Apollo control API does not yet exist.
+
+## Background lifetime
+
+- Closing the main window hides it to the Windows notification area by default.
+  The Ligase-owned Apollo process keeps running so clients can still connect.
+- Launching Ligase Host again activates the existing window instead of starting
+  a second UI or Apollo instance.
+- The tray menu can show the window, start or stop the Ligase streaming core,
+  or exit the product.
+- The Settings page also exposes an explicit exit action. A full exit removes
+  the tray icon and stops only the Ligase-owned Apollo process.
+- Optional Windows startup uses the current-user Run key with `--minimized`, so
+  login startup does not display the main window.
+- Runtime preferences are stored under `%LOCALAPPDATA%\Ligase Host` and never
+  share state or ports with an existing Apollo installation.
 
 ## Build and probe
 
