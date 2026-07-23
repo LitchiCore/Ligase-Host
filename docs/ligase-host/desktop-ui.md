@@ -39,7 +39,7 @@ dictionaries, dependency injection, and page-scoped view models.
 | --- | --- |
 | Overview | Service health, streaming readiness, guided fixes |
 | Game library | Discover, search, import, and maintain launch entries |
-| Devices | Read-only paired-device identity, permissions, display policy, and connection state |
+| Devices | Paired devices, attended pairing approvals, permissions, display policy, and connection state |
 | Settings | Background lifetime, Windows startup, and display language |
 
 The current vertical slice includes Steam discovery, non-Steam applications,
@@ -84,11 +84,32 @@ Web UI product model.
 
 - Reads paired clients from Apollo instead of maintaining a second device
   database.
+- Shows pending Android pairing requests with device identity, a short safety
+  fingerprint, expiry, and explicit Allow/Reject actions. The normal user path
+  never displays or asks for a PIN.
 - Displays name, stable device UUID, connected/paired state, display policy,
   permission mask, and whether client commands are allowed.
 - The local endpoint rejects non-loopback callers.
-- The first version is intentionally read-only. Disconnecting or unpairing a
-  device will require a separate destructive-action confirmation flow.
+- Disconnecting or unpairing a device requires a separate destructive-action
+  confirmation flow.
+
+## Library ownership and visibility
+
+- Steam/non-Steam discovery, add, remove, and collection changes exist only in
+  Host.
+- Every non-system item has a Host-owned “Show on clients” publication state.
+  Turning it off hides the UUID from normal client views without deleting it.
+- Android may additionally hide an item only on that device. Host-global hiding
+  wins and cannot be restored by Android.
+- Desktop and virtual desktop are non-hideable system recovery entries in the
+  first implementation.
+- Delete is unavailable for system entries. Deleting any other item names the
+  item in a confirmation and explains that it disappears from every client.
+- Library mutations pass through `ApplicationLibrary`; pages and view models
+  never write product JSON or Apollo manifests directly.
+
+See [`multi-client-product-contract.md`](multi-client-product-contract.md) for
+the frozen cross-client semantics, pairing protocol, and shared color tokens.
 
 ## Background lifetime
 

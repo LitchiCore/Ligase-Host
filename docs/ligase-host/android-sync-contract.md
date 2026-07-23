@@ -17,6 +17,9 @@
 - Keep the numeric GameStream `ID` from `applist` for launch compatibility.
   Launch continues to send both `appuuid` and `appid`.
 - Never use the display name as an identity.
+- Collection ownership, global publication, local hiding, and attended pairing
+  are defined in
+  [`multi-client-product-contract.md`](multi-client-product-contract.md).
 
 ## Product protocol versus transport ABI
 
@@ -68,6 +71,7 @@ but Android must not treat them as authoritative library metadata.
         "name": "Example",
         "steamAppId": 123,
         "system": false,
+        "publishedToClients": true,
         "addedAt": "2026-07-23T05:00:00Z",
         "updatedAt": "2026-07-23T05:00:00Z",
         "lastPlayedAt": null
@@ -95,6 +99,12 @@ but Android must not treat them as authoritative library metadata.
 ```
 
 Host paths, working directories, and commands are intentionally excluded.
+
+`publishedToClients` is an additive Sync v1 field controlled only by Host. A
+missing value from an older Sync v1 snapshot means visible. Android must parse
+it as nullable and calculate `hostPublished = value != false`; it must not let a
+local-hidden-game action modify this field. Both system entries are always
+published in the first implementation.
 
 HDR capability has intentionally separate meanings:
 
@@ -186,7 +196,8 @@ Allowed values:
 - `lastPlayedNewest`
 
 The response is the updated `library` object. Android may update only the sort
-mode. The Host remains the authority for adding and removing applications.
+mode. The Host remains the authority for adding and removing applications and
+for changing `publishedToClients`.
 
 ## Revision conflicts
 
@@ -203,6 +214,45 @@ HTTP `409` returns:
 On conflict, discard the optimistic local write, fetch
 `GET /ligase/v1/sync`, merge by UUID, and let the user retry. Do not retry a
 stale write automatically.
+
+### Verified conflict behavior
+
+The Android/Host joint test on 2026-07-23 established the required behavior:
+
+1. Android held streaming revision `4`.
+2. Host advanced the authoritative snapshot to revision `5` without changing
+   the effective 1600×900 setting.
+3. Android submitted an application override with stale `baseRevision: 4`.
+4. Host returned HTTP `409`.
+5. Android did not replay the write, immediately fetched Sync v1, and loaded
+   revision `5`, `apps: {}`, and the unchanged global resolution.
+6. The UI used natural-language conflict text and asked the user to perform the
+   operation again.
+
+HTTP status remains sufficient for the conflict branch, but the Android
+transport must also retain the JSON error response body for diagnostics. Losing
+the body must not change the no-replay rule or tempt either side to infer errors
+from exception text.
+
+### Verified launch behavior
+
+The V2353A/Host joint test on 2026-07-23 established the complete launch path:
+
+- Android launched the desktop item by its synchronized canonical UUID and
+  numeric applist ID, sending both `appuuid` and `appid`.
+- The request carried `mode=1600x900x60` from the effective synchronized
+  resolution and `virtualDisplay=0` for the physical desktop entry.
+- Host returned `gamesession=1` and RTSP port `50010`.
+- RTSP negotiation, HEVC decode, and the Android 1600×900 rendering surface all
+  succeeded.
+- Host reported HDR encoding capability, while V2353A reported no usable HDR
+  display path. Android therefore launched with HDR disabled, and the runtime
+  log confirmed `Display HDR mode: disabled`.
+
+This is the required HDR layering behavior: Host capability alone never enables
+HDR. The launch request also proves that Sync UUID identity, applist numeric ID,
+resolution inheritance, and the GameStream transport adapter remain separate
+layers.
 
 Other relevant errors are `400` for an invalid payload, `403` for insufficient
 paired-client permission, `404 appNotFound`, and `404 syncUnavailable`.
