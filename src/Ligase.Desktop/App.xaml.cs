@@ -53,7 +53,12 @@ public partial class App : Application
             return;
         }
 
-        await _host.StartAsync();
+        // Show the shell before starting file and core initialization. A slow
+        // encoder probe or damaged local state must not look like the app
+        // failed to launch.
+        var window = _host.Services.GetRequiredService<MainWindow>();
+        window.Activate();
+
         var preferences = _host.Services.GetRequiredService<HostPreferencesService>();
         await preferences.InitializeAsync();
         ApplicationLanguages.PrimaryLanguageOverride =
@@ -64,8 +69,7 @@ public partial class App : Application
             .WriteAsync(library, streaming);
         await _host.Services.GetRequiredService<IApolloAppsWriter>().WriteAsync(library.Items);
         await _host.Services.GetRequiredService<ApolloInstanceManager>().StartAsync();
-        var window = _host.Services.GetRequiredService<MainWindow>();
-        window.Activate();
+        window.RefreshCoreStatus();
         if (Environment.GetCommandLineArgs().Any(argument =>
                 string.Equals(argument, "--minimized", StringComparison.OrdinalIgnoreCase)))
         {
@@ -80,7 +84,7 @@ public partial class App : Application
         Services.GetRequiredService<WindowsTrayIconService>().Dispose();
         await Services.GetRequiredService<ApolloInstanceManager>().StopAsync();
         Services.GetRequiredService<SingleInstanceService>().Dispose();
-        await _host.StopAsync();
+        _host.Dispose();
         Exit();
     }
 }

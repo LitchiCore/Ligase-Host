@@ -115,7 +115,7 @@ public sealed partial class MainWindow : Window
         await ((App)Application.Current).ExitAsync();
     }
 
-    private void RefreshCoreStatus()
+    public void RefreshCoreStatus()
     {
         CoreStatusText.Text = _core.IsRunning
             ? $"运行中 · 独立端口 {_core.BasePort}"

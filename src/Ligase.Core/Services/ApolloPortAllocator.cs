@@ -1,4 +1,5 @@
-using System.Net.NetworkInformation;
+using System.Net;
+using System.Net.Sockets;
 
 namespace Ligase.Host.Core.Services;
 
@@ -8,14 +9,9 @@ public sealed class ApolloPortAllocator
 
     public ushort FindAvailableBasePort(ushort preferredBasePort = 48989)
     {
-        var properties = IPGlobalProperties.GetIPGlobalProperties();
-        var usedPorts = properties.GetActiveTcpListeners().Select(endpoint => endpoint.Port)
-            .Concat(properties.GetActiveUdpListeners().Select(endpoint => endpoint.Port))
-            .ToHashSet();
-
         for (var candidate = (int)preferredBasePort; candidate <= 65464; candidate += 50)
         {
-            if (PortOffsets.All(offset => !usedPorts.Contains(candidate + offset)))
+            if (PortOffsets.All(offset => CanBind(candidate + offset)))
             {
                 return checked((ushort)candidate);
             }
@@ -26,4 +22,26 @@ public sealed class ApolloPortAllocator
 
     public static IReadOnlyList<int> ExpandPortFamily(ushort basePort) =>
         PortOffsets.Select(offset => basePort + offset).ToArray();
+
+    private static bool CanBind(int port)
+    {
+        try
+        {
+            using var tcp = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp)
+            {
+                ExclusiveAddressUse = true
+            };
+            using var udp = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp)
+            {
+                ExclusiveAddressUse = true
+            };
+            tcp.Bind(new IPEndPoint(IPAddress.Any, port));
+            udp.Bind(new IPEndPoint(IPAddress.Any, port));
+            return true;
+        }
+        catch (SocketException)
+        {
+            return false;
+        }
+    }
 }
