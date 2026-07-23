@@ -1,0 +1,454 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ligase.invalid/attended-pairing-v1-vectors.schema.json",
+  "title": "Ligase attended-pairing v1 vectors",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "draft", "cases"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "draft": {"const": "attended-pairing-v1"},
+    "cases": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {"$ref": "#/$defs/primitiveX25519"},
+          {"$ref": "#/$defs/primitiveHkdf"},
+          {"$ref": "#/$defs/primitiveAead"},
+          {"$ref": "#/$defs/primitiveJcs"},
+          {"$ref": "#/$defs/positive"},
+          {"$ref": "#/$defs/create"},
+          {"$ref": "#/$defs/envelope"},
+          {"$ref": "#/$defs/status"},
+          {"$ref": "#/$defs/cancel"},
+          {"$ref": "#/$defs/loopbackList"},
+          {"$ref": "#/$defs/loopbackAllow"},
+          {"$ref": "#/$defs/loopbackReject"},
+          {"$ref": "#/$defs/race"},
+          {"$ref": "#/$defs/androidCancel"}
+        ]
+      }
+    }
+  },
+  "$defs": {
+    "id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,79}$"},
+    "b64": {"type": "string", "pattern": "^[A-Za-z0-9_-]*$"},
+    "b12slot": {"type": "string", "pattern": "^$|^[A-Za-z0-9_-]{16}$"},
+    "b32": {"type": "string", "pattern": "^[A-Za-z0-9_-]{43}$"},
+    "b32slot": {"type": "string", "pattern": "^$|^[A-Za-z0-9_-]{43}$"},
+    "uuidSlot": {
+      "type": "string",
+      "pattern": "^$|^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "rule": {
+      "enum": [
+        "strictHttpOrder",
+        "strictJsonFirstError",
+        "canonicalUuid",
+        "canonicalBase64url",
+        "sourceNormalization",
+        "tokenSha256Authentication",
+        "monotonicExpiryBeforeState",
+        "requestLockLinearization",
+        "envelopeReplayBeforeFirstUploadState",
+        "generationGuard",
+        "terminalCleanup"
+      ]
+    },
+    "createRules": {
+      "type": "array",
+      "minItems": 5,
+      "maxItems": 5,
+      "prefixItems": [
+        {"const": "strictHttpOrder"},
+        {"const": "strictJsonFirstError"},
+        {"const": "canonicalUuid"},
+        {"const": "canonicalBase64url"},
+        {"const": "sourceNormalization"}
+      ],
+      "items": false
+    },
+    "publicStatusCancelRules": {
+      "type": "array",
+      "minItems": 9,
+      "maxItems": 9,
+      "prefixItems": [
+        {"const": "strictHttpOrder"},
+        {"const": "canonicalUuid"},
+        {"const": "canonicalBase64url"},
+        {"const": "sourceNormalization"},
+        {"const": "tokenSha256Authentication"},
+        {"const": "monotonicExpiryBeforeState"},
+        {"const": "requestLockLinearization"},
+        {"const": "generationGuard"},
+        {"const": "terminalCleanup"}
+      ],
+      "items": false
+    },
+    "loopbackListRules": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "prefixItems": [
+        {"const": "strictHttpOrder"},
+        {"const": "sourceNormalization"}
+      ],
+      "items": false
+    },
+    "loopbackActionRules": {
+      "type": "array",
+      "minItems": 6,
+      "maxItems": 6,
+      "prefixItems": [
+        {"const": "strictHttpOrder"},
+        {"const": "canonicalUuid"},
+        {"const": "monotonicExpiryBeforeState"},
+        {"const": "requestLockLinearization"},
+        {"const": "generationGuard"},
+        {"const": "terminalCleanup"}
+      ],
+      "items": false
+    },
+    "envelopeRules": {
+      "type": "array",
+      "minItems": 11,
+      "maxItems": 11,
+      "prefixItems": [
+        {"const": "strictHttpOrder"},
+        {"const": "strictJsonFirstError"},
+        {"const": "canonicalUuid"},
+        {"const": "canonicalBase64url"},
+        {"const": "sourceNormalization"},
+        {"const": "tokenSha256Authentication"},
+        {"const": "monotonicExpiryBeforeState"},
+        {"const": "requestLockLinearization"},
+        {"const": "envelopeReplayBeforeFirstUploadState"},
+        {"const": "generationGuard"},
+        {"const": "terminalCleanup"}
+      ],
+      "items": false
+    },
+    "raceRules": {
+      "type": "array",
+      "minItems": 9,
+      "maxItems": 9,
+      "prefixItems": [
+        {"const": "canonicalUuid"},
+        {"const": "canonicalBase64url"},
+        {"const": "sourceNormalization"},
+        {"const": "tokenSha256Authentication"},
+        {"const": "monotonicExpiryBeforeState"},
+        {"const": "requestLockLinearization"},
+        {"const": "envelopeReplayBeforeFirstUploadState"},
+        {"const": "generationGuard"},
+        {"const": "terminalCleanup"}
+      ],
+      "items": false
+    },
+    "primitiveRules": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 1,
+      "prefixItems": [{"const": "canonicalBase64url"}],
+      "items": false
+    },
+    "jcsRules": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "prefixItems": [
+        {"const": "strictJsonFirstError"},
+        {"const": "canonicalBase64url"}
+      ],
+      "items": false
+    },
+    "positiveRules": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "prefixItems": [
+        {"const": "strictJsonFirstError"},
+        {"const": "canonicalUuid"},
+        {"const": "canonicalBase64url"},
+        {"const": "tokenSha256Authentication"}
+      ],
+      "items": false
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["address", "scopeId"],
+      "properties": {
+        "address": {"type": "string", "minLength": 1, "maxLength": 253},
+        "scopeId": {"type": "integer", "minimum": 0, "maximum": 4294967295}
+      }
+    },
+    "sourceSlot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["present", "address", "scopeId"],
+      "properties": {
+        "present": {"type": "boolean"},
+        "address": {"type": "string", "maxLength": 253},
+        "scopeId": {"type": "integer", "minimum": 0, "maximum": 4294967295}
+      }
+    },
+    "header": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "value"],
+      "properties": {
+        "name": {"type": "string", "pattern": "^[\\x21-\\x7e]+$"},
+        "value": {"type": "string", "maxLength": 8192}
+      }
+    },
+    "http": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["method", "path", "headers", "bodyEncoding", "body"],
+      "properties": {
+        "method": {"enum": ["GET", "POST", "PUT", "DELETE"]},
+        "path": {"type": "string", "minLength": 1},
+        "headers": {"type": "array", "items": {"$ref": "#/$defs/header"}},
+        "bodyEncoding": {"const": "base64url"},
+        "body": {"$ref": "#/$defs/b64"}
+      }
+    },
+    "state": {
+      "enum": ["empty", "pending", "approved", "paired", "rejected", "cancelled", "expired", "failed", "evicted"]
+    },
+    "context": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "nowMonotonicMs", "deadlineMonotonicMs", "terminalCacheEvictsAtMs",
+        "rateWindowStartMs", "rateCount", "rateLimit", "liveFingerprintBusy",
+        "requestPresent", "requestId", "state", "readyForApproval", "generation",
+        "canonicalCreateJcsBase64url", "incomingSource", "storedExactSource",
+        "incomingBearerBase64url", "storedTokenHashBase64url", "tokenBytesPresent",
+        "replayNonceBase64url", "replayCanonicalEnvelopeHashBase64url",
+        "fullEncryptedEnvelopePresent", "validatedEnvelope", "heldGetservercert",
+        "certificateFingerprintMatched", "readyEventEmitted", "pairedDeviceCommitted"
+      ],
+      "properties": {
+        "nowMonotonicMs": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+        "deadlineMonotonicMs": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+        "terminalCacheEvictsAtMs": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+        "rateWindowStartMs": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+        "rateCount": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+        "rateLimit": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+        "liveFingerprintBusy": {"type": "boolean"},
+        "requestPresent": {"type": "boolean"},
+        "requestId": {"$ref": "#/$defs/uuidSlot"},
+        "state": {"$ref": "#/$defs/state"},
+        "readyForApproval": {"type": "boolean"},
+        "generation": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+        "canonicalCreateJcsBase64url": {"$ref": "#/$defs/b64"},
+        "incomingSource": {"$ref": "#/$defs/source"},
+        "storedExactSource": {"$ref": "#/$defs/sourceSlot"},
+        "incomingBearerBase64url": {"$ref": "#/$defs/b64"},
+        "storedTokenHashBase64url": {"$ref": "#/$defs/b32slot"},
+        "tokenBytesPresent": {"type": "boolean"},
+        "replayNonceBase64url": {"$ref": "#/$defs/b12slot"},
+        "replayCanonicalEnvelopeHashBase64url": {"$ref": "#/$defs/b32slot"},
+        "fullEncryptedEnvelopePresent": {"type": "boolean"},
+        "validatedEnvelope": {"type": "boolean"},
+        "heldGetservercert": {"type": "boolean"},
+        "certificateFingerprintMatched": {"type": "boolean"},
+        "readyEventEmitted": {"type": "boolean"},
+        "pairedDeviceCommitted": {"type": "boolean"}
+      }
+    },
+    "postState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "requestExists", "state", "readyForApproval", "generation", "heldPair",
+        "tokenBytesPresent", "tokenHashPresent", "sourceVerifierPresent",
+        "envelopeStorage", "validatedEnvelope", "certificateFingerprintMatched",
+        "domainEventCount", "pairedDeviceCommitted"
+      ],
+      "properties": {
+        "requestExists": {"type": "boolean"},
+        "state": {"$ref": "#/$defs/state"},
+        "readyForApproval": {"type": "boolean"},
+        "generation": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+        "heldPair": {"type": "boolean"},
+        "tokenBytesPresent": {"type": "boolean"},
+        "tokenHashPresent": {"type": "boolean"},
+        "sourceVerifierPresent": {"type": "boolean"},
+        "envelopeStorage": {"enum": ["none", "fullCiphertext", "digestOnly"]},
+        "validatedEnvelope": {"type": "boolean"},
+        "certificateFingerprintMatched": {"type": "boolean"},
+        "domainEventCount": {"type": "integer", "minimum": 0, "maximum": 1},
+        "pairedDeviceCommitted": {"type": "boolean"}
+      }
+    },
+    "cleanup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pinCleared", "bearerTokenBytesCleared", "privateKeyCleared",
+        "sharedSecretCleared", "pairingKeyCleared", "plaintextCleared",
+        "fullCiphertextCleared", "pollCancelled", "heldOperationCancelled"
+      ],
+      "properties": {
+        "pinCleared": {"type": "boolean"},
+        "bearerTokenBytesCleared": {"type": "boolean"},
+        "privateKeyCleared": {"type": "boolean"},
+        "sharedSecretCleared": {"type": "boolean"},
+        "pairingKeyCleared": {"type": "boolean"},
+        "plaintextCleared": {"type": "boolean"},
+        "fullCiphertextCleared": {"type": "boolean"},
+        "pollCancelled": {"type": "boolean"},
+        "heldOperationCancelled": {"type": "boolean"}
+      }
+    },
+    "expectedHttp": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "headers", "bodyEncoding", "body"],
+      "properties": {
+        "status": {"type": "integer", "minimum": 100, "maximum": 599},
+        "headers": {"type": "array", "items": {"$ref": "#/$defs/header"}},
+        "bodyEncoding": {"const": "base64url"},
+        "body": {"$ref": "#/$defs/b64"}
+      }
+    },
+    "behavior": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "operation", "validationRules", "context", "input", "expectedHttp", "expectedPostState", "expectedCleanupMetadata"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "operation": {"enum": ["create", "envelope", "status", "cancel", "loopbackList", "loopbackAllow", "loopbackReject"]},
+        "validationRules": {"type": "array", "items": {"$ref": "#/$defs/rule"}, "uniqueItems": true},
+        "context": {"$ref": "#/$defs/context"},
+        "input": {"$ref": "#/$defs/http"},
+        "expectedHttp": {"$ref": "#/$defs/expectedHttp"},
+        "expectedPostState": {"$ref": "#/$defs/postState"},
+        "expectedCleanupMetadata": {"$ref": "#/$defs/cleanup"}
+      }
+    },
+    "create": {"allOf": [{"$ref": "#/$defs/behavior"}, {"type": "object", "properties": {"operation": {"const": "create"}, "validationRules": {"$ref": "#/$defs/createRules"}}}]},
+    "envelope": {"allOf": [{"$ref": "#/$defs/behavior"}, {"type": "object", "properties": {"operation": {"const": "envelope"}, "validationRules": {"$ref": "#/$defs/envelopeRules"}}}]},
+    "status": {"allOf": [{"$ref": "#/$defs/behavior"}, {"type": "object", "properties": {"operation": {"const": "status"}, "validationRules": {"$ref": "#/$defs/publicStatusCancelRules"}}}]},
+    "cancel": {"allOf": [{"$ref": "#/$defs/behavior"}, {"type": "object", "properties": {"operation": {"const": "cancel"}, "validationRules": {"$ref": "#/$defs/publicStatusCancelRules"}}}]},
+    "loopbackList": {"allOf": [{"$ref": "#/$defs/behavior"}, {"type": "object", "properties": {"operation": {"const": "loopbackList"}, "validationRules": {"$ref": "#/$defs/loopbackListRules"}}}]},
+    "loopbackAllow": {"allOf": [{"$ref": "#/$defs/behavior"}, {"type": "object", "properties": {"operation": {"const": "loopbackAllow"}, "validationRules": {"$ref": "#/$defs/loopbackActionRules"}}}]},
+    "loopbackReject": {"allOf": [{"$ref": "#/$defs/behavior"}, {"type": "object", "properties": {"operation": {"const": "loopbackReject"}, "validationRules": {"$ref": "#/$defs/loopbackActionRules"}}}]},
+    "primitiveX25519": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "operation", "validationRules", "source", "privateKeyBase64url", "peerPublicKeyBase64url", "expectedPublicKeyBase64url", "expectedSharedSecretBase64url"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"}, "operation": {"const": "primitiveX25519"},
+        "validationRules": {"$ref": "#/$defs/primitiveRules"},
+        "source": {"type": "string"}, "privateKeyBase64url": {"$ref": "#/$defs/b32"},
+        "peerPublicKeyBase64url": {"$ref": "#/$defs/b32"}, "expectedPublicKeyBase64url": {"$ref": "#/$defs/b32"},
+        "expectedSharedSecretBase64url": {"$ref": "#/$defs/b32"}
+      }
+    },
+    "primitiveHkdf": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "operation", "validationRules", "source", "ikmBase64url", "saltBase64url", "infoBase64url", "length", "expectedOkmBase64url"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"}, "operation": {"const": "primitiveHkdfSha256"},
+        "validationRules": {"$ref": "#/$defs/primitiveRules"},
+        "source": {"type": "string"}, "ikmBase64url": {"$ref": "#/$defs/b64"},
+        "saltBase64url": {"$ref": "#/$defs/b64"}, "infoBase64url": {"$ref": "#/$defs/b64"},
+        "length": {"const": 32}, "expectedOkmBase64url": {"$ref": "#/$defs/b32"}
+      }
+    },
+    "primitiveAead": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "operation", "validationRules", "source", "keyBase64url", "nonceBase64url", "aadBase64url", "plaintextBase64url", "expectedCiphertextAndTagBase64url"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"}, "operation": {"const": "primitiveChaCha20Poly1305"},
+        "validationRules": {"$ref": "#/$defs/primitiveRules"},
+        "source": {"type": "string"}, "keyBase64url": {"$ref": "#/$defs/b32"},
+        "nonceBase64url": {"type": "string", "pattern": "^[A-Za-z0-9_-]{16}$"},
+        "aadBase64url": {"$ref": "#/$defs/b64"}, "plaintextBase64url": {"$ref": "#/$defs/b64"},
+        "expectedCiphertextAndTagBase64url": {"$ref": "#/$defs/b64"}
+      }
+    },
+    "primitiveJcs": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "operation", "validationRules", "source", "inputUtf8Base64url", "expectedJcsUtf8Base64url"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"}, "operation": {"const": "primitiveJcs"},
+        "validationRules": {"$ref": "#/$defs/jcsRules"},
+        "source": {"type": "string"}, "inputUtf8Base64url": {"$ref": "#/$defs/b64"},
+        "expectedJcsUtf8Base64url": {"$ref": "#/$defs/b64"}
+      }
+    },
+    "positive": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "id", "operation", "validationRules", "clientPrivateKeyBase64url", "clientPublicKeyBase64url",
+        "hostPrivateKeyBase64url", "hostPublicKeyBase64url", "clientNonceBase64url",
+        "hostNonceBase64url", "requestTokenBase64url", "requestTokenSha256Base64url",
+        "createRequestJcsBase64url", "createResponseWithoutTokenJcsBase64url",
+        "transcriptJcsBase64url", "transcriptHashBase64url", "saltBase64url",
+        "sharedSecretBase64url", "pairingKeyBase64url", "safetyDigestBase64url",
+        "safetyCode", "envelopeNonceBase64url", "envelopePlaintextJcsBase64url",
+        "envelopePlaintextJcsHashBase64url", "envelopeCiphertextAndTagBase64url",
+        "envelopeJcsBase64url", "envelopeCanonicalHashBase64url"
+      ],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"}, "operation": {"const": "ligasePositive"},
+        "validationRules": {"$ref": "#/$defs/positiveRules"},
+        "clientPrivateKeyBase64url": {"$ref": "#/$defs/b32"}, "clientPublicKeyBase64url": {"$ref": "#/$defs/b32"},
+        "hostPrivateKeyBase64url": {"$ref": "#/$defs/b32"}, "hostPublicKeyBase64url": {"$ref": "#/$defs/b32"},
+        "clientNonceBase64url": {"$ref": "#/$defs/b32"},
+        "hostNonceBase64url": {"$ref": "#/$defs/b32"},
+        "requestTokenBase64url": {"type": "string", "pattern": "^[A-Za-z0-9_-]{43}$"},
+        "requestTokenSha256Base64url": {"$ref": "#/$defs/b32"},
+        "createRequestJcsBase64url": {"$ref": "#/$defs/b64"},
+        "createResponseWithoutTokenJcsBase64url": {"$ref": "#/$defs/b64"},
+        "transcriptJcsBase64url": {"$ref": "#/$defs/b64"}, "transcriptHashBase64url": {"$ref": "#/$defs/b32"},
+        "saltBase64url": {"$ref": "#/$defs/b32"}, "sharedSecretBase64url": {"$ref": "#/$defs/b32"},
+        "pairingKeyBase64url": {"$ref": "#/$defs/b32"}, "safetyDigestBase64url": {"$ref": "#/$defs/b32"},
+        "safetyCode": {"type": "string", "pattern": "^[A-Z2-7]{4}-[A-Z2-7]{4}$"},
+        "envelopeNonceBase64url": {"type": "string", "pattern": "^[A-Za-z0-9_-]{16}$"},
+        "envelopePlaintextJcsBase64url": {"$ref": "#/$defs/b64"},
+        "envelopePlaintextJcsHashBase64url": {"$ref": "#/$defs/b32"},
+        "envelopeCiphertextAndTagBase64url": {"type": "string", "pattern": "^[A-Za-z0-9_-]{48}$"},
+        "envelopeJcsBase64url": {"$ref": "#/$defs/b64"}, "envelopeCanonicalHashBase64url": {"$ref": "#/$defs/b32"}
+      }
+    },
+    "raceStep": {
+      "type": "object", "additionalProperties": false,
+      "required": ["step", "actor", "action", "phase", "input", "expectedPostState"],
+      "properties": {
+        "step": {"type": "integer", "minimum": 1, "maximum": 64},
+        "actor": {"enum": ["publicClient", "loopbackUi", "nvhttpAdapter", "coordinator", "androidCoordinator"]},
+        "action": {"enum": ["create", "uploadEnvelope", "bindHeldGetservercert", "allow", "reject", "cancel", "commitPaired", "materializeExpiry", "androidDelete", "androidStatusProbe", "transportFailure"]},
+        "phase": {"enum": ["beforeLock", "underLock", "afterCommit", "afterResponse"]},
+        "input": {"$ref": "#/$defs/http"},
+        "expectedPostState": {"$ref": "#/$defs/postState"}
+      }
+    },
+    "race": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "operation", "validationRules", "context", "schedule", "expectedPostState", "expectedCleanupMetadata"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"}, "operation": {"const": "race"},
+        "validationRules": {"$ref": "#/$defs/raceRules"}, "context": {"$ref": "#/$defs/context"},
+        "schedule": {"type": "array", "minItems": 2, "items": {"$ref": "#/$defs/raceStep"}},
+        "expectedPostState": {"$ref": "#/$defs/postState"}, "expectedCleanupMetadata": {"$ref": "#/$defs/cleanup"}
+      }
+    },
+    "androidCancel": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "operation", "validationRules", "context", "deleteInput", "deleteExpectedHttp", "statusProbeInput", "statusProbeExpectedHttp", "expectedAndroidOutcome", "expectedPostState", "expectedCleanupMetadata"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"}, "operation": {"const": "androidCancel"},
+        "validationRules": {"$ref": "#/$defs/raceRules"}, "context": {"$ref": "#/$defs/context"},
+        "deleteInput": {"$ref": "#/$defs/http"}, "deleteExpectedHttp": {"$ref": "#/$defs/expectedHttp"},
+        "statusProbeInput": {"$ref": "#/$defs/http"}, "statusProbeExpectedHttp": {"$ref": "#/$defs/expectedHttp"},
+        "expectedAndroidOutcome": {"enum": ["cancelled", "rejected", "expired", "failed", "paired", "protocolError", "unknown"]},
+        "expectedPostState": {"$ref": "#/$defs/postState"}, "expectedCleanupMetadata": {"$ref": "#/$defs/cleanup"}
+      }
+    }
+  }
+}
