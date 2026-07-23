@@ -23,6 +23,7 @@ public sealed partial class AddApplicationPage : Page
     protected override async void OnNavigatedTo(NavigationEventArgs e)
     {
         base.OnNavigatedTo(e);
+        await ViewModel.RefreshAuthorityAsync();
         await ViewModel.ScanSteamAsync();
     }
 
@@ -39,7 +40,14 @@ public sealed partial class AddApplicationPage : Page
     {
         if ((sender as FrameworkElement)?.Tag is SteamGame game)
         {
-            await ViewModel.AddSteamAsync(game);
+            try
+            {
+                await ViewModel.AddSteamAsync(game);
+            }
+            catch (Exception exception)
+            {
+                ViewModel.Message = exception.Message;
+            }
         }
     }
 
@@ -63,6 +71,7 @@ public sealed partial class AddApplicationPage : Page
             ViewModel.Message = exception.Message;
         }
     }
+
     private async void OnSearchCovers(object sender, RoutedEventArgs e) =>
         await ViewModel.SearchCoversAsync();
 

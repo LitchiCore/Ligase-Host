@@ -36,6 +36,7 @@
                 </StackPanel>
                 <Button
                     Grid.Column="1"
+                    IsEnabled="{x:Bind ViewModel.CanModifyLibrary, Mode=OneWay}"
                     Click="OnAddApplication"
                     Style="{StaticResource LigaseSecondaryButtonStyle}">
                     <StackPanel Orientation="Horizontal" Spacing="8">
@@ -86,6 +87,13 @@
                 Margin="0,12,0,0"
                 IsIndeterminate="True"
                 Visibility="{x:Bind ViewModel.LoadingVisibility, Mode=OneWay}" />
+            <InfoBar
+                Margin="0,12,0,0"
+                IsClosable="False"
+                IsOpen="{x:Bind ViewModel.HasAuthorityWarning, Mode=OneWay}"
+                Message="{x:Bind ViewModel.AuthorityMessage, Mode=OneWay}"
+                Severity="Warning"
+                Title="游戏库暂时只读" />
             <InfoBar
                 Margin="0,12,0,0"
                 IsClosable="False"
@@ -156,10 +164,11 @@
                                 <Button
                                     Grid.Column="2"
                                     VerticalAlignment="Center"
+                                    Click="OnManageApplication"
                                     Style="{StaticResource LigaseQuietButtonStyle}">
                                     <StackPanel Orientation="Horizontal" Spacing="6">
                                         <FontIcon FontSize="13" Glyph="&#xE768;" />
-                                        <TextBlock Text="详情" />
+                                        <TextBlock Text="管理" />
                                     </StackPanel>
                                 </Button>
                             </Grid>
@@ -199,6 +208,7 @@
                     TextWrapping="Wrap" />
                 <Button
                     Margin="0,8,0,0"
+                    IsEnabled="{x:Bind ViewModel.CanModifyLibrary, Mode=OneWay}"
                     Click="OnAddApplication"
                     Style="{StaticResource LigaseQuietButtonStyle}"
                     Content="添加第一个项目" />

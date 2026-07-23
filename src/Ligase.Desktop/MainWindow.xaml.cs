@@ -13,6 +13,7 @@ public sealed partial class MainWindow : Window
 {
     private readonly ApolloInstanceManager _core;
     private readonly ApolloCoreLocator _coreLocator;
+    private readonly ILibraryAuthorityService _libraryAuthority;
     private readonly HostPreferencesService _preferences;
     private readonly WindowsTrayIconService _trayIcon;
     private readonly AppWindow _appWindow;
@@ -26,6 +27,7 @@ public sealed partial class MainWindow : Window
         var services = ((App)Application.Current).Services;
         _core = services.GetRequiredService<ApolloInstanceManager>();
         _coreLocator = services.GetRequiredService<ApolloCoreLocator>();
+        _libraryAuthority = services.GetRequiredService<ILibraryAuthorityService>();
         _preferences = services.GetRequiredService<HostPreferencesService>();
         _trayIcon = services.GetRequiredService<WindowsTrayIconService>();
         var windowHandle = WindowNative.GetWindowHandle(this);
@@ -35,6 +37,7 @@ public sealed partial class MainWindow : Window
         _trayIcon.OpenRequested += ShowWindow;
         _trayIcon.ExitRequested += OnExitRequested;
         _trayIcon.CoreStatusChanged += RefreshCoreStatus;
+        _core.StatusChanged += OnManagedCoreStatusChanged;
         _trayIcon.Initialize(this);
         RefreshCoreStatus();
         ContentFrame.Navigate(typeof(GameLibraryPage));
@@ -48,8 +51,9 @@ public sealed partial class MainWindow : Window
         Activate();
     }
 
-    public void NavigateToAddApplication()
+    public async void NavigateToAddApplication()
     {
+        if (!await RefreshLibraryAuthorityAsync()) return;
         if (ReferenceEquals(RootNavigation.SelectedItem, AddApplicationNavigationItem))
         {
             ContentFrame.Navigate(typeof(AddApplicationPage));
@@ -74,7 +78,7 @@ public sealed partial class MainWindow : Window
             : "\uE706";
     }
 
-    private void OnSelectionChanged(NavigationView sender, NavigationViewSelectionChangedEventArgs args)
+    private async void OnSelectionChanged(NavigationView sender, NavigationViewSelectionChangedEventArgs args)
     {
         if (args.IsSettingsSelected)
         {
@@ -83,6 +87,11 @@ public sealed partial class MainWindow : Window
         }
 
         var tag = (args.SelectedItemContainer as NavigationViewItem)?.Tag as string;
+        if (tag == "add" && !await RefreshLibraryAuthorityAsync())
+        {
+            RootNavigation.SelectedItem = LibraryNavigationItem;
+            return;
+        }
         ContentFrame.Navigate(tag switch
         {
             "library" => typeof(GameLibraryPage),
@@ -117,7 +126,9 @@ public sealed partial class MainWindow : Window
         await ((App)Application.Current).ExitAsync();
     }
 
-    public async void RefreshCoreStatus()
+    public void RefreshCoreStatus() => _ = RefreshCoreStatusAsync();
+
+    public async Task RefreshCoreStatusAsync()
     {
         try
         {
@@ -125,12 +136,59 @@ public sealed partial class MainWindow : Window
             CoreStatusText.Text = _core.IsRunning
                 ? $"运行中 · 独立端口 {endpoint.BasePort}"
                 : $"已连接 {endpoint.HostName} · 端口 {endpoint.BasePort}";
+            CoreRetryButton.Visibility = _core.IsRunning
+                ? Visibility.Collapsed
+                : Visibility.Visible;
+            HostStatusText.Text = _core.IsRunning ? "主机就绪" : "游戏库只读";
         }
         catch (ApolloCoreUnavailableException)
         {
             CoreStatusText.Text = _core.StartupError ?? "核心未运行 · 可在概览页启动";
+            CoreRetryButton.Visibility = Visibility.Visible;
+            HostStatusText.Text = "需要处理";
+        }
+        await RefreshLibraryAuthorityAsync();
+        if (ContentFrame.Content is GameLibraryPage libraryPage)
+            await libraryPage.ViewModel.RefreshAsync();
+    }
+
+    private void OnManagedCoreStatusChanged()
+    {
+        DispatcherQueue.TryEnqueue(RefreshCoreStatus);
+    }
+
+    private async void OnRetryCore(object sender, RoutedEventArgs args)
+    {
+        CoreRetryButton.IsEnabled = false;
+        CoreStatusText.Text = "正在启动串流核心…";
+        try
+        {
+            var existing = await _coreLocator.DiscoverAsync();
+            if (existing.Count > 0)
+            {
+                CoreStatusText.Text =
+                    "检测到其他 Ligase 核心。请关闭其他实例，再点击“重新启动”。";
+                return;
+            }
+
+            await _core.StartAsync();
+            await Task.Delay(1500);
+        }
+        finally
+        {
+            CoreRetryButton.IsEnabled = true;
+            await RefreshCoreStatusAsync();
         }
     }
 
+    private async Task<bool> RefreshLibraryAuthorityAsync()
+    {
+        var authority = await _libraryAuthority.GetStateAsync();
+        AddApplicationNavigationItem.IsEnabled = authority.CanWrite;
+        ToolTipService.SetToolTip(
+            AddApplicationNavigationItem,
+            authority.CanWrite ? null : authority.Message);
+        return authority.CanWrite;
+    }
 
 }

@@ -20,7 +20,13 @@ public partial class App : Application
         _host = Microsoft.Extensions.Hosting.Host.CreateDefaultBuilder()
             .ConfigureServices(services =>
             {
-                var paths = LigasePaths.CreateDefault();
+                var paths = LigasePaths.CreateFromCommandLine(
+                    Environment.GetCommandLineArgs(),
+                    environmentDataRoot: Environment.GetEnvironmentVariable(
+                        "LIGASE_DATA_ROOT"),
+                    bootstrapFile: Path.Combine(
+                        AppContext.BaseDirectory,
+                        "ligase-bootstrap.json"));
                 services.AddSingleton(paths);
                 services.AddSingleton<ISteamInstallationLocator, WindowsSteamInstallationLocator>();
                 services.AddSingleton<ISteamLibraryService, SteamLibraryService>();
@@ -35,10 +41,16 @@ public partial class App : Application
                 });
                 services.AddSingleton<CoverArtService>();
                 services.AddSingleton<IApolloAppsWriter, ApolloAppsWriter>();
-                services.AddSingleton<IApplicationLibrary, ApplicationLibrary>();
+                services.AddSingleton<ApplicationLibrary>();
+                services.AddSingleton<IApplicationLibrary>(provider =>
+                    provider.GetRequiredService<ApplicationLibrary>());
                 services.AddSingleton<ApolloPortAllocator>();
                 services.AddSingleton<ApolloInstanceManager>();
                 services.AddSingleton<ApolloCoreLocator>();
+                services.AddSingleton<LibraryAuthorityService>();
+                services.AddSingleton<ILibraryAuthorityService>(provider =>
+                    provider.GetRequiredService<LibraryAuthorityService>());
+                services.AddSingleton<LibraryMutationCoordinator>();
                 services.AddSingleton<HostPreferencesService>();
                 services.AddSingleton<LigaseSyncDocumentWriter>();
                 services.AddSingleton<StreamingSettingsService>();
@@ -72,16 +84,41 @@ public partial class App : Application
         window.Activate();
 
         var preferences = _host.Services.GetRequiredService<HostPreferencesService>();
-        await preferences.InitializeAsync();
-        ApplicationLanguages.PrimaryLanguageOverride =
-            HostPreferencesService.GetPrimaryLanguageOverride(preferences.Current.Language);
-        var library = await _host.Services.GetRequiredService<IApplicationLibrary>().LoadAsync();
-        var streaming = await _host.Services.GetRequiredService<StreamingSettingsService>().LoadAsync();
-        await _host.Services.GetRequiredService<LigaseSyncDocumentWriter>()
-            .WriteAsync(library, streaming);
-        await _host.Services.GetRequiredService<IApolloAppsWriter>().WriteAsync(library.Items);
-        await _host.Services.GetRequiredService<ApolloInstanceManager>().StartAsync();
-        window.RefreshCoreStatus();
+        try
+        {
+            await preferences.InitializeAsync();
+            ApplicationLanguages.PrimaryLanguageOverride =
+                HostPreferencesService.GetPrimaryLanguageOverride(preferences.Current.Language);
+        }
+        catch (Exception exception)
+        {
+            System.Diagnostics.Debug.WriteLine(
+                $"Ligase preference initialization failed: {exception.Message}");
+        }
+
+        try
+        {
+            var library = await _host.Services.GetRequiredService<IApplicationLibrary>().LoadAsync();
+            var streaming = await _host.Services.GetRequiredService<StreamingSettingsService>().LoadAsync();
+            await _host.Services.GetRequiredService<LigaseSyncDocumentWriter>()
+                .WriteAsync(library, streaming);
+            await _host.Services.GetRequiredService<IApolloAppsWriter>().WriteAsync(library.Items);
+        }
+        catch (Exception exception)
+        {
+            System.Diagnostics.Debug.WriteLine(
+                $"Ligase projection initialization failed: {exception.Message}");
+        }
+
+        var managedCore = _host.Services.GetRequiredService<ApolloInstanceManager>();
+        var coreLocator = _host.Services.GetRequiredService<ApolloCoreLocator>();
+        if ((await coreLocator.DiscoverAsync()).Count == 0)
+            await managedCore.StartAsync();
+        // The core process can exist before serverinfo is ready. Refresh once
+        // after a short bounded readiness window so the shell does not remain
+        // in a stale read-only state for the whole session.
+        await Task.Delay(1500);
+        await window.RefreshCoreStatusAsync();
         if (Environment.GetCommandLineArgs().Any(argument =>
                 string.Equals(argument, "--minimized", StringComparison.OrdinalIgnoreCase)))
         {

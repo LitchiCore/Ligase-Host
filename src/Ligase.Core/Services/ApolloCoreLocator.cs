@@ -57,6 +57,29 @@ public sealed class ApolloCoreLocator(ApolloInstanceManager managedCore)
         };
     }
 
+    public async Task<IReadOnlyList<ApolloCoreEndpoint>> DiscoverAsync(
+        CancellationToken cancellationToken = default)
+    {
+        var candidates = IPGlobalProperties.GetIPGlobalProperties()
+            .GetActiveTcpListeners()
+            .Select(endpoint => endpoint.Port)
+            .Where(IsLigaseBasePortCandidate)
+            .Distinct()
+            .Order()
+            .ToArray();
+        var matches = new List<ApolloCoreEndpoint>();
+        foreach (var candidate in candidates)
+        {
+            var endpoint = await ProbeLoopbackAsync((ushort)candidate, cancellationToken);
+            if (endpoint is not null) matches.Add(endpoint);
+        }
+
+        return matches
+            .GroupBy(match => $"{match.UniqueId.ToLowerInvariant()}|{match.BasePort}")
+            .Select(group => group.First())
+            .ToArray();
+    }
+
     internal static bool IsLigaseBasePortCandidate(int port) =>
         port >= 48989 && port <= 65464 && (port - 48989) % 50 == 0;
 

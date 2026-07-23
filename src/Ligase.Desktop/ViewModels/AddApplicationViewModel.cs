@@ -8,7 +8,8 @@ namespace Ligase.Host.Desktop.ViewModels;
 
 public partial class AddApplicationViewModel(
     ISteamLibraryService steamLibraryService,
-    IApplicationLibrary applicationLibrary,
+    ILibraryAuthorityService authorityService,
+    LibraryMutationCoordinator mutationCoordinator,
     CoverArtService coverArtService) : ObservableObject
 {
     private IReadOnlyList<SteamGame> _allSteamGames = [];
@@ -49,7 +50,15 @@ public partial class AddApplicationViewModel(
     [ObservableProperty]
     private string? _message;
 
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasAuthorityWarning))]
+    private string? _authorityMessage;
+
+    [ObservableProperty]
+    private bool _canModifyLibrary;
+
     public bool HasMessage => !string.IsNullOrWhiteSpace(Message);
+    public bool HasAuthorityWarning => !string.IsNullOrWhiteSpace(AuthorityMessage);
     public Visibility ScanningVisibility => IsScanning ? Visibility.Visible : Visibility.Collapsed;
 
     partial void OnSteamSearchTextChanged(string value) => ApplySteamFilter();
@@ -87,23 +96,25 @@ public partial class AddApplicationViewModel(
 
     public async Task AddSteamAsync(SteamGame game, CancellationToken cancellationToken = default)
     {
+        await EnsureWritableAsync(cancellationToken);
         var coverPath = await ResolveAutomaticCoverAsync(game.Name, cancellationToken);
-        await applicationLibrary.AddSteamAsync(game, coverPath, cancellationToken);
-        Message = $"已将“{game.Name}”添加到游戏库。";
+        await mutationCoordinator.AddSteamAsync(game, coverPath, cancellationToken);
+        Message = $"已将“{game.Name}”添加并同步到当前 Ligase 核心。";
         ResetCoverSelection();
     }
 
     public async Task AddExecutableAsync(CancellationToken cancellationToken = default)
     {
+        await EnsureWritableAsync(cancellationToken);
         var coverPath = await ResolveAutomaticCoverAsync(ApplicationName, cancellationToken);
-        await applicationLibrary.AddExecutableAsync(
+        await mutationCoordinator.AddExecutableAsync(
             ApplicationName,
             ExecutablePath,
             Arguments,
             WorkingDirectory,
             coverPath,
             cancellationToken);
-        Message = $"已将“{ApplicationName.Trim()}”添加到游戏库。";
+        Message = $"已将“{ApplicationName.Trim()}”添加并同步到当前 Ligase 核心。";
         ResetCoverSelection();
     }
 
@@ -183,6 +194,22 @@ public partial class AddApplicationViewModel(
             : _allSteamGames.Where(game => SteamGameSearch.Matches(game, query));
         SteamGames.Clear();
         foreach (var game in matches) SteamGames.Add(game);
+    }
+
+    public async Task RefreshAuthorityAsync(CancellationToken cancellationToken = default)
+    {
+        var authority = await authorityService.GetStateAsync(cancellationToken);
+        CanModifyLibrary = authority.CanWrite;
+        AuthorityMessage = authority.CanWrite ? null : authority.Message;
+    }
+
+    private async Task EnsureWritableAsync(CancellationToken cancellationToken)
+    {
+        await RefreshAuthorityAsync(cancellationToken);
+        if (!CanModifyLibrary)
+            throw new LibraryAuthorityException(
+                "libraryReadOnly",
+                AuthorityMessage ?? "当前游戏库暂时只读。请重新启动 Ligase Host。");
     }
 
     private async Task<string?> ResolveAutomaticCoverAsync(

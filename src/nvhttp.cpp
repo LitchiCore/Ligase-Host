@@ -1093,6 +1093,10 @@ namespace nvhttp {
       return ligase_root_path() / "library.json";
     }
 
+    fs::path ligase_authority_path() {
+      return ligase_root_path() / "ligase-authority.json";
+    }
+
     std::string ligase_timestamp() {
       const auto now = std::chrono::system_clock::now();
       const auto value = std::chrono::system_clock::to_time_t(now);
@@ -1251,6 +1255,50 @@ namespace nvhttp {
           {"currentRevision", current_revision}
         }
       );
+    }
+
+    nlohmann::json build_ligase_authority_readback(const nlohmann::json &authority) {
+      nlohmann::json library_items = nlohmann::json::array();
+      const auto sync = read_ligase_json(ligase_sync_path());
+      for (const auto &item : sync.at("library").at("items")) {
+        library_items.push_back({
+          {"id", item.at("id")},
+          {"kind", item.at("kind")},
+          {"steamAppId", item.value("steamAppId", nlohmann::json(nullptr))},
+          {"publishedToClients", item.value("publishedToClients", true)}
+        });
+      }
+
+      nlohmann::json loaded_apps = nlohmann::json::array();
+      for (const auto &app : proc::proc.get_apps()) {
+        loaded_apps.push_back({
+          {"uuid", app.uuid},
+          {"appId", app.id}
+        });
+      }
+
+      return {
+        {"schemaVersion", 1},
+        {"authorityToken", authority.at("token")},
+        {"startNonce", authority.at("startNonce")},
+        {"rootFingerprint", authority.at("rootFingerprint")},
+        {"hostUniqueId", http::unique_id},
+        {"libraryItems", library_items},
+        {"apps", loaded_apps}
+      };
+    }
+
+    template<class Request>
+    bool ligase_request_is_loopback(const std::shared_ptr<Request> &request) {
+      const auto address = request->remote_endpoint().address();
+      if (address.is_loopback()) {
+        return true;
+      }
+      if (!address.is_v6()) {
+        return false;
+      }
+      const auto text = address.to_string();
+      return text.starts_with("::ffff:127.");
     }
 
     void apply_ligase_resolution(
@@ -1509,7 +1557,7 @@ namespace nvhttp {
 
   void ligase_devices_local(resp_http_t response, req_http_t request) {
     print_req<SimpleWeb::HTTP>(request);
-    if (!request->remote_endpoint().address().is_loopback()) {
+    if (!ligase_request_is_loopback(request)) {
       send_ligase_json(
         response,
         SimpleWeb::StatusCode::client_error_forbidden,
@@ -1530,7 +1578,7 @@ namespace nvhttp {
 
   void ligase_cancel_session_local(resp_http_t response, req_http_t request) {
     print_req<SimpleWeb::HTTP>(request);
-    if (!request->remote_endpoint().address().is_loopback()) {
+    if (!ligase_request_is_loopback(request)) {
       send_ligase_json(
         response,
         SimpleWeb::StatusCode::client_error_forbidden,
@@ -1553,6 +1601,110 @@ namespace nvhttp {
         {"sessionState", "free"}
       }
     );
+  }
+
+  void ligase_authority_readback_local(resp_http_t response, req_http_t request) {
+    print_req<SimpleWeb::HTTP>(request);
+    if (!ligase_request_is_loopback(request)) {
+      send_ligase_json(
+        response,
+        SimpleWeb::StatusCode::client_error_forbidden,
+        {{"error", "loopbackOnly"}}
+      );
+      return;
+    }
+
+    try {
+      std::stringstream body;
+      body << request->content.rdbuf();
+      const auto request_json = nlohmann::json::parse(body.str());
+      const auto authority = read_ligase_json(ligase_authority_path());
+      if (!request_json.contains("token") ||
+          !request_json["token"].is_string() ||
+          !authority.contains("token") ||
+          request_json["token"] != authority["token"]) {
+        send_ligase_json(
+          response,
+          SimpleWeb::StatusCode::client_error_forbidden,
+          {{"error", "authorityMismatch"}}
+        );
+        return;
+      }
+
+      send_ligase_json(
+        response,
+        SimpleWeb::StatusCode::success_ok,
+        build_ligase_authority_readback(authority)
+      );
+    } catch (const std::exception &) {
+      send_ligase_json(
+        response,
+        SimpleWeb::StatusCode::client_error_not_found,
+        {{"error", "authorityUnavailable"}}
+      );
+    }
+  }
+
+  void ligase_authority_reload_local(resp_http_t response, req_http_t request) {
+    print_req<SimpleWeb::HTTP>(request);
+    if (!ligase_request_is_loopback(request)) {
+      send_ligase_json(
+        response,
+        SimpleWeb::StatusCode::client_error_forbidden,
+        {{"error", "loopbackOnly"}}
+      );
+      return;
+    }
+
+    nlohmann::json authority;
+    try {
+      std::stringstream body;
+      body << request->content.rdbuf();
+      const auto request_json = nlohmann::json::parse(body.str());
+      authority = read_ligase_json(ligase_authority_path());
+      if (!request_json.contains("token") ||
+          !request_json["token"].is_string() ||
+          !authority.contains("token") ||
+          request_json["token"] != authority["token"]) {
+        send_ligase_json(
+          response,
+          SimpleWeb::StatusCode::client_error_forbidden,
+          {{"error", "authorityMismatch"}}
+        );
+        return;
+      }
+    } catch (const std::exception &) {
+      send_ligase_json(
+        response,
+        SimpleWeb::StatusCode::client_error_not_found,
+        {{"error", "authorityUnavailable"}}
+      );
+      return;
+    }
+
+    if (proc::proc.running() > 0) {
+      send_ligase_json(
+        response,
+        SimpleWeb::StatusCode::client_error_conflict,
+        {{"error", "sessionActive"}}
+      );
+      return;
+    }
+
+    try {
+      proc::refresh(config::stream.file_apps, false);
+      send_ligase_json(
+        response,
+        SimpleWeb::StatusCode::success_ok,
+        build_ligase_authority_readback(authority)
+      );
+    } catch (const std::exception &) {
+      send_ligase_json(
+        response,
+        SimpleWeb::StatusCode::server_error_internal_server_error,
+        {{"error", "reloadFailed"}}
+      );
+    }
   }
 
   void applist(resp_https_t response, req_https_t request) {
@@ -2241,6 +2393,8 @@ namespace nvhttp {
     http_server.resource["^/pair$"]["GET"] = pair<SimpleWeb::HTTP>;
     http_server.resource["^/ligase/v1/devices$"]["GET"] = ligase_devices_local;
     http_server.resource["^/ligase/v1/session/cancel$"]["POST"] = ligase_cancel_session_local;
+    http_server.resource["^/ligase/v1/authority/readback$"]["POST"] = ligase_authority_readback_local;
+    http_server.resource["^/ligase/v1/authority/reload$"]["POST"] = ligase_authority_reload_local;
 
     http_server.config.reuse_address = true;
     http_server.config.address = net::af_to_any_address_string(address_family);

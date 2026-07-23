@@ -1,10 +1,12 @@
 <Page
     x:Class="Ligase.Host.Desktop.Pages.AddApplicationPage"
+    x:Name="RootPage"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:models="using:Ligase.Host.Core.Models">
     <Grid Margin="28,24,28,28" Background="{ThemeResource LigaseWindowBrush}">
         <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
@@ -42,8 +44,17 @@
             Severity="Informational"
             Title="添加结果" />
 
-        <Border
+        <InfoBar
             Grid.Row="2"
+            Margin="0,12,0,0"
+            IsClosable="False"
+            IsOpen="{x:Bind ViewModel.HasAuthorityWarning, Mode=OneWay}"
+            Message="{x:Bind ViewModel.AuthorityMessage, Mode=OneWay}"
+            Severity="Warning"
+            Title="游戏库暂时只读" />
+
+        <Border
+            Grid.Row="3"
             Margin="0,14,0,0"
             Style="{StaticResource LigaseToolbarStyle}">
             <StackPanel Spacing="10">
@@ -103,7 +114,7 @@
         </Border>
 
         <TabView
-            Grid.Row="3"
+            Grid.Row="4"
             Margin="0,18,0,0"
             IsAddTabButtonVisible="False">
             <TabViewItem Header="Steam 游戏" IconSource="{StaticResource SteamTabIcon}" IsClosable="False">
@@ -179,6 +190,7 @@
                                                 Content="选封面" />
                                             <Button
                                                 Tag="{x:Bind}"
+                                                IsEnabled="{Binding ViewModel.CanModifyLibrary, ElementName=RootPage}"
                                                 Click="OnAddSteam"
                                                 Style="{StaticResource LigaseQuietButtonStyle}">
                                                 <StackPanel Orientation="Horizontal" Spacing="6">
@@ -241,6 +253,7 @@
                             </StackPanel>
                             <Button
                                 HorizontalAlignment="Left"
+                                IsEnabled="{x:Bind ViewModel.CanModifyLibrary, Mode=OneWay}"
                                 Click="OnAddExecutable"
                                 Style="{StaticResource LigaseQuietButtonStyle}">
                                 <StackPanel Orientation="Horizontal" Spacing="7">

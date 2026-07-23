@@ -8,7 +8,10 @@ namespace Ligase.Host.Desktop.ViewModels;
 
 public sealed record LibrarySortOption(string Label, LibrarySortMode Value);
 
-public partial class GameLibraryViewModel(IApplicationLibrary applicationLibrary) : ObservableObject
+public partial class GameLibraryViewModel(
+    IApplicationLibrary applicationLibrary,
+    ILibraryAuthorityService authorityService,
+    LibraryMutationCoordinator mutationCoordinator) : ObservableObject
 {
     private IReadOnlyList<LibraryItem> _allItems = [];
 
@@ -38,8 +41,16 @@ public partial class GameLibraryViewModel(IApplicationLibrary applicationLibrary
     [ObservableProperty]
     private LibrarySortOption? _selectedSortOption;
 
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasAuthorityWarning))]
+    private string? _authorityMessage;
+
+    [ObservableProperty]
+    private bool _canModifyLibrary;
+
     public bool IsNotLoading => !IsLoading;
     public bool HasError => !string.IsNullOrWhiteSpace(ErrorMessage);
+    public bool HasAuthorityWarning => !string.IsNullOrWhiteSpace(AuthorityMessage);
     public int ItemCount => FilteredItems.Count;
     public Visibility LoadingVisibility => IsLoading ? Visibility.Visible : Visibility.Collapsed;
     public Visibility EmptyVisibility => !IsLoading && FilteredItems.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
@@ -56,6 +67,9 @@ public partial class GameLibraryViewModel(IApplicationLibrary applicationLibrary
         try
         {
             var state = await applicationLibrary.LoadAsync(cancellationToken);
+            var authority = await authorityService.GetStateAsync(cancellationToken);
+            CanModifyLibrary = authority.CanWrite;
+            AuthorityMessage = authority.CanWrite ? null : authority.Message;
             _allItems = state.Items;
             SelectedSortOption = SortOptions.First(option => option.Value == state.SortMode);
             ApplyView();
@@ -70,13 +84,54 @@ public partial class GameLibraryViewModel(IApplicationLibrary applicationLibrary
         }
     }
 
+    public async Task<bool> EnsureWritableAsync(CancellationToken cancellationToken = default)
+    {
+        var authority = await authorityService.GetStateAsync(cancellationToken);
+        CanModifyLibrary = authority.CanWrite;
+        AuthorityMessage = authority.CanWrite ? null : authority.Message;
+        return authority.CanWrite;
+    }
+
+    public async Task<bool> RemoveAsync(
+        LibraryItem item,
+        CancellationToken cancellationToken = default)
+    {
+        if (item.IsSystemEntry)
+        {
+            ErrorMessage = "系统桌面入口需要始终保留，不能删除。";
+            return false;
+        }
+
+        if (!await EnsureWritableAsync(cancellationToken)) return false;
+
+        try
+        {
+            await mutationCoordinator.RemoveAsync(item.Id, cancellationToken);
+            await RefreshAsync(cancellationToken);
+            return true;
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            ErrorMessage = exception.Message;
+            return false;
+        }
+    }
+
     partial void OnSearchTextChanged(string value) => ApplyView();
 
     async partial void OnSelectedSortOptionChanged(LibrarySortOption? value)
     {
         if (value is null) return;
         ApplyView();
-        await applicationLibrary.SetSortModeAsync(value.Value);
+        if (!CanModifyLibrary) return;
+        try
+        {
+            await mutationCoordinator.SetSortModeAsync(value.Value);
+        }
+        catch (Exception exception)
+        {
+            ErrorMessage = exception.Message;
+        }
     }
 
     private void ApplyView()

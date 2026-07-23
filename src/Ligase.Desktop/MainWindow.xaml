@@ -53,12 +53,19 @@
                     <FontIcon x:Name="ThemeIcon" FontSize="14" Glyph="&#xE706;" />
                 </Button>
                 <Border
+                    x:Name="HostStatusBorder"
                     Padding="10,4"
                     Background="{ThemeResource LigaseSuccessSubtleBrush}"
                     CornerRadius="10">
                     <StackPanel Orientation="Horizontal" Spacing="6">
-                        <Ellipse Width="7" Height="7" VerticalAlignment="Center" Fill="{ThemeResource LigaseSuccessBrush}" />
+                        <Ellipse
+                            x:Name="HostStatusDot"
+                            Width="7"
+                            Height="7"
+                            VerticalAlignment="Center"
+                            Fill="{ThemeResource LigaseSuccessBrush}" />
                         <TextBlock
+                            x:Name="HostStatusText"
                             x:Uid="HostReady"
                             FontSize="12"
                             Foreground="{ThemeResource LigaseSuccessBrush}"
@@ -122,6 +129,7 @@
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="26" />
                             <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
                         <Border
                             Width="26"
@@ -143,6 +151,14 @@
                                 Style="{StaticResource LigaseCaptionTextStyle}"
                                 Text="正在初始化" />
                         </StackPanel>
+                        <Button
+                            x:Name="CoreRetryButton"
+                            Grid.Column="2"
+                            VerticalAlignment="Center"
+                            Click="OnRetryCore"
+                            Content="重新启动"
+                            Style="{StaticResource LigaseQuietButtonStyle}"
+                            Visibility="Collapsed" />
                     </Grid>
                 </Border>
             </NavigationView.PaneFooter>
