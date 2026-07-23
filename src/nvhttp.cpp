@@ -374,6 +374,12 @@ namespace nvhttp {
     client_t &client = client_root;
     client.named_devices.push_back(named_cert_p);
 
+#if defined SUNSHINE_TESTS
+    // Unit pairing tests do not own a tray window or a writable state path.
+    // The production path below remains unchanged.
+    return;
+#endif
+
 #if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
     system_tray::update_tray_paired(named_cert_p->name);
 #endif
@@ -642,7 +648,9 @@ namespace nvhttp {
       named_cert_p->always_use_virtual_display = false;
 
       auto it = map_id_sess.find(client.uniqueID);
-      map_id_sess.erase(it);
+      if (it != map_id_sess.end()) {
+        map_id_sess.erase(it);
+      }
 
       add_authorized_client(named_cert_p);
     } else {
