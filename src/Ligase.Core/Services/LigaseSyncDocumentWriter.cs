@@ -57,6 +57,7 @@ public sealed class LigaseSyncDocumentWriter(LigasePaths paths)
                     Name = item.Name,
                     SteamAppId = item.SteamAppId,
                     System = item.IsSystemEntry,
+                    PublishedToClients = item.PublishedToClients,
                     AddedAt = item.AddedAt,
                     UpdatedAt = item.UpdatedAt,
                     LastPlayedAt = item.LastPlayedAt

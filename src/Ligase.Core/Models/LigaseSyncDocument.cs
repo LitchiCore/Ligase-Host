@@ -22,6 +22,7 @@ public sealed class LibrarySyncItem
     public required string Name { get; init; }
     public uint? SteamAppId { get; init; }
     public required bool System { get; init; }
+    public required bool PublishedToClients { get; init; }
     public required DateTimeOffset AddedAt { get; init; }
     public required DateTimeOffset UpdatedAt { get; init; }
     public DateTimeOffset? LastPlayedAt { get; init; }

@@ -80,6 +80,66 @@ public sealed class ApplicationLibraryTests
     }
 
     [TestMethod]
+    public async Task MissingPublicationFieldDefaultsToPublished()
+    {
+        var paths = new LigasePaths(_temporaryDirectory);
+        var appId = Guid.NewGuid();
+        await File.WriteAllTextAsync(paths.LibraryFile, $$"""
+            {
+              "schemaVersion": 1,
+              "revision": 1,
+              "items": [{
+                "id": "{{appId}}",
+                "kind": 3,
+                "name": "Legacy app"
+              }]
+            }
+            """);
+
+        var state = await new ApplicationLibrary(paths, new RecordingAppsWriter()).LoadAsync();
+
+        Assert.IsTrue(state.Items.Single(item => item.Id == appId).PublishedToClients);
+    }
+
+    [TestMethod]
+    public async Task PublicationPersistsAndAppearsInSyncProjection()
+    {
+        var paths = new LigasePaths(_temporaryDirectory);
+        var syncWriter = new LigaseSyncDocumentWriter(paths);
+        var executable = Path.Combine(_temporaryDirectory, "Published.exe");
+        await File.WriteAllBytesAsync(executable, []);
+        var library = new ApplicationLibrary(
+            paths,
+            new RecordingAppsWriter(),
+            new StreamingSettingsService(paths),
+            syncWriter);
+        var item = await library.AddExecutableAsync("Published", executable, null, null);
+
+        await library.SetPublishedToClientsAsync(item.Id, false);
+
+        var reloaded = await new ApplicationLibrary(paths, new RecordingAppsWriter()).LoadAsync();
+        Assert.IsFalse(reloaded.Items.Single(candidate => candidate.Id == item.Id).PublishedToClients);
+        using var sync = JsonDocument.Parse(await File.ReadAllTextAsync(paths.SyncFile));
+        var projected = sync.RootElement.GetProperty("library").GetProperty("items")
+            .EnumerateArray().Single(candidate => candidate.GetProperty("id").GetGuid() == item.Id);
+        Assert.IsFalse(projected.GetProperty("publishedToClients").GetBoolean());
+    }
+
+    [TestMethod]
+    public async Task SystemEntriesCannotBeHiddenOrDeleted()
+    {
+        var library = new ApplicationLibrary(
+            new LigasePaths(_temporaryDirectory),
+            new RecordingAppsWriter());
+        await library.LoadAsync();
+
+        await Assert.ThrowsExceptionAsync<SystemLibraryItemMutationException>(
+            () => library.SetPublishedToClientsAsync(SystemLibraryIds.Desktop, false));
+        await Assert.ThrowsExceptionAsync<SystemLibraryItemMutationException>(
+            () => library.RemoveAsync(SystemLibraryIds.VirtualDesktop));
+    }
+
+    [TestMethod]
     public async Task ApolloWriterProducesVersionTwoTrackedCommands()
     {
         var paths = new LigasePaths(_temporaryDirectory);

@@ -12,6 +12,7 @@ public sealed class LibraryItem
     public string? WorkingDirectory { get; init; }
     public uint? SteamAppId { get; init; }
     public string? SteamInstallPath { get; init; }
+    public bool PublishedToClients { get; set; } = true;
     public DateTimeOffset AddedAt { get; init; } = DateTimeOffset.UtcNow;
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
     public DateTimeOffset? LastPlayedAt { get; set; }

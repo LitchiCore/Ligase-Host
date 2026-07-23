@@ -13,5 +13,9 @@ public interface IApplicationLibrary
         string? workingDirectory,
         CancellationToken cancellationToken = default);
     Task SetSortModeAsync(LibrarySortMode sortMode, CancellationToken cancellationToken = default);
+    Task SetPublishedToClientsAsync(
+        Guid id,
+        bool published,
+        CancellationToken cancellationToken = default);
     Task RemoveAsync(Guid id, CancellationToken cancellationToken = default);
 }

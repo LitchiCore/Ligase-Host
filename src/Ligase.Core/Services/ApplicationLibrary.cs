@@ -92,11 +92,34 @@ public sealed class ApplicationLibrary(
         }, cancellationToken);
     }
 
+    public async Task SetPublishedToClientsAsync(
+        Guid id,
+        bool published,
+        CancellationToken cancellationToken = default)
+    {
+        await MutateAsync<object?>(state =>
+        {
+            var item = state.Items.SingleOrDefault(candidate => candidate.Id == id)
+                       ?? throw new LibraryItemNotFoundException(id);
+            if (item.IsSystemEntry)
+                throw new SystemLibraryItemMutationException(id, "系统桌面入口不能隐藏。");
+
+            item.PublishedToClients = published;
+            item.UpdatedAt = DateTimeOffset.UtcNow;
+            return null;
+        }, cancellationToken);
+    }
+
     public async Task RemoveAsync(Guid id, CancellationToken cancellationToken = default)
     {
         await MutateAsync<object?>(state =>
         {
-            state.Items.RemoveAll(item => item.Id == id);
+            var item = state.Items.SingleOrDefault(candidate => candidate.Id == id)
+                       ?? throw new LibraryItemNotFoundException(id);
+            if (item.IsSystemEntry)
+                throw new SystemLibraryItemMutationException(id, "系统桌面入口不能删除。");
+
+            state.Items.Remove(item);
             return null;
         }, cancellationToken);
     }
@@ -191,7 +214,8 @@ public sealed class ApplicationLibrary(
                 Name = name,
                 AddedAt = existing.AddedAt,
                 UpdatedAt = existing.UpdatedAt,
-                LastPlayedAt = existing.LastPlayedAt
+                LastPlayedAt = existing.LastPlayedAt,
+                PublishedToClients = true
             };
             return;
         }
@@ -205,4 +229,13 @@ public sealed class ApplicationLibrary(
             UpdatedAt = DateTimeOffset.UnixEpoch
         });
     }
+}
+
+public sealed class LibraryItemNotFoundException(Guid id)
+    : InvalidOperationException($"找不到游戏库项目 {id}。");
+
+public sealed class SystemLibraryItemMutationException(Guid id, string message)
+    : InvalidOperationException(message)
+{
+    public Guid Id { get; } = id;
 }
