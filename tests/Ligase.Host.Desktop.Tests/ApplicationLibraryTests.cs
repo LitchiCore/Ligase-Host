@@ -377,6 +377,37 @@ public sealed class ApplicationLibraryTests
         Assert.IsTrue(device.Connected);
     }
 
+    [TestMethod]
+    public void CoreLocatorRecognizesOnlyLigasePortFamilies()
+    {
+        Assert.IsTrue(ApolloCoreLocator.IsLigaseBasePortCandidate(48989));
+        Assert.IsTrue(ApolloCoreLocator.IsLigaseBasePortCandidate(49989));
+        Assert.IsFalse(ApolloCoreLocator.IsLigaseBasePortCandidate(47989));
+        Assert.IsFalse(ApolloCoreLocator.IsLigaseBasePortCandidate(49990));
+    }
+
+    [TestMethod]
+    public void CoreLocatorRequiresLigaseCapabilityAndIdentity()
+    {
+        const string ligase = """
+            <root>
+              <hostname>Ligase Host Parallel</hostname>
+              <uniqueid>host-uuid</uniqueid>
+              <LigaseSyncVersion>1</LigaseSyncVersion>
+            </root>
+            """;
+        const string apollo = """
+            <root><hostname>Apollo</hostname><uniqueid>old</uniqueid></root>
+            """;
+
+        var endpoint = ApolloCoreLocator.ParseServerInfo(49989, ligase);
+
+        Assert.IsNotNull(endpoint);
+        Assert.AreEqual((ushort)49989, endpoint.BasePort);
+        Assert.AreEqual("host-uuid", endpoint.UniqueId);
+        Assert.IsNull(ApolloCoreLocator.ParseServerInfo(48989, apollo));
+    }
+
     private sealed class RecordingAppsWriter : IApolloAppsWriter
     {
         public int WriteCount { get; private set; }

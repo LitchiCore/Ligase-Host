@@ -84,12 +84,19 @@ Web UI product model.
 
 - Reads paired clients from Apollo instead of maintaining a second device
   database.
+- Uses the UI-managed core when it is running. During development or recovery,
+  if that core is unavailable, it probes only locally listening Ligase port
+  families and attaches when exactly one Sync-v1-capable core is present. It
+  never guesses between multiple cores or treats an ordinary Apollo instance as
+  authoritative.
 - Shows pending Android pairing requests with device identity, a short safety
   fingerprint, expiry, and explicit Allow/Reject actions. The normal user path
   never displays or asks for a PIN.
 - Displays name, stable device UUID, connected/paired state, display policy,
   permission mask, and whether client commands are allowed.
 - The local endpoint rejects non-loopback callers.
+- Empty, core-not-running, interface-unavailable, and read-failure states remain
+  distinct and provide a retry or corrective next step.
 - Disconnecting or unpairing a device requires a separate destructive-action
   confirmation flow.
 

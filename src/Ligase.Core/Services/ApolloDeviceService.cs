@@ -4,7 +4,7 @@ using Ligase.Host.Core.Models;
 
 namespace Ligase.Host.Core.Services;
 
-public sealed class ApolloDeviceService(ApolloInstanceManager core)
+public sealed class ApolloDeviceService(ApolloCoreLocator coreLocator)
 {
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -19,15 +19,17 @@ public sealed class ApolloDeviceService(ApolloInstanceManager core)
     public async Task<IReadOnlyList<ApolloDevice>> GetDevicesAsync(
         CancellationToken cancellationToken = default)
     {
-        if (!core.IsRunning || core.BasePort == 0)
-            throw new InvalidOperationException("Apollo 核心尚未运行。");
+        var core = await coreLocator.ResolveAsync(cancellationToken);
 
         using var response = await _client.GetAsync(
             $"http://127.0.0.1:{core.BasePort}/ligase/v1/devices",
             cancellationToken);
         if (response.StatusCode == HttpStatusCode.NotFound)
-            throw new InvalidOperationException("当前 Apollo 核心尚未包含 Ligase 设备接口。");
-        response.EnsureSuccessStatusCode();
+            throw new ApolloDeviceInterfaceUnavailableException(
+                "当前 Ligase 核心不支持设备列表。请升级 Host 后重试。");
+        if (!response.IsSuccessStatusCode)
+            throw new ApolloDeviceReadException(
+                "设备列表暂时无法读取。请确认核心仍在运行，然后重试。");
 
         return DeserializeSnapshot(
             await response.Content.ReadAsStringAsync(cancellationToken)).Devices;
@@ -37,3 +39,8 @@ public sealed class ApolloDeviceService(ApolloInstanceManager core)
         JsonSerializer.Deserialize<ApolloDeviceSnapshot>(json, JsonOptions)
         ?? new ApolloDeviceSnapshot();
 }
+
+public sealed class ApolloDeviceInterfaceUnavailableException(string message)
+    : InvalidOperationException(message);
+public sealed class ApolloDeviceReadException(string message)
+    : InvalidOperationException(message);

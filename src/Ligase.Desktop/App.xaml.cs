@@ -28,6 +28,7 @@ public partial class App : Application
                 services.AddSingleton<IApplicationLibrary, ApplicationLibrary>();
                 services.AddSingleton<ApolloPortAllocator>();
                 services.AddSingleton<ApolloInstanceManager>();
+                services.AddSingleton<ApolloCoreLocator>();
                 services.AddSingleton<HostPreferencesService>();
                 services.AddSingleton<LigaseSyncDocumentWriter>();
                 services.AddSingleton<StreamingSettingsService>();
