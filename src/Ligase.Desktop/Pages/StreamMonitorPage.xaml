@@ -34,7 +34,9 @@
                 <StackPanel Grid.Column="1" VerticalAlignment="Bottom" Orientation="Horizontal" Spacing="10">
                     <Button
                         Click="OnEndStream"
-                        Content="结束串流" />
+                        Content="结束串流"
+                        BorderBrush="{ThemeResource LigaseErrorDangerBrush}"
+                        Foreground="{ThemeResource LigaseErrorDangerBrush}" />
                     <ToggleButton
                         x:Name="PreviewToggle"
                         MinWidth="118"

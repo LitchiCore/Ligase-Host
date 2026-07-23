@@ -100,7 +100,7 @@
                     </Grid.ColumnDefinitions>
                     <FontIcon
                         FontSize="22"
-                        Foreground="{ThemeResource LigaseAccentTextBrush}"
+                        Foreground="{ThemeResource LigaseWarningBrush}"
                         Glyph="&#xE74E;" />
                     <StackPanel Grid.Column="1" Spacing="3">
                         <TextBlock x:Uid="ExitTitle" FontWeight="SemiBold" Text="如何彻底退出" />
@@ -121,6 +121,8 @@
                         AutomationProperties.Name="彻底退出 Ligase Host"
                         Click="OnExitApplication"
                         Content="退出 Ligase Host"
+                        BorderBrush="{ThemeResource LigaseErrorDangerBrush}"
+                        Foreground="{ThemeResource LigaseErrorDangerBrush}"
                         Style="{StaticResource LigaseSecondaryButtonStyle}" />
                 </Grid>
             </Border>

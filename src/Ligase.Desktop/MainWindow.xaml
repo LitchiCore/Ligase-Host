@@ -78,27 +78,6 @@
             PaneDisplayMode="Left"
             PaneTitle="控制中心"
             SelectionChanged="OnSelectionChanged">
-            <NavigationView.Resources>
-                <ResourceDictionary>
-                    <ResourceDictionary.ThemeDictionaries>
-                        <ResourceDictionary x:Key="Default">
-                            <SolidColorBrush x:Key="NavigationViewExpandedPaneBackground" Color="#EEF2F8" />
-                            <SolidColorBrush x:Key="NavigationViewDefaultPaneBackground" Color="#EEF2F8" />
-                            <SolidColorBrush x:Key="NavigationViewItemBackgroundSelected" Color="#E2E5F4" />
-                        </ResourceDictionary>
-                        <ResourceDictionary x:Key="Light">
-                            <SolidColorBrush x:Key="NavigationViewExpandedPaneBackground" Color="#EEF2F8" />
-                            <SolidColorBrush x:Key="NavigationViewDefaultPaneBackground" Color="#EEF2F8" />
-                            <SolidColorBrush x:Key="NavigationViewItemBackgroundSelected" Color="#E2E5F4" />
-                        </ResourceDictionary>
-                        <ResourceDictionary x:Key="Dark">
-                            <SolidColorBrush x:Key="NavigationViewExpandedPaneBackground" Color="#1B1E25" />
-                            <SolidColorBrush x:Key="NavigationViewDefaultPaneBackground" Color="#1B1E25" />
-                            <SolidColorBrush x:Key="NavigationViewItemBackgroundSelected" Color="#292D3B" />
-                        </ResourceDictionary>
-                    </ResourceDictionary.ThemeDictionaries>
-                </ResourceDictionary>
-            </NavigationView.Resources>
             <NavigationView.MenuItems>
                 <NavigationViewItem x:Uid="OverviewNavigationItem" Content="概览" Style="{StaticResource LigaseNavigationViewItemStyle}" Tag="overview">
                     <NavigationViewItem.Icon><FontIcon Glyph="&#xE80F;" /></NavigationViewItem.Icon>
