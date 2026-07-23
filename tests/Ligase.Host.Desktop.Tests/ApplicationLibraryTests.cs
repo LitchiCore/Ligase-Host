@@ -52,6 +52,12 @@ public sealed class ApplicationLibraryTests
         Assert.AreEqual(1, reloaded.Items.Count(item => item.Kind == LibraryItemKind.Steam));
         Assert.AreEqual(1, reloaded.Items.Count(item => item.Kind == LibraryItemKind.Desktop));
         Assert.AreEqual(1, reloaded.Items.Count(item => item.Kind == LibraryItemKind.VirtualDesktop));
+        Assert.IsTrue(reloaded.Items.Any(item =>
+            item.Kind == LibraryItemKind.Desktop &&
+            item.Id == SystemLibraryIds.Desktop));
+        Assert.IsTrue(reloaded.Items.Any(item =>
+            item.Kind == LibraryItemKind.VirtualDesktop &&
+            item.Id == SystemLibraryIds.VirtualDesktop));
         Assert.AreEqual(LibrarySortMode.AddedNewest, reloaded.SortMode);
         Assert.IsTrue(reloaded.Revision >= 3);
         Assert.AreEqual(3, writer.WriteCount);
@@ -103,13 +109,13 @@ public sealed class ApplicationLibraryTests
         var writer = new ApolloAppsWriter(paths);
         var desktop = new LibraryItem
         {
-            Id = Guid.Parse("78a25216-f239-45bd-b4aa-f41c814066e9"),
+            Id = SystemLibraryIds.Desktop,
             Kind = LibraryItemKind.Desktop,
             Name = "监控桌面"
         };
         var virtualDesktop = new LibraryItem
         {
-            Id = Guid.Parse("70b9f1d5-0cb7-438f-b3c7-18f1489f4be6"),
+            Id = SystemLibraryIds.VirtualDesktop,
             Kind = LibraryItemKind.VirtualDesktop,
             Name = "虚拟桌面"
         };
@@ -121,6 +127,38 @@ public sealed class ApplicationLibraryTests
         Assert.AreEqual(1, apps.GetArrayLength());
         Assert.AreEqual("监控桌面", apps[0].GetProperty("name").GetString());
         Assert.IsFalse(apps[0].GetProperty("virtual-display").GetBoolean());
+    }
+
+    [TestMethod]
+    public async Task LegacyVirtualDesktopIdMigratesToApolloUuid()
+    {
+        var paths = new LigasePaths(_temporaryDirectory);
+        var legacyState = new LibraryState
+        {
+            Items =
+            [
+                new LibraryItem
+                {
+                    Id = Guid.Parse("70B9F1D5-0CB7-438F-B3C7-18F1489F4BE6"),
+                    Kind = LibraryItemKind.VirtualDesktop,
+                    Name = "虚拟桌面"
+                }
+            ]
+        };
+        await File.WriteAllTextAsync(
+            paths.LibraryFile,
+            JsonSerializer.Serialize(legacyState, new JsonSerializerOptions
+            {
+                PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+            }));
+
+        var reloaded = await new ApplicationLibrary(
+            paths,
+            new RecordingAppsWriter()).LoadAsync();
+
+        Assert.AreEqual(
+            SystemLibraryIds.VirtualDesktop,
+            reloaded.Items.Single(item => item.Kind == LibraryItemKind.VirtualDesktop).Id);
     }
 
     [TestMethod]

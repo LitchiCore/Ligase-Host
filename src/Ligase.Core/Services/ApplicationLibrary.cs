@@ -152,12 +152,12 @@ public sealed class ApplicationLibrary(
     {
         AddSystemEntryIfMissing(
             state,
-            Guid.Parse("78a25216-f239-45bd-b4aa-f41c814066e9"),
+            SystemLibraryIds.Desktop,
             LibraryItemKind.Desktop,
             "监控桌面");
         AddSystemEntryIfMissing(
             state,
-            Guid.Parse("70b9f1d5-0cb7-438f-b3c7-18f1489f4be6"),
+            SystemLibraryIds.VirtualDesktop,
             LibraryItemKind.VirtualDesktop,
             "虚拟桌面");
     }
@@ -168,7 +168,24 @@ public sealed class ApplicationLibrary(
         LibraryItemKind kind,
         string name)
     {
-        if (state.Items.Any(item => item.Kind == kind)) return;
+        var existingIndex = state.Items.FindIndex(item => item.Kind == kind);
+        if (existingIndex >= 0)
+        {
+            var existing = state.Items[existingIndex];
+            if (existing.Id == id) return;
+
+            state.Items[existingIndex] = new LibraryItem
+            {
+                Id = id,
+                Kind = kind,
+                Name = name,
+                AddedAt = existing.AddedAt,
+                UpdatedAt = existing.UpdatedAt,
+                LastPlayedAt = existing.LastPlayedAt
+            };
+            return;
+        }
+
         state.Items.Insert(0, new LibraryItem
         {
             Id = id,
