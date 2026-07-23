@@ -2,8 +2,12 @@
     x:Class="Ligase.Host.Desktop.Pages.GameLibraryPage"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:converters="using:Ligase.Host.Desktop.Converters"
     xmlns:models="using:Ligase.Host.Core.Models"
     NavigationCacheMode="Enabled">
+    <Page.Resources>
+        <converters:CoverPathToImageSourceConverter x:Key="CoverPathConverter" />
+    </Page.Resources>
     <Grid Margin="28,24,28,28" Background="{ThemeResource LigaseWindowBrush}">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
@@ -124,7 +128,7 @@
                                             Foreground="{ThemeResource LigaseAccentBrush}"
                                             Glyph="{x:Bind IconGlyph}" />
                                         <Image
-                                            Source="{x:Bind DisplayCoverPath}"
+                                            Source="{x:Bind DisplayCoverPath, Converter={StaticResource CoverPathConverter}}"
                                             Stretch="UniformToFill" />
                                     </Grid>
                                 </Border>
