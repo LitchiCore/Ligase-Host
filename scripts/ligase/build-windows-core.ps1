@@ -18,6 +18,7 @@ $downloads = Join-Path $BuildRoot "downloads"
 $msysContainer = Join-Path $BuildRoot "msys64-$($msysRelease.Replace('-', ''))"
 $msysRoot = Join-Path $msysContainer "msys64"
 $bash = Join-Path $msysRoot "usr\bin\bash.exe"
+$cmake = Join-Path $msysRoot "ucrt64\bin\cmake.exe"
 $nodeRoot = Join-Path $BuildRoot "node\node-$nodeVersion-win-x64"
 $nodeExe = Join-Path $nodeRoot "node.exe"
 
@@ -118,7 +119,7 @@ $nodePath = Convert-ToMsysPath $nodeRoot
 $env:BRANCH = $branch
 $env:BUILD_VERSION = $version
 $env:COMMIT = $commit
-$env:PATH = "$nodeRoot;C:\Windows\System32;C:\Windows"
+$env:PATH = "$nodeRoot;$(Join-Path $msysRoot 'ucrt64\bin');$(Join-Path $msysRoot 'usr\bin');C:\Windows\System32;C:\Windows"
 
 $configure = @"
 export PATH="/ucrt64/bin:/usr/bin:${nodePath}:`$PATH"
@@ -134,12 +135,12 @@ if ($LASTEXITCODE -ne 0) {
     throw "CMake configuration failed."
 }
 
-& $bash -lc "export PATH=`"/ucrt64/bin:/usr/bin:$nodePath`"; cmake --build `"$msysBuild`" --parallel $Parallel" | Out-Host
+& $cmake --build $buildDirectory --parallel $Parallel | Out-Host
 if ($LASTEXITCODE -ne 0) {
     throw "Core build failed."
 }
 
-& $bash -lc "export PATH=`"/ucrt64/bin:/usr/bin`"; cmake --install `"$msysBuild`" --prefix `"$msysDeploy`"" | Out-Host
+& $cmake --install $buildDirectory --prefix $deployDirectory | Out-Host
 if ($LASTEXITCODE -ne 0) {
     throw "Core installation failed."
 }
