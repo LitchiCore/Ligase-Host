@@ -12,6 +12,7 @@ namespace Ligase.Host.Desktop;
 public sealed partial class MainWindow : Window
 {
     private readonly ApolloInstanceManager _core;
+    private readonly ApolloCoreLocator _coreLocator;
     private readonly HostPreferencesService _preferences;
     private readonly WindowsTrayIconService _trayIcon;
     private readonly AppWindow _appWindow;
@@ -24,6 +25,7 @@ public sealed partial class MainWindow : Window
         SetTitleBar(AppTitleBar);
         var services = ((App)Application.Current).Services;
         _core = services.GetRequiredService<ApolloInstanceManager>();
+        _coreLocator = services.GetRequiredService<ApolloCoreLocator>();
         _preferences = services.GetRequiredService<HostPreferencesService>();
         _trayIcon = services.GetRequiredService<WindowsTrayIconService>();
         var windowHandle = WindowNative.GetWindowHandle(this);
@@ -115,10 +117,18 @@ public sealed partial class MainWindow : Window
         await ((App)Application.Current).ExitAsync();
     }
 
-    public void RefreshCoreStatus()
+    public async void RefreshCoreStatus()
     {
-        CoreStatusText.Text = _core.IsRunning
-            ? $"运行中 · 独立端口 {_core.BasePort}"
-            : _core.StartupError ?? $"核心已停止 · 独立端口 {_core.BasePort}";
+        try
+        {
+            var endpoint = await _coreLocator.ResolveAsync();
+            CoreStatusText.Text = _core.IsRunning
+                ? $"运行中 · 独立端口 {endpoint.BasePort}"
+                : $"已连接 {endpoint.HostName} · 端口 {endpoint.BasePort}";
+        }
+        catch (ApolloCoreUnavailableException)
+        {
+            CoreStatusText.Text = _core.StartupError ?? "核心未运行 · 可在概览页启动";
+        }
     }
 }
