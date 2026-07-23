@@ -14,6 +14,9 @@ It is not a WebView wrapper around Apollo's existing configuration site.
 - Artemis/TouchKit remains a separate Android client. Host/client capabilities
   are synchronized through the paired GameStream HTTPS channel; this repository
   does not modify the Android project.
+- Ligase Host does not locate or launch an existing system Apollo service. A
+  Ligase-owned core must be bundled beside the desktop executable or built in
+  this repository.
 
 ## Navigation
 
@@ -55,6 +58,15 @@ Paired Android clients use the GameStream HTTPS port for the versioned sync
 API. The desktop Devices page uses the loopback-only
 `GET /ligase/v1/devices` endpoint on the Ligase HTTP base port. See
 [`android-sync-contract.md`](android-sync-contract.md) for the wire format.
+The sync response also reports Apollo's runtime HDR encoding capability.
+Clients combine it with their own decoder/display capability; Ligase does not
+guess whether an individual game actually emits HDR content.
+
+Sync v1 is a required Ligase product capability. Clients must present a Host
+without it as incompatible instead of falling back to an applist-derived
+library. GameStream pair, discovery, launch, and media fields remain a transport
+ABI only; they are not compatibility promises for Apollo's configuration or
+Web UI product model.
 
 ## Devices page
 

@@ -912,6 +912,7 @@ namespace nvhttp {
     tree.put("root.MaxLumaPixelsHEVC", video::active_hevc_mode > 1 ? "1869449984" : "0");
     tree.put("root.LigaseSyncVersion", 1);
     tree.put("root.LigaseSyncPath", "/ligase/v1/sync");
+    tree.put("root.LigaseHdrEncodingSupported", video::active_hevc_mode == 3 ? 1 : 0);
 
     // Only include the MAC address for requests sent from paired clients over HTTPS.
     // For HTTP requests, use a placeholder MAC address that Moonlight knows to ignore.
@@ -1254,10 +1255,14 @@ namespace nvhttp {
 
     try {
       std::scoped_lock lock(ligase_sync_mutex);
+      auto sync = read_ligase_json(ligase_sync_path());
+      sync["capabilities"] = {
+        {"hdrEncodingSupported", video::active_hevc_mode == 3}
+      };
       send_ligase_json(
         response,
         SimpleWeb::StatusCode::success_ok,
-        read_ligase_json(ligase_sync_path())
+        sync
       );
     } catch (const std::exception &error) {
       send_ligase_json(

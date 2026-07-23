@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using Microsoft.Win32;
 
 namespace Ligase.Host.Core.Services;
 
@@ -43,7 +42,7 @@ public sealed class ApolloInstanceManager(
         {
             await InitializeAsync(cancellationToken);
             var executable = ExecutablePath
-                ?? throw new FileNotFoundException("Ligase 的 Apollo 核心尚未构建或安装。");
+                ?? throw new FileNotFoundException("Ligase 串流核心尚未随应用提供或从本仓库构建。");
 
             _process = Process.Start(new ProcessStartInfo
             {
@@ -78,34 +77,12 @@ public sealed class ApolloInstanceManager(
     private static string? FindBundledExecutable()
     {
         var baseDirectory = AppContext.BaseDirectory;
-        var candidates = new List<string>
+        var candidates = new[]
         {
             Path.Combine(baseDirectory, "Apollo", "sunshine.exe"),
             Path.Combine(baseDirectory, "sunshine.exe"),
             Path.GetFullPath(Path.Combine(baseDirectory, "..", "..", "..", "..", "..", "build", "sunshine.exe"))
         };
-        var serviceExecutable = FindInstalledServiceExecutable();
-        if (serviceExecutable is not null) candidates.Add(serviceExecutable);
         return candidates.FirstOrDefault(File.Exists);
-    }
-
-    private static string? FindInstalledServiceExecutable()
-    {
-        try
-        {
-            using var key = Registry.LocalMachine.OpenSubKey(
-                @"SYSTEM\CurrentControlSet\Services\ApolloService");
-            var rawPath = key?.GetValue("ImagePath") as string;
-            if (string.IsNullOrWhiteSpace(rawPath)) return null;
-            var servicePath = rawPath.Trim().Trim('"');
-            return Path.GetFullPath(Path.Combine(
-                Path.GetDirectoryName(servicePath)!,
-                "..",
-                "sunshine.exe"));
-        }
-        catch
-        {
-            return null;
-        }
     }
 }
