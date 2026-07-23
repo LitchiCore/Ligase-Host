@@ -745,9 +745,11 @@ of required cryptographic material only; it is not a second case schema.
 ```
 
 The file is UTF-8 without BOM, uses LF line endings, two-space indentation, one
-final LF, and the exact producer property/array order shown by the accepted
-schema. The published SHA-256 covers every file byte including the final LF.
-It is not JCS-reformatted before hashing.
+final LF, and the exact root property order
+`schemaVersion,draft,coverageManifest,cases`. The producer writes that order
+directly. The runner uses an order-preserving raw JSON parse and rejects any
+other root order before semantic validation. The published SHA-256 covers every
+file byte including the final LF. It is not JCS-reformatted before hashing.
 
 Every binary field, including raw invalid JSON and canonical UTF-8, uses
 unpadded base64url; there is no alternative hex representation. UUIDs are
@@ -758,15 +760,29 @@ exact inputs, and exact outputs.
 
 `coverageManifest` is the closed object
 `{"version":1,"requiredIds":[...]}`. `requiredIds` is non-empty, unique,
-canonical case IDs in unsigned UTF-8 ordinal order. The runner derives actual
-IDs only from `cases[].id` and rejects the file unless every case ID is unique,
-the cases use the same order, and the derived set exactly equals
-`requiredIds`; there is no second ID list or category-array source.
+canonical case IDs in unsigned UTF-8 ordinal order. Host tooling owns one
+manually reviewed static tuple in
+`tools/ligase/attended_pairing_required_case_ids.py`; it is not read from or
+computed from generated cases. The producer copies that tuple into the only
+portable output source, `coverageManifest.requiredIds`. Independently, the
+runner imports the same reviewed tuple, derives actual IDs only from
+`cases[].id`, and rejects the file unless the tuple, manifest, and actual case
+IDs are each unique, use the same unsigned UTF-8 ordinal order, and are exact
+set-and-sequence matches. Removing a case therefore cannot rewrite the expected
+coverage from the actual cases. Android audits the static tuple against the
+frozen contract coverage; Android runtime consumes only the fixture manifest.
 
-Every behavior case contains its schema-required closed `context`, `input`,
-`expectedHttp`, `expectedPostState`, and `expectedCleanupMetadata`. State cases
-add a deterministic `schedule`; every step has a named linearization action
-and exact expected state/generation.
+Every behavior case contains its schema-required closed `context`,
+`initialOwnerState`, `input`, `expectedHttp`, `expectedPostState`, and ordered
+`cleanupCheckpoints`. State cases add a deterministic `schedule`; every step
+has a named linearization action and exact expected state/generation. A
+behavior case has exactly two checkpoints: `afterStep=0` must deep-equal
+`initialOwnerState`, and `afterStep=1` is the final operation state. A race
+starts with the same required step-zero deep equality; every later checkpoint
+must reference an actual schedule step, be strictly increasing, and the final
+checkpoint must reference `schedule.length`. The runner validates a checkpoint
+immediately after executing that real step, so a synthetic step such as 64
+cannot satisfy cleanup.
 Invalid UTF-8 and duplicate-property cases are represented only by
 raw `input.body` base64url bytes, never by a parsed JSON object. Race cases declare an
 exact step schedule and winner rather than relying on thread timing. Cases
@@ -788,6 +804,142 @@ probe uses `statusProbeExpected` as a strict union: either
 204/non-204 body rule, or
 `{kind:"transportError",transportError:"timeout"|"connectionReset"|"tlsFailure"}`
 with no HTTP response fields.
+
+Android cancel cases have a required `initialOwnerState` immediately before
+DELETE and exactly four ordered schedule entries. They do not copy HTTP inputs
+or outputs from the case-level fields:
+
+1. step 1, `afterDelete`: Host DELETE has linearized; secret and poll owner
+   state is unchanged. The held operation is also unchanged except when the
+   paired CAS won before DELETE, in which case it is already `completed`.
+2. step 2, `afterPreProbeCleanup`: all owned secrets except bearer bytes are
+   cleared, polling is cancelled, and the held operation is cancelled or
+   completed according to the actual race; bearer bytes remain present solely
+   for the one-shot status probe.
+3. step 3, `afterStatusProbe`: the one-shot result/fault has arrived; bearer
+   bytes remain present until the result is classified. `probeFault` is exactly
+   one of `none`, `invalidBearer`, `terminalCacheEvicted`,
+   `unexpectedHttp410`, `unexpectedLiveStatus`, `timeout`,
+   `connectionReset`, or `tlsFailure`.
+4. step 4, `afterFinalCleanup`: bearer bytes are cleared and the coordinator is
+   finalized; no periodic poll or replay restarts.
+
+The step-3 fault and `statusProbeExpected` are cross-validated:
+`none`, `invalidBearer`, `terminalCacheEvicted`, `unexpectedHttp410`, and
+`unexpectedLiveStatus` require HTTP results; the three transport faults require
+the matching transport-error branch. Exactly two defensive cases use
+`hostConformance:"injectedProtocolViolation"`: `unexpectedHttp410` is HTTP 410,
+and `unexpectedLiveStatus` is HTTP 200 with state only `pending|approved`.
+Every other case is `conformant`. A conforming cached-expired probe returns HTTP
+200 with state `expired`, never 410. A conforming `none` probe must have the
+same terminal state and requestId as the step-3 Host snapshot; a terminal
+mismatch, unknown state, invalid requestId/expiresAt/failure, or any other
+contradiction is rejected rather than treated as an injected case. A 404 case
+starts from a valid live request, records
+DELETE's cancelled transition and generation increment, then explicitly evicts
+the terminal cache before probing. A 401 or transport fault leaves the Host
+snapshot cancelled at that incremented generation. A paired winner keeps the
+paired transition and reports the held operation as completed; DELETE is a
+no-op and never revokes the device.
+
+Owner state is a postcondition, not an assertion that a clear function was
+called. Secret fields `pin`, `bearerTokenBytes`, `privateKey`, `sharedSecret`,
+`pairingKey`, `nonce`, `plaintext`, and `fullCiphertext` use
+`present|cleared|notOwned`: `present` means the owner can still read/use the
+value, `cleared` means this case previously owned it and performed best-effort
+clear, and `notOwned` means this case/owner never owned it. `poll` and
+`heldOperation` use `active|cancelled|completed|notOwned`. Secrets may only
+transition `present -> cleared`; `cleared` and `notOwned` are absorbing.
+Operations may only transition `active -> cancelled|completed`; terminal
+operation states and `notOwned` are absorbing. The runner maintains this typed
+owner state and validates every checkpoint; never-owned material may not be
+reported as cleared.
+
+For Android cancel, the initial bearer is `present`, poll is `active`, and held
+operation is a context-valid `active|completed|notOwned`. At
+`afterPreProbeCleanup`, bearer stays `present`; each other initially-present
+secret is `cleared`, each already-cleared secret stays `cleared`, each
+initially-not-owned secret stays `notOwned`, poll is `cancelled`, and held
+operation is `completed` for a paired winner,
+`cancelled` for other active work, or remains `notOwned`. The status-probe
+checkpoint deep-equals this owner state. Final cleanup changes only bearer from
+`present` to `cleared`; poll and held operation are already terminal.
+
+The one-shot probe derives Android outcome mechanically, independently of the
+declared Host post-state. A strict HTTP 200 status body maps `paired`,
+`cancelled`, `rejected`, `expired`, and `failed` to the same outcome;
+`pending|approved` maps to `protocolError`. HTTP 401/404/410 and the three
+transport failures map to `unknown`. Any other HTTP status or fixed-shape
+failure maps to `protocolError`. A paired 200 requires held operation
+`completed` and never revokes the committed device.
+
+The runner owns a hand-written HTTP error matrix, not one inferred from fixture
+bodies: 400 permits `invalidRequest|invalidEnvelope`; 401
+`invalidRequestToken`; 404 `requestNotFound`; 409
+`requestIdConflict|clientCertificateBusy|invalidState|nonceReuse|envelopeConflict`;
+410 `requestExpired`; 415 `unsupportedMediaType`; 429 `rateLimited`; and 503
+`pairingUnavailable`. `currentState` is required only for `invalidState`.
+`invalidRequest` detail is exactly
+`invalidJson|duplicateField|unknownField|missingField|invalidType|invalidValue|unexpectedBody`;
+the five schema/value details require `path`, while `invalidJson` and
+`unexpectedBody` forbid it. `invalidEnvelope` detail is
+`authenticationFailed|invalidPlaintext`. `unsupportedMediaType` has no detail
+except `contentEncodingNotSupported`; `invalidState` optionally has only
+`notReadyForApproval`. All other codes forbid detail/path/currentState. The
+runner also requires canonical compact JSON, exact field sets, the fixed JSON
+Content-Type, and no trailing bytes.
+
+Snapshot invariants are equally mechanical. Any pending-ready or approved
+snapshot/post-state has an accepted envelope, held getservercert/pair,
+certificate fingerprint match, and exactly one ready event. Paired retains
+ready truth, accepted-envelope and certificate binding evidence, exactly one
+ready event, committed device state, and no full ciphertext, but the held
+getservercert operation has completed and is no longer held. Other terminal
+states may retain historical ready truth only when the accepted envelope,
+certificate binding, and ready event evidence remain consistent; they are
+never projected as actionable approval items.
+
+Every closed `context` and `postState` also carries required
+`statusExpiresAt` and `failure` authority. A present/existing request outside
+`empty|evicted` has a real Gregorian UTC second in exact
+`YYYY-MM-DDTHH:MM:SSZ` form; an absent/empty/evicted request uses `""`.
+Validation first checks the exact shape, then performs strict calendar parsing
+and byte-for-byte round-trip. Fractions, offsets, invalid dates, or invalid
+times are rejected. `failure` is null except in `failed`, where it is exactly
+one of `certificateMismatch|pairSessionMissing|cryptoFailure|legacyPairingFailed`.
+Existing requests retain `statusExpiresAt`; only a successful new create may
+produce it from an empty context. Failure may change from null to a frozen
+reason only on the first transition to failed, and an existing failed reason
+does not change.
+
+All single-request 2xx status bodies are compared to Host authority:
+`requestId` equals the context/target canonical ID, while `state`,
+`expiresAt`, and `failure` equal the expected post-state. Pure status does not
+mutate these fields. Create success uses the input request ID and the new
+post-state expiry. Loopback list has no single context; each item is validated
+independently for canonical ID, pending/approved state, real UTC expiry, fixed
+shape, and ordering. `unexpectedLiveStatus` is the sole 200 exception for
+`state`: its body may say pending/approved while the Host post remains the
+actual terminal, but request ID and expiry still match and failure obeys the
+body-state null rule.
+
+Race steps use the following closed actor/action/phase pairs:
+
+- `publicClient/cancel/underLock`
+- `loopbackUi/allow/underLock`
+- `loopbackUi/reject/underLock`
+- `nvhttpAdapter/bindHeldGetservercert/underLock`
+- `nvhttpAdapter/commitPaired/underLock`
+- `coordinator/materializeExpiry/underLock`
+- `coordinator/transportFailure/underLock`
+
+Both schema and runner reject any cross-pairing; in particular,
+`loopbackUi/cancel` and `loopbackUi/commitPaired` are invalid.
+
+The coverage authority includes separate loopback-list cases for different
+`createdAt` values with request IDs in the opposite lexical order and for equal
+`createdAt` request-ID tie-breaking. Android cancel contains distinct
+`timeout`, `connectionReset`, and `tlsFailure` transport cases.
 
 Every HTTP/race context is a closed, inline coordinator snapshot. Behavior and
 race cases never resolve fixture, source, token, nonce, or hash references from

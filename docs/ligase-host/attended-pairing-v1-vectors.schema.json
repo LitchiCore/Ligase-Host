@@ -238,6 +238,7 @@
         "nowMonotonicMs", "deadlineMonotonicMs", "terminalCacheEvictsAtMs",
         "rateWindowStartMs", "rateCount", "rateLimit", "liveFingerprintBusy",
         "requestPresent", "requestId", "state", "readyForApproval", "generation",
+        "statusExpiresAt", "failure",
         "canonicalCreateJcsBase64url", "incomingSource", "storedExactSource",
         "incomingBearerBase64url", "storedTokenHashBase64url", "tokenBytesPresent",
         "replayNonceBase64url", "replayCanonicalEnvelopeHashBase64url",
@@ -257,6 +258,14 @@
         "state": {"$ref": "#/$defs/state"},
         "readyForApproval": {"type": "boolean"},
         "generation": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+        "statusExpiresAt": {
+          "type": "string",
+          "pattern": "^$|^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+        },
+        "failure": {
+          "type": ["string", "null"],
+          "enum": [null, "certificateMismatch", "pairSessionMissing", "cryptoFailure", "legacyPairingFailed"]
+        },
         "canonicalCreateJcsBase64url": {"$ref": "#/$defs/b64"},
         "incomingSource": {"$ref": "#/$defs/source"},
         "storedExactSource": {"$ref": "#/$defs/sourceSlot"},
@@ -278,6 +287,7 @@
       "additionalProperties": false,
       "required": [
         "requestExists", "state", "readyForApproval", "generation", "heldPair",
+        "statusExpiresAt", "failure",
         "tokenBytesPresent", "tokenHashPresent", "sourceVerifierPresent",
         "envelopeStorage", "validatedEnvelope", "certificateFingerprintMatched",
         "domainEventCount", "pairedDeviceCommitted"
@@ -287,6 +297,14 @@
         "state": {"$ref": "#/$defs/state"},
         "readyForApproval": {"type": "boolean"},
         "generation": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+        "statusExpiresAt": {
+          "type": "string",
+          "pattern": "^$|^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+        },
+        "failure": {
+          "type": ["string", "null"],
+          "enum": [null, "certificateMismatch", "pairSessionMissing", "cryptoFailure", "legacyPairingFailed"]
+        },
         "heldPair": {"type": "boolean"},
         "tokenBytesPresent": {"type": "boolean"},
         "tokenHashPresent": {"type": "boolean"},
@@ -298,25 +316,68 @@
         "pairedDeviceCommitted": {"type": "boolean"}
       }
     },
-    "cleanup": {
+    "ownerState": {
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "pinCleared", "bearerTokenBytesCleared", "privateKeyCleared",
-        "sharedSecretCleared", "pairingKeyCleared", "plaintextCleared",
-        "fullCiphertextCleared", "pollCancelled", "heldOperationCancelled"
+        "pin", "bearerTokenBytes", "privateKey", "sharedSecret",
+        "pairingKey", "nonce", "plaintext", "fullCiphertext",
+        "poll", "heldOperation"
       ],
       "properties": {
-        "pinCleared": {"type": "boolean"},
-        "bearerTokenBytesCleared": {"type": "boolean"},
-        "privateKeyCleared": {"type": "boolean"},
-        "sharedSecretCleared": {"type": "boolean"},
-        "pairingKeyCleared": {"type": "boolean"},
-        "plaintextCleared": {"type": "boolean"},
-        "fullCiphertextCleared": {"type": "boolean"},
-        "pollCancelled": {"type": "boolean"},
-        "heldOperationCancelled": {"type": "boolean"}
+        "pin": {"$ref": "#/$defs/secretOwnerState"},
+        "bearerTokenBytes": {"$ref": "#/$defs/secretOwnerState"},
+        "privateKey": {"$ref": "#/$defs/secretOwnerState"},
+        "sharedSecret": {"$ref": "#/$defs/secretOwnerState"},
+        "pairingKey": {"$ref": "#/$defs/secretOwnerState"},
+        "nonce": {"$ref": "#/$defs/secretOwnerState"},
+        "plaintext": {"$ref": "#/$defs/secretOwnerState"},
+        "fullCiphertext": {"$ref": "#/$defs/secretOwnerState"},
+        "poll": {"$ref": "#/$defs/operationOwnerState"},
+        "heldOperation": {"$ref": "#/$defs/operationOwnerState"}
       }
+    },
+    "secretOwnerState": {"enum": ["present", "cleared", "notOwned"]},
+    "operationOwnerState": {"enum": ["active", "cancelled", "completed", "notOwned"]},
+    "cleanupCheckpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["afterStep", "expectedOwnerState"],
+      "properties": {
+        "afterStep": {"type": "integer", "minimum": 0, "maximum": 64},
+        "expectedOwnerState": {"$ref": "#/$defs/ownerState"}
+      }
+    },
+    "cleanupCheckpoints": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/cleanupCheckpoint"}
+    },
+    "behaviorCleanupCheckpoints": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "prefixItems": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["afterStep", "expectedOwnerState"],
+          "properties": {
+            "afterStep": {"const": 0},
+            "expectedOwnerState": {"$ref": "#/$defs/ownerState"}
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["afterStep", "expectedOwnerState"],
+          "properties": {
+            "afterStep": {"const": 1},
+            "expectedOwnerState": {"$ref": "#/$defs/ownerState"}
+          }
+        }
+      ],
+      "items": false
     },
     "expectedHttp": {
       "type": "object",
@@ -339,16 +400,17 @@
     "behavior": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "operation", "validationRules", "context", "input", "expectedHttp", "expectedPostState", "expectedCleanupMetadata"],
+      "required": ["id", "operation", "validationRules", "context", "initialOwnerState", "input", "expectedHttp", "expectedPostState", "cleanupCheckpoints"],
       "properties": {
         "id": {"$ref": "#/$defs/id"},
         "operation": {"enum": ["create", "envelope", "status", "cancel", "loopbackList", "loopbackAllow", "loopbackReject"]},
         "validationRules": {"type": "array", "items": {"$ref": "#/$defs/rule"}, "uniqueItems": true},
         "context": {"$ref": "#/$defs/context"},
+        "initialOwnerState": {"$ref": "#/$defs/ownerState"},
         "input": {"$ref": "#/$defs/http"},
         "expectedHttp": {"$ref": "#/$defs/expectedHttp"},
         "expectedPostState": {"$ref": "#/$defs/postState"},
-        "expectedCleanupMetadata": {"$ref": "#/$defs/cleanup"}
+        "cleanupCheckpoints": {"$ref": "#/$defs/behaviorCleanupCheckpoints"}
       }
     },
     "create": {"allOf": [{"$ref": "#/$defs/behavior"}, {"type": "object", "properties": {"operation": {"const": "create"}, "validationRules": {"$ref": "#/$defs/createRules"}}}]},
@@ -438,33 +500,131 @@
       }
     },
     "raceStep": {
-      "type": "object", "additionalProperties": false,
+      "oneOf": [
+        {"$ref": "#/$defs/raceStepPublicCancel"},
+        {"$ref": "#/$defs/raceStepLoopbackAllow"},
+        {"$ref": "#/$defs/raceStepLoopbackReject"},
+        {"$ref": "#/$defs/raceStepBindHeld"},
+        {"$ref": "#/$defs/raceStepCommitPaired"},
+        {"$ref": "#/$defs/raceStepExpiry"},
+        {"$ref": "#/$defs/raceStepTransportFailure"}
+      ]
+    },
+    "raceStepBase": {
+      "type": "object",
+      "additionalProperties": false,
       "required": ["step", "actor", "action", "phase", "input", "expectedPostState"],
       "properties": {
         "step": {"type": "integer", "minimum": 1, "maximum": 64},
-        "actor": {"enum": ["publicClient", "loopbackUi", "nvhttpAdapter", "coordinator", "androidCoordinator"]},
-        "action": {"enum": ["create", "uploadEnvelope", "bindHeldGetservercert", "allow", "reject", "cancel", "commitPaired", "materializeExpiry", "androidDelete", "androidStatusProbe", "transportFailure"]},
-        "phase": {"enum": ["beforeLock", "underLock", "afterCommit", "afterResponse"]},
+        "actor": {"type": "string"},
+        "action": {"type": "string"},
+        "phase": {"type": "string"},
         "input": {"$ref": "#/$defs/http"},
         "expectedPostState": {"$ref": "#/$defs/postState"}
       }
     },
+    "raceStepPublicCancel": {
+      "allOf": [
+        {"$ref": "#/$defs/raceStepBase"},
+        {"type": "object", "properties": {"actor": {"const": "publicClient"}, "action": {"const": "cancel"}, "phase": {"const": "underLock"}}}
+      ]
+    },
+    "raceStepLoopbackAllow": {
+      "allOf": [
+        {"$ref": "#/$defs/raceStepBase"},
+        {"type": "object", "properties": {"actor": {"const": "loopbackUi"}, "action": {"const": "allow"}, "phase": {"const": "underLock"}}}
+      ]
+    },
+    "raceStepLoopbackReject": {
+      "allOf": [
+        {"$ref": "#/$defs/raceStepBase"},
+        {"type": "object", "properties": {"actor": {"const": "loopbackUi"}, "action": {"const": "reject"}, "phase": {"const": "underLock"}}}
+      ]
+    },
+    "raceStepBindHeld": {
+      "allOf": [
+        {"$ref": "#/$defs/raceStepBase"},
+        {"type": "object", "properties": {"actor": {"const": "nvhttpAdapter"}, "action": {"const": "bindHeldGetservercert"}, "phase": {"const": "underLock"}}}
+      ]
+    },
+    "raceStepCommitPaired": {
+      "allOf": [
+        {"$ref": "#/$defs/raceStepBase"},
+        {"type": "object", "properties": {"actor": {"const": "nvhttpAdapter"}, "action": {"const": "commitPaired"}, "phase": {"const": "underLock"}}}
+      ]
+    },
+    "raceStepExpiry": {
+      "allOf": [
+        {"$ref": "#/$defs/raceStepBase"},
+        {"type": "object", "properties": {"actor": {"const": "coordinator"}, "action": {"const": "materializeExpiry"}, "phase": {"const": "underLock"}}}
+      ]
+    },
+    "raceStepTransportFailure": {
+      "allOf": [
+        {"$ref": "#/$defs/raceStepBase"},
+        {"type": "object", "properties": {"actor": {"const": "coordinator"}, "action": {"const": "transportFailure"}, "phase": {"const": "underLock"}}}
+      ]
+    },
     "race": {
       "type": "object", "additionalProperties": false,
-      "required": ["id", "operation", "validationRules", "context", "schedule", "expectedPostState", "expectedCleanupMetadata"],
+      "required": ["id", "operation", "validationRules", "context", "initialOwnerState", "schedule", "expectedPostState", "cleanupCheckpoints"],
       "properties": {
         "id": {"$ref": "#/$defs/id"}, "operation": {"const": "race"},
         "validationRules": {"$ref": "#/$defs/raceRules"}, "context": {"$ref": "#/$defs/context"},
+        "initialOwnerState": {"$ref": "#/$defs/ownerState"},
         "schedule": {"type": "array", "minItems": 2, "items": {"$ref": "#/$defs/raceStep"}},
-        "expectedPostState": {"$ref": "#/$defs/postState"}, "expectedCleanupMetadata": {"$ref": "#/$defs/cleanup"}
+        "expectedPostState": {"$ref": "#/$defs/postState"},
+        "cleanupCheckpoints": {"$ref": "#/$defs/cleanupCheckpoints"}
       }
+    },
+    "androidCancelStepCommon": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["step", "phase", "expectedPostState", "expectedOwnerState"],
+      "properties": {
+        "step": {"type": "integer", "minimum": 1, "maximum": 4},
+        "phase": {"type": "string"},
+        "expectedPostState": {"$ref": "#/$defs/postState"},
+        "expectedOwnerState": {"$ref": "#/$defs/ownerState"}
+      }
+    },
+    "androidCancelStep1": {
+      "allOf": [
+        {"$ref": "#/$defs/androidCancelStepCommon"},
+        {"type": "object", "properties": {"step": {"const": 1}, "phase": {"const": "afterDelete"}}}
+      ]
+    },
+    "androidCancelStep2": {
+      "allOf": [
+        {"$ref": "#/$defs/androidCancelStepCommon"},
+        {"type": "object", "properties": {"step": {"const": 2}, "phase": {"const": "afterPreProbeCleanup"}}}
+      ]
+    },
+    "androidCancelStep3": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["step", "phase", "probeFault", "expectedPostState", "expectedOwnerState"],
+      "properties": {
+        "step": {"const": 3},
+        "phase": {"const": "afterStatusProbe"},
+        "probeFault": {"enum": ["none", "invalidBearer", "terminalCacheEvicted", "unexpectedHttp410", "unexpectedLiveStatus", "timeout", "connectionReset", "tlsFailure"]},
+        "expectedPostState": {"$ref": "#/$defs/postState"},
+        "expectedOwnerState": {"$ref": "#/$defs/ownerState"}
+      }
+    },
+    "androidCancelStep4": {
+      "allOf": [
+        {"$ref": "#/$defs/androidCancelStepCommon"},
+        {"type": "object", "properties": {"step": {"const": 4}, "phase": {"const": "afterFinalCleanup"}}}
+      ]
     },
     "androidCancel": {
       "type": "object", "additionalProperties": false,
-      "required": ["id", "operation", "validationRules", "context", "deleteInput", "deleteExpectedHttp", "statusProbeInput", "statusProbeExpected", "expectedAndroidOutcome", "expectedPostState", "expectedCleanupMetadata"],
+      "required": ["id", "operation", "validationRules", "context", "initialOwnerState", "deleteInput", "deleteExpectedHttp", "statusProbeInput", "statusProbeExpected", "hostConformance", "schedule", "expectedAndroidOutcome", "expectedPostState"],
       "properties": {
         "id": {"$ref": "#/$defs/id"}, "operation": {"const": "androidCancel"},
         "validationRules": {"$ref": "#/$defs/raceRules"}, "context": {"$ref": "#/$defs/context"},
+        "initialOwnerState": {"$ref": "#/$defs/ownerState"},
         "deleteInput": {"$ref": "#/$defs/http"}, "deleteExpectedHttp": {"$ref": "#/$defs/expectedHttp"},
         "statusProbeInput": {"$ref": "#/$defs/http"},
         "statusProbeExpected": {
@@ -499,9 +659,69 @@
             }
           ]
         },
+        "hostConformance": {"enum": ["conformant", "injectedProtocolViolation"]},
+        "schedule": {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "prefixItems": [
+            {"$ref": "#/$defs/androidCancelStep1"},
+            {"$ref": "#/$defs/androidCancelStep2"},
+            {"$ref": "#/$defs/androidCancelStep3"},
+            {"$ref": "#/$defs/androidCancelStep4"}
+          ],
+          "items": false
+        },
         "expectedAndroidOutcome": {"enum": ["cancelled", "rejected", "expired", "failed", "paired", "protocolError", "unknown"]},
-        "expectedPostState": {"$ref": "#/$defs/postState"}, "expectedCleanupMetadata": {"$ref": "#/$defs/cleanup"}
-      }
+        "expectedPostState": {"$ref": "#/$defs/postState"}
+      },
+      "allOf": [
+        {
+          "if": {
+            "type": "object",
+            "properties": {"hostConformance": {"const": "injectedProtocolViolation"}},
+            "required": ["hostConformance"]
+          },
+          "then": {
+            "type": "object",
+            "properties": {
+              "schedule": {
+                "type": "array",
+                "contains": {
+                  "type": "object",
+                  "properties": {
+                    "step": {"const": 3},
+                    "probeFault": {"enum": ["unexpectedHttp410", "unexpectedLiveStatus"]}
+                  },
+                  "required": ["step", "probeFault"]
+                },
+                "minContains": 1,
+                "maxContains": 1
+              }
+            }
+          },
+          "else": {
+            "type": "object",
+            "properties": {
+              "schedule": {
+                "type": "array",
+                "contains": {
+                  "type": "object",
+                  "properties": {
+                    "step": {"const": 3},
+                    "probeFault": {
+                      "not": {"enum": ["unexpectedHttp410", "unexpectedLiveStatus"]}
+                    }
+                  },
+                  "required": ["step", "probeFault"]
+                },
+                "minContains": 1,
+                "maxContains": 1
+              }
+            }
+          }
+        }
+      ]
     }
   }
 }
