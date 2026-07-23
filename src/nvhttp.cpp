@@ -1528,6 +1528,33 @@ namespace nvhttp {
     );
   }
 
+  void ligase_cancel_session_local(resp_http_t response, req_http_t request) {
+    print_req<SimpleWeb::HTTP>(request);
+    if (!request->remote_endpoint().address().is_loopback()) {
+      send_ligase_json(
+        response,
+        SimpleWeb::StatusCode::client_error_forbidden,
+        {{"error", "loopbackOnly"}}
+      );
+      return;
+    }
+
+    const auto was_running = proc::proc.running() > 0;
+    rtsp_stream::terminate_sessions();
+    if (was_running) {
+      proc::proc.terminate();
+    }
+    display_device::revert_configuration();
+    send_ligase_json(
+      response,
+      SimpleWeb::StatusCode::success_ok,
+      {
+        {"cancelled", was_running},
+        {"sessionState", "free"}
+      }
+    );
+  }
+
   void applist(resp_https_t response, req_https_t request) {
     print_req<SunshineHTTPS>(request);
 
@@ -2213,6 +2240,7 @@ namespace nvhttp {
     http_server.resource["^/serverinfo$"]["GET"] = serverinfo<SimpleWeb::HTTP>;
     http_server.resource["^/pair$"]["GET"] = pair<SimpleWeb::HTTP>;
     http_server.resource["^/ligase/v1/devices$"]["GET"] = ligase_devices_local;
+    http_server.resource["^/ligase/v1/session/cancel$"]["POST"] = ligase_cancel_session_local;
 
     http_server.config.reuse_address = true;
     http_server.config.address = net::af_to_any_address_string(address_family);

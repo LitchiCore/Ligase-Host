@@ -3,7 +3,9 @@ using Ligase.Host.Core.Services;
 
 namespace Ligase.Host.Desktop.ViewModels;
 
-public partial class StreamMonitorViewModel(ApolloInstanceManager core) : ObservableObject
+public partial class StreamMonitorViewModel(
+    ApolloInstanceManager core,
+    ApolloSessionService sessions) : ObservableObject
 {
     [ObservableProperty]
     private string _coreStatus = "正在读取核心状态";
@@ -22,6 +24,37 @@ public partial class StreamMonitorViewModel(ApolloInstanceManager core) : Observ
 
     [ObservableProperty]
     private bool _isPreviewActive;
+
+    [ObservableProperty]
+    private bool _isEndingStream;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasSessionMessage))]
+    private string? _sessionMessage;
+
+    public bool HasSessionMessage => !string.IsNullOrWhiteSpace(SessionMessage);
+
+    public async Task EndStreamAsync(CancellationToken cancellationToken = default)
+    {
+        if (IsEndingStream) return;
+        IsEndingStream = true;
+        SessionMessage = null;
+        try
+        {
+            var result = await sessions.CancelAsync(cancellationToken);
+            SessionMessage = result.Cancelled
+                ? "串流已结束，设备现在可以重新连接。"
+                : "当前没有正在进行的串流。";
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            SessionMessage = exception.Message;
+        }
+        finally
+        {
+            IsEndingStream = false;
+        }
+    }
 
     public void RefreshCoreStatus()
     {

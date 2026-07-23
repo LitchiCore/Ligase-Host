@@ -47,6 +47,11 @@ persistent library sorting, physical/virtual desktop entries, per-application
 resolution settings, an isolated Apollo process, a read-only Devices page, and
 a low-frame-rate desktop monitor.
 
+The Stream Monitor page provides an explicit **End stream** action. It requires
+confirmation, disconnects the active session without deleting pairing or
+library data, and reports that no session is active when repeated. The desktop
+calls a loopback-only Ligase core route; remote callers cannot use this control.
+
 ## Runtime data
 
 All Ligase-owned files live below `%LOCALAPPDATA%\Ligase Host`:

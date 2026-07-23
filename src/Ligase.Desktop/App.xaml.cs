@@ -33,6 +33,7 @@ public partial class App : Application
                 services.AddSingleton<LigaseSyncDocumentWriter>();
                 services.AddSingleton<StreamingSettingsService>();
                 services.AddSingleton<ApolloDeviceService>();
+                services.AddSingleton<ApolloSessionService>();
                 services.AddSingleton<IDesktopPreviewService, GdiDesktopPreviewService>();
                 services.AddSingleton<SingleInstanceService>();
                 services.AddSingleton<WindowsTrayIconService>();

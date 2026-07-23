@@ -64,6 +64,21 @@ public sealed partial class StreamMonitorPage : Page
         }
     }
 
+    private async void OnEndStream(object sender, RoutedEventArgs e)
+    {
+        var dialog = new ContentDialog
+        {
+            XamlRoot = XamlRoot,
+            Title = "结束当前串流？",
+            Content = "正在连接的设备会断开，但游戏库和配对不会被删除。",
+            PrimaryButtonText = "结束串流",
+            CloseButtonText = "取消",
+            DefaultButton = ContentDialogButton.Close
+        };
+        if (await dialog.ShowAsync() == ContentDialogResult.Primary)
+            await ViewModel.EndStreamAsync();
+    }
+
     private void StartPreview()
     {
         if (_timer.IsEnabled) return;
