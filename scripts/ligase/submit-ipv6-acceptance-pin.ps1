@@ -43,12 +43,34 @@ if (-not $process) {
     throw "Acceptance core is not running."
 }
 
-$securePassword = Get-Content -Raw -LiteralPath $secretFile | ConvertTo-SecureString
+$protectedPassword = (Get-Content -Raw -LiteralPath $secretFile).Trim()
+$securePassword = $protectedPassword | ConvertTo-SecureString
 $credential = [System.Net.NetworkCredential]::new($metadata.managementUsername, $securePassword)
 $expectedPort = [int]$metadata.basePort + 1
 try {
-    $payload = @{ pin = $Pin; name = $DeviceName } | ConvertTo-Json -Compress
     $password = $credential.Password
+    $loginPayload = @{
+        username = $metadata.managementUsername
+        password = $password
+    } | ConvertTo-Json -Compress
+    $escapedLoginPayload = $loginPayload.Replace('"', '\"')
+    $loginConfiguration = @"
+url = "https://localhost:$expectedPort/api/login"
+insecure
+silent
+show-error
+fail-with-body
+include
+header = "Content-Type: application/json"
+data = "$escapedLoginPayload"
+"@
+    $loginResponse = Invoke-LoopbackCurlConfig -Configuration $loginConfiguration
+    $authCookie = [regex]::Match($loginResponse, 'Set-Cookie:\s*auth=([^;]+)').Groups[1].Value
+    if ([string]::IsNullOrWhiteSpace($authCookie)) {
+        throw "Acceptance management login did not return an auth cookie."
+    }
+
+    $payload = @{ pin = $Pin; name = $DeviceName } | ConvertTo-Json -Compress
     $escapedPayload = $payload.Replace('"', '\"')
     $curlConfiguration = @"
 url = "https://localhost:$expectedPort/api/pin"
@@ -57,7 +79,7 @@ silent
 show-error
 fail-with-body
 header = "Content-Type: application/json"
-user = "$($metadata.managementUsername):$password"
+cookie = "auth=$authCookie"
 data = "$escapedPayload"
 "@
     $result = Invoke-LoopbackCurlConfig -Configuration $curlConfiguration | ConvertFrom-Json
@@ -73,8 +95,14 @@ finally {
     $Pin = $null
     $payload = $null
     $password = $null
+    $loginPayload = $null
+    $escapedLoginPayload = $null
+    $loginConfiguration = $null
+    $loginResponse = $null
+    $authCookie = $null
     $escapedPayload = $null
     $curlConfiguration = $null
     $credential = $null
     $securePassword = $null
+    $protectedPassword = $null
 }
