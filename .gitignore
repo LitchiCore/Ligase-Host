@@ -39,6 +39,7 @@
 
 # build directories
 build/
+build-ligase/
 cmake-*/
 docs/doxyconfig*
 

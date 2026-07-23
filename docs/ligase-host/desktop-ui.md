@@ -3,6 +3,18 @@
 Ligase Host is a native Windows control surface for Apollo's C++ streaming core.
 It is not a WebView wrapper around Apollo's existing configuration site.
 
+## First-use product path
+
+The default experience exposes only four user goals: start the Host, add a
+game, see a device, and start streaming. Port allocation, certificates,
+application manifests, Sync revisions, encoder probing, and resolution
+inheritance are automatic and absent from first use. Diagnostics use
+progressive disclosure under advanced settings.
+
+Each page emphasizes one primary action. Error text must explain both what
+happened and what the user can do now, and should offer retry, re-pair, or
+automatic repair instead of exposing HTTP status codes or exception text.
+
 ## Product boundary
 
 - `Ligase.Host.Desktop` owns setup, discovery, day-to-day host status, devices,
