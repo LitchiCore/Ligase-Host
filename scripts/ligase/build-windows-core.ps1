@@ -124,6 +124,7 @@ $configure = @"
 export PATH="/ucrt64/bin:/usr/bin:${nodePath}:`$PATH"
 cmake -S "$msysSource" -B "$msysBuild" -G Ninja \
   -DCMAKE_BUILD_TYPE=Release \
+  -DNPM="$nodePath/npm.cmd" \
   -DSUNSHINE_PUBLISHER_NAME=LitchiCore \
   -DSUNSHINE_PUBLISHER_WEBSITE=https://github.com/LitchiCore/Ligase-Host \
   -DSUNSHINE_PUBLISHER_ISSUE_URL=https://github.com/LitchiCore/Ligase-Host/issues
