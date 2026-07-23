@@ -26,3 +26,26 @@ INSTANTIATE_TEST_SUITE_P(
     std::make_tuple(std::string(128, 'a'), std::string(63, 'a'))
   )
 );
+
+TEST(NetworkAddressFamilyTest, ParsesConfiguredListenerMode) {
+  EXPECT_EQ(net::af_from_enum_string("ipv4"), net::af_e::IPV4);
+  EXPECT_EQ(net::af_from_enum_string("both"), net::af_e::BOTH);
+  EXPECT_EQ(net::af_from_enum_string("unexpected"), net::af_e::BOTH);
+  EXPECT_EQ(net::af_to_any_address_string(net::af_e::IPV4), "0.0.0.0");
+  EXPECT_EQ(net::af_to_any_address_string(net::af_e::BOTH), "::");
+}
+
+TEST(NetworkAddressFormattingTest, BracketsIpv6UriAuthorities) {
+  EXPECT_EQ(
+    net::addr_to_url_escaped_string(boost::asio::ip::make_address("192.0.2.10")),
+    "192.0.2.10"
+  );
+  EXPECT_EQ(
+    net::addr_to_url_escaped_string(boost::asio::ip::make_address("2001:db8::1")),
+    "[2001:db8::1]"
+  );
+  EXPECT_EQ(
+    net::addr_to_url_escaped_string(boost::asio::ip::make_address("::1")),
+    "[::1]"
+  );
+}

@@ -27,16 +27,25 @@ public sealed class ApolloPortAllocator
     {
         try
         {
-            using var tcp = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp)
+            var family = Socket.OSSupportsIPv6
+                ? AddressFamily.InterNetworkV6
+                : AddressFamily.InterNetwork;
+            var anyAddress = Socket.OSSupportsIPv6 ? IPAddress.IPv6Any : IPAddress.Any;
+            using var tcp = new Socket(family, SocketType.Stream, ProtocolType.Tcp)
             {
                 ExclusiveAddressUse = true
             };
-            using var udp = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp)
+            using var udp = new Socket(family, SocketType.Dgram, ProtocolType.Udp)
             {
                 ExclusiveAddressUse = true
             };
-            tcp.Bind(new IPEndPoint(IPAddress.Any, port));
-            udp.Bind(new IPEndPoint(IPAddress.Any, port));
+            if (Socket.OSSupportsIPv6)
+            {
+                tcp.DualMode = true;
+                udp.DualMode = true;
+            }
+            tcp.Bind(new IPEndPoint(anyAddress, port));
+            udp.Bind(new IPEndPoint(anyAddress, port));
             return true;
         }
         catch (SocketException)

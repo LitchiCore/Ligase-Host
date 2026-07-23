@@ -13,7 +13,7 @@ public sealed class ApolloSessionService(ApolloCoreLocator coreLocator)
     {
         var core = await coreLocator.ResolveAsync(cancellationToken);
         using var response = await _client.PostAsync(
-            $"http://127.0.0.1:{core.BasePort}/ligase/v1/session/cancel",
+            core.Endpoint.BuildUri("/ligase/v1/session/cancel"),
             content: null,
             cancellationToken);
         if (response.StatusCode == System.Net.HttpStatusCode.NotFound)

@@ -24,6 +24,7 @@ public sealed class ApolloInstanceManager(
         var configuration = string.Join(Environment.NewLine,
             "sunshine_name = Ligase Host",
             $"port = {BasePort}",
+            "address_family = both",
             "upnp = disabled",
             "origin_web_ui_allowed = pc",
             $"file_apps = {paths.ApolloAppsFile}",

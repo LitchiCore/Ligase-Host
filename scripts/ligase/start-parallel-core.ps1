@@ -35,7 +35,7 @@ if ($occupied) {
 New-Item -ItemType Directory -Force -Path $configDirectory | Out-Null
 $configuration = @"
 port = $BasePort
-address_family = ipv4
+address_family = both
 upnp = disabled
 system_tray = disabled
 enable_discovery = disabled

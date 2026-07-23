@@ -22,7 +22,7 @@ public sealed class ApolloDeviceService(ApolloCoreLocator coreLocator)
         var core = await coreLocator.ResolveAsync(cancellationToken);
 
         using var response = await _client.GetAsync(
-            $"http://127.0.0.1:{core.BasePort}/ligase/v1/devices",
+            core.Endpoint.BuildUri("/ligase/v1/devices"),
             cancellationToken);
         if (response.StatusCode == HttpStatusCode.NotFound)
             throw new ApolloDeviceInterfaceUnavailableException(

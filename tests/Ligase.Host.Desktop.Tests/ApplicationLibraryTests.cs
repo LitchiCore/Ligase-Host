@@ -400,12 +400,18 @@ public sealed class ApplicationLibraryTests
             <root><hostname>Apollo</hostname><uniqueid>old</uniqueid></root>
             """;
 
-        var endpoint = ApolloCoreLocator.ParseServerInfo(49989, ligase);
+        var loopback = LigaseEndpoint.Create(
+            LigaseEndpointScheme.Http,
+            "::1",
+            49989,
+            source: LigaseEndpointSource.Loopback);
+        var endpoint = ApolloCoreLocator.ParseServerInfo(loopback, ligase);
 
         Assert.IsNotNull(endpoint);
         Assert.AreEqual((ushort)49989, endpoint.BasePort);
+        Assert.AreEqual("::1", endpoint.Endpoint.Host);
         Assert.AreEqual("host-uuid", endpoint.UniqueId);
-        Assert.IsNull(ApolloCoreLocator.ParseServerInfo(48989, apollo));
+        Assert.IsNull(ApolloCoreLocator.ParseServerInfo(loopback, apollo));
     }
 
     private sealed class RecordingAppsWriter : IApolloAppsWriter

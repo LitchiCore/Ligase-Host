@@ -69,6 +69,20 @@ curl.exe -s "http://127.0.0.1:49989/serverinfo?uniqueid=ligase-smoke"
 curl.exe -s "http://127.0.0.1:49989/ligase/v1/devices"
 ```
 
+The Ligase parallel configuration uses `address_family=both`. On a system with
+IPv6 loopback enabled, verify both families without changing system networking:
+
+```powershell
+curl.exe --noproxy "*" -sS "http://[::1]:49989/serverinfo?uniqueid=ligase-ipv6-smoke"
+curl.exe --noproxy "*" -sS "http://127.0.0.1:49989/serverinfo?uniqueid=ligase-ipv4-smoke"
+Get-NetTCPConnection -State Listen -LocalPort 49989 |
+  Select-Object LocalAddress, LocalPort, OwningProcess
+```
+
+Both responses must expose the same `uniqueid` and `LigaseSyncVersion=1`.
+`LocalAddress=::` confirms the dual-stack listener on Windows; it does not by
+itself prove LAN firewall, mDNS, or native streaming acceptance.
+
 `serverinfo` must expose:
 
 - `LigaseSyncVersion=1`
