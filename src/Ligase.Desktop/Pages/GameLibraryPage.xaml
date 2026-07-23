@@ -1,0 +1,199 @@
+<Page
+    x:Class="Ligase.Host.Desktop.Pages.GameLibraryPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:models="using:Ligase.Host.Core.Models"
+    NavigationCacheMode="Enabled">
+    <Grid Margin="28,24,28,28" Background="{ThemeResource LigaseWindowBrush}">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <Border
+            Padding="20,18"
+            Background="{ThemeResource LigaseHeroGradientBrush}"
+            BorderBrush="{ThemeResource LigaseCardStrokeBrush}"
+            BorderThickness="1"
+            CornerRadius="18">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <StackPanel Spacing="5">
+                    <TextBlock Style="{StaticResource LigaseEyebrowTextStyle}" Text="LIBRARY / APOLLO" />
+                    <TextBlock Style="{StaticResource LigasePageTitleStyle}" Text="游戏库" />
+                    <TextBlock
+                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                        Text="这里展示已经发布到 Ligase Host 的游戏和应用。" />
+                </StackPanel>
+                <Button
+                    Grid.Column="1"
+                    Click="OnAddApplication"
+                    Style="{StaticResource LigaseSecondaryButtonStyle}">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <FontIcon FontSize="14" Glyph="&#xE710;" />
+                        <TextBlock Text="添加游戏或应用" />
+                    </StackPanel>
+                </Button>
+            </Grid>
+        </Border>
+
+        <Border Grid.Row="1" Margin="0,16,0,0" Style="{StaticResource LigaseToolbarStyle}">
+            <Grid ColumnSpacing="12">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="190" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <AutoSuggestBox
+                    AutomationProperties.Name="搜索已添加项目"
+                    PlaceholderText="搜索名称、App ID 或安装位置"
+                    QueryIcon="Find"
+                    Style="{StaticResource LigaseSearchBoxStyle}"
+                    Text="{x:Bind ViewModel.SearchText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                <ComboBox
+                    Grid.Column="1"
+                    Height="42"
+                    AutomationProperties.Name="游戏库排序方式"
+                    DisplayMemberPath="Label"
+                    ItemsSource="{x:Bind ViewModel.SortOptions}"
+                    SelectedItem="{x:Bind ViewModel.SelectedSortOption, Mode=TwoWay}" />
+                <Border
+                    Grid.Column="2"
+                    Padding="12,7"
+                    VerticalAlignment="Center"
+                    Background="{ThemeResource LigaseAccentSubtleBrush}"
+                    CornerRadius="9">
+                    <TextBlock Foreground="{ThemeResource LigaseAccentTextBrush}" FontWeight="SemiBold">
+                        <Run Text="{x:Bind ViewModel.ItemCount, Mode=OneWay}" />
+                        <Run Text=" 个项目" />
+                    </TextBlock>
+                </Border>
+            </Grid>
+        </Border>
+
+        <StackPanel Grid.Row="2">
+            <ProgressBar
+                Height="3"
+                Margin="0,12,0,0"
+                IsIndeterminate="True"
+                Visibility="{x:Bind ViewModel.LoadingVisibility, Mode=OneWay}" />
+            <InfoBar
+                Margin="0,12,0,0"
+                IsClosable="False"
+                IsOpen="{x:Bind ViewModel.HasError, Mode=OneWay}"
+                Message="{x:Bind ViewModel.ErrorMessage, Mode=OneWay}"
+                Severity="Warning"
+                Title="无法读取游戏库" />
+        </StackPanel>
+
+        <Grid Grid.Row="3" MinHeight="320" Margin="0,16,0,0">
+            <ListView ItemsSource="{x:Bind ViewModel.FilteredItems, Mode=OneWay}" SelectionMode="None">
+                <ListView.ItemContainerStyle>
+                    <Style TargetType="ListViewItem">
+                        <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                        <Setter Property="Margin" Value="0,0,0,10" />
+                        <Setter Property="Padding" Value="0" />
+                    </Style>
+                </ListView.ItemContainerStyle>
+                <ListView.ItemTemplate>
+                    <DataTemplate x:DataType="models:LibraryItem">
+                        <Border Style="{StaticResource LigaseGameCardStyle}">
+                            <Grid ColumnSpacing="16">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="52" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <Border
+                                    Width="52"
+                                    Height="52"
+                                    Background="{ThemeResource LigaseGameTileBrush}"
+                                    BorderBrush="{ThemeResource LigaseGameTileStrokeBrush}"
+                                    BorderThickness="1"
+                                    CornerRadius="12">
+                                    <FontIcon
+                                        HorizontalAlignment="Center"
+                                        VerticalAlignment="Center"
+                                        FontSize="22"
+                                        Foreground="{ThemeResource LigaseAccentBrush}"
+                                        Glyph="{x:Bind IconGlyph}" />
+                                </Border>
+                                <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="4">
+                                    <TextBlock FontSize="16" FontWeight="SemiBold" Text="{x:Bind Name}" />
+                                    <TextBlock
+                                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                        Text="{x:Bind LocationLabel}"
+                                        TextTrimming="CharacterEllipsis" />
+                                    <StackPanel Orientation="Horizontal" Spacing="14">
+                                        <TextBlock
+                                            Foreground="{ThemeResource LigaseAccentTextBrush}"
+                                            Style="{StaticResource LigaseCaptionTextStyle}"
+                                            Text="{x:Bind SourceLabel}" />
+                                        <TextBlock
+                                            Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                                            Style="{StaticResource LigaseCaptionTextStyle}"
+                                            Text="{x:Bind AddedLabel}" />
+                                        <TextBlock
+                                            Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                                            Style="{StaticResource LigaseCaptionTextStyle}"
+                                            Text="{x:Bind LastPlayedLabel}" />
+                                    </StackPanel>
+                                </StackPanel>
+                                <Button
+                                    Grid.Column="2"
+                                    VerticalAlignment="Center"
+                                    Style="{StaticResource LigaseQuietButtonStyle}">
+                                    <StackPanel Orientation="Horizontal" Spacing="6">
+                                        <FontIcon FontSize="13" Glyph="&#xE768;" />
+                                        <TextBlock Text="详情" />
+                                    </StackPanel>
+                                </Button>
+                            </Grid>
+                        </Border>
+                    </DataTemplate>
+                </ListView.ItemTemplate>
+            </ListView>
+
+            <StackPanel
+                HorizontalAlignment="Center"
+                VerticalAlignment="Center"
+                Spacing="10"
+                Visibility="{x:Bind ViewModel.EmptyVisibility, Mode=OneWay}">
+                <Border
+                    Width="72"
+                    Height="72"
+                    Background="{ThemeResource LigaseAccentSubtleBrush}"
+                    CornerRadius="24">
+                    <FontIcon
+                        HorizontalAlignment="Center"
+                        VerticalAlignment="Center"
+                        FontSize="32"
+                        Foreground="{ThemeResource LigaseAccentBrush}"
+                        Glyph="&#xE7FC;" />
+                </Border>
+                <TextBlock
+                    HorizontalAlignment="Center"
+                    FontSize="17"
+                    FontWeight="SemiBold"
+                    Text="{x:Bind ViewModel.EmptyTitle, Mode=OneWay}" />
+                <TextBlock
+                    MaxWidth="460"
+                    HorizontalAlignment="Center"
+                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                    Text="{x:Bind ViewModel.EmptyDescription, Mode=OneWay}"
+                    TextAlignment="Center"
+                    TextWrapping="Wrap" />
+                <Button
+                    Margin="0,8,0,0"
+                    Click="OnAddApplication"
+                    Style="{StaticResource LigaseQuietButtonStyle}"
+                    Content="添加第一个项目" />
+            </StackPanel>
+        </Grid>
+    </Grid>
+</Page>

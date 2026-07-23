@@ -1,0 +1,158 @@
+<Page
+    x:Class="Ligase.Host.Desktop.Pages.StreamMonitorPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d">
+    <ScrollViewer HorizontalScrollBarVisibility="Disabled">
+        <Grid
+            Margin="32,28,32,40"
+            HorizontalAlignment="Stretch"
+            RowSpacing="18">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <StackPanel Spacing="6">
+                    <TextBlock Style="{StaticResource LigaseEyebrowTextStyle}" Text="STREAM OBSERVER" />
+                    <TextBlock Style="{StaticResource LigasePageTitleStyle}" Text="串流监控" />
+                    <TextBlock
+                        MaxWidth="650"
+                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                        Text="实时查看 Apollo 当前输出桌面的低帧率缩略画面，快速确认游戏、分辨率和画面状态。"
+                        TextWrapping="Wrap" />
+                </StackPanel>
+                <ToggleButton
+                    x:Name="PreviewToggle"
+                    Grid.Column="1"
+                    MinWidth="118"
+                    VerticalAlignment="Bottom"
+                    Checked="OnPreviewToggleChanged"
+                    Content="实时预览"
+                    IsChecked="True"
+                    Unchecked="OnPreviewToggleChanged" />
+            </Grid>
+
+            <Border
+                Grid.Row="1"
+                Padding="12"
+                Background="#FF090B10"
+                BorderBrush="{ThemeResource LigaseCardStrokeBrush}"
+                BorderThickness="1"
+                CornerRadius="18">
+                <Grid>
+                    <Border
+                        Background="#FF050609"
+                        CornerRadius="12">
+                        <Image
+                            x:Name="PreviewImage"
+                            MinHeight="300"
+                            MaxHeight="590"
+                            HorizontalAlignment="Stretch"
+                            VerticalAlignment="Center"
+                            Stretch="Uniform" />
+                    </Border>
+                    <StackPanel
+                        x:Name="EmptyState"
+                        HorizontalAlignment="Center"
+                        VerticalAlignment="Center"
+                        Spacing="10">
+                        <FontIcon
+                            HorizontalAlignment="Center"
+                            FontSize="36"
+                            Foreground="#FF78808F"
+                            Glyph="&#xE7F4;" />
+                        <TextBlock
+                            Foreground="#FFB8BEC9"
+                            Text="正在连接桌面画面"
+                            TextAlignment="Center" />
+                    </StackPanel>
+                    <Border
+                        Margin="12"
+                        Padding="10,6"
+                        HorizontalAlignment="Left"
+                        VerticalAlignment="Top"
+                        Background="#CC12151B"
+                        CornerRadius="9">
+                        <StackPanel Orientation="Horizontal" Spacing="7">
+                            <Ellipse
+                                Width="7"
+                                Height="7"
+                                VerticalAlignment="Center"
+                                Fill="{ThemeResource LigaseSuccessBrush}" />
+                            <TextBlock
+                                FontSize="12"
+                                Foreground="White"
+                                Text="{x:Bind ViewModel.PreviewStatus, Mode=OneWay}" />
+                        </StackPanel>
+                    </Border>
+                </Grid>
+            </Border>
+
+            <Grid Grid.Row="2" ColumnSpacing="12">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="1.8*" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <Border Style="{StaticResource LigaseCardStyle}">
+                    <StackPanel Spacing="6">
+                        <TextBlock Style="{StaticResource LigaseEyebrowTextStyle}" Text="APOLLO CORE" />
+                        <TextBlock
+                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                            Text="{x:Bind ViewModel.CoreStatus, Mode=OneWay}"
+                            TextWrapping="Wrap" />
+                    </StackPanel>
+                </Border>
+                <Border Grid.Column="1" Style="{StaticResource LigaseCardStyle}">
+                    <StackPanel Spacing="6">
+                        <TextBlock Style="{StaticResource LigaseEyebrowTextStyle}" Text="SOURCE" />
+                        <TextBlock
+                            FontSize="18"
+                            FontWeight="SemiBold"
+                            Text="{x:Bind ViewModel.Resolution, Mode=OneWay}" />
+                        <TextBlock
+                            Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                            Style="{StaticResource LigaseCaptionTextStyle}"
+                            Text="主显示器" />
+                    </StackPanel>
+                </Border>
+                <Border Grid.Column="2" Style="{StaticResource LigaseCardStyle}">
+                    <StackPanel Spacing="6">
+                        <TextBlock Style="{StaticResource LigaseEyebrowTextStyle}" Text="PREVIEW RATE" />
+                        <TextBlock
+                            FontSize="18"
+                            FontWeight="SemiBold"
+                            Text="{x:Bind ViewModel.FrameRate, Mode=OneWay}" />
+                        <TextBlock
+                            Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                            Style="{StaticResource LigaseCaptionTextStyle}"
+                            Text="低开销缩略预览" />
+                    </StackPanel>
+                </Border>
+                <Border Grid.Column="3" Style="{StaticResource LigaseCardStyle}">
+                    <StackPanel Spacing="6">
+                        <TextBlock Style="{StaticResource LigaseEyebrowTextStyle}" Text="UPDATED" />
+                        <TextBlock
+                            FontSize="18"
+                            FontWeight="SemiBold"
+                            Text="{x:Bind ViewModel.LastUpdated, Mode=OneWay}" />
+                        <TextBlock
+                            Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                            Style="{StaticResource LigaseCaptionTextStyle}"
+                            Text="本机时间" />
+                    </StackPanel>
+                </Border>
+            </Grid>
+        </Grid>
+    </ScrollViewer>
+</Page>

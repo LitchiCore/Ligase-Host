@@ -42,6 +42,12 @@ build/
 cmake-*/
 docs/doxyconfig*
 
+# .NET / WinUI build outputs
+**/bin/
+**/obj/
+*.user
+*.suo
+
 # npm
 node_modules/
 package-lock.json

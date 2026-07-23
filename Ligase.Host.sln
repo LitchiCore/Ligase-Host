@@ -1,0 +1,47 @@
+﻿Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Ligase.Host.Desktop", "src\Ligase.Desktop\Ligase.Host.Desktop.csproj", "{F21A2DC8-F7A7-41B5-8C87-36FB99A5BD07}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Ligase.Host.Desktop.Tests", "tests\Ligase.Host.Desktop.Tests\Ligase.Host.Desktop.Tests.csproj", "{7D45558A-5CE8-47E9-9B25-8191D8CB1C75}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Ligase.Host.Core", "src\Ligase.Core\Ligase.Host.Core.csproj", "{BF06BB2E-7946-45F6-8853-B832430003AE}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Ligase.SteamProbe", "tools\Ligase.SteamProbe\Ligase.SteamProbe.csproj", "{E5124CB6-17A5-4310-B2DF-66B6CE46FA67}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tools", "tools", "{0CE98ADA-6645-49F5-A4E2-8E19B2321749}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Ligase.GameWatcher", "tools\Ligase.GameWatcher\Ligase.GameWatcher.csproj", "{0BAFE5BB-1880-4D33-BFBA-24DDA600BD34}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|x64 = Debug|x64
+		Release|x64 = Release|x64
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{F21A2DC8-F7A7-41B5-8C87-36FB99A5BD07}.Debug|x64.ActiveCfg = Debug|x64
+		{F21A2DC8-F7A7-41B5-8C87-36FB99A5BD07}.Debug|x64.Build.0 = Debug|x64
+		{F21A2DC8-F7A7-41B5-8C87-36FB99A5BD07}.Release|x64.ActiveCfg = Release|x64
+		{F21A2DC8-F7A7-41B5-8C87-36FB99A5BD07}.Release|x64.Build.0 = Release|x64
+		{7D45558A-5CE8-47E9-9B25-8191D8CB1C75}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{7D45558A-5CE8-47E9-9B25-8191D8CB1C75}.Debug|x64.Build.0 = Debug|Any CPU
+		{7D45558A-5CE8-47E9-9B25-8191D8CB1C75}.Release|x64.ActiveCfg = Release|Any CPU
+		{7D45558A-5CE8-47E9-9B25-8191D8CB1C75}.Release|x64.Build.0 = Release|Any CPU
+		{BF06BB2E-7946-45F6-8853-B832430003AE}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{BF06BB2E-7946-45F6-8853-B832430003AE}.Debug|x64.Build.0 = Debug|Any CPU
+		{BF06BB2E-7946-45F6-8853-B832430003AE}.Release|x64.ActiveCfg = Release|Any CPU
+		{BF06BB2E-7946-45F6-8853-B832430003AE}.Release|x64.Build.0 = Release|Any CPU
+		{E5124CB6-17A5-4310-B2DF-66B6CE46FA67}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{E5124CB6-17A5-4310-B2DF-66B6CE46FA67}.Debug|x64.Build.0 = Debug|Any CPU
+		{E5124CB6-17A5-4310-B2DF-66B6CE46FA67}.Release|x64.ActiveCfg = Release|Any CPU
+		{E5124CB6-17A5-4310-B2DF-66B6CE46FA67}.Release|x64.Build.0 = Release|Any CPU
+		{0BAFE5BB-1880-4D33-BFBA-24DDA600BD34}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{0BAFE5BB-1880-4D33-BFBA-24DDA600BD34}.Debug|x64.Build.0 = Debug|Any CPU
+		{0BAFE5BB-1880-4D33-BFBA-24DDA600BD34}.Release|x64.ActiveCfg = Release|Any CPU
+		{0BAFE5BB-1880-4D33-BFBA-24DDA600BD34}.Release|x64.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{0BAFE5BB-1880-4D33-BFBA-24DDA600BD34} = {0CE98ADA-6645-49F5-A4E2-8E19B2321749}
+	EndGlobalSection
+EndGlobal

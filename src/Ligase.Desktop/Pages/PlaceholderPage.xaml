@@ -1,0 +1,14 @@
+<Page
+    x:Class="Ligase.Host.Desktop.Pages.PlaceholderPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Grid>
+        <StackPanel Margin="32" HorizontalAlignment="Left" VerticalAlignment="Top" Spacing="8">
+            <TextBlock x:Name="TitleText" Style="{StaticResource LigasePageTitleStyle}" />
+            <TextBlock
+                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                Text="该区域将在后续纵向切片中连接 Apollo C++ 核心。"
+                TextWrapping="Wrap" />
+        </StackPanel>
+    </Grid>
+</Page>

@@ -1,0 +1,167 @@
+<Window
+    x:Class="Ligase.Host.Desktop.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    Title="Ligase Host">
+    <Grid x:Name="RootLayout" Background="{ThemeResource LigaseWindowBrush}">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="48" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+        <Grid
+            x:Name="AppTitleBar"
+            Grid.Row="0"
+            Padding="16,0,142,0"
+            Background="{ThemeResource LigaseTitleBarBrush}">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <Border
+                Width="28"
+                Height="28"
+                VerticalAlignment="Center"
+                Background="{ThemeResource LigaseAccentGradientBrush}"
+                CornerRadius="9">
+                <FontIcon
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center"
+                    FontSize="14"
+                    Foreground="White"
+                    Glyph="&#xE71B;" />
+            </Border>
+            <TextBlock
+                Grid.Column="1"
+                Margin="10,0,0,0"
+                VerticalAlignment="Center"
+                FontFamily="Segoe UI Variable Display"
+                FontSize="15"
+                FontWeight="SemiBold"
+                Text="Ligase Host" />
+            <StackPanel
+                Grid.Column="2"
+                VerticalAlignment="Center"
+                Orientation="Horizontal"
+                Spacing="8">
+                <Button
+                    AutomationProperties.Name="切换浅色或深色主题"
+                    Click="OnThemeToggle"
+                    Style="{StaticResource LigaseTitleBarButtonStyle}"
+                    ToolTipService.ToolTip="切换浅色或深色主题">
+                    <FontIcon x:Name="ThemeIcon" FontSize="14" Glyph="&#xE706;" />
+                </Button>
+                <Border
+                    Padding="10,4"
+                    Background="{ThemeResource LigaseSuccessSubtleBrush}"
+                    CornerRadius="10">
+                    <StackPanel Orientation="Horizontal" Spacing="6">
+                        <Ellipse Width="7" Height="7" VerticalAlignment="Center" Fill="{ThemeResource LigaseSuccessBrush}" />
+                        <TextBlock
+                            FontSize="12"
+                            Foreground="{ThemeResource LigaseSuccessBrush}"
+                            Text="主机就绪" />
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+        </Grid>
+        <NavigationView
+            x:Name="RootNavigation"
+            Grid.Row="1"
+            IsBackButtonVisible="Collapsed"
+            IsSettingsVisible="True"
+            IsTitleBarAutoPaddingEnabled="False"
+            Background="{ThemeResource LigaseWindowBrush}"
+            PaneDisplayMode="Left"
+            PaneTitle="控制中心"
+            SelectionChanged="OnSelectionChanged">
+            <NavigationView.Resources>
+                <ResourceDictionary>
+                    <ResourceDictionary.ThemeDictionaries>
+                        <ResourceDictionary x:Key="Default">
+                            <SolidColorBrush x:Key="NavigationViewExpandedPaneBackground" Color="#EEF2F8" />
+                            <SolidColorBrush x:Key="NavigationViewDefaultPaneBackground" Color="#EEF2F8" />
+                            <SolidColorBrush x:Key="NavigationViewItemBackgroundSelected" Color="#E2E5F4" />
+                        </ResourceDictionary>
+                        <ResourceDictionary x:Key="Light">
+                            <SolidColorBrush x:Key="NavigationViewExpandedPaneBackground" Color="#EEF2F8" />
+                            <SolidColorBrush x:Key="NavigationViewDefaultPaneBackground" Color="#EEF2F8" />
+                            <SolidColorBrush x:Key="NavigationViewItemBackgroundSelected" Color="#E2E5F4" />
+                        </ResourceDictionary>
+                        <ResourceDictionary x:Key="Dark">
+                            <SolidColorBrush x:Key="NavigationViewExpandedPaneBackground" Color="#1B1E25" />
+                            <SolidColorBrush x:Key="NavigationViewDefaultPaneBackground" Color="#1B1E25" />
+                            <SolidColorBrush x:Key="NavigationViewItemBackgroundSelected" Color="#292D3B" />
+                        </ResourceDictionary>
+                    </ResourceDictionary.ThemeDictionaries>
+                </ResourceDictionary>
+            </NavigationView.Resources>
+            <NavigationView.MenuItems>
+                <NavigationViewItem Content="概览" Style="{StaticResource LigaseNavigationViewItemStyle}" Tag="overview">
+                    <NavigationViewItem.Icon><FontIcon Glyph="&#xE80F;" /></NavigationViewItem.Icon>
+                </NavigationViewItem>
+                <NavigationViewItem
+                    x:Name="LibraryNavigationItem"
+                    Content="游戏库"
+                    IsSelected="True"
+                    Style="{StaticResource LigaseNavigationViewItemStyle}"
+                    Tag="library">
+                    <NavigationViewItem.Icon><FontIcon Glyph="&#xE7FC;" /></NavigationViewItem.Icon>
+                </NavigationViewItem>
+                <NavigationViewItem
+                    x:Name="AddApplicationNavigationItem"
+                    Content="添加游戏"
+                    Style="{StaticResource LigaseNavigationViewItemStyle}"
+                    Tag="add">
+                    <NavigationViewItem.Icon><FontIcon Glyph="&#xE710;" /></NavigationViewItem.Icon>
+                </NavigationViewItem>
+                <NavigationViewItem
+                    Content="串流监控"
+                    Style="{StaticResource LigaseNavigationViewItemStyle}"
+                    Tag="monitor">
+                    <NavigationViewItem.Icon><FontIcon Glyph="&#xE7F4;" /></NavigationViewItem.Icon>
+                </NavigationViewItem>
+                <NavigationViewItem Content="设备" Style="{StaticResource LigaseNavigationViewItemStyle}" Tag="devices">
+                    <NavigationViewItem.Icon><FontIcon Glyph="&#xE8BE;" /></NavigationViewItem.Icon>
+                </NavigationViewItem>
+            </NavigationView.MenuItems>
+            <NavigationView.PaneFooter>
+                <Border
+                    Margin="8,12"
+                    Padding="12,10"
+                    Background="{ThemeResource LigaseSurfaceMutedBrush}"
+                    BorderBrush="{ThemeResource LigaseCardStrokeBrush}"
+                    BorderThickness="1"
+                    CornerRadius="10">
+                    <Grid ColumnSpacing="10">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="26" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Border
+                            Width="26"
+                            Height="26"
+                            Background="{ThemeResource LigaseCyanSubtleBrush}"
+                            CornerRadius="8">
+                            <FontIcon
+                                HorizontalAlignment="Center"
+                                VerticalAlignment="Center"
+                                FontSize="12"
+                                Foreground="{ThemeResource LigaseCyanBrush}"
+                                Glyph="&#xE950;" />
+                        </Border>
+                        <StackPanel Grid.Column="1" Spacing="2">
+                            <TextBlock Style="{StaticResource LigaseEyebrowTextStyle}" Text="APOLLO CORE" />
+                            <TextBlock
+                                x:Name="CoreStatusText"
+                                Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                                Style="{StaticResource LigaseCaptionTextStyle}"
+                                Text="正在初始化" />
+                        </StackPanel>
+                    </Grid>
+                </Border>
+            </NavigationView.PaneFooter>
+            <Frame x:Name="ContentFrame" />
+        </NavigationView>
+    </Grid>
+</Window>
