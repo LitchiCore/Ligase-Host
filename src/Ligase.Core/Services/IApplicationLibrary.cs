@@ -5,12 +5,16 @@ namespace Ligase.Host.Core.Services;
 public interface IApplicationLibrary
 {
     Task<LibraryState> LoadAsync(CancellationToken cancellationToken = default);
-    Task<LibraryItem> AddSteamAsync(SteamGame game, CancellationToken cancellationToken = default);
+    Task<LibraryItem> AddSteamAsync(
+        SteamGame game,
+        string? coverImagePath = null,
+        CancellationToken cancellationToken = default);
     Task<LibraryItem> AddExecutableAsync(
         string name,
         string executablePath,
         string? arguments,
         string? workingDirectory,
+        string? coverImagePath = null,
         CancellationToken cancellationToken = default);
     Task SetSortModeAsync(LibrarySortMode sortMode, CancellationToken cancellationToken = default);
     Task SetPublishedToClientsAsync(

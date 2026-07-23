@@ -12,6 +12,7 @@ public sealed class LibraryItem
     public string? WorkingDirectory { get; init; }
     public uint? SteamAppId { get; init; }
     public string? SteamInstallPath { get; init; }
+    public string? CoverImagePath { get; init; }
     public bool PublishedToClients { get; set; } = true;
     public DateTimeOffset AddedAt { get; init; } = DateTimeOffset.UtcNow;
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
@@ -58,5 +59,15 @@ public sealed class LibraryItem
         LibraryItemKind.VirtualDesktop => "\uE8A7",
         LibraryItemKind.Executable => "\uE756",
         _ => "\uE7FC"
+    };
+
+    [JsonIgnore]
+    public string? DisplayCoverPath => CoverImagePath ?? Kind switch
+    {
+        LibraryItemKind.Desktop => Path.Combine(
+            AppContext.BaseDirectory, "Apollo", "assets", "desktop.png"),
+        LibraryItemKind.VirtualDesktop => Path.Combine(
+            AppContext.BaseDirectory, "Apollo", "assets", "virtual_desktop.png"),
+        _ => null
     };
 }

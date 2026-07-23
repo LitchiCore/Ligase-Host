@@ -24,6 +24,16 @@ public partial class App : Application
                 services.AddSingleton(paths);
                 services.AddSingleton<ISteamInstallationLocator, WindowsSteamInstallationLocator>();
                 services.AddSingleton<ISteamLibraryService, SteamLibraryService>();
+                services.AddSingleton(_ =>
+                {
+                    var client = new HttpClient
+                    {
+                        Timeout = TimeSpan.FromSeconds(12)
+                    };
+                    client.DefaultRequestHeaders.UserAgent.ParseAdd("LigaseHost/1.0");
+                    return client;
+                });
+                services.AddSingleton<CoverArtService>();
                 services.AddSingleton<IApolloAppsWriter, ApolloAppsWriter>();
                 services.AddSingleton<IApplicationLibrary, ApplicationLibrary>();
                 services.AddSingleton<ApolloPortAllocator>();

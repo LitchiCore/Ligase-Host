@@ -166,6 +166,22 @@ Every product change must update its affected documentation in the same commit:
 
 ## Steam discovery contract
 
+### Cover artwork
+
+- Adding a Steam or non-Steam application searches the public LizardByte
+  GameDB index by display name and uses the first exact-prefix result by
+  default.
+- The add page exposes the same result set so the user can search again and
+  choose a different cover before adding. Failure to search or download a
+  cover never blocks adding the application.
+- Downloaded artwork is restricted to HTTPS images from `images.igdb.com`,
+  validated as PNG, size-limited, and stored under the managed Ligase data
+  root. The canonical path is written to Apollo `image-path`, so GameStream
+  `appasset` clients receive the same artwork.
+- Desktop and virtual-desktop use separate built-in Ligase artwork. Desktop
+  depicts a mirrored physical display; virtual desktop depicts an extended
+  display created for streaming.
+
 The current Windows implementation:
 
 1. Locates Steam from per-user/machine registry keys, then the conventional

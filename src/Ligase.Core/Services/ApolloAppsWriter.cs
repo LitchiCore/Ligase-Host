@@ -50,7 +50,7 @@ public sealed class ApolloAppsWriter(LigasePaths paths) : IApolloAppsWriter
             {
                 uuid = item.Id.ToString(),
                 name = item.Name,
-                imagePath = "desktop.png",
+                imagePath = item.CoverImagePath ?? "desktop.png",
                 virtualDisplay = false,
                 allowClientCommands = false
             };
@@ -65,6 +65,7 @@ public sealed class ApolloAppsWriter(LigasePaths paths) : IApolloAppsWriter
                 uuid = item.Id.ToString(),
                 name = item.Name,
                 cmd = command,
+                imagePath = item.CoverImagePath,
                 workingDir = AppContext.BaseDirectory,
                 waitAll = true,
                 autoDetach = false
@@ -77,6 +78,7 @@ public sealed class ApolloAppsWriter(LigasePaths paths) : IApolloAppsWriter
             uuid = item.Id.ToString(),
             name = item.Name,
             cmd = $"{Quote(item.ExecutablePath!)}{arguments}",
+            imagePath = item.CoverImagePath,
             workingDir = item.WorkingDirectory,
             waitAll = true,
             autoDetach = false

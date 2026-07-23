@@ -105,23 +105,28 @@
                         <Border Style="{StaticResource LigaseGameCardStyle}">
                             <Grid ColumnSpacing="16">
                                 <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="52" />
+                                    <ColumnDefinition Width="84" />
                                     <ColumnDefinition Width="*" />
                                     <ColumnDefinition Width="Auto" />
                                 </Grid.ColumnDefinitions>
                                 <Border
-                                    Width="52"
-                                    Height="52"
+                                    Width="84"
+                                    Height="112"
                                     Background="{ThemeResource LigaseGameTileBrush}"
                                     BorderBrush="{ThemeResource LigaseGameTileStrokeBrush}"
                                     BorderThickness="1"
                                     CornerRadius="12">
-                                    <FontIcon
-                                        HorizontalAlignment="Center"
-                                        VerticalAlignment="Center"
-                                        FontSize="22"
-                                        Foreground="{ThemeResource LigaseAccentBrush}"
-                                        Glyph="{x:Bind IconGlyph}" />
+                                    <Grid>
+                                        <FontIcon
+                                            HorizontalAlignment="Center"
+                                            VerticalAlignment="Center"
+                                            FontSize="22"
+                                            Foreground="{ThemeResource LigaseAccentBrush}"
+                                            Glyph="{x:Bind IconGlyph}" />
+                                        <Image
+                                            Source="{x:Bind DisplayCoverPath}"
+                                            Stretch="UniformToFill" />
+                                    </Grid>
                                 </Border>
                                 <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="4">
                                     <TextBlock FontSize="16" FontWeight="SemiBold" Text="{x:Bind Name}" />

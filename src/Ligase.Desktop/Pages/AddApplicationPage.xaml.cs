@@ -63,4 +63,25 @@ public sealed partial class AddApplicationPage : Page
             ViewModel.Message = exception.Message;
         }
     }
+    private async void OnSearchCovers(object sender, RoutedEventArgs e) =>
+        await ViewModel.SearchCoversAsync();
+
+    private async void OnSelectCover(object sender, RoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.Tag is not CoverCandidate candidate) return;
+        try
+        {
+            await ViewModel.SelectCoverAsync(candidate);
+        }
+        catch (Exception exception)
+        {
+            ViewModel.Message = $"无法保存所选封面：{exception.Message}";
+        }
+    }
+
+    private async void OnFindSteamCover(object sender, RoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.Tag is SteamGame game)
+            await ViewModel.SearchCoversAsync(game.Name);
+    }
 }

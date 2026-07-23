@@ -32,4 +32,16 @@
     </ItemGroup>
     <Copy SourceFiles="@(_GameWatcherFiles)" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" />
   </Target>
+  <Target Name="CopyLigaseSystemCovers" AfterTargets="Build">
+    <ItemGroup>
+      <_LigaseSystemCovers Include="$(MSBuildProjectDirectory)\..\..\src_assets\common\assets\desktop.png" />
+      <_LigaseSystemCovers Include="$(MSBuildProjectDirectory)\..\..\src_assets\common\assets\desktop-alt.png" />
+      <_LigaseSystemCovers Include="$(MSBuildProjectDirectory)\..\..\src_assets\common\assets\virtual_desktop.png" />
+    </ItemGroup>
+    <MakeDir Directories="$(TargetDir)Apollo\assets" />
+    <Copy
+      SourceFiles="@(_LigaseSystemCovers)"
+      DestinationFolder="$(TargetDir)Apollo\assets"
+      SkipUnchangedFiles="true" />
+  </Target>
 </Project>

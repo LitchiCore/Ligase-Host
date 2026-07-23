@@ -32,6 +32,7 @@ public sealed class ApplicationLibrary(
 
     public Task<LibraryItem> AddSteamAsync(
         SteamGame game,
+        string? coverImagePath = null,
         CancellationToken cancellationToken = default) =>
         MutateAsync(state =>
         {
@@ -44,7 +45,8 @@ public sealed class ApplicationLibrary(
                 Kind = LibraryItemKind.Steam,
                 Name = game.Name,
                 SteamAppId = game.AppId,
-                SteamInstallPath = game.InstallPath
+                SteamInstallPath = game.InstallPath,
+                CoverImagePath = coverImagePath
             };
             state.Items.Add(item);
             return item;
@@ -55,6 +57,7 @@ public sealed class ApplicationLibrary(
         string executablePath,
         string? arguments,
         string? workingDirectory,
+        string? coverImagePath = null,
         CancellationToken cancellationToken = default) =>
         MutateAsync(state =>
         {
@@ -73,6 +76,7 @@ public sealed class ApplicationLibrary(
                 Name = name.Trim(),
                 ExecutablePath = fullExecutablePath,
                 Arguments = string.IsNullOrWhiteSpace(arguments) ? null : arguments.Trim(),
+                CoverImagePath = coverImagePath,
                 WorkingDirectory = string.IsNullOrWhiteSpace(workingDirectory)
                     ? Path.GetDirectoryName(fullExecutablePath)
                     : Path.GetFullPath(workingDirectory)
