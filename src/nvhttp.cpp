@@ -6,6 +6,7 @@
 #define BOOST_BIND_GLOBAL_PLACEHOLDERS
 
 // standard includes
+#include <cctype>
 #include <filesystem>
 #include <format>
 #include <fstream>
@@ -1177,6 +1178,49 @@ namespace nvhttp {
       return width >= 320 && width <= 16384 && height >= 240 && height <= 16384;
     }
 
+    bool ligase_uuid_equals(std::string_view left, std::string_view right) {
+      return left.size() == right.size() &&
+             std::equal(
+               left.begin(),
+               left.end(),
+               right.begin(),
+               [](unsigned char left_char, unsigned char right_char) {
+                 return std::tolower(left_char) == std::tolower(right_char);
+               }
+             );
+    }
+
+    std::optional<std::string> find_ligase_library_uuid(
+      const nlohmann::json &items,
+      std::string_view requested_uuid
+    ) {
+      for (const auto &item : items) {
+        if (!item.is_object() || !item.contains("id") || !item.at("id").is_string()) {
+          continue;
+        }
+        const auto canonical_uuid = item.at("id").get<std::string>();
+        if (ligase_uuid_equals(canonical_uuid, requested_uuid)) {
+          return canonical_uuid;
+        }
+      }
+      return std::nullopt;
+    }
+
+    const nlohmann::json *find_ligase_app_settings(
+      const nlohmann::json &apps,
+      std::string_view requested_uuid
+    ) {
+      if (!apps.is_object()) {
+        return nullptr;
+      }
+      for (auto iterator = apps.begin(); iterator != apps.end(); ++iterator) {
+        if (ligase_uuid_equals(iterator.key(), requested_uuid)) {
+          return &iterator.value();
+        }
+      }
+      return nullptr;
+    }
+
     std::optional<nlohmann::json> parse_ligase_request(
       resp_https_t response,
       req_https_t request
@@ -1223,12 +1267,12 @@ namespace nvhttp {
         const auto &streaming = sync.at("streaming");
         const auto &apps = streaming.at("apps");
         const nlohmann::json *resolution = &streaming.at("globalResolution");
-        if (apps.is_object() && apps.contains(app_uuid)) {
-          const auto &candidate = apps.at(app_uuid);
-          if (candidate.is_object() &&
-              candidate.contains("resolution") &&
-              !candidate.at("resolution").is_null()) {
-            resolution = &candidate.at("resolution");
+        if (const auto *candidate = find_ligase_app_settings(apps, app_uuid);
+            candidate != nullptr) {
+          if (candidate->is_object() &&
+              candidate->contains("resolution") &&
+              !candidate->at("resolution").is_null()) {
+            resolution = &candidate->at("resolution");
           }
         }
 
@@ -1329,17 +1373,10 @@ namespace nvhttp {
           );
           return;
         }
-        const auto app_id = app.at("id").get<std::string>();
+        const auto requested_app_id = app.at("id").get<std::string>();
         const auto &items = sync.at("library").at("items");
-        const auto known_app = std::any_of(
-          items.begin(),
-          items.end(),
-          [&app_id](const auto &item) {
-            return item.is_object() &&
-                   item.value("id", std::string {}) == app_id;
-          }
-        );
-        if (!known_app) {
+        const auto app_id = find_ligase_library_uuid(items, requested_app_id);
+        if (!app_id) {
           send_ligase_json(
             response,
             SimpleWeb::StatusCode::client_error_not_found,
@@ -1348,7 +1385,19 @@ namespace nvhttp {
           return;
         }
         if (app.at("resolution").is_null()) {
-          state["apps"].erase(app_id);
+          if (const auto *existing = find_ligase_app_settings(state["apps"], *app_id);
+              existing != nullptr) {
+            const auto existing_key = std::find_if(
+              state["apps"].begin(),
+              state["apps"].end(),
+              [&](const auto &entry) {
+                return &entry == existing;
+              }
+            );
+            if (existing_key != state["apps"].end()) {
+              state["apps"].erase(existing_key);
+            }
+          }
         } else {
           if (!valid_ligase_resolution(app.at("resolution"))) {
             send_ligase_json(
@@ -1358,7 +1407,7 @@ namespace nvhttp {
             );
             return;
           }
-          state["apps"][app_id] = {{"resolution", app.at("resolution")}};
+          state["apps"][*app_id] = {{"resolution", app.at("resolution")}};
         }
         changed = true;
       }
