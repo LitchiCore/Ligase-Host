@@ -61,6 +61,8 @@ public sealed partial class MainWindow : Window
 
     public void HideToTray() => _appWindow.Hide();
 
+    internal void AllowApplicationExit() => _isExiting = true;
+
     public void ShowWindow()
     {
         _appWindow.Show();
@@ -101,6 +103,17 @@ public sealed partial class MainWindow : Window
         RootNavigation.SelectedItem = LibraryNavigationItem;
     }
 
+    public void NavigateToLibrary() =>
+        RootNavigation.SelectedItem = LibraryNavigationItem;
+
+    public void NavigateToMonitor() =>
+        RootNavigation.SelectedItem = RootNavigation.MenuItems
+            .OfType<NavigationViewItem>()
+            .First(item => Equals(item.Tag, "monitor"));
+
+    public void NavigateToDevices() =>
+        RootNavigation.SelectedItem = DevicesNavigationItem;
+
     private void OnThemeToggle(object sender, RoutedEventArgs args)
     {
         RootLayout.RequestedTheme = RootLayout.ActualTheme == ElementTheme.Dark
@@ -131,7 +144,7 @@ public sealed partial class MainWindow : Window
             "add" => typeof(AddApplicationPage),
             "monitor" => typeof(StreamMonitorPage),
             "devices" => typeof(DevicesPage),
-            _ => typeof(PlaceholderPage)
+            _ => typeof(OverviewPage)
         };
         var parameter = tag switch
         {

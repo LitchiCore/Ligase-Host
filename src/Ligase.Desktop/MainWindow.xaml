@@ -5,7 +5,7 @@
     Title="Ligase Host">
     <Grid x:Name="RootLayout" Background="{ThemeResource LigaseWindowBrush}">
         <Grid.RowDefinitions>
-            <RowDefinition Height="48" />
+            <RowDefinition Height="32" />
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
         <Grid
@@ -19,11 +19,11 @@
                 <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
             <Border
-                Width="28"
-                Height="28"
+                Width="24"
+                Height="24"
                 VerticalAlignment="Center"
                 Background="{ThemeResource LigaseAccentGradientBrush}"
-                CornerRadius="9">
+                CornerRadius="8">
                 <FontIcon
                     HorizontalAlignment="Center"
                     VerticalAlignment="Center"
@@ -91,7 +91,12 @@
             PaneTitle="控制中心"
             SelectionChanged="OnSelectionChanged">
             <NavigationView.MenuItems>
-                <NavigationViewItem x:Uid="OverviewNavigationItem" Content="概览" Style="{StaticResource LigaseNavigationViewItemStyle}" Tag="overview">
+                <NavigationViewItem
+                    x:Name="OverviewNavigationItem"
+                    x:Uid="OverviewNavigationItem"
+                    Content="概览"
+                    Style="{StaticResource LigaseNavigationViewItemStyle}"
+                    Tag="overview">
                     <NavigationViewItem.Icon><FontIcon Glyph="&#xE80F;" /></NavigationViewItem.Icon>
                 </NavigationViewItem>
                 <NavigationViewItem

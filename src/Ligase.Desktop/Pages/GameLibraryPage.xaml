@@ -55,7 +55,8 @@
                 </Grid.RowDefinitions>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="190" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
                 <AutoSuggestBox
@@ -63,16 +64,40 @@
                     PlaceholderText="搜索名称、App ID 或安装位置"
                     QueryIcon="Find"
                     Style="{StaticResource LigaseSearchBoxStyle}"
-                    Text="{x:Bind ViewModel.SearchText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                    Text="{x:Bind ViewModel.SearchText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                    TextChanged="OnSearchTextChanged" />
                 <ComboBox
                     Grid.Column="1"
+                    MinWidth="132"
                     Height="42"
                     AutomationProperties.Name="游戏库排序方式"
                     DisplayMemberPath="Label"
                     ItemsSource="{x:Bind ViewModel.SortOptions}"
-                    SelectedItem="{x:Bind ViewModel.SelectedSortOption, Mode=TwoWay}" />
-                <Border
+                    SelectedItem="{x:Bind ViewModel.SelectedSortOption, Mode=TwoWay}"
+                    SelectionChanged="OnSortModeChanged" />
+                <Button
+                    x:Name="ReorderModeButton"
                     Grid.Column="2"
+                    MinWidth="122"
+                    AutomationProperties.Name="调整游戏库顺序"
+                    Click="OnReorderModeButtonClick"
+                    IsEnabled="{x:Bind ViewModel.CanAcceptManualDrop, Mode=OneWay}"
+                    Style="{StaticResource LigaseSecondaryButtonStyle}"
+                    Visibility="{x:Bind ViewModel.ManualSortVisibility, Mode=OneWay}">
+                    <StackPanel Orientation="Horizontal" Spacing="7">
+                        <FontIcon
+                            x:Name="ReorderModeIcon"
+                            FontSize="13"
+                            Foreground="{ThemeResource LigaseTextPrimaryBrush}"
+                            Glyph="&#xE70F;" />
+                        <TextBlock
+                            x:Name="ReorderModeLabel"
+                            Foreground="{ThemeResource LigaseTextPrimaryBrush}"
+                            Text="开始排序" />
+                    </StackPanel>
+                </Button>
+                <Border
+                    Grid.Column="3"
                     Padding="12,7"
                     VerticalAlignment="Center"
                     Background="{ThemeResource LigaseAccentSubtleBrush}"
@@ -83,8 +108,9 @@
                     </TextBlock>
                 </Border>
                 <TextBlock
+                    x:Name="SortDescriptionText"
                     Grid.Row="1"
-                    Grid.ColumnSpan="3"
+                    Grid.ColumnSpan="4"
                     Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                     Style="{StaticResource LigaseCaptionTextStyle}"
                     Text="{x:Bind ViewModel.SortDescription, Mode=OneWay}"
@@ -111,11 +137,27 @@
                 IsOpen="{x:Bind ViewModel.HasError, Mode=OneWay}"
                 Message="{x:Bind ViewModel.ErrorMessage, Mode=OneWay}"
                 Severity="Warning"
-                Title="无法读取游戏库" />
+                Title="游戏库操作未完成">
+                <InfoBar.ActionButton>
+                    <Button
+                        Click="OnReloadLibrary"
+                        Content="重新加载"
+                        Style="{StaticResource LigaseSecondaryButtonStyle}" />
+                </InfoBar.ActionButton>
+            </InfoBar>
         </StackPanel>
 
         <Grid Grid.Row="3" MinHeight="320" Margin="0,16,0,0">
-            <ListView ItemsSource="{x:Bind ViewModel.FilteredItems, Mode=OneWay}" SelectionMode="None">
+            <ListView
+                x:Name="LibraryList"
+                AllowDrop="True"
+                CanDragItems="False"
+                CanReorderItems="False"
+                DragItemsCompleted="OnLibraryDragItemsCompleted"
+                DragItemsStarting="OnLibraryDragItemsStarting"
+                ItemsSource="{x:Bind ViewModel.FilteredItems, Mode=OneWay}"
+                ReorderMode="Disabled"
+                SelectionMode="None">
                 <ListView.ItemContainerStyle>
                     <Style TargetType="ListViewItem">
                         <Setter Property="HorizontalContentAlignment" Value="Stretch" />
@@ -125,7 +167,9 @@
                 </ListView.ItemContainerStyle>
                 <ListView.ItemTemplate>
                     <DataTemplate x:DataType="models:LibraryItem">
-                        <Border Style="{StaticResource LigaseGameCardStyle}">
+                        <Border
+                            AutomationProperties.HelpText="开启调整顺序后可直接拖动卡片"
+                            Style="{StaticResource LigaseGameCardStyle}">
                             <Grid ColumnSpacing="16">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="84" />
@@ -172,36 +216,24 @@
                                             Text="{x:Bind LastPlayedLabel}" />
                                     </StackPanel>
                                 </StackPanel>
-                                <StackPanel
+                                <Grid
                                     Grid.Column="2"
-                                    VerticalAlignment="Center"
-                                    Orientation="Horizontal"
-                                    Spacing="6">
+                                    MinWidth="82">
                                     <Button
-                                        AutomationProperties.Name="在游戏库中上移"
-                                        Click="OnMoveApplicationUp"
-                                        IsEnabled="{x:Bind CanManuallyOrder}"
-                                        Style="{StaticResource LigaseQuietButtonStyle}"
-                                        ToolTipService.ToolTip="上移并切换到手动排序">
-                                        <FontIcon FontSize="13" Glyph="&#xE74A;" />
-                                    </Button>
-                                    <Button
-                                        AutomationProperties.Name="在游戏库中下移"
-                                        Click="OnMoveApplicationDown"
-                                        IsEnabled="{x:Bind CanManuallyOrder}"
-                                        Style="{StaticResource LigaseQuietButtonStyle}"
-                                        ToolTipService.ToolTip="下移并切换到手动排序">
-                                        <FontIcon FontSize="13" Glyph="&#xE74B;" />
-                                    </Button>
-                                    <Button
+                                        VerticalAlignment="Center"
                                         Click="OnManageApplication"
                                         Style="{StaticResource LigaseQuietButtonStyle}">
                                         <StackPanel Orientation="Horizontal" Spacing="6">
-                                            <FontIcon FontSize="13" Glyph="&#xE768;" />
-                                            <TextBlock Text="管理" />
+                                            <FontIcon
+                                                FontSize="13"
+                                                Foreground="{ThemeResource LigaseAccentTextBrush}"
+                                                Glyph="&#xE768;" />
+                                            <TextBlock
+                                                Foreground="{ThemeResource LigaseAccentTextBrush}"
+                                                Text="管理" />
                                         </StackPanel>
                                     </Button>
-                                </StackPanel>
+                                </Grid>
                             </Grid>
                         </Border>
                     </DataTemplate>

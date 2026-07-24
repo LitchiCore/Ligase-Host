@@ -65,6 +65,7 @@ public partial class App : Application
                 services.AddSingleton<PairingNotificationService>();
                 services.AddSingleton<AttendedPairingUiCoordinator>();
                 services.AddTransient<GameLibraryViewModel>();
+                services.AddTransient<OverviewViewModel>();
                 services.AddTransient<AddApplicationViewModel>();
                 services.AddTransient<StreamMonitorViewModel>();
                 services.AddTransient<DevicesViewModel>();
@@ -147,13 +148,30 @@ public partial class App : Application
     {
         if (_isExiting) return;
         _isExiting = true;
+        Services.GetRequiredService<MainWindow>().AllowApplicationExit();
         Services.GetRequiredService<WindowsTrayIconService>().Dispose();
-        await Services.GetRequiredService<AttendedPairingCoordinator>()
-            .DisposeAsync();
-        Services.GetRequiredService<PairingNotificationService>().Dispose();
-        await Services.GetRequiredService<ApolloInstanceManager>().StopAsync();
-        Services.GetRequiredService<SingleInstanceService>().Dispose();
-        _host.Dispose();
-        Exit();
+        try
+        {
+            await Services.GetRequiredService<AttendedPairingCoordinator>()
+                .DisposeAsync()
+                .AsTask()
+                .WaitAsync(TimeSpan.FromSeconds(3));
+            Services.GetRequiredService<PairingNotificationService>().Dispose();
+            await Services.GetRequiredService<ApolloInstanceManager>()
+                .StopAsync()
+                .WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        catch (TimeoutException)
+        {
+            // Never leave the Desktop window behind after the managed core
+            // has already stopped. Process teardown completes remaining work.
+        }
+        finally
+        {
+            Services.GetRequiredService<SingleInstanceService>().Dispose();
+            // Host disposal can synchronously wait for the same timed-out
+            // background service. App.Exit owns final process teardown.
+            Exit();
+        }
     }
 }

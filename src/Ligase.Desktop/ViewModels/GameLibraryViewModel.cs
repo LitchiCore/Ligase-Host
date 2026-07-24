@@ -29,14 +29,13 @@ public partial class GameLibraryViewModel(
     public ObservableCollection<LibraryItem> FilteredItems { get; } = [];
     public IReadOnlyList<LibrarySortOption> SortOptions { get; } =
     [
-        new("手动排序（同步）", LibraryViewSortMode.Manual),
+        new("手动排序", LibraryViewSortMode.Manual),
         new("名称 A–Z（仅此窗口）", LibraryViewSortMode.NameAscending),
         new("名称 Z–A（仅此窗口）", LibraryViewSortMode.NameDescending),
         new("最近添加（仅此窗口）", LibraryViewSortMode.AddedNewest),
         new("最早添加（仅此窗口）", LibraryViewSortMode.AddedOldest),
         new("最近启动（仅此窗口）", LibraryViewSortMode.LastPlayedNewest)
     ];
-
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(IsNotLoading))]
     [NotifyPropertyChangedFor(nameof(LoadingVisibility))]
@@ -66,13 +65,21 @@ public partial class GameLibraryViewModel(
     public int ItemCount => FilteredItems.Count;
     public Visibility LoadingVisibility => IsLoading ? Visibility.Visible : Visibility.Collapsed;
     public Visibility EmptyVisibility => !IsLoading && FilteredItems.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+    public bool CanAcceptManualDrop =>
+        CanModifyLibrary &&
+        SelectedSortOption?.Value == LibraryViewSortMode.Manual &&
+        string.IsNullOrWhiteSpace(SearchText);
+    public Visibility ManualSortVisibility =>
+        SelectedSortOption?.Value == LibraryViewSortMode.Manual
+            ? Visibility.Visible
+            : Visibility.Collapsed;
     public string EmptyTitle => _allItems.Count == 0 ? "游戏库还是空的" : "没有匹配的项目";
     public string EmptyDescription => _allItems.Count == 0
         ? "添加 Steam 游戏或本地应用后，它们会出现在这里并同步到 Ligase 的 Apollo 核心。"
         : "尝试缩短关键词，或切换排序方式。";
     public string SortDescription => SelectedSortOption?.Value == LibraryViewSortMode.Manual
-        ? "使用每个项目右侧的上移、下移按钮调整共享顺序；桌面入口也可以移动。"
-        : "名称、添加时间和最近游玩只改变此窗口的查看方式，不会覆盖共享手动顺序。";
+        ? "点击“开始排序”进入编辑模式；直接拖动卡片，松手后同步共享顺序。"
+        : "当前排序只改变此窗口的查看方式，不会覆盖共享手动顺序。";
 
     public async Task RefreshAsync(CancellationToken cancellationToken = default)
     {
@@ -136,44 +143,72 @@ public partial class GameLibraryViewModel(
         }
     }
 
-    partial void OnSearchTextChanged(string value) => ApplyView();
+    partial void OnSearchTextChanged(string value)
+    {
+        OnPropertyChanged(nameof(CanAcceptManualDrop));
+        ApplyView();
+    }
 
     partial void OnSelectedSortOptionChanged(LibrarySortOption? value)
     {
         if (value is null) return;
         OnPropertyChanged(nameof(SortDescription));
+        OnPropertyChanged(nameof(CanAcceptManualDrop));
+        OnPropertyChanged(nameof(ManualSortVisibility));
         ApplyView();
     }
 
-    public async Task MoveManualAsync(
-        LibraryItem item,
-        int direction,
+    partial void OnCanModifyLibraryChanged(bool value) =>
+        OnPropertyChanged(nameof(CanAcceptManualDrop));
+
+    public bool CanBeginManualDrag(LibraryItem item) =>
+        item.PublishedToClients &&
+        item.CanManuallyOrder &&
+        CanAcceptManualDrop;
+
+    public async Task CommitManualOrderAsync(
+        IReadOnlyList<Guid> orderedPublishedIds,
         CancellationToken cancellationToken = default)
     {
-        if (!item.PublishedToClients || !await EnsureWritableAsync(cancellationToken)) return;
+        if (!CanAcceptManualDrop ||
+            !await EnsureWritableAsync(cancellationToken))
+        {
+            ApplyView();
+            return;
+        }
+
         try
         {
             var published = _allItems
                 .Where(candidate => candidate.PublishedToClients)
                 .Select(candidate => candidate.Id)
-                .ToList();
-            var currentIndex = published.IndexOf(item.Id);
-            if (currentIndex < 0) return;
-            var targetIndex = Math.Clamp(currentIndex + direction, 0, published.Count - 1);
-            if (targetIndex == currentIndex) return;
-            published.RemoveAt(currentIndex);
-            published.Insert(targetIndex, item.Id);
-            SelectedSortOption = SortOptions.First(option =>
-                option.Value == LibraryViewSortMode.Manual);
+                .ToArray();
+            if (!ManualLibraryOrder.IsCompleteOrder(
+                    published,
+                    orderedPublishedIds) ||
+                published.SequenceEqual(orderedPublishedIds))
+            {
+                ApplyView();
+                return;
+            }
+
             await mutationCoordinator.SetManualOrderAsync(
-                _libraryRevision, published, cancellationToken);
+                _libraryRevision, orderedPublishedIds, cancellationToken);
             await RefreshAsync(cancellationToken);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
-            ErrorMessage = exception.Message;
+            var message = exception.Message;
+            await RefreshAsync(cancellationToken);
+            ErrorMessage = message.Contains(
+                "核心读取到的游戏库与刚才的修改不一致",
+                StringComparison.Ordinal)
+                ? "排序未能保存，列表已恢复到修改前的安全状态。请点击“重新加载”后再试。"
+                : message;
         }
     }
+
+    public void RestoreManualView() => ApplyView();
 
     private void ApplyView()
     {
@@ -190,6 +225,9 @@ public partial class GameLibraryViewModel(
                 item.Kind == LibraryItemKind.VirtualDesktop ? 1 : 2);
         var ordered = SelectedSortOption?.Value switch
         {
+            LibraryViewSortMode.NameAscending => pinned
+                .ThenBy(item => item.Name, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(item => item.Id),
             LibraryViewSortMode.NameDescending => pinned
                 .ThenByDescending(item => item.Name, StringComparer.OrdinalIgnoreCase)
                 .ThenBy(item => item.Id),
@@ -203,10 +241,7 @@ public partial class GameLibraryViewModel(
                 .ThenByDescending(item => item.LastPlayedAt.HasValue)
                 .ThenByDescending(item => item.LastPlayedAt)
                 .ThenBy(item => item.Id),
-            LibraryViewSortMode.Manual => matches,
-            _ => pinned
-                .ThenBy(item => item.Name, StringComparer.OrdinalIgnoreCase)
-                .ThenBy(item => item.Id)
+            _ => matches
         };
 
         FilteredItems.Clear();
@@ -216,4 +251,15 @@ public partial class GameLibraryViewModel(
         OnPropertyChanged(nameof(EmptyTitle));
         OnPropertyChanged(nameof(EmptyDescription));
     }
+}
+
+internal static class ManualLibraryOrder
+{
+    internal static bool IsCompleteOrder(
+        IReadOnlyList<Guid> published,
+        IReadOnlyList<Guid> candidate) =>
+        published.Count == candidate.Count &&
+        published.ToHashSet().SetEquals(candidate) &&
+        candidate.Distinct().Count() == candidate.Count;
+
 }
