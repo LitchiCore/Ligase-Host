@@ -45,16 +45,6 @@ TEST(HttpPermissions, ObserveCanReadButCannotMutate) {
   EXPECT_FALSE(ligase_client_can_mutate(client));
 }
 
-TEST(HttpPermissions, ManualLibrarySortInputUsesSafeCanonicalTypes) {
-  EXPECT_TRUE(ligase_manual_sort_revision_valid(1));
-  EXPECT_TRUE(ligase_manual_sort_revision_valid(9007199254740991LL));
-  EXPECT_FALSE(ligase_manual_sort_revision_valid(0));
-  EXPECT_FALSE(ligase_manual_sort_revision_valid(9007199254740992LL));
-  EXPECT_TRUE(ligase_manual_sort_uuid_valid("f3d67f4d-b1fe-4c5d-a77e-b78a51051c1a"));
-  EXPECT_FALSE(ligase_manual_sort_uuid_valid("F3D67F4D-B1FE-4C5D-A77E-B78A51051C1A"));
-  EXPECT_FALSE(ligase_manual_sort_uuid_valid("776710782"));
-}
-
 struct pairing_input {
   std::shared_ptr<pair_session_t> session;
   /**

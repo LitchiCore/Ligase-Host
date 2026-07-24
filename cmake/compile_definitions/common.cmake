@@ -85,6 +85,8 @@ set(SUNSHINE_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/ligase/pairing/service/attended_pairing_service.h"
         "${CMAKE_SOURCE_DIR}/src/ligase/pairing/http/attended_pairing_http.cpp"
         "${CMAKE_SOURCE_DIR}/src/ligase/pairing/http/attended_pairing_http.h"
+        "${CMAKE_SOURCE_DIR}/src/ligase/library/http/library_sort_http.cpp"
+        "${CMAKE_SOURCE_DIR}/src/ligase/library/http/library_sort_http.h"
         "${CMAKE_SOURCE_DIR}/src/nvhttp.cpp"
         "${CMAKE_SOURCE_DIR}/src/nvhttp.h"
         "${CMAKE_SOURCE_DIR}/src/httpcommon.cpp"
