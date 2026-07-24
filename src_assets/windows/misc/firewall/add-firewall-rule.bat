@@ -1,11 +1,4 @@
 @echo off
-
-rem Get sunshine root directory
 for %%I in ("%~dp0\..") do set "ROOT_DIR=%%~fI"
-
-set RULE_NAME=Apollo
-set PROGRAM_BIN="%ROOT_DIR%\sunshine.exe"
-
-rem Add the rule
-netsh advfirewall firewall add rule name=%RULE_NAME% dir=in action=allow protocol=tcp program=%PROGRAM_BIN% enable=yes
-netsh advfirewall firewall add rule name=%RULE_NAME% dir=in action=allow protocol=udp program=%PROGRAM_BIN% enable=yes
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0Manage-LigaseFirewall.ps1" -Action Apply -Manifest "%~dp0ligase-firewall-v1.json" -Program "%ROOT_DIR%\sunshine.exe" -BasePort 48989
+exit /b %ERRORLEVEL%

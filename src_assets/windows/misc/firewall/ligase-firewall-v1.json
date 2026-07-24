@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "ruleGroup": "Ligase Host LAN Access",
+  "profile": "Private",
+  "remoteAddress": "LocalSubnet",
+  "ownedRuleNames": [
+    "Ligase.Host.Lan.Tcp.v0",
+    "Ligase.Host.Lan.Udp.v0",
+    "Ligase.Host.Lan.Tcp.v1",
+    "Ligase.Host.Lan.Udp.v1"
+  ],
+  "rules": [
+    {
+      "id": "lanTcp",
+      "transport": "Tcp",
+      "offsets": [-5, 0, 21]
+    },
+    {
+      "id": "streamUdp",
+      "transport": "Udp",
+      "offsets": [9, 10, 11]
+    }
+  ]
+}
