@@ -44,6 +44,19 @@ device. Active deletion is deliberately two-step; only the explicitly named
 end-session route can stop the device's session before revoking its certificate
 and named-device record.
 
+An authenticated paired client reads its own effective mode from HTTPS
+`/serverinfo`:
+
+```xml
+<LigaseClientAccessMode>operate</LigaseClientAccessMode>
+```
+
+The value is `operate` or `observe`. It is emitted only after HTTPS client
+certificate verification; public HTTP serverinfo omits it. Only the exact full
+permission set with client commands enabled reports `operate`. Unknown or
+custom permission combinations report `observe` so clients fail closed. A
+permission update is reflected by the next HTTPS serverinfo request.
+
 ## Enforcement
 
 The certificate maps the connection and RTSP session to the named device UUID.

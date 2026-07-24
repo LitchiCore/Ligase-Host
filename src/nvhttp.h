@@ -7,6 +7,7 @@
 
 // standard includes
 #include <string>
+#include <string_view>
 #include <chrono>
 #include <list>
 
@@ -53,6 +54,15 @@ namespace nvhttp {
   constexpr auto PORT_HTTPS = -5;
 
   constexpr auto OTP_EXPIRE_DURATION = 180s;
+
+  /**
+   * @brief Return the stable Ligase access projection for a paired client.
+   * @details Only the exact full permission set with client commands enabled
+   *          is projected as operate. Custom or unknown permission sets fail
+   *          closed to observe.
+   */
+  std::string_view
+  ligase_client_access_mode(const crypto::named_cert_t &client);
 
   /**
    * @brief Start the nvhttp server.

@@ -766,6 +766,14 @@ namespace nvhttp {
     return (crypto::named_cert_t*)request->userp.get();
   }
 
+  std::string_view ligase_client_access_mode(
+    const crypto::named_cert_t &client
+  ) {
+    return client.perm == PERM::_all && client.allow_client_commands
+      ? "operate"sv
+      : "observe"sv;
+  }
+
   template <class T>
   void print_req(std::shared_ptr<typename SimpleWeb::ServerBase<T>::Request> request) {
     BOOST_LOG(debug) << "TUNNEL :: "sv << tunnel<T>::to_string;
@@ -1136,6 +1144,9 @@ namespace nvhttp {
       }
 
       tree.put("root.Permission", std::to_string((uint32_t)named_cert_p->perm));
+      tree.put(
+        "root.LigaseClientAccessMode",
+        ligase_client_access_mode(*named_cert_p));
 
     #ifdef _WIN32
       tree.put("root.VirtualDisplayCapable", true);

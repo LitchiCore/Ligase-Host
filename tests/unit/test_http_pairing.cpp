@@ -9,6 +9,23 @@
 
 using namespace nvhttp;
 
+TEST(HttpServerInfo, LigaseClientAccessModeFailsClosed) {
+  crypto::named_cert_t client;
+  client.perm = crypto::PERM::_all;
+  client.allow_client_commands = true;
+  EXPECT_EQ(ligase_client_access_mode(client), "operate");
+
+  client.allow_client_commands = false;
+  EXPECT_EQ(ligase_client_access_mode(client), "observe");
+
+  client.allow_client_commands = true;
+  client.perm = crypto::PERM::_default;
+  EXPECT_EQ(ligase_client_access_mode(client), "observe");
+
+  client.perm = crypto::PERM::launch;
+  EXPECT_EQ(ligase_client_access_mode(client), "observe");
+}
+
 struct pairing_input {
   std::shared_ptr<pair_session_t> session;
   /**
