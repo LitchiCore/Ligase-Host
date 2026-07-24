@@ -48,7 +48,11 @@
         </Border>
 
         <Border Grid.Row="1" Margin="0,16,0,0" Style="{StaticResource LigaseToolbarStyle}">
-            <Grid ColumnSpacing="12">
+            <Grid ColumnSpacing="12" RowSpacing="8">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="190" />
@@ -78,6 +82,13 @@
                         <Run Text=" 个项目" />
                     </TextBlock>
                 </Border>
+                <TextBlock
+                    Grid.Row="1"
+                    Grid.ColumnSpan="3"
+                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                    Style="{StaticResource LigaseCaptionTextStyle}"
+                    Text="{x:Bind ViewModel.SortDescription, Mode=OneWay}"
+                    TextWrapping="Wrap" />
             </Grid>
         </Border>
 
@@ -161,16 +172,36 @@
                                             Text="{x:Bind LastPlayedLabel}" />
                                     </StackPanel>
                                 </StackPanel>
-                                <Button
+                                <StackPanel
                                     Grid.Column="2"
                                     VerticalAlignment="Center"
-                                    Click="OnManageApplication"
-                                    Style="{StaticResource LigaseQuietButtonStyle}">
-                                    <StackPanel Orientation="Horizontal" Spacing="6">
-                                        <FontIcon FontSize="13" Glyph="&#xE768;" />
-                                        <TextBlock Text="管理" />
-                                    </StackPanel>
-                                </Button>
+                                    Orientation="Horizontal"
+                                    Spacing="6">
+                                    <Button
+                                        AutomationProperties.Name="在游戏库中上移"
+                                        Click="OnMoveApplicationUp"
+                                        IsEnabled="{x:Bind CanManuallyOrder}"
+                                        Style="{StaticResource LigaseQuietButtonStyle}"
+                                        ToolTipService.ToolTip="上移并切换到手动排序">
+                                        <FontIcon FontSize="13" Glyph="&#xE74A;" />
+                                    </Button>
+                                    <Button
+                                        AutomationProperties.Name="在游戏库中下移"
+                                        Click="OnMoveApplicationDown"
+                                        IsEnabled="{x:Bind CanManuallyOrder}"
+                                        Style="{StaticResource LigaseQuietButtonStyle}"
+                                        ToolTipService.ToolTip="下移并切换到手动排序">
+                                        <FontIcon FontSize="13" Glyph="&#xE74B;" />
+                                    </Button>
+                                    <Button
+                                        Click="OnManageApplication"
+                                        Style="{StaticResource LigaseQuietButtonStyle}">
+                                        <StackPanel Orientation="Horizontal" Spacing="6">
+                                            <FontIcon FontSize="13" Glyph="&#xE768;" />
+                                            <TextBlock Text="管理" />
+                                        </StackPanel>
+                                    </Button>
+                                </StackPanel>
                             </Grid>
                         </Border>
                     </DataTemplate>

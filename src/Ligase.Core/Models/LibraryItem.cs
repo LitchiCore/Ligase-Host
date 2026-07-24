@@ -23,6 +23,9 @@ public sealed class LibraryItem
         Kind is LibraryItemKind.Desktop or LibraryItemKind.VirtualDesktop;
 
     [JsonIgnore]
+    public bool CanManuallyOrder => !IsSystemEntry && PublishedToClients;
+
+    [JsonIgnore]
     public string SourceLabel => Kind switch
     {
         LibraryItemKind.Desktop => "Windows · 复制显示器",

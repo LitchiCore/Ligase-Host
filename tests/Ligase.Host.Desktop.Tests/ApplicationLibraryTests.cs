@@ -45,7 +45,8 @@ public sealed class ApplicationLibraryTests
 
         var first = await library.AddSteamAsync(game);
         var duplicate = await library.AddSteamAsync(game);
-        await library.SetSortModeAsync(LibrarySortMode.AddedNewest);
+        var beforeOrder = await library.LoadAsync();
+        await library.SetManualOrderAsync(beforeOrder.Revision, [first.Id]);
 
         var reloaded = await new ApplicationLibrary(paths, writer).LoadAsync();
         Assert.AreEqual(first.Id, duplicate.Id);
@@ -58,9 +59,127 @@ public sealed class ApplicationLibraryTests
         Assert.IsTrue(reloaded.Items.Any(item =>
             item.Kind == LibraryItemKind.VirtualDesktop &&
             item.Id == SystemLibraryIds.VirtualDesktop));
-        Assert.AreEqual(LibrarySortMode.AddedNewest, reloaded.SortMode);
+        Assert.AreEqual(LibrarySortMode.Manual, reloaded.SortMode);
         Assert.IsTrue(reloaded.Revision >= 3);
         Assert.AreEqual(3, writer.WriteCount);
+    }
+
+    [TestMethod]
+    public async Task ManualOrderPersistsCanonicalOrderAndSyncProjection()
+    {
+        var paths = new LigasePaths(_temporaryDirectory);
+        var library = new ApplicationLibrary(
+            paths,
+            new RecordingAppsWriter(),
+            new StreamingSettingsService(paths),
+            new LigaseSyncDocumentWriter(paths));
+        var zulu = await library.AddSteamAsync(new SteamGame(
+            2, "Zulu", "Zulu", @"D:\Steam\Zulu", "z.acf", 1));
+        var alpha = await library.AddSteamAsync(new SteamGame(
+            1, "Alpha", "Alpha", @"D:\Steam\Alpha", "a.acf", 1));
+
+        var before = await library.LoadAsync();
+        var ordered = await library.SetManualOrderAsync(
+            before.Revision, [zulu.Id, alpha.Id]);
+
+        CollectionAssert.AreEqual(
+            new[]
+            {
+                SystemLibraryIds.Desktop,
+                SystemLibraryIds.VirtualDesktop,
+                zulu.Id,
+                alpha.Id
+            },
+            ordered.Items.Select(item => item.Id).ToArray());
+        using var sync = JsonDocument.Parse(await File.ReadAllTextAsync(paths.SyncFile));
+        Assert.AreEqual("manual",
+            sync.RootElement.GetProperty("library").GetProperty("sortMode").GetString());
+        CollectionAssert.AreEqual(
+            ordered.Items.Select(item => item.Id).ToArray(),
+            sync.RootElement.GetProperty("library").GetProperty("items")
+                .EnumerateArray().Select(item => item.GetProperty("id").GetGuid()).ToArray());
+    }
+
+    [TestMethod]
+    public async Task ManualOrderRejectsStaleIncompleteDuplicateAndSystemIds()
+    {
+        var paths = new LigasePaths(_temporaryDirectory);
+        var library = new ApplicationLibrary(
+            paths,
+            new RecordingAppsWriter(),
+            new StreamingSettingsService(paths),
+            new LigaseSyncDocumentWriter(paths));
+        var alpha = await library.AddSteamAsync(new SteamGame(
+            1, "Alpha", "Alpha", @"D:\Steam\Alpha", "a.acf", 1));
+        var zulu = await library.AddSteamAsync(new SteamGame(
+            2, "Zulu", "Zulu", @"D:\Steam\Zulu", "z.acf", 1));
+
+        var before = await library.LoadAsync();
+        await Assert.ThrowsExceptionAsync<LibraryRevisionConflictException>(
+            () => library.SetManualOrderAsync(before.Revision - 1, [alpha.Id, zulu.Id]));
+        await Assert.ThrowsExceptionAsync<InvalidManualLibraryOrderException>(
+            () => library.SetManualOrderAsync(before.Revision, [alpha.Id]));
+        await Assert.ThrowsExceptionAsync<InvalidManualLibraryOrderException>(
+            () => library.SetManualOrderAsync(before.Revision, [alpha.Id, alpha.Id]));
+        await Assert.ThrowsExceptionAsync<InvalidManualLibraryOrderException>(
+            () => library.SetManualOrderAsync(
+                before.Revision, [alpha.Id, SystemLibraryIds.Desktop]));
+        await Assert.ThrowsExceptionAsync<InvalidLibraryRevisionException>(
+            () => library.SetManualOrderAsync(0, [alpha.Id, zulu.Id]));
+        await Assert.ThrowsExceptionAsync<InvalidLibraryRevisionException>(
+            () => library.SetManualOrderAsync(
+                9_007_199_254_740_992, [alpha.Id, zulu.Id]));
+    }
+
+    [TestMethod]
+    public async Task HiddenAndNewItemsFollowFrozenManualAppendRules()
+    {
+        var paths = new LigasePaths(_temporaryDirectory);
+        var library = new ApplicationLibrary(
+            paths,
+            new RecordingAppsWriter(),
+            new StreamingSettingsService(paths),
+            new LigaseSyncDocumentWriter(paths));
+        var alpha = await library.AddSteamAsync(new SteamGame(
+            1, "Alpha", "Alpha", @"D:\Steam\Alpha", "a.acf", 1));
+        var beta = await library.AddSteamAsync(new SteamGame(
+            2, "Beta", "Beta", @"D:\Steam\Beta", "b.acf", 1));
+        var gamma = await library.AddSteamAsync(new SteamGame(
+            3, "Gamma", "Gamma", @"D:\Steam\Gamma", "g.acf", 1));
+
+        var initial = await library.LoadAsync();
+        await library.SetManualOrderAsync(
+            initial.Revision, [gamma.Id, beta.Id, alpha.Id]);
+        await library.SetPublishedToClientsAsync(beta.Id, false);
+
+        var hidden = await library.LoadAsync();
+        CollectionAssert.AreEqual(
+            new[] { gamma.Id, alpha.Id },
+            hidden.Items
+                .Where(item => !item.IsSystemEntry && item.PublishedToClients)
+                .Select(item => item.Id)
+                .ToArray());
+        Assert.AreEqual(beta.Id, hidden.Items.Last().Id);
+
+        var delta = await library.AddSteamAsync(new SteamGame(
+            4, "Delta", "Delta", @"D:\Steam\Delta", "d.acf", 1));
+        var added = await library.LoadAsync();
+        CollectionAssert.AreEqual(
+            new[] { gamma.Id, alpha.Id, delta.Id },
+            added.Items
+                .Where(item => !item.IsSystemEntry && item.PublishedToClients)
+                .Select(item => item.Id)
+                .ToArray());
+        Assert.AreEqual(beta.Id, added.Items.Last().Id);
+
+        await library.SetPublishedToClientsAsync(beta.Id, true);
+        var republished = await library.LoadAsync();
+        CollectionAssert.AreEqual(
+            new[] { gamma.Id, alpha.Id, delta.Id, beta.Id },
+            republished.Items
+                .Where(item => !item.IsSystemEntry && item.PublishedToClients)
+                .Select(item => item.Id)
+                .ToArray());
     }
 
     [TestMethod]

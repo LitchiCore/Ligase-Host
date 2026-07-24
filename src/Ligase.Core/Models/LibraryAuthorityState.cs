@@ -34,4 +34,7 @@ public sealed record AuthorityReadbackDocument(
     string RootFingerprint,
     string HostUniqueId,
     IReadOnlyList<AuthorityReadbackLibraryItem> LibraryItems,
-    IReadOnlyList<AuthorityReadbackApp> Apps);
+    IReadOnlyList<AuthorityReadbackApp> Apps,
+    long LibraryRevision = 0,
+    string LibrarySortMode = "",
+    IReadOnlyList<string>? LibraryOrder = null);

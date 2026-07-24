@@ -6,5 +6,6 @@ public enum LibrarySortMode
     NameDescending,
     AddedNewest,
     AddedOldest,
-    LastPlayedNewest
+    LastPlayedNewest,
+    Manual
 }

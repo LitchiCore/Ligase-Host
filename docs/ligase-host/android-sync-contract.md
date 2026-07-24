@@ -63,7 +63,7 @@ but Android must not treat them as authoritative library metadata.
   "library": {
     "revision": 12,
     "updatedAt": "2026-07-23T05:30:00Z",
-    "sortMode": "nameAscending",
+    "sortMode": "manual",
     "items": [
       {
         "id": "2c42a3d0-79f1-4bb6-98f8-40c18cd5bc91",
@@ -99,6 +99,18 @@ but Android must not treat them as authoritative library metadata.
 ```
 
 Host paths, working directories, and commands are intentionally excluded.
+
+When `sortMode` is `manual`, `library.items` is in the Host's shared canonical
+order. Android and other clients preserve that array order after UUID-only
+merging with `applist`. Name, added-time, and last-played sorting are local view
+choices: a client may apply them without writing Host state. Older snapshots
+may still contain `nameAscending`, `nameDescending`, `addedNewest`,
+`addedOldest`, or `lastPlayedNewest`; clients parse those values for
+compatibility, but new product writes use `manual`.
+
+The two system entries have fixed order semantics: `desktop` is first and
+`virtualDesktop` is second. Host sorting applies only to the remaining games
+and applications. UUID identity never changes when order changes.
 
 `publishedToClients` is an additive Sync v1 field controlled only by Host. A
 missing value from an older Sync v1 snapshot means visible. Android must parse
@@ -176,32 +188,63 @@ Clear an override and return to the global setting:
 The response is the updated `streaming` object. Width must be between 320 and
 16384; height must be between 240 and 16384.
 
-## Update library sort mode
+## Update shared manual library order
 
 `POST /ligase/v1/library/sort`
+
+Only a paired client with `operate` permission may call this route. The request
+contains the revision from the last Sync snapshot and every currently
+published, non-system application UUID exactly once, in the desired order:
 
 ```json
 {
   "baseRevision": 12,
-  "sortMode": "lastPlayedNewest"
+  "orderedAppUuids": [
+    "2c42a3d0-79f1-4bb6-98f8-40c18cd5bc91",
+    "9af5103b-1dc0-4562-8421-62f95d855a8a"
+  ]
 }
 ```
 
-Allowed values:
+`baseRevision` is a JSON integer token in `1..9007199254740991`; decimal,
+exponent, zero, negative, and overflowing values are invalid. UUIDs must already
+be lowercase canonical D form. The sequence is rejected if it has a duplicate,
+an unknown or missing UUID, a system UUID, or an unpublished UUID. Names,
+numeric app IDs, paths, and fuzzy matching are never accepted.
 
-- `nameAscending`
-- `nameDescending`
-- `addedNewest`
-- `addedOldest`
-- `lastPlayedNewest`
+The two system entries are not sent and are prepended by Host in fixed
+`desktop`, `virtualDesktop` order. Unpublished Host-only entries are also not
+sent or returned. Host retains them after the public sequence without exposing
+their names, UUIDs, paths, or relative order. A newly added published item is
+appended to the public manual sequence. Hiding an item removes it from the
+public sequence; publishing it again appends it to the public sequence.
 
-The response is the updated `library` object. Android may update only the sort
-mode. The Host remains the authority for adding and removing applications and
-for changing `publishedToClients`.
+Success is HTTP `200` with the minimal public projection:
+
+```json
+{
+  "revision": 13,
+  "sortMode": "manual",
+  "orderedAppUuids": [
+    "2c42a3d0-79f1-4bb6-98f8-40c18cd5bc91",
+    "9af5103b-1dc0-4562-8421-62f95d855a8a"
+  ]
+}
+```
+
+Host UI manual up/down actions use the same domain coordinator and validation.
+Name, added-time, and last-played controls are local view-only operations and
+never call this route.
+
+Malformed revision or UUID/order input returns HTTP `400` with
+`{"error":"invalidManualOrder"}`. Observe clients return HTTP `403`
+`permissionDenied`. A persistence or projection failure returns HTTP `500`
+`libraryUpdateFailed` without exception text or Host paths.
 
 ## Revision conflicts
 
-Both write endpoints require the revision from the last successful snapshot.
+Streaming writes and shared manual ordering require the revision from the last
+successful snapshot.
 HTTP `409` returns:
 
 ```json

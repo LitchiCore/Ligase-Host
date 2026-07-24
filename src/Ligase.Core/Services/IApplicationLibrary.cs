@@ -16,7 +16,10 @@ public interface IApplicationLibrary
         string? workingDirectory,
         string? coverImagePath = null,
         CancellationToken cancellationToken = default);
-    Task SetSortModeAsync(LibrarySortMode sortMode, CancellationToken cancellationToken = default);
+    Task<LibraryState> SetManualOrderAsync(
+        long baseRevision,
+        IReadOnlyList<Guid> orderedPublishedAppIds,
+        CancellationToken cancellationToken = default);
     Task SetPublishedToClientsAsync(
         Guid id,
         bool published,

@@ -130,6 +130,52 @@ public sealed class LibraryAuthorityTests
         Assert.AreEqual(3, authority.ReadbackCount);
     }
 
+    [TestMethod]
+    public void ManualOrderReadbackRequiresRevisionModeAndExactSequence()
+    {
+        var first = new LibraryItem
+        {
+            Id = SystemLibraryIds.Desktop,
+            Kind = LibraryItemKind.Desktop,
+            Name = "监控桌面"
+        };
+        var second = new LibraryItem
+        {
+            Id = Guid.Parse("f3d67f4d-b1fe-4c5d-a77e-b78a51051c1a"),
+            Kind = LibraryItemKind.Steam,
+            Name = "Chill"
+        };
+        var state = new LibraryState
+        {
+            Revision = 12,
+            SortMode = LibrarySortMode.Manual,
+            Items = [first, second]
+        };
+        var matching = new AuthorityReadbackDocument(
+            SchemaVersion: 1,
+            AuthorityToken: "token",
+            StartNonce: "nonce",
+            RootFingerprint: "fingerprint",
+            HostUniqueId: "host",
+            LibraryItems: [],
+            Apps: [],
+            LibraryRevision: 12,
+            LibrarySortMode: "manual",
+            LibraryOrder: [first.Id.ToString("D"), second.Id.ToString("D")]);
+
+        Assert.IsTrue(LibraryMutationCoordinator.MatchesCanonicalOrder(matching, state));
+        Assert.IsFalse(LibraryMutationCoordinator.MatchesCanonicalOrder(
+            matching with { LibraryRevision = 13 }, state));
+        Assert.IsFalse(LibraryMutationCoordinator.MatchesCanonicalOrder(
+            matching with { LibrarySortMode = "nameAscending" }, state));
+        Assert.IsFalse(LibraryMutationCoordinator.MatchesCanonicalOrder(
+            matching with
+            {
+                LibraryOrder = [second.Id.ToString("D"), first.Id.ToString("D")]
+            },
+            state));
+    }
+
     private LigasePaths CreateProjectionFiles()
     {
         var paths = new LigasePaths(_root);
@@ -195,7 +241,10 @@ public sealed class LibraryAuthorityTests
             string? coverImagePath = null,
             CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
-        public Task SetSortModeAsync(LibrarySortMode sortMode, CancellationToken cancellationToken = default) =>
+        public Task<LibraryState> SetManualOrderAsync(
+            long baseRevision,
+            IReadOnlyList<Guid> orderedPublishedAppIds,
+            CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
         public Task SetPublishedToClientsAsync(Guid id, bool published, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();

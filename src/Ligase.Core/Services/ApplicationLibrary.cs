@@ -85,16 +85,34 @@ public sealed class ApplicationLibrary(
             return item;
         }, cancellationToken);
 
-    public async Task SetSortModeAsync(
-        LibrarySortMode sortMode,
-        CancellationToken cancellationToken = default)
-    {
-        await MutateAsync<object?>(state =>
+    public Task<LibraryState> SetManualOrderAsync(
+        long baseRevision,
+        IReadOnlyList<Guid> orderedPublishedAppIds,
+        CancellationToken cancellationToken = default) =>
+        MutateAsync(state =>
         {
-            state.SortMode = sortMode;
-            return null;
+            if (baseRevision is < 1 or > 9_007_199_254_740_991)
+                throw new InvalidLibraryRevisionException(baseRevision);
+            if (state.Revision != baseRevision)
+                throw new LibraryRevisionConflictException(baseRevision, state.Revision);
+
+            var published = state.Items
+                .Where(item => !item.IsSystemEntry && item.PublishedToClients)
+                .ToDictionary(item => item.Id);
+            if (orderedPublishedAppIds.Count != published.Count ||
+                orderedPublishedAppIds.Distinct().Count() != orderedPublishedAppIds.Count ||
+                orderedPublishedAppIds.Any(id => !published.ContainsKey(id)))
+                throw new InvalidManualLibraryOrderException();
+
+            var hidden = state.Items
+                .Where(item => !item.IsSystemEntry && !item.PublishedToClients)
+                .ToArray();
+            state.SortMode = LibrarySortMode.Manual;
+            var ordered = orderedPublishedAppIds.Select(id => published[id]).Concat(hidden).ToArray();
+            state.Items.RemoveAll(item => !item.IsSystemEntry);
+            state.Items.AddRange(ordered);
+            return state;
         }, cancellationToken);
-    }
 
     public async Task SetPublishedToClientsAsync(
         Guid id,
@@ -137,6 +155,7 @@ public sealed class ApplicationLibrary(
         {
             var state = await ReadCoreAsync(cancellationToken);
             var result = mutation(state);
+            ApplyCanonicalOrder(state);
             state.Revision++;
             state.UpdatedAt = DateTimeOffset.UtcNow;
             await WriteCoreAsync(state, cancellationToken);
@@ -170,6 +189,7 @@ public sealed class ApplicationLibrary(
         var state = await JsonSerializer.DeserializeAsync<LibraryState>(stream, JsonOptions, cancellationToken)
                     ?? new LibraryState();
         EnsureSystemEntries(state);
+        ApplyCanonicalOrder(state);
         return state;
     }
 
@@ -197,6 +217,20 @@ public sealed class ApplicationLibrary(
             SystemLibraryIds.VirtualDesktop,
             LibraryItemKind.VirtualDesktop,
             "虚拟桌面");
+    }
+
+    internal static void ApplyCanonicalOrder(LibraryState state)
+    {
+        var system = state.Items
+            .Where(item => item.IsSystemEntry)
+            .OrderBy(item => item.Kind == LibraryItemKind.Desktop ? 0 : 1);
+        var games = state.Items
+            .Where(item => !item.IsSystemEntry && item.PublishedToClients)
+            .Concat(state.Items.Where(item => !item.IsSystemEntry && !item.PublishedToClients));
+
+        var ordered = system.Concat(games).ToList();
+        state.Items.Clear();
+        state.Items.AddRange(ordered);
     }
 
     private static void AddSystemEntryIfMissing(
@@ -243,3 +277,16 @@ public sealed class SystemLibraryItemMutationException(Guid id, string message)
 {
     public Guid Id { get; } = id;
 }
+
+public sealed class InvalidLibraryRevisionException(long revision)
+    : InvalidOperationException($"游戏库版本 {revision} 超出安全整数范围。");
+
+public sealed class LibraryRevisionConflictException(long expected, long actual)
+    : InvalidOperationException("游戏库已在其他位置更新，请刷新后重新排序。")
+{
+    public long ExpectedRevision { get; } = expected;
+    public long ActualRevision { get; } = actual;
+}
+
+public sealed class InvalidManualLibraryOrderException()
+    : InvalidOperationException("手动顺序必须完整包含当前所有已发布游戏，且不能重复。");

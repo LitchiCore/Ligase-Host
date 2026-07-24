@@ -61,6 +61,18 @@ public sealed partial class GameLibraryPage : Page
             $"“{item.Name}”已从 Host 和客户端同步游戏库中移除。");
     }
 
+    private async void OnMoveApplicationUp(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement { DataContext: LibraryItem item })
+            await ViewModel.MoveManualAsync(item, -1);
+    }
+
+    private async void OnMoveApplicationDown(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement { DataContext: LibraryItem item })
+            await ViewModel.MoveManualAsync(item, 1);
+    }
+
     private async Task ShowMessageAsync(string title, string message)
     {
         var dialog = new ContentDialog

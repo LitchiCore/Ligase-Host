@@ -6,7 +6,17 @@ using Microsoft.UI.Xaml;
 
 namespace Ligase.Host.Desktop.ViewModels;
 
-public sealed record LibrarySortOption(string Label, LibrarySortMode Value);
+public enum LibraryViewSortMode
+{
+    Manual,
+    NameAscending,
+    NameDescending,
+    AddedNewest,
+    AddedOldest,
+    LastPlayedNewest
+}
+
+public sealed record LibrarySortOption(string Label, LibraryViewSortMode Value);
 
 public partial class GameLibraryViewModel(
     IApplicationLibrary applicationLibrary,
@@ -14,15 +24,17 @@ public partial class GameLibraryViewModel(
     LibraryMutationCoordinator mutationCoordinator) : ObservableObject
 {
     private IReadOnlyList<LibraryItem> _allItems = [];
+    private long _libraryRevision;
 
     public ObservableCollection<LibraryItem> FilteredItems { get; } = [];
     public IReadOnlyList<LibrarySortOption> SortOptions { get; } =
     [
-        new("名称 A–Z", LibrarySortMode.NameAscending),
-        new("名称 Z–A", LibrarySortMode.NameDescending),
-        new("最近添加", LibrarySortMode.AddedNewest),
-        new("最早添加", LibrarySortMode.AddedOldest),
-        new("最近启动", LibrarySortMode.LastPlayedNewest)
+        new("手动排序（同步）", LibraryViewSortMode.Manual),
+        new("名称 A–Z（仅此窗口）", LibraryViewSortMode.NameAscending),
+        new("名称 Z–A（仅此窗口）", LibraryViewSortMode.NameDescending),
+        new("最近添加（仅此窗口）", LibraryViewSortMode.AddedNewest),
+        new("最早添加（仅此窗口）", LibraryViewSortMode.AddedOldest),
+        new("最近启动（仅此窗口）", LibraryViewSortMode.LastPlayedNewest)
     ];
 
     [ObservableProperty]
@@ -58,6 +70,9 @@ public partial class GameLibraryViewModel(
     public string EmptyDescription => _allItems.Count == 0
         ? "添加 Steam 游戏或本地应用后，它们会出现在这里并同步到 Ligase 的 Apollo 核心。"
         : "尝试缩短关键词，或切换排序方式。";
+    public string SortDescription => SelectedSortOption?.Value == LibraryViewSortMode.Manual
+        ? "使用每个游戏右侧的上移、下移按钮调整顺序；系统桌面入口始终固定在最前。"
+        : "名称、添加时间和最近游玩只改变此窗口的查看方式，不会覆盖共享手动顺序。";
 
     public async Task RefreshAsync(CancellationToken cancellationToken = default)
     {
@@ -70,8 +85,12 @@ public partial class GameLibraryViewModel(
             var authority = await authorityService.GetStateAsync(cancellationToken);
             CanModifyLibrary = authority.CanWrite;
             AuthorityMessage = authority.CanWrite ? null : authority.Message;
-            _allItems = state.Items;
-            SelectedSortOption = SortOptions.First(option => option.Value == state.SortMode);
+            _allItems = state.Items.ToArray();
+            _libraryRevision = state.Revision;
+            SelectedSortOption ??= SortOptions.First(option =>
+                option.Value == (state.SortMode == LibrarySortMode.Manual
+                    ? LibraryViewSortMode.Manual
+                    : LibraryViewSortMode.NameAscending));
             ApplyView();
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
@@ -119,16 +138,38 @@ public partial class GameLibraryViewModel(
 
     partial void OnSearchTextChanged(string value) => ApplyView();
 
-    async partial void OnSelectedSortOptionChanged(LibrarySortOption? value)
+    partial void OnSelectedSortOptionChanged(LibrarySortOption? value)
     {
         if (value is null) return;
+        OnPropertyChanged(nameof(SortDescription));
         ApplyView();
-        if (!CanModifyLibrary) return;
+    }
+
+    public async Task MoveManualAsync(
+        LibraryItem item,
+        int direction,
+        CancellationToken cancellationToken = default)
+    {
+        if (item.IsSystemEntry || !await EnsureWritableAsync(cancellationToken)) return;
         try
         {
-            await mutationCoordinator.SetSortModeAsync(value.Value);
+            var published = _allItems
+                .Where(candidate => !candidate.IsSystemEntry && candidate.PublishedToClients)
+                .Select(candidate => candidate.Id)
+                .ToList();
+            var currentIndex = published.IndexOf(item.Id);
+            if (currentIndex < 0) return;
+            var targetIndex = Math.Clamp(currentIndex + direction, 0, published.Count - 1);
+            if (targetIndex == currentIndex) return;
+            published.RemoveAt(currentIndex);
+            published.Insert(targetIndex, item.Id);
+            SelectedSortOption = SortOptions.First(option =>
+                option.Value == LibraryViewSortMode.Manual);
+            await mutationCoordinator.SetManualOrderAsync(
+                _libraryRevision, published, cancellationToken);
+            await RefreshAsync(cancellationToken);
         }
-        catch (Exception exception)
+        catch (Exception exception) when (exception is not OperationCanceledException)
         {
             ErrorMessage = exception.Message;
         }
@@ -144,23 +185,32 @@ public partial class GameLibraryViewModel(
                 item.LocationLabel.Contains(query, StringComparison.OrdinalIgnoreCase) ||
                 (item.SteamAppId?.ToString().Contains(query, StringComparison.OrdinalIgnoreCase) ?? false));
 
-        var sortMode = SelectedSortOption?.Value ?? LibrarySortMode.NameAscending;
         var pinned = matches
             .OrderBy(item => item.Kind == LibraryItemKind.Desktop ? 0 :
                 item.Kind == LibraryItemKind.VirtualDesktop ? 1 : 2);
-        var ordered = sortMode switch
+        var ordered = SelectedSortOption?.Value switch
         {
-            LibrarySortMode.NameDescending => pinned.ThenByDescending(item => item.Name, StringComparer.CurrentCultureIgnoreCase),
-            LibrarySortMode.AddedNewest => pinned.ThenByDescending(item => item.AddedAt),
-            LibrarySortMode.AddedOldest => pinned.ThenBy(item => item.AddedAt),
-            LibrarySortMode.LastPlayedNewest => pinned
+            LibraryViewSortMode.NameDescending => pinned
+                .ThenByDescending(item => item.Name, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(item => item.Id),
+            LibraryViewSortMode.AddedNewest => pinned
+                .ThenByDescending(item => item.AddedAt)
+                .ThenBy(item => item.Id),
+            LibraryViewSortMode.AddedOldest => pinned
+                .ThenBy(item => item.AddedAt)
+                .ThenBy(item => item.Id),
+            LibraryViewSortMode.LastPlayedNewest => pinned
                 .ThenByDescending(item => item.LastPlayedAt.HasValue)
-                .ThenByDescending(item => item.LastPlayedAt),
-            _ => pinned.ThenBy(item => item.Name, StringComparer.CurrentCultureIgnoreCase)
+                .ThenByDescending(item => item.LastPlayedAt)
+                .ThenBy(item => item.Id),
+            LibraryViewSortMode.Manual => matches,
+            _ => pinned
+                .ThenBy(item => item.Name, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(item => item.Id)
         };
 
         FilteredItems.Clear();
-        foreach (var item in ordered.ThenBy(item => item.Id)) FilteredItems.Add(item);
+        foreach (var item in ordered) FilteredItems.Add(item);
         OnPropertyChanged(nameof(ItemCount));
         OnPropertyChanged(nameof(EmptyVisibility));
         OnPropertyChanged(nameof(EmptyTitle));

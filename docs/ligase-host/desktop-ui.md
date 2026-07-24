@@ -1,5 +1,23 @@
 # Ligase Host desktop UI
 
+## Shared manual order and local view sorting
+
+The game-library toolbar separates local view sorting from shared Host order:
+
+- Manual order is shared, adjusted with per-game up/down controls, and persisted
+  through the managed authority transaction.
+- Name A-Z/Z-A, added newest/oldest, and last played are deterministic local
+  view choices. They do not change the library revision or Sync.
+
+Manual movement uses `LibraryMutationCoordinator`, reloads the managed core,
+and requires core readback of revision, sort mode, and the exact UUID sequence.
+`desktop` and `virtualDesktop` remain first and second and cannot be moved.
+Only published non-system UUIDs participate. Newly added or republished items
+append; hidden items leave the public sequence without leaking Host-only
+metadata. All identities remain unchanged. Operate clients may submit the same
+complete manual UUID sequence with optimistic `baseRevision`; `409` requires a
+fresh pull and is never automatically replayed.
+
 Ligase Host is a native Windows control surface for Apollo's C++ streaming core.
 It is not a WebView wrapper around Apollo's existing configuration site.
 

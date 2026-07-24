@@ -78,6 +78,12 @@ namespace nvhttp {
   bool
   ligase_client_can_mutate(const crypto::named_cert_t &client);
 
+  bool
+  ligase_manual_sort_revision_valid(std::int64_t revision);
+
+  bool
+  ligase_manual_sort_uuid_valid(std::string_view value);
+
   /**
    * @brief Start the nvhttp server.
    * @examples

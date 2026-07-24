@@ -42,16 +42,14 @@ public sealed class LibraryMutationCoordinator(
                 HasPublishedItem(readback, item) && HasLaunchMapping(readback, item.Id),
             cancellationToken);
 
-    public Task SetSortModeAsync(
-        LibrarySortMode sortMode,
+    public Task SetManualOrderAsync(
+        long baseRevision,
+        IReadOnlyList<Guid> orderedPublishedAppIds,
         CancellationToken cancellationToken = default) =>
-        MutateAsync<object?>(
-            async token =>
-            {
-                await repository.SetSortModeAsync(sortMode, token);
-                return null;
-            },
-            static (_, _) => true,
+        MutateAsync(
+            token => repository.SetManualOrderAsync(
+                baseRevision, orderedPublishedAppIds, token),
+            static (readback, state) => MatchesCanonicalOrder(readback, state),
             cancellationToken);
 
     public Task SetPublishedToClientsAsync(
@@ -180,10 +178,39 @@ public sealed class LibraryMutationCoordinator(
             candidate.Uuid.Equals(id.ToString("D"), StringComparison.OrdinalIgnoreCase) &&
             uint.TryParse(candidate.AppId, out _));
 
+    internal static bool MatchesCanonicalOrder(
+        AuthorityReadbackDocument readback,
+        LibraryState state) =>
+        readback.LibraryRevision == state.Revision &&
+        string.Equals(
+            readback.LibrarySortMode,
+            ToContractSortMode(state.SortMode),
+            StringComparison.Ordinal) &&
+        (readback.LibraryOrder ?? []).SequenceEqual(
+            state.Items.Select(item => item.Id.ToString("D")),
+            StringComparer.OrdinalIgnoreCase);
+
+    private static string ToContractSortMode(LibrarySortMode mode) =>
+        mode switch
+        {
+            LibrarySortMode.NameAscending => "nameAscending",
+            LibrarySortMode.NameDescending => "nameDescending",
+            LibrarySortMode.AddedNewest => "addedNewest",
+            LibrarySortMode.AddedOldest => "addedOldest",
+            LibrarySortMode.LastPlayedNewest => "lastPlayedNewest",
+            LibrarySortMode.Manual => "manual",
+            _ => throw new ArgumentOutOfRangeException(nameof(mode))
+        };
+
     private static bool EquivalentProjection(
         AuthorityReadbackDocument expected,
         AuthorityReadbackDocument actual) =>
         string.Equals(expected.HostUniqueId, actual.HostUniqueId, StringComparison.OrdinalIgnoreCase) &&
+        expected.LibraryRevision == actual.LibraryRevision &&
+        string.Equals(expected.LibrarySortMode, actual.LibrarySortMode, StringComparison.Ordinal) &&
+        (expected.LibraryOrder ?? []).SequenceEqual(
+            actual.LibraryOrder ?? [],
+            StringComparer.OrdinalIgnoreCase) &&
         expected.LibraryItems
             .OrderBy(item => item.Id, StringComparer.OrdinalIgnoreCase)
             .SequenceEqual(actual.LibraryItems.OrderBy(

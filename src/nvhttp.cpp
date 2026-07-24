@@ -782,6 +782,16 @@ namespace nvhttp {
     return !!(client.perm & PERM::launch);
   }
 
+  bool ligase_manual_sort_revision_valid(std::int64_t revision) {
+    return revision >= 1 && revision <= 9007199254740991LL;
+  }
+
+  bool ligase_manual_sort_uuid_valid(std::string_view value) {
+    static const std::regex canonical(
+      "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$");
+    return std::regex_match(value.begin(), value.end(), canonical);
+  }
+
   template <class T>
   void print_req(std::shared_ptr<typename SimpleWeb::ServerBase<T>::Request> request) {
     BOOST_LOG(debug) << "TUNNEL :: "sv << tunnel<T>::to_string;
@@ -1566,8 +1576,10 @@ namespace nvhttp {
 
     nlohmann::json build_ligase_authority_readback(const nlohmann::json &authority) {
       nlohmann::json library_items = nlohmann::json::array();
+      nlohmann::json library_order = nlohmann::json::array();
       const auto sync = read_ligase_json(ligase_sync_path());
       for (const auto &item : sync.at("library").at("items")) {
+        library_order.push_back(item.at("id"));
         library_items.push_back({
           {"id", item.at("id")},
           {"kind", item.at("kind")},
@@ -1591,7 +1603,10 @@ namespace nvhttp {
         {"rootFingerprint", authority.at("rootFingerprint")},
         {"hostUniqueId", http::unique_id},
         {"libraryItems", library_items},
-        {"apps", loaded_apps}
+        {"apps", loaded_apps},
+        {"libraryRevision", sync.at("library").value("revision", std::int64_t {0})},
+        {"librarySortMode", sync.at("library").value("sortMode", "nameAscending")},
+        {"libraryOrder", library_order}
       };
     }
 
@@ -1800,70 +1815,155 @@ namespace nvhttp {
 
   void ligase_update_library_sort(resp_https_t response, req_https_t request) {
     print_req<SunshineHTTPS>(request);
-    if (!ligase_mutation_authorized(response, request)) {
-      return;
-    }
+    if (!ligase_mutation_authorized(response, request)) return;
     const auto request_json = parse_ligase_request(response, request);
-    if (!request_json) {
+    if (!request_json) return;
+
+    if (!request_json->is_object() ||
+        request_json->size() != 2 ||
+        !request_json->contains("baseRevision") ||
+        !request_json->at("baseRevision").is_number_integer() ||
+        !request_json->contains("orderedAppUuids") ||
+        !request_json->at("orderedAppUuids").is_array()) {
+      send_ligase_json(
+        response,
+        SimpleWeb::StatusCode::client_error_bad_request,
+        {{"error", "invalidManualOrder"}}
+      );
       return;
     }
 
-    static const std::unordered_map<std::string, int> sort_modes {
-      {"nameAscending", 0},
-      {"nameDescending", 1},
-      {"addedNewest", 2},
-      {"addedOldest", 3},
-      {"lastPlayedNewest", 4}
-    };
+    const auto &base_revision_json = request_json->at("baseRevision");
+    if (base_revision_json.is_number_unsigned() &&
+        base_revision_json.get<std::uint64_t>() >
+          static_cast<std::uint64_t>(9007199254740991LL)) {
+      send_ligase_json(
+        response,
+        SimpleWeb::StatusCode::client_error_bad_request,
+        {{"error", "invalidManualOrder"}}
+      );
+      return;
+    }
+    const auto base_revision = base_revision_json.get<std::int64_t>();
+    if (!ligase_manual_sort_revision_valid(base_revision)) {
+      send_ligase_json(
+        response,
+        SimpleWeb::StatusCode::client_error_bad_request,
+        {{"error", "invalidManualOrder"}}
+      );
+      return;
+    }
+
+    std::vector<std::string> requested_order;
+    std::unordered_set<std::string> requested_ids;
+    for (const auto &value : request_json->at("orderedAppUuids")) {
+      if (!value.is_string()) {
+        requested_order.clear();
+        break;
+      }
+      auto uuid = value.get<std::string>();
+      if (!ligase_manual_sort_uuid_valid(uuid) || !requested_ids.emplace(uuid).second) {
+        requested_order.clear();
+        break;
+      }
+      requested_order.emplace_back(std::move(uuid));
+    }
+    if (requested_order.size() != request_json->at("orderedAppUuids").size()) {
+      send_ligase_json(
+        response,
+        SimpleWeb::StatusCode::client_error_bad_request,
+        {{"error", "invalidManualOrder"}}
+      );
+      return;
+    }
 
     try {
       std::scoped_lock lock(ligase_sync_mutex);
       auto library = read_ligase_json(ligase_library_path());
+      auto sync = read_ligase_json(ligase_sync_path());
       const auto current_revision = library.value("revision", std::int64_t {0});
-      if (!request_json->contains("baseRevision") ||
-          !request_json->at("baseRevision").is_number_integer() ||
-          !request_json->contains("sortMode") ||
-          !request_json->at("sortMode").is_string()) {
-        send_ligase_json(
-          response,
-          SimpleWeb::StatusCode::client_error_bad_request,
-          {{"error", "baseRevisionAndSortModeRequired"}}
-        );
-        return;
-      }
-      if (request_json->at("baseRevision").get<std::int64_t>() != current_revision) {
+      if (base_revision != current_revision) {
         send_ligase_revision_conflict(response, current_revision);
         return;
       }
 
-      const auto sort_mode = request_json->at("sortMode").get<std::string>();
-      const auto mode = sort_modes.find(sort_mode);
-      if (mode == sort_modes.end()) {
+      std::unordered_set<std::string> expected_ids;
+      std::vector<std::string> hidden_ids;
+      for (const auto &item : sync.at("library").at("items")) {
+        const auto id = item.at("id").get<std::string>();
+        if (item.value("system", false)) continue;
+        if (item.value("publishedToClients", true)) expected_ids.emplace(id);
+        else hidden_ids.emplace_back(id);
+      }
+      if (requested_ids != expected_ids) {
         send_ligase_json(
           response,
           SimpleWeb::StatusCode::client_error_bad_request,
-          {{"error", "invalidSortMode"}}
+          {{"error", "invalidManualOrder"}}
         );
         return;
       }
 
-      const auto updated_at = ligase_timestamp();
-      library["sortMode"] = mode->second;
-      library["revision"] = current_revision + 1;
-      library["updatedAt"] = updated_at;
-      write_ligase_json(ligase_library_path(), library);
+      const std::vector<std::string> canonical_order {
+        "78a25216-f239-45bd-b4aa-f41c814066e9",
+        "8902cb19-674a-403d-a587-41b092e900ba"
+      };
+      auto full_order = canonical_order;
+      full_order.insert(full_order.end(), requested_order.begin(), requested_order.end());
+      full_order.insert(full_order.end(), hidden_ids.begin(), hidden_ids.end());
 
-      auto sync = read_ligase_json(ligase_sync_path());
-      sync["library"]["sortMode"] = sort_mode;
-      sync["library"]["revision"] = current_revision + 1;
-      sync["library"]["updatedAt"] = updated_at;
-      write_ligase_json(ligase_sync_path(), sync);
-      send_ligase_json(response, SimpleWeb::StatusCode::success_ok, sync["library"]);
-    } catch (const std::exception &error) {
+      const auto reorder = [&full_order](nlohmann::json &items) {
+        std::unordered_map<std::string, nlohmann::json> by_id;
+        for (auto &item : items) {
+          by_id.emplace(item.at("id").get<std::string>(), std::move(item));
+        }
+        nlohmann::json ordered = nlohmann::json::array();
+        for (const auto &id : full_order) {
+          auto iterator = by_id.find(id);
+          if (iterator != by_id.end()) {
+            ordered.push_back(std::move(iterator->second));
+            by_id.erase(iterator);
+          }
+        }
+        if (!by_id.empty()) throw std::runtime_error("library order projection mismatch");
+        items = std::move(ordered);
+      };
+
+      auto updated_library = library;
+      auto updated_sync = sync;
+      reorder(updated_library["items"]);
+      reorder(updated_sync["library"]["items"]);
+      const auto updated_at = ligase_timestamp();
+      updated_library["sortMode"] = 5;
+      updated_library["revision"] = current_revision + 1;
+      updated_library["updatedAt"] = updated_at;
+      updated_sync["library"]["sortMode"] = "manual";
+      updated_sync["library"]["revision"] = current_revision + 1;
+      updated_sync["library"]["updatedAt"] = updated_at;
+
+      try {
+        write_ligase_json(ligase_library_path(), updated_library);
+        write_ligase_json(ligase_sync_path(), updated_sync);
+      } catch (...) {
+        write_ligase_json(ligase_library_path(), library);
+        write_ligase_json(ligase_sync_path(), sync);
+        throw;
+      }
+
+      send_ligase_json(
+        response,
+        SimpleWeb::StatusCode::success_ok,
+        {
+          {"revision", current_revision + 1},
+          {"sortMode", "manual"},
+          {"orderedAppUuids", requested_order}
+        }
+      );
+    } catch (const std::exception &) {
       send_ligase_json(
         response,
         SimpleWeb::StatusCode::server_error_internal_server_error,
-        {{"error", "libraryUpdateFailed"}, {"message", error.what()}}
+        {{"error", "libraryUpdateFailed"}}
       );
     }
   }
