@@ -1,6 +1,10 @@
 using Ligase.Host.Core.Application.LayoutCatalog;
+using Ligase.Host.Core.Application.WindowsFirewall;
 using Ligase.Host.Core.Infrastructure.Storage;
+using Ligase.Host.Core.Infrastructure.Windows;
+using Ligase.Host.Desktop.Platform.Windows.Firewall;
 using Ligase.Host.Desktop.Presentation.LayoutCatalog;
+using Ligase.Host.Desktop.Presentation.Settings.Firewall;
 using Ligase.Host.Desktop.ViewModels;
 using Ligase.Host.Desktop.Services;
 using Ligase.Host.Core.Services;
@@ -53,6 +57,15 @@ public partial class App : Application
                     provider.GetRequiredService<ApplicationLibrary>());
                 services.AddSingleton<ApolloPortAllocator>();
                 services.AddSingleton<ApolloInstanceManager>();
+                services.AddSingleton<WindowsFirewallPlanner>();
+                services.AddSingleton<WindowsFirewallEnvironmentReader>();
+                services.AddSingleton<
+                    IFirewallElevatedProcessLauncher,
+                    SystemFirewallElevatedProcessLauncher>();
+                services.AddSingleton<
+                    IFirewallAccessGateway,
+                    WindowsFirewallAccessGateway>();
+                services.AddTransient<FirewallSettingsViewModel>();
                 services.AddSingleton<ApolloCoreLocator>();
                 services.AddSingleton<IManagedPairingCoreResolver, ManagedPairingCoreResolver>();
                 services.AddSingleton<IAttendedPairingRepository, AttendedPairingRepository>();

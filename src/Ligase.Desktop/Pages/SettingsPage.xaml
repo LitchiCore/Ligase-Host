@@ -10,6 +10,7 @@
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
             <StackPanel Spacing="6">
                 <TextBlock Style="{StaticResource LigaseEyebrowTextStyle}" Text="HOST BEHAVIOR" />
@@ -114,6 +115,75 @@
             </Border>
 
             <Border Grid.Row="4" Style="{StaticResource LigaseCardStyle}">
+                <StackPanel Spacing="12">
+                      <Grid ColumnSpacing="16">
+                          <Grid.ColumnDefinitions>
+                              <ColumnDefinition Width="*" />
+                              <ColumnDefinition Width="Auto" />
+                          </Grid.ColumnDefinitions>
+                          <Grid.RowDefinitions>
+                              <RowDefinition Height="Auto" />
+                              <RowDefinition Height="Auto" />
+                          </Grid.RowDefinitions>
+                          <VisualStateManager.VisualStateGroups>
+                              <VisualStateGroup>
+                                  <VisualState>
+                                      <VisualState.StateTriggers>
+                                          <AdaptiveTrigger MinWindowWidth="760" />
+                                      </VisualState.StateTriggers>
+                                  </VisualState>
+                                  <VisualState>
+                                      <VisualState.StateTriggers>
+                                          <AdaptiveTrigger MinWindowWidth="0" />
+                                      </VisualState.StateTriggers>
+                                      <VisualState.Setters>
+                                          <Setter Target="ConfigureFirewallButton.(Grid.Row)" Value="1" />
+                                          <Setter Target="ConfigureFirewallButton.(Grid.Column)" Value="0" />
+                                          <Setter Target="ConfigureFirewallButton.HorizontalAlignment" Value="Left" />
+                                          <Setter Target="ConfigureFirewallButton.Margin" Value="0,12,0,0" />
+                                      </VisualState.Setters>
+                                  </VisualState>
+                              </VisualStateGroup>
+                          </VisualStateManager.VisualStateGroups>
+                        <StackPanel Spacing="4">
+                            <TextBlock FontSize="16" FontWeight="SemiBold" Text="局域网访问" />
+                            <TextBlock
+                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                Text="仅允许 Private 局域网的 LocalSubnet 通过 IPv4/IPv6 访问串流服务；不会开放管理端口，也不会关闭 Windows 防火墙。"
+                                TextWrapping="Wrap" />
+                        </StackPanel>
+                        <Button
+                              x:Name="ConfigureFirewallButton"
+                              Grid.Column="1"
+                              HorizontalAlignment="Right"
+                              VerticalAlignment="Center"
+                            AutomationProperties.Name="配置 Ligase Host 局域网访问"
+                            Click="OnConfigureFirewall"
+                            Content="{x:Bind FirewallViewModel.ActionLabel, Mode=OneWay}" />
+                    </Grid>
+                    <InfoBar
+                        x:Name="FirewallStatusBar"
+                        IsClosable="False"
+                        IsOpen="True"
+                        Message="{x:Bind FirewallViewModel.StatusMessage, Mode=OneWay}"
+                        Severity="{x:Bind FirewallViewModel.Severity, Mode=OneWay}"
+                        Title="{x:Bind FirewallViewModel.StatusTitle, Mode=OneWay}" />
+                    <Expander Header="高级信息">
+                        <StackPanel Padding="0,8,0,0" Spacing="5">
+                            <TextBlock
+                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                Text="{x:Bind FirewallViewModel.PortSummary, Mode=OneWay}"
+                                TextWrapping="Wrap" />
+                            <TextBlock
+                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                Text="{x:Bind FirewallViewModel.AuditSummary, Mode=OneWay}"
+                                TextWrapping="Wrap" />
+                        </StackPanel>
+                    </Expander>
+                </StackPanel>
+            </Border>
+
+            <Border Grid.Row="5" Style="{StaticResource LigaseCardStyle}">
                 <Grid ColumnSpacing="12">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto" />

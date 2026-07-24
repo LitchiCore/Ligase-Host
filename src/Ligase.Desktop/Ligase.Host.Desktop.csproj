@@ -26,6 +26,14 @@
     <ProjectReference Include="..\..\tools\Ligase.GameWatcher\Ligase.GameWatcher.csproj"
                       ReferenceOutputAssembly="false" />
   </ItemGroup>
+  <ItemGroup>
+    <Content Include="..\..\src_assets\windows\misc\firewall\Manage-LigaseFirewall.ps1"
+             Link="Firewall\Manage-LigaseFirewall.ps1"
+             CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\src_assets\windows\misc\firewall\ligase-firewall-v1.json"
+             Link="Firewall\ligase-firewall-v1.json"
+             CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
   <Target Name="CopyGameWatcher" AfterTargets="Build">
     <ItemGroup>
       <_GameWatcherFiles Include="$(MSBuildProjectDirectory)\..\..\tools\Ligase.GameWatcher\bin\$(Configuration)\net8.0-windows10.0.19041.0\Ligase.GameWatcher.*" />

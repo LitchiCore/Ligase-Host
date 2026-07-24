@@ -1,6 +1,7 @@
 using Ligase.Host.Core.Models;
 using Ligase.Host.Core.Services;
 using Ligase.Host.Desktop.Services;
+using Ligase.Host.Desktop.Presentation.Settings.Firewall;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -13,6 +14,7 @@ public sealed partial class SettingsPage : Page
 {
     private readonly HostPreferencesService _preferences;
     private readonly PairingNotificationService _notifications;
+    public FirewallSettingsViewModel FirewallViewModel { get; }
     private bool _loading;
 
     public SettingsPage()
@@ -21,10 +23,12 @@ public sealed partial class SettingsPage : Page
             .Services.GetRequiredService<HostPreferencesService>();
         _notifications = ((App)Application.Current)
             .Services.GetRequiredService<PairingNotificationService>();
+        FirewallViewModel = ((App)Application.Current)
+            .Services.GetRequiredService<FirewallSettingsViewModel>();
         InitializeComponent();
     }
 
-    protected override void OnNavigatedTo(NavigationEventArgs e)
+    protected override async void OnNavigatedTo(NavigationEventArgs e)
     {
         base.OnNavigatedTo(e);
         _loading = true;
@@ -32,6 +36,7 @@ public sealed partial class SettingsPage : Page
         StartWithWindowsToggle.IsOn = _preferences.Current.StartWithWindows;
         LanguageComboBox.SelectedIndex = (int)_preferences.Current.Language;
         _loading = false;
+        await FirewallViewModel.LoadAsync();
     }
 
     private async void OnCloseToTrayToggled(object sender, RoutedEventArgs e)
@@ -114,6 +119,19 @@ public sealed partial class SettingsPage : Page
         catch (Exception exception)
         {
             SetSaveStatus($"通知发送失败：{exception.Message}", isError: true);
+        }
+    }
+
+    private async void OnConfigureFirewall(object sender, RoutedEventArgs e)
+    {
+        ConfigureFirewallButton.IsEnabled = false;
+        try
+        {
+            await FirewallViewModel.ExecutePrimaryActionAsync();
+        }
+        finally
+        {
+            ConfigureFirewallButton.IsEnabled = true;
         }
     }
 }
