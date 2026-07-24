@@ -97,7 +97,7 @@ public sealed class ApplicationLibrary(
                 throw new LibraryRevisionConflictException(baseRevision, state.Revision);
 
             var published = state.Items
-                .Where(item => !item.IsSystemEntry && item.PublishedToClients)
+                .Where(item => item.PublishedToClients)
                 .ToDictionary(item => item.Id);
             if (orderedPublishedAppIds.Count != published.Count ||
                 orderedPublishedAppIds.Distinct().Count() != orderedPublishedAppIds.Count ||
@@ -105,11 +105,11 @@ public sealed class ApplicationLibrary(
                 throw new InvalidManualLibraryOrderException();
 
             var hidden = state.Items
-                .Where(item => !item.IsSystemEntry && !item.PublishedToClients)
+                .Where(item => !item.PublishedToClients)
                 .ToArray();
             state.SortMode = LibrarySortMode.Manual;
             var ordered = orderedPublishedAppIds.Select(id => published[id]).Concat(hidden).ToArray();
-            state.Items.RemoveAll(item => !item.IsSystemEntry);
+            state.Items.Clear();
             state.Items.AddRange(ordered);
             return state;
         }, cancellationToken);
@@ -221,14 +221,10 @@ public sealed class ApplicationLibrary(
 
     internal static void ApplyCanonicalOrder(LibraryState state)
     {
-        var system = state.Items
-            .Where(item => item.IsSystemEntry)
-            .OrderBy(item => item.Kind == LibraryItemKind.Desktop ? 0 : 1);
-        var games = state.Items
-            .Where(item => !item.IsSystemEntry && item.PublishedToClients)
-            .Concat(state.Items.Where(item => !item.IsSystemEntry && !item.PublishedToClients));
-
-        var ordered = system.Concat(games).ToList();
+        var ordered = state.Items
+            .Where(item => item.PublishedToClients)
+            .Concat(state.Items.Where(item => !item.PublishedToClients))
+            .ToList();
         state.Items.Clear();
         state.Items.AddRange(ordered);
     }
@@ -258,7 +254,7 @@ public sealed class ApplicationLibrary(
             return;
         }
 
-        state.Items.Insert(0, new LibraryItem
+        state.Items.Add(new LibraryItem
         {
             Id = id,
             Kind = kind,
@@ -289,4 +285,4 @@ public sealed class LibraryRevisionConflictException(long expected, long actual)
 }
 
 public sealed class InvalidManualLibraryOrderException()
-    : InvalidOperationException("手动顺序必须完整包含当前所有已发布游戏，且不能重复。");
+    : InvalidOperationException("手动顺序必须完整包含当前所有已发布项目，且不能重复。");

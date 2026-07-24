@@ -1891,7 +1891,6 @@ namespace nvhttp {
       std::vector<std::string> hidden_ids;
       for (const auto &item : sync.at("library").at("items")) {
         const auto id = item.at("id").get<std::string>();
-        if (item.value("system", false)) continue;
         if (item.value("publishedToClients", true)) expected_ids.emplace(id);
         else hidden_ids.emplace_back(id);
       }
@@ -1904,12 +1903,7 @@ namespace nvhttp {
         return;
       }
 
-      const std::vector<std::string> canonical_order {
-        "78a25216-f239-45bd-b4aa-f41c814066e9",
-        "8902cb19-674a-403d-a587-41b092e900ba"
-      };
-      auto full_order = canonical_order;
-      full_order.insert(full_order.end(), requested_order.begin(), requested_order.end());
+      auto full_order = requested_order;
       full_order.insert(full_order.end(), hidden_ids.begin(), hidden_ids.end());
 
       const auto reorder = [&full_order](nlohmann::json &items) {

@@ -108,9 +108,9 @@ may still contain `nameAscending`, `nameDescending`, `addedNewest`,
 `addedOldest`, or `lastPlayedNewest`; clients parse those values for
 compatibility, but new product writes use `manual`.
 
-The two system entries have fixed order semantics: `desktop` is first and
-`virtualDesktop` is second. Host sorting applies only to the remaining games
-and applications. UUID identity never changes when order changes.
+The two system entries participate in the shared manual order like other
+published items. They can move, but they remain protected from hide/delete
+operations. UUID identity never changes when order changes.
 
 `publishedToClients` is an additive Sync v1 field controlled only by Host. A
 missing value from an older Sync v1 snapshot means visible. Android must parse
@@ -194,14 +194,17 @@ The response is the updated `streaming` object. Width must be between 320 and
 
 Only a paired client with `operate` permission may call this route. The request
 contains the revision from the last Sync snapshot and every currently
-published, non-system application UUID exactly once, in the desired order:
+published application UUID exactly once, including both system UUIDs, in the
+desired order:
 
 ```json
 {
   "baseRevision": 12,
   "orderedAppUuids": [
+    "78a25216-f239-45bd-b4aa-f41c814066e9",
     "2c42a3d0-79f1-4bb6-98f8-40c18cd5bc91",
-    "9af5103b-1dc0-4562-8421-62f95d855a8a"
+    "9af5103b-1dc0-4562-8421-62f95d855a8a",
+    "8902cb19-674a-403d-a587-41b092e900ba"
   ]
 }
 ```
@@ -209,15 +212,16 @@ published, non-system application UUID exactly once, in the desired order:
 `baseRevision` is a JSON integer token in `1..9007199254740991`; decimal,
 exponent, zero, negative, and overflowing values are invalid. UUIDs must already
 be lowercase canonical D form. The sequence is rejected if it has a duplicate,
-an unknown or missing UUID, a system UUID, or an unpublished UUID. Names,
-numeric app IDs, paths, and fuzzy matching are never accepted.
+an unknown or missing published UUID, or an unpublished UUID. Names, numeric
+app IDs, paths, and fuzzy matching are never accepted.
 
-The two system entries are not sent and are prepended by Host in fixed
-`desktop`, `virtualDesktop` order. Unpublished Host-only entries are also not
-sent or returned. Host retains them after the public sequence without exposing
-their names, UUIDs, paths, or relative order. A newly added published item is
-appended to the public manual sequence. Hiding an item removes it from the
-public sequence; publishing it again appends it to the public sequence.
+Both system entries are sent in the requested sequence and are reorderable,
+while their hide/delete protection remains unchanged. Unpublished Host-only
+entries are not sent or returned. Host retains them after the public sequence
+without exposing their names, UUIDs, paths, or relative order. A newly added
+published item is appended to the public manual sequence. Hiding an item removes
+it from the public sequence; publishing it again appends it to the public
+sequence.
 
 Success is HTTP `200` with the minimal public projection:
 
@@ -226,8 +230,10 @@ Success is HTTP `200` with the minimal public projection:
   "revision": 13,
   "sortMode": "manual",
   "orderedAppUuids": [
+    "78a25216-f239-45bd-b4aa-f41c814066e9",
     "2c42a3d0-79f1-4bb6-98f8-40c18cd5bc91",
-    "9af5103b-1dc0-4562-8421-62f95d855a8a"
+    "9af5103b-1dc0-4562-8421-62f95d855a8a",
+    "8902cb19-674a-403d-a587-41b092e900ba"
   ]
 }
 ```

@@ -71,7 +71,7 @@ public partial class GameLibraryViewModel(
         ? "添加 Steam 游戏或本地应用后，它们会出现在这里并同步到 Ligase 的 Apollo 核心。"
         : "尝试缩短关键词，或切换排序方式。";
     public string SortDescription => SelectedSortOption?.Value == LibraryViewSortMode.Manual
-        ? "使用每个游戏右侧的上移、下移按钮调整顺序；系统桌面入口始终固定在最前。"
+        ? "使用每个项目右侧的上移、下移按钮调整共享顺序；桌面入口也可以移动。"
         : "名称、添加时间和最近游玩只改变此窗口的查看方式，不会覆盖共享手动顺序。";
 
     public async Task RefreshAsync(CancellationToken cancellationToken = default)
@@ -150,11 +150,11 @@ public partial class GameLibraryViewModel(
         int direction,
         CancellationToken cancellationToken = default)
     {
-        if (item.IsSystemEntry || !await EnsureWritableAsync(cancellationToken)) return;
+        if (!item.PublishedToClients || !await EnsureWritableAsync(cancellationToken)) return;
         try
         {
             var published = _allItems
-                .Where(candidate => !candidate.IsSystemEntry && candidate.PublishedToClients)
+                .Where(candidate => candidate.PublishedToClients)
                 .Select(candidate => candidate.Id)
                 .ToList();
             var currentIndex = published.IndexOf(item.Id);

@@ -23,7 +23,7 @@ public sealed class LibraryItem
         Kind is LibraryItemKind.Desktop or LibraryItemKind.VirtualDesktop;
 
     [JsonIgnore]
-    public bool CanManuallyOrder => !IsSystemEntry && PublishedToClients;
+    public bool CanManuallyOrder => PublishedToClients;
 
     [JsonIgnore]
     public string SourceLabel => Kind switch

@@ -46,7 +46,9 @@ public sealed class ApplicationLibraryTests
         var first = await library.AddSteamAsync(game);
         var duplicate = await library.AddSteamAsync(game);
         var beforeOrder = await library.LoadAsync();
-        await library.SetManualOrderAsync(beforeOrder.Revision, [first.Id]);
+        await library.SetManualOrderAsync(
+            beforeOrder.Revision,
+            [SystemLibraryIds.Desktop, first.Id, SystemLibraryIds.VirtualDesktop]);
 
         var reloaded = await new ApplicationLibrary(paths, writer).LoadAsync();
         Assert.AreEqual(first.Id, duplicate.Id);
@@ -80,15 +82,16 @@ public sealed class ApplicationLibraryTests
 
         var before = await library.LoadAsync();
         var ordered = await library.SetManualOrderAsync(
-            before.Revision, [zulu.Id, alpha.Id]);
+            before.Revision,
+            [zulu.Id, SystemLibraryIds.VirtualDesktop, alpha.Id, SystemLibraryIds.Desktop]);
 
         CollectionAssert.AreEqual(
             new[]
             {
-                SystemLibraryIds.Desktop,
-                SystemLibraryIds.VirtualDesktop,
                 zulu.Id,
-                alpha.Id
+                SystemLibraryIds.VirtualDesktop,
+                alpha.Id,
+                SystemLibraryIds.Desktop
             },
             ordered.Items.Select(item => item.Id).ToArray());
         using var sync = JsonDocument.Parse(await File.ReadAllTextAsync(paths.SyncFile));
@@ -101,7 +104,7 @@ public sealed class ApplicationLibraryTests
     }
 
     [TestMethod]
-    public async Task ManualOrderRejectsStaleIncompleteDuplicateAndSystemIds()
+    public async Task ManualOrderRejectsStaleIncompleteDuplicateUnknownAndUnsafeRevision()
     {
         var paths = new LigasePaths(_temporaryDirectory);
         var library = new ApplicationLibrary(
@@ -115,20 +118,25 @@ public sealed class ApplicationLibraryTests
             2, "Zulu", "Zulu", @"D:\Steam\Zulu", "z.acf", 1));
 
         var before = await library.LoadAsync();
+        var complete =
+            new[] { SystemLibraryIds.Desktop, SystemLibraryIds.VirtualDesktop, alpha.Id, zulu.Id };
         await Assert.ThrowsExceptionAsync<LibraryRevisionConflictException>(
-            () => library.SetManualOrderAsync(before.Revision - 1, [alpha.Id, zulu.Id]));
+            () => library.SetManualOrderAsync(before.Revision - 1, complete));
         await Assert.ThrowsExceptionAsync<InvalidManualLibraryOrderException>(
             () => library.SetManualOrderAsync(before.Revision, [alpha.Id]));
         await Assert.ThrowsExceptionAsync<InvalidManualLibraryOrderException>(
-            () => library.SetManualOrderAsync(before.Revision, [alpha.Id, alpha.Id]));
+            () => library.SetManualOrderAsync(
+                before.Revision,
+                [SystemLibraryIds.Desktop, SystemLibraryIds.VirtualDesktop, alpha.Id, alpha.Id]));
         await Assert.ThrowsExceptionAsync<InvalidManualLibraryOrderException>(
             () => library.SetManualOrderAsync(
-                before.Revision, [alpha.Id, SystemLibraryIds.Desktop]));
+                before.Revision,
+                [SystemLibraryIds.Desktop, SystemLibraryIds.VirtualDesktop, alpha.Id, Guid.NewGuid()]));
         await Assert.ThrowsExceptionAsync<InvalidLibraryRevisionException>(
-            () => library.SetManualOrderAsync(0, [alpha.Id, zulu.Id]));
+            () => library.SetManualOrderAsync(0, complete));
         await Assert.ThrowsExceptionAsync<InvalidLibraryRevisionException>(
             () => library.SetManualOrderAsync(
-                9_007_199_254_740_992, [alpha.Id, zulu.Id]));
+                9_007_199_254_740_992, complete));
     }
 
     [TestMethod]
@@ -149,37 +157,79 @@ public sealed class ApplicationLibraryTests
 
         var initial = await library.LoadAsync();
         await library.SetManualOrderAsync(
-            initial.Revision, [gamma.Id, beta.Id, alpha.Id]);
+            initial.Revision,
+            [gamma.Id, SystemLibraryIds.VirtualDesktop, beta.Id, alpha.Id, SystemLibraryIds.Desktop]);
         await library.SetPublishedToClientsAsync(beta.Id, false);
 
         var hidden = await library.LoadAsync();
         CollectionAssert.AreEqual(
-            new[] { gamma.Id, alpha.Id },
-            hidden.Items
-                .Where(item => !item.IsSystemEntry && item.PublishedToClients)
-                .Select(item => item.Id)
-                .ToArray());
+            new[] { gamma.Id, SystemLibraryIds.VirtualDesktop, alpha.Id, SystemLibraryIds.Desktop },
+            hidden.Items.Where(item => item.PublishedToClients).Select(item => item.Id).ToArray());
         Assert.AreEqual(beta.Id, hidden.Items.Last().Id);
 
         var delta = await library.AddSteamAsync(new SteamGame(
             4, "Delta", "Delta", @"D:\Steam\Delta", "d.acf", 1));
         var added = await library.LoadAsync();
         CollectionAssert.AreEqual(
-            new[] { gamma.Id, alpha.Id, delta.Id },
-            added.Items
-                .Where(item => !item.IsSystemEntry && item.PublishedToClients)
-                .Select(item => item.Id)
-                .ToArray());
+            new[]
+            {
+                gamma.Id,
+                SystemLibraryIds.VirtualDesktop,
+                alpha.Id,
+                SystemLibraryIds.Desktop,
+                delta.Id
+            },
+            added.Items.Where(item => item.PublishedToClients).Select(item => item.Id).ToArray());
         Assert.AreEqual(beta.Id, added.Items.Last().Id);
 
         await library.SetPublishedToClientsAsync(beta.Id, true);
         var republished = await library.LoadAsync();
         CollectionAssert.AreEqual(
-            new[] { gamma.Id, alpha.Id, delta.Id, beta.Id },
-            republished.Items
-                .Where(item => !item.IsSystemEntry && item.PublishedToClients)
-                .Select(item => item.Id)
-                .ToArray());
+            new[]
+            {
+                gamma.Id,
+                SystemLibraryIds.VirtualDesktop,
+                alpha.Id,
+                SystemLibraryIds.Desktop,
+                delta.Id,
+                beta.Id
+            },
+            republished.Items.Where(item => item.PublishedToClients).Select(item => item.Id).ToArray());
+    }
+
+    [TestMethod]
+    public async Task LegacyManualOrderPreservesSystemPositionsAndMovesHiddenItemsAfterPublished()
+    {
+        var paths = new LigasePaths(_temporaryDirectory);
+        var visibleId = Guid.NewGuid();
+        var hiddenId = Guid.NewGuid();
+        await File.WriteAllTextAsync(paths.LibraryFile, $$"""
+            {
+              "schemaVersion": 1,
+              "revision": 7,
+              "sortMode": 0,
+              "items": [
+                { "id": "{{visibleId}}", "kind": 3, "name": "Visible" },
+                { "id": "{{SystemLibraryIds.VirtualDesktop}}", "kind": 1, "name": "Virtual desktop" },
+                { "id": "{{hiddenId}}", "kind": 3, "name": "Hidden", "publishedToClients": false },
+                { "id": "{{SystemLibraryIds.Desktop}}", "kind": 0, "name": "Desktop" }
+              ]
+            }
+            """);
+
+        var state = await new ApplicationLibrary(paths, new RecordingAppsWriter()).LoadAsync();
+
+        CollectionAssert.AreEqual(
+            new[]
+            {
+                visibleId,
+                SystemLibraryIds.VirtualDesktop,
+                SystemLibraryIds.Desktop,
+                hiddenId
+            },
+            state.Items.Select(item => item.Id).ToArray());
+        Assert.IsTrue(state.Items.Single(item => item.Id == SystemLibraryIds.Desktop).CanManuallyOrder);
+        Assert.IsTrue(state.Items.Single(item => item.Id == SystemLibraryIds.VirtualDesktop).CanManuallyOrder);
     }
 
     [TestMethod]
@@ -218,6 +268,9 @@ public sealed class ApplicationLibraryTests
         var state = await new ApplicationLibrary(paths, new RecordingAppsWriter()).LoadAsync();
 
         Assert.IsTrue(state.Items.Single(item => item.Id == appId).PublishedToClients);
+        CollectionAssert.AreEqual(
+            new[] { appId, SystemLibraryIds.Desktop, SystemLibraryIds.VirtualDesktop },
+            state.Items.Select(item => item.Id).ToArray());
     }
 
     [TestMethod]
