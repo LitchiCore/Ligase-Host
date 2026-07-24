@@ -97,6 +97,31 @@ Web UI product model.
 - Shows pending Android pairing requests with device identity, a short safety
   fingerprint, expiry, and explicit Allow/Reject actions. The normal user path
   never displays or asks for a PIN.
+- The pending projection is read at most once per second from the managed
+  core's loopback-only attended-pairing endpoint. Process identity, base port,
+  Host UUID, and managed `startNonce` must all remain stable; a core switch
+  clears pending cards and notification deduplication state instead of letting
+  an old request act on a new instance.
+- A request that has not yet bound its encrypted envelope and held
+  `getservercert` operation displays “establishing secure connection.” Allow is
+  disabled while Reject remains available. Once ready, the card displays the
+  same `XXXX-XXXX` safety code as Android and a natural-language source class;
+  it never exposes the request token, certificate fingerprint, JSON, IP in a
+  notification, or the internal legacy PIN.
+- When the window is active, one queued in-app prompt offers to open the
+  Devices page; it never approves from the prompt. When the window is hidden,
+  inactive, or minimized, an unpackaged Windows App SDK notification contains
+  only the device name, safety code, and an instruction to open Ligase Host.
+  Notifications are deduplicated by managed-instance key plus request ID,
+  removed at terminal state/core switch, and stale activation can only display
+  an expired-request message.
+- Notification activation and ordinary second launches are redirected through
+  the Windows App SDK single-instance activation channel. The existing window
+  is restored; the managed-instance key and request ID remain attached to the
+  activation instead of being replaced by a generic “show window” signal.
+- After Allow, the page continues reading the pending projection and refreshes
+  Apollo's dynamic paired-device projection when the request leaves the live
+  list. No Host restart is required.
 - Displays name, stable device UUID, connected/paired state, display policy,
   permission mask, and whether client commands are allowed.
 - The local endpoint rejects non-loopback callers.

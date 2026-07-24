@@ -113,7 +113,12 @@
                     Tag="monitor">
                     <NavigationViewItem.Icon><FontIcon Glyph="&#xE7F4;" /></NavigationViewItem.Icon>
                 </NavigationViewItem>
-                <NavigationViewItem x:Uid="DevicesNavigationItem" Content="设备" Style="{StaticResource LigaseNavigationViewItemStyle}" Tag="devices">
+                <NavigationViewItem
+                    x:Name="DevicesNavigationItem"
+                    x:Uid="DevicesNavigationItem"
+                    Content="设备"
+                    Style="{StaticResource LigaseNavigationViewItemStyle}"
+                    Tag="devices">
                     <NavigationViewItem.Icon><FontIcon Glyph="&#xE8BE;" /></NavigationViewItem.Icon>
                 </NavigationViewItem>
             </NavigationView.MenuItems>

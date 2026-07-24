@@ -104,12 +104,6 @@ public sealed class WindowsTrayIconService : IDisposable
         IntPtr wParam,
         IntPtr lParam)
     {
-        if (message == SingleInstanceService.ShowWindowMessage)
-        {
-            RestoreWindow();
-            return IntPtr.Zero;
-        }
-
         if (message == CallbackMessage)
         {
             var notification = unchecked((uint)lParam.ToInt64());

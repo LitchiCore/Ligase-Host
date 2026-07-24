@@ -203,7 +203,9 @@ def aes_ecb(key: bytes, value: bytes, encrypt: bool) -> bytes:
     return context.update(value) + context.finalize()
 
 
-def complete_legacy_pair(base: str, enrollment: Enrollment) -> None:
+def complete_legacy_pair(
+    base: str, enrollment: Enrollment, *, wait_for_host_ui: bool = False
+) -> None:
     salt = os.urandom(16)
     unique_id = uuid.uuid4().hex
     held: dict[str, object] = {}
@@ -220,7 +222,7 @@ def complete_legacy_pair(base: str, enrollment: Enrollment) -> None:
                     "devicename": enrollment.create_request["device"]["name"],
                     "ligasepairingrequestid": enrollment.request_id,
                 },
-                timeout=15,
+                timeout=120 if wait_for_host_ui else 15,
             )
         except BaseException as error:  # propagate in the main thread
             held["error"] = error
@@ -241,13 +243,32 @@ def complete_legacy_pair(base: str, enrollment: Enrollment) -> None:
     else:
         raise RuntimeError("request never became ready for approval")
 
-    status, allowed = json_http(
-        base,
-        "POST",
-        f"/ligase/v1/pairing/requests/{enrollment.request_id}/allow",
-    )
-    if status != 202 or allowed["state"] != "approved":
-        raise RuntimeError(f"allow failed: HTTP {status} {allowed}")
+    if wait_for_host_ui:
+        deadline = time.monotonic() + 90
+        while time.monotonic() < deadline:
+            status, allowed = json_http(
+                base,
+                "GET",
+                f"/ligase/v1/pairing/requests/{enrollment.request_id}",
+                token=enrollment.token,
+            )
+            if status == 200 and allowed["state"] == "approved":
+                break
+            if status != 200 or allowed["state"] != "pending":
+                raise RuntimeError(
+                    f"Host UI did not allow request: HTTP {status} {allowed}"
+                )
+            time.sleep(0.25)
+        else:
+            raise RuntimeError("timed out waiting for Host UI approval")
+    else:
+        status, allowed = json_http(
+            base,
+            "POST",
+            f"/ligase/v1/pairing/requests/{enrollment.request_id}/allow",
+        )
+        if status != 202 or allowed["state"] != "approved":
+            raise RuntimeError(f"allow failed: HTTP {status} {allowed}")
     thread.join(5)
     if thread.is_alive():
         raise RuntimeError("held getservercert did not complete")
@@ -534,7 +555,16 @@ def main() -> None:
     parser.add_argument("--base", required=True)
     parser.add_argument("--alternate-base")
     parser.add_argument(
-        "--mode", choices=("full", "timeout", "rate"), default="full"
+        "--mode",
+        choices=(
+            "full",
+            "timeout",
+            "rate",
+            "ui-allow",
+            "ui-reject",
+            "ui-cancel",
+        ),
+        default="full",
     )
     parser.add_argument("--wait-seconds", type=float, default=3)
     args = parser.parse_args()
@@ -577,6 +607,101 @@ def main() -> None:
         if status != 429 or response != {"code": "rateLimited"}:
             raise RuntimeError(f"rate limit mismatch: {status} {response}")
         print('{"result":"PASS","rateLimited":429}')
+        return
+    if args.mode == "ui-allow":
+        enrollment = create_enrollment(base, "Ligase C UI Approval")
+        print(
+            json.dumps(
+                {
+                    "result": "WAITING_FOR_UI",
+                    "requestId": enrollment.request_id,
+                },
+                separators=(",", ":"),
+            ),
+            flush=True,
+        )
+        time.sleep(args.wait_seconds)
+        complete_legacy_pair(base, enrollment, wait_for_host_ui=True)
+        print(
+            json.dumps(
+                {
+                    "result": "PASS",
+                    "mode": "ui-allow",
+                    "requestId": enrollment.request_id,
+                },
+                separators=(",", ":"),
+            )
+        )
+        return
+    if args.mode == "ui-reject":
+        enrollment = create_enrollment(base, "Ligase C UI Rejection")
+        print(
+            json.dumps(
+                {
+                    "result": "WAITING_FOR_UI",
+                    "requestId": enrollment.request_id,
+                },
+                separators=(",", ":"),
+            ),
+            flush=True,
+        )
+        deadline = time.monotonic() + 90
+        while time.monotonic() < deadline:
+            status, rejected = json_http(
+                base,
+                "GET",
+                f"/ligase/v1/pairing/requests/{enrollment.request_id}",
+                token=enrollment.token,
+            )
+            if status == 200 and rejected["state"] == "rejected":
+                print(
+                    json.dumps(
+                        {
+                            "result": "PASS",
+                            "mode": "ui-reject",
+                            "requestId": enrollment.request_id,
+                        },
+                        separators=(",", ":"),
+                    )
+                )
+                return
+            if status != 200 or rejected["state"] != "pending":
+                raise RuntimeError(
+                    f"Host UI did not reject request: HTTP {status} {rejected}"
+                )
+            time.sleep(0.25)
+        raise RuntimeError("timed out waiting for Host UI rejection")
+    if args.mode == "ui-cancel":
+        enrollment = create_enrollment(base, "Ligase C Client Cancel")
+        print(
+            json.dumps(
+                {
+                    "result": "WAITING_FOR_CLIENT_CANCEL",
+                    "requestId": enrollment.request_id,
+                },
+                separators=(",", ":"),
+            ),
+            flush=True,
+        )
+        time.sleep(args.wait_seconds)
+        status, raw = http(
+            base,
+            "DELETE",
+            f"/ligase/v1/pairing/requests/{enrollment.request_id}",
+            token=enrollment.token,
+        )
+        if status != 204 or raw:
+            raise RuntimeError(f"UI cancel branch mismatch: {status} {raw!r}")
+        print(
+            json.dumps(
+                {
+                    "result": "PASS",
+                    "mode": "ui-cancel",
+                    "requestId": enrollment.request_id,
+                },
+                separators=(",", ":"),
+            )
+        )
         return
     enrollment = create_enrollment(base, "Synthetic Android")
     complete_legacy_pair(base, enrollment)

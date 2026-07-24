@@ -47,6 +47,8 @@ public partial class App : Application
                 services.AddSingleton<ApolloPortAllocator>();
                 services.AddSingleton<ApolloInstanceManager>();
                 services.AddSingleton<ApolloCoreLocator>();
+                services.AddSingleton<IManagedPairingCoreResolver, ManagedPairingCoreResolver>();
+                services.AddSingleton<IAttendedPairingRepository, AttendedPairingRepository>();
                 services.AddSingleton<LibraryAuthorityService>();
                 services.AddSingleton<ILibraryAuthorityService>(provider =>
                     provider.GetRequiredService<LibraryAuthorityService>());
@@ -59,10 +61,14 @@ public partial class App : Application
                 services.AddSingleton<IDesktopPreviewService, GdiDesktopPreviewService>();
                 services.AddSingleton<SingleInstanceService>();
                 services.AddSingleton<WindowsTrayIconService>();
+                services.AddSingleton<AttendedPairingCoordinator>();
+                services.AddSingleton<PairingNotificationService>();
+                services.AddSingleton<AttendedPairingUiCoordinator>();
                 services.AddTransient<GameLibraryViewModel>();
                 services.AddTransient<AddApplicationViewModel>();
                 services.AddTransient<StreamMonitorViewModel>();
                 services.AddTransient<DevicesViewModel>();
+                services.AddTransient<AttendedPairingViewModel>();
                 services.AddSingleton<MainWindow>();
             })
             .Build();
@@ -70,8 +76,16 @@ public partial class App : Application
 
     protected override async void OnLaunched(LaunchActivatedEventArgs args)
     {
+        // AppNotificationManager must be registered before the first call to
+        // AppInstance.GetActivatedEventArgs() so an unpackaged cold-start
+        // notification activation is surfaced to this process.
+        var notifications =
+            _host.Services.GetRequiredService<PairingNotificationService>();
+        notifications.Initialize();
+
         var singleInstance = _host.Services.GetRequiredService<SingleInstanceService>();
-        if (!singleInstance.TryAcquire())
+        var activation = await singleInstance.TryAcquireAsync();
+        if (!activation.IsPrimary)
         {
             Exit();
             return;
@@ -82,6 +96,8 @@ public partial class App : Application
         // failed to launch.
         var window = _host.Services.GetRequiredService<MainWindow>();
         window.Activate();
+        _host.Services.GetRequiredService<AttendedPairingUiCoordinator>()
+            .HandleInitialActivation(activation.Arguments);
 
         var preferences = _host.Services.GetRequiredService<HostPreferencesService>();
         try
@@ -119,6 +135,7 @@ public partial class App : Application
         // in a stale read-only state for the whole session.
         await Task.Delay(1500);
         await window.RefreshCoreStatusAsync();
+        _host.Services.GetRequiredService<AttendedPairingCoordinator>().Start();
         if (Environment.GetCommandLineArgs().Any(argument =>
                 string.Equals(argument, "--minimized", StringComparison.OrdinalIgnoreCase)))
         {
@@ -131,6 +148,9 @@ public partial class App : Application
         if (_isExiting) return;
         _isExiting = true;
         Services.GetRequiredService<WindowsTrayIconService>().Dispose();
+        await Services.GetRequiredService<AttendedPairingCoordinator>()
+            .DisposeAsync();
+        Services.GetRequiredService<PairingNotificationService>().Dispose();
         await Services.GetRequiredService<ApolloInstanceManager>().StopAsync();
         Services.GetRequiredService<SingleInstanceService>().Dispose();
         _host.Dispose();

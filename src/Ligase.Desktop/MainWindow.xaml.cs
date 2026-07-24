@@ -16,7 +16,9 @@ public sealed partial class MainWindow : Window
     private readonly ILibraryAuthorityService _libraryAuthority;
     private readonly HostPreferencesService _preferences;
     private readonly WindowsTrayIconService _trayIcon;
+    private readonly AttendedPairingUiCoordinator _pairingUi;
     private readonly AppWindow _appWindow;
+    private string? _pendingPairingNavigationRequestId;
     private bool _isExiting;
 
     public MainWindow()
@@ -30,6 +32,8 @@ public sealed partial class MainWindow : Window
         _libraryAuthority = services.GetRequiredService<ILibraryAuthorityService>();
         _preferences = services.GetRequiredService<HostPreferencesService>();
         _trayIcon = services.GetRequiredService<WindowsTrayIconService>();
+        _pairingUi =
+            services.GetRequiredService<AttendedPairingUiCoordinator>();
         var windowHandle = WindowNative.GetWindowHandle(this);
         var windowId = Microsoft.UI.Win32Interop.GetWindowIdFromWindow(windowHandle);
         _appWindow = AppWindow.GetFromWindowId(windowId);
@@ -38,6 +42,14 @@ public sealed partial class MainWindow : Window
         _trayIcon.ExitRequested += OnExitRequested;
         _trayIcon.CoreStatusChanged += RefreshCoreStatus;
         _core.StatusChanged += OnManagedCoreStatusChanged;
+        _pairingUi.Attach(
+            this,
+            _appWindow,
+            RootLayout,
+            NavigateToPairing,
+            ShowWindow,
+            () => ContentFrame.Content is DevicesPage,
+            RefreshPairingPageAsync);
         _trayIcon.Initialize(this);
         RefreshCoreStatus();
         ContentFrame.Navigate(typeof(GameLibraryPage));
@@ -49,6 +61,23 @@ public sealed partial class MainWindow : Window
     {
         _appWindow.Show();
         Activate();
+    }
+
+    public void NavigateToPairing(string? requestId = null)
+    {
+        ShowWindow();
+        _pendingPairingNavigationRequestId = requestId;
+        if (ReferenceEquals(
+                RootNavigation.SelectedItem,
+                DevicesNavigationItem))
+        {
+            ContentFrame.Navigate(typeof(DevicesPage), requestId);
+            _pendingPairingNavigationRequestId = null;
+        }
+        else
+        {
+            RootNavigation.SelectedItem = DevicesNavigationItem;
+        }
     }
 
     public async void NavigateToAddApplication()
@@ -92,18 +121,22 @@ public sealed partial class MainWindow : Window
             RootNavigation.SelectedItem = LibraryNavigationItem;
             return;
         }
-        ContentFrame.Navigate(tag switch
+        var page = tag switch
         {
             "library" => typeof(GameLibraryPage),
             "add" => typeof(AddApplicationPage),
             "monitor" => typeof(StreamMonitorPage),
             "devices" => typeof(DevicesPage),
             _ => typeof(PlaceholderPage)
-        }, tag switch
+        };
+        var parameter = tag switch
         {
+            "devices" => _pendingPairingNavigationRequestId,
             "overview" => "概览",
             _ => null
-        });
+        };
+        _pendingPairingNavigationRequestId = null;
+        ContentFrame.Navigate(page, parameter);
     }
 
     private void OnWindowClosing(AppWindow sender, AppWindowClosingEventArgs args)
@@ -156,6 +189,11 @@ public sealed partial class MainWindow : Window
     {
         DispatcherQueue.TryEnqueue(RefreshCoreStatus);
     }
+
+    private Task RefreshPairingPageAsync() =>
+        ContentFrame.Content is DevicesPage devicesPage
+            ? devicesPage.ViewModel.RefreshAsync()
+            : Task.CompletedTask;
 
     private async void OnRetryCore(object sender, RoutedEventArgs args)
     {

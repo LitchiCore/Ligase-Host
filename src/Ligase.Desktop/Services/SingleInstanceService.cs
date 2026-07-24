@@ -1,48 +1,38 @@
-using System.Runtime.InteropServices;
+using Microsoft.Windows.AppLifecycle;
 
 namespace Ligase.Host.Desktop.Services;
 
 public sealed class SingleInstanceService : IDisposable
 {
-    private const string MutexName = @"Local\Ligase.Host.Desktop.SingleInstance";
-    private const string ShowMessageName = "Ligase.Host.Desktop.ShowWindow";
-    private static readonly IntPtr HwndBroadcast = new(0xFFFF);
-    private Mutex? _mutex;
-    private bool _ownsMutex;
+    private const string InstanceKey = "Ligase.Host.Desktop.Primary";
+    private AppInstance? _primary;
 
-    public static uint ShowWindowMessage { get; } = RegisterWindowMessage(ShowMessageName);
+    public event Action<AppActivationArguments>? RedirectedActivation;
 
-    public bool TryAcquire()
+    public async Task<(bool IsPrimary, AppActivationArguments Arguments)>
+        TryAcquireAsync()
     {
-        _mutex = new Mutex(initiallyOwned: true, MutexName, out var createdNew);
-        _ownsMutex = createdNew;
-        if (!createdNew)
+        var arguments = AppInstance.GetCurrent().GetActivatedEventArgs();
+        var primary = AppInstance.FindOrRegisterForKey(InstanceKey);
+        if (!primary.IsCurrent)
         {
-            PostMessage(HwndBroadcast, ShowWindowMessage, IntPtr.Zero, IntPtr.Zero);
+            await primary.RedirectActivationToAsync(arguments);
+            return (false, arguments);
         }
 
-        return createdNew;
+        _primary = primary;
+        _primary.Activated += OnActivated;
+        return (true, arguments);
     }
+
+    private void OnActivated(object? sender, AppActivationArguments arguments) =>
+        RedirectedActivation?.Invoke(arguments);
 
     public void Dispose()
     {
-        if (_ownsMutex)
-        {
-            _mutex?.ReleaseMutex();
-            _ownsMutex = false;
-        }
-
-        _mutex?.Dispose();
-        _mutex = null;
+        if (_primary is null) return;
+        _primary.Activated -= OnActivated;
+        _primary.UnregisterKey();
+        _primary = null;
     }
-
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-    private static extern uint RegisterWindowMessage(string message);
-
-    [DllImport("user32.dll")]
-    private static extern bool PostMessage(
-        IntPtr window,
-        uint message,
-        IntPtr wParam,
-        IntPtr lParam);
 }

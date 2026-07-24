@@ -9,6 +9,7 @@
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
                 <Grid>
                     <Grid.ColumnDefinitions>
@@ -33,7 +34,106 @@
                     </Button>
                 </Grid>
 
-                <Grid Grid.Row="1">
+                <StackPanel
+                    Grid.Row="1"
+                    Spacing="10">
+                    <StackPanel
+                        Spacing="10"
+                        Visibility="{x:Bind PairingViewModel.PendingVisibility, Mode=OneWay}">
+                        <StackPanel Spacing="3">
+                            <TextBlock FontSize="18" FontWeight="SemiBold" Text="待批准设备" />
+                            <TextBlock
+                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                Text="请在电脑和 Android 设备上核对相同安全码，再选择允许。" />
+                        </StackPanel>
+                        <InfoBar
+                            IsClosable="False"
+                            IsOpen="True"
+                            Message="{x:Bind PairingViewModel.NotificationWarning, Mode=OneWay}"
+                            Severity="Warning"
+                            Title="系统通知不可用"
+                            Visibility="{x:Bind PairingViewModel.NotificationWarningVisibility, Mode=OneWay}" />
+                        <ItemsRepeater ItemsSource="{x:Bind PairingViewModel.Items, Mode=OneWay}">
+                        <ItemsRepeater.Layout>
+                            <StackLayout Spacing="10" />
+                        </ItemsRepeater.Layout>
+                        <ItemsRepeater.ItemTemplate>
+                            <DataTemplate x:DataType="viewModels:PendingPairingCard">
+                                <Border
+                                    AutomationProperties.Name="{Binding DeviceName}"
+                                    Style="{StaticResource LigaseCardStyle}">
+                                    <Grid ColumnSpacing="16">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel Spacing="5">
+                                            <TextBlock FontSize="17" FontWeight="SemiBold" Text="{Binding DeviceName}" />
+                                            <TextBlock
+                                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                                Text="{Binding Platform}" />
+                                            <TextBlock
+                                                FontFamily="Cascadia Mono"
+                                                FontSize="22"
+                                                FontWeight="SemiBold"
+                                                Text="{Binding SafetyCode}" />
+                                            <TextBlock Text="{Binding StateText}" />
+                                            <StackPanel Orientation="Horizontal" Spacing="12">
+                                                <TextBlock
+                                                    Style="{StaticResource LigaseCaptionTextStyle}"
+                                                    Text="{Binding SourceText}" />
+                                                <TextBlock
+                                                    Style="{StaticResource LigaseCaptionTextStyle}"
+                                                    Text="{Binding RemainingText}" />
+                                            </StackPanel>
+                                        </StackPanel>
+                                        <Border
+                                            Width="4"
+                                            Margin="-14,-14,0,-14"
+                                            HorizontalAlignment="Left"
+                                            Background="{ThemeResource LigaseBrandPrimaryBrush}"
+                                            CornerRadius="2"
+                                            Visibility="{Binding SelectionVisibility}" />
+                                        <StackPanel
+                                            Grid.Column="1"
+                                            VerticalAlignment="Center"
+                                            Orientation="Horizontal"
+                                            Spacing="8">
+                                            <Button
+                                                AutomationProperties.Name="拒绝配对"
+                                                Click="OnReject"
+                                                Content="拒绝"
+                                                Tag="{Binding RequestId}" />
+                                            <Button
+                                                AutomationProperties.Name="允许配对"
+                                                Click="OnAllow"
+                                                Content="允许"
+                                                IsEnabled="{Binding AllowEnabled}"
+                                                Style="{StaticResource AccentButtonStyle}"
+                                                Tag="{Binding RequestId}" />
+                                        </StackPanel>
+                                    </Grid>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsRepeater.ItemTemplate>
+                        </ItemsRepeater>
+                        <InfoBar
+                            IsClosable="True"
+                            IsOpen="True"
+                            Message="{x:Bind PairingViewModel.FeedbackMessage, Mode=OneWay}"
+                            Severity="Informational"
+                            Visibility="{x:Bind PairingViewModel.FeedbackVisibility, Mode=OneWay}" />
+                    </StackPanel>
+                    <InfoBar
+                        IsClosable="False"
+                        IsOpen="True"
+                        Message="{x:Bind PairingViewModel.ErrorMessage, Mode=OneWay}"
+                        Severity="Warning"
+                        Title="一键配对暂不可用"
+                        Visibility="{x:Bind PairingViewModel.ErrorVisibility, Mode=OneWay}" />
+                </StackPanel>
+
+                <Grid Grid.Row="2">
                     <ProgressRing
                         Width="32"
                         Height="32"
