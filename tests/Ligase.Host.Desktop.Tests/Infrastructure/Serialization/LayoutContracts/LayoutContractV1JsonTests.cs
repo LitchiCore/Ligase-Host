@@ -8,56 +8,10 @@ using Microsoft.VisualStudio.TestTools.UnitTesting;
 namespace Ligase.Host.Desktop.Tests;
 
 [TestClass]
-public sealed class LayoutContractV1Tests
+public sealed class LayoutContractV1JsonTests
 {
     private const string VectorSha256 =
         "b8022f21d37481bc54a869a6be8c70b994cb94266796634356808c8dbe859fcd";
-
-    [TestMethod]
-    public void NormalizationVectorsMatch()
-    {
-        using var document = LoadVectors();
-        foreach (var testCase in document.RootElement
-                     .GetProperty("normalizationCases")
-                     .EnumerateArray())
-        {
-            var expected = testCase.GetProperty("expected");
-            var kind = testCase.GetProperty("kind").GetString();
-            bool valid;
-            string? normalized = null;
-            PortableGameIdentityV1? portable = null;
-            if (kind == "uuid")
-            {
-                valid = LayoutContractV1Validator.TryNormalizeUuid(
-                    testCase.GetProperty("input").GetString(),
-                    out normalized!);
-            }
-            else
-            {
-                var input = testCase.GetProperty("input");
-                valid = LayoutContractV1Validator.TryNormalizePortableIdentity(
-                    new PortableGameIdentityV1(
-                        input.GetProperty("provider").GetString()!,
-                        input.GetProperty("id").GetString()!),
-                    out portable!);
-            }
-
-            Assert.AreEqual(
-                expected.GetProperty("valid").GetBoolean(),
-                valid,
-                testCase.GetProperty("id").GetString());
-            if (!valid) continue;
-            if (kind == "uuid")
-            {
-                Assert.AreEqual(expected.GetProperty("normalized").GetString(), normalized);
-            }
-            else
-            {
-                Assert.AreEqual(expected.GetProperty("provider").GetString(), portable!.Provider);
-                Assert.AreEqual(expected.GetProperty("id").GetString(), portable.Id);
-            }
-        }
-    }
 
     [TestMethod]
     public void ResolutionVectorsMatchCanonicalResults()
@@ -113,7 +67,9 @@ public sealed class LayoutContractV1Tests
     public void VectorFileSha256IsFrozen()
     {
         var bytes = File.ReadAllBytes(VectorPath());
-        Assert.AreEqual(VectorSha256, Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant());
+        Assert.AreEqual(
+            VectorSha256,
+            Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant());
     }
 
     private static string BuildRequestJson(JsonElement testCase, JsonElement fixtures)
