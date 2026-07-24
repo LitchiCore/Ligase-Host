@@ -117,6 +117,13 @@
                     <NavigationViewItem.Icon><FontIcon Glyph="&#xE710;" /></NavigationViewItem.Icon>
                 </NavigationViewItem>
                 <NavigationViewItem
+                    x:Name="LayoutCatalogNavigationItem"
+                    Content="布局大厅"
+                    Style="{StaticResource LigaseNavigationViewItemStyle}"
+                    Tag="layouts">
+                    <NavigationViewItem.Icon><FontIcon Glyph="&#xECA5;" /></NavigationViewItem.Icon>
+                </NavigationViewItem>
+                <NavigationViewItem
                     x:Uid="MonitorNavigationItem"
                     Content="串流监控"
                     Style="{StaticResource LigaseNavigationViewItemStyle}"

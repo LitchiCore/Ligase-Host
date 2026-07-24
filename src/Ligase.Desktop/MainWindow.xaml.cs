@@ -1,4 +1,5 @@
 using Ligase.Host.Desktop.Pages;
+using Ligase.Host.Desktop.Presentation.LayoutCatalog;
 using Ligase.Host.Desktop.Services;
 using Ligase.Host.Core.Services;
 using Microsoft.Extensions.DependencyInjection;
@@ -142,6 +143,7 @@ public sealed partial class MainWindow : Window
         {
             "library" => typeof(GameLibraryPage),
             "add" => typeof(AddApplicationPage),
+            "layouts" => typeof(LayoutCatalogPage),
             "monitor" => typeof(StreamMonitorPage),
             "devices" => typeof(DevicesPage),
             _ => typeof(OverviewPage)

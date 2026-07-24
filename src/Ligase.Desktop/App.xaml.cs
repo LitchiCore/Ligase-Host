@@ -1,3 +1,6 @@
+using Ligase.Host.Core.Application.LayoutCatalog;
+using Ligase.Host.Core.Infrastructure.Storage;
+using Ligase.Host.Desktop.Presentation.LayoutCatalog;
 using Ligase.Host.Desktop.ViewModels;
 using Ligase.Host.Desktop.Services;
 using Ligase.Host.Core.Services;
@@ -28,6 +31,10 @@ public partial class App : Application
                         AppContext.BaseDirectory,
                         "ligase-bootstrap.json"));
                 services.AddSingleton(paths);
+                services.AddSingleton<ILayoutCatalogRepository>(_ =>
+                    new JsonLayoutCatalogRepository(
+                        Path.Combine(paths.RootDirectory, "layout-catalog.json")));
+                services.AddSingleton<LayoutCatalogService>();
                 services.AddSingleton<ISteamInstallationLocator, WindowsSteamInstallationLocator>();
                 services.AddSingleton<ISteamLibraryService, SteamLibraryService>();
                 services.AddSingleton(_ =>
@@ -66,6 +73,7 @@ public partial class App : Application
                 services.AddSingleton<AttendedPairingUiCoordinator>();
                 services.AddTransient<GameLibraryViewModel>();
                 services.AddTransient<OverviewViewModel>();
+                services.AddTransient<LayoutCatalogViewModel>();
                 services.AddTransient<AddApplicationViewModel>();
                 services.AddTransient<StreamMonitorViewModel>();
                 services.AddTransient<DevicesViewModel>();
