@@ -28,6 +28,7 @@
 
 // local includes
 #include "config.h"
+#include "ligase/library/http/library_sync_http.h"
 #include "ligase/library/http/library_sort_http.h"
 #include "ligase/pairing/http/attended_pairing_http.h"
 #include "ligase/pairing/service/attended_pairing_service.h"
@@ -1655,33 +1656,30 @@ namespace nvhttp {
   void ligase_sync(resp_https_t response, req_https_t request) {
     print_req<SunshineHTTPS>(request);
     auto named_cert_p = get_verified_cert(request);
-    if (!ligase_client_can_read_library(*named_cert_p)) {
-      send_ligase_json(
-        response,
-        SimpleWeb::StatusCode::client_error_forbidden,
-        {{"error", "permissionDenied"}}
-      );
-      return;
-    }
-
-    try {
-      std::scoped_lock lock(ligase_sync_mutex);
-      auto sync = read_ligase_json(ligase_sync_path());
-      sync["capabilities"] = {
-        {"hdrEncodingSupported", video::active_hevc_mode == 3}
-      };
-      send_ligase_json(
-        response,
-        SimpleWeb::StatusCode::success_ok,
-        sync
-      );
-    } catch (const std::exception &error) {
-      send_ligase_json(
-        response,
-        SimpleWeb::StatusCode::client_error_not_found,
-        {{"error", "syncUnavailable"}, {"message", error.what()}}
-      );
-    }
+    const auto output = ligase::library::http::handle_sync(
+      {
+        .authorized = ligase_client_can_read_library(*named_cert_p)
+      },
+      {
+        .sync_mutex = ligase_sync_mutex,
+        .load_sync = []() { return read_ligase_json(ligase_sync_path()); },
+        .hdr_encoding_supported = []() {
+          return video::active_hevc_mode == 3;
+        }
+      }
+    );
+    const auto status = [&]() {
+      switch (output.status) {
+        case 200: return SimpleWeb::StatusCode::success_ok;
+        case 403: return SimpleWeb::StatusCode::client_error_forbidden;
+        default: return SimpleWeb::StatusCode::client_error_not_found;
+      }
+    }();
+    send_ligase_json(
+      response,
+      status,
+      output.body
+    );
   }
 
   void ligase_update_streaming(resp_https_t response, req_https_t request) {
