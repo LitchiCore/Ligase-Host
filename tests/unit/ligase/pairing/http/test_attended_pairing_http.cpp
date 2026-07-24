@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "src/attended_pairing_http.h"
+#include "src/ligase/pairing/http/attended_pairing_http.h"
 
 namespace {
   using namespace attended_pairing;

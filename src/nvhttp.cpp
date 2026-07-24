@@ -28,8 +28,8 @@
 
 // local includes
 #include "config.h"
-#include "attended_pairing_http.h"
-#include "attended_pairing_service.h"
+#include "ligase/pairing/http/attended_pairing_http.h"
+#include "ligase/pairing/service/attended_pairing_service.h"
 #include "display_device.h"
 #include "file_handler.h"
 #include "globals.h"

@@ -1,5 +1,5 @@
 /**
- * @file src/attended_pairing.h
+ * @file src/ligase/pairing/domain/attended_pairing.h
  * @brief Pure cryptographic and canonical-encoding primitives for Ligase
  *        attended pairing v1.
  *

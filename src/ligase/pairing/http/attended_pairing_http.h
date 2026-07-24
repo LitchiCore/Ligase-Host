@@ -1,6 +1,6 @@
 #pragma once
 
-#include "attended_pairing_service.h"
+#include "src/ligase/pairing/service/attended_pairing_service.h"
 
 #include <string>
 #include <utility>

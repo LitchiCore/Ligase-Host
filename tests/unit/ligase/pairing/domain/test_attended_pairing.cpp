@@ -1,5 +1,5 @@
 /**
- * @file tests/unit/test_attended_pairing.cpp
+ * @file tests/unit/ligase/pairing/domain/test_attended_pairing.cpp
  * @brief Fixed standards vectors and negative tests for the pure P2-A module.
  */
 
@@ -10,7 +10,7 @@
 #include <ranges>
 #include <set>
 
-#include "src/attended_pairing.h"
+#include "src/ligase/pairing/domain/attended_pairing.h"
 #include "src/utility.h"
 
 namespace {

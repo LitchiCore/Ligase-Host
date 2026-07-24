@@ -1,10 +1,10 @@
 /**
- * @file src/attended_pairing_service.h
+ * @file src/ligase/pairing/service/attended_pairing_service.h
  * @brief HTTP-independent attended-pairing v1 coordinator repository.
  */
 #pragma once
 
-#include "attended_pairing.h"
+#include "src/ligase/pairing/domain/attended_pairing.h"
 
 #include <chrono>
 #include <functional>

@@ -1,9 +1,9 @@
 /**
- * @file src/attended_pairing.cpp
+ * @file src/ligase/pairing/domain/attended_pairing.cpp
  * @brief Pure attended-pairing v1 cryptographic primitives.
  */
 
-#include "attended_pairing.h"
+#include "src/ligase/pairing/domain/attended_pairing.h"
 
 #include <algorithm>
 #include <limits>
