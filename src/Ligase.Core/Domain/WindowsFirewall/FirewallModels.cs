@@ -53,3 +53,46 @@ public sealed record FirewallOperationResult(
     bool IsConfigured,
     bool RequiresElevation,
     string? Detail = null);
+
+public enum FirewallAssetStatus
+{
+    Available,
+    MissingScript,
+    MissingManifest,
+    MissingBoth
+}
+
+public sealed record FirewallDeploymentAssets(
+    FirewallAssetStatus Status,
+    string? ScriptPath,
+    string? ManifestPath)
+{
+    public bool IsAvailable => Status == FirewallAssetStatus.Available;
+}
+
+public enum ManagedSunshineStatus
+{
+    Available,
+    Unavailable,
+    InvalidExecutable
+}
+
+public sealed record ManagedSunshineExecutable(
+    ManagedSunshineStatus Status,
+    string? ExecutablePath)
+{
+    public bool IsAvailable => Status == ManagedSunshineStatus.Available;
+}
+
+public enum FirewallNetworkCategory
+{
+    Private,
+    Public,
+    Domain,
+    Unknown,
+    NoActiveNetwork
+}
+
+public sealed record FirewallEnvironmentSnapshot(
+    FirewallNetworkCategory NetworkCategory,
+    bool HasLegacyBroadSunshineRule);

@@ -1,5 +1,7 @@
 using System.Diagnostics;
 using System.Text.Json;
+using Ligase.Host.Core.Application.WindowsFirewall;
+using Ligase.Host.Core.Domain.WindowsFirewall;
 
 namespace Ligase.Host.Core.Services;
 
@@ -113,6 +115,8 @@ public sealed class ApolloInstanceManager
                     .TrimEnd(Path.DirectorySeparatorChar)
                     .ToLowerInvariant()))).ToLowerInvariant();
     public string? ExecutablePath => FindBundledExecutable();
+    public ManagedSunshineExecutable ManagedExecutable =>
+        ManagedSunshineExecutableValidator.Validate(ExecutablePath);
     public string? StartupError { get; private set; }
     public ApolloStopOutcome? LastStopOutcome { get; private set; }
 
