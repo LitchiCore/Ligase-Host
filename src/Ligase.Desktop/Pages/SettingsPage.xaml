@@ -9,6 +9,7 @@
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
             <StackPanel Spacing="6">
                 <TextBlock Style="{StaticResource LigaseEyebrowTextStyle}" Text="HOST BEHAVIOR" />
@@ -92,6 +93,27 @@
             </Border>
 
             <Border Grid.Row="3" Style="{StaticResource LigaseCardStyle}">
+                <Grid ColumnSpacing="20">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Spacing="4">
+                        <TextBlock FontSize="16" FontWeight="SemiBold" Text="Windows 通知" />
+                        <TextBlock
+                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                            Text="发送一条本机测试通知。点击通知应返回当前 Ligase Host 窗口。"
+                            TextWrapping="Wrap" />
+                    </StackPanel>
+                    <Button
+                        Grid.Column="1"
+                        AutomationProperties.Name="发送 Windows 测试通知"
+                        Click="OnTestNotification"
+                        Content="发送测试通知" />
+                </Grid>
+            </Border>
+
+            <Border Grid.Row="4" Style="{StaticResource LigaseCardStyle}">
                 <Grid ColumnSpacing="12">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto" />

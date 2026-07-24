@@ -44,7 +44,7 @@ dictionaries, dependency injection, and page-scoped view models.
 
 The current vertical slice includes Steam discovery, non-Steam applications,
 persistent library sorting, physical/virtual desktop entries, per-application
-resolution settings, an isolated Apollo process, a read-only Devices page, and
+resolution settings, an isolated Apollo process, device access management, and
 a low-frame-rate desktop monitor.
 
 The Stream Monitor page provides an explicit **End stream** action. It requires
@@ -122,6 +122,15 @@ Web UI product model.
 - After Allow, the page continues reading the pending projection and refreshes
   Apollo's dynamic paired-device projection when the request leaves the live
   list. No Host restart is required.
+- New requests default to **Operate**. Each pending card has an unchecked
+  **Observe only** option; the UI must persist that pending selection through
+  the loopback access route before it calls the frozen empty-body Allow route.
+- Paired device cards show **Operate** or **Observe only** and expose a
+  management dialog. Permission changes and device deletion are core-owned
+  loopback operations, not direct edits of `state.json`.
+- Device deletion names the device and explains that pairing must be repeated.
+  An active device is not silently disconnected: the first delete returns a
+  conflict and the UI separately offers **End stream and delete**.
 - Displays name, stable device UUID, connected/paired state, display policy,
   permission mask, and whether client commands are allowed.
 - The local endpoint rejects non-loopback callers.
@@ -164,6 +173,10 @@ the frozen cross-client semantics, pairing protocol, and shared color tokens.
   share state or ports with an existing Apollo installation.
 - The display language supports system default, Simplified Chinese, and
   English. Language changes are persisted and applied on the next launch.
+- Settings includes **Send Windows test notification**. It verifies the same
+  unpackaged App SDK notification registration and activation channel used for
+  attended pairing. The notification contains no request authority; clicking
+  it only restores the existing Host window and navigates to Devices.
 
 ## Build and probe
 

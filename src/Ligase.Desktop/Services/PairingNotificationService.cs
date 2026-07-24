@@ -12,6 +12,7 @@ public sealed class PairingNotificationService : IDisposable
     private bool _registered;
 
     public event Action<string, string>? Activated;
+    public event Action? TestActivated;
 
     public bool IsAvailable { get; private set; }
     public string? UnavailableReason { get; private set; }
@@ -72,11 +73,39 @@ public sealed class PairingNotificationService : IDisposable
         _ = RemoveCoreAsync(NotificationTag(key));
     }
 
+    public void ShowTest()
+    {
+        if (!IsAvailable)
+            throw new InvalidOperationException(
+                UnavailableReason ?? "Windows 通知当前不可用。");
+        try
+        {
+            var notification = new AppNotificationBuilder()
+                .AddArgument("action", "notification-test")
+                .AddText("Ligase Host Windows 通知测试")
+                .AddText("通知投递正常。点击可返回现有 Ligase Host 窗口。")
+                .BuildNotification();
+            AppNotificationManager.Default.Show(notification);
+        }
+        catch (Exception exception)
+        {
+            MarkUnavailable(exception);
+            throw new InvalidOperationException(
+                UnavailableReason ?? "Windows 通知发送失败。", exception);
+        }
+    }
+
     private void OnInvoked(
         AppNotificationManager sender,
         AppNotificationActivatedEventArgs args)
     {
         var values = ParseArguments(args.Argument);
+        if (values.TryGetValue("action", out var action) &&
+            action == "notification-test")
+        {
+            TestActivated?.Invoke();
+            return;
+        }
         if (values.TryGetValue("instance", out var instance) &&
             values.TryGetValue("request", out var request))
             Activated?.Invoke(instance, request);

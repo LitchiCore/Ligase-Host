@@ -27,4 +27,15 @@ public sealed class PairingNotificationServiceTests
             PairingNotificationService.ParseArguments(
                 "request=a&request=b"));
     }
+
+    [TestMethod]
+    public void NotificationTestActivationHasNoPairingRequestAuthority()
+    {
+        var values = PairingNotificationService.ParseArguments(
+            "action=notification-test");
+
+        Assert.AreEqual("notification-test", values["action"]);
+        Assert.IsFalse(values.ContainsKey("instance"));
+        Assert.IsFalse(values.ContainsKey("request"));
+    }
 }

@@ -19,6 +19,7 @@ public sealed class PendingPairingCard(
     public string SafetyCode { get; } = request.SafetyCode;
     public bool ReadyForApproval { get; } = request.ReadyForApproval;
     public bool AllowEnabled => ReadyForApproval;
+    public bool ObserveOnly { get; set; }
     public Visibility SelectionVisibility =>
         selected ? Visibility.Visible : Visibility.Collapsed;
     public string StateText => ReadyForApproval
@@ -89,11 +90,20 @@ public partial class AttendedPairingViewModel(
 
     public void Apply(AttendedPairingProjection projection)
     {
+        var accessSelections = Items.ToDictionary(
+            item => item.RequestId,
+            item => item.ObserveOnly,
+            StringComparer.Ordinal);
         Items.Clear();
         foreach (var item in projection.Requests)
-            Items.Add(new PendingPairingCard(
+        {
+            var card = new PendingPairingCard(
                 item,
-                item.RequestId == SelectedRequestId));
+                item.RequestId == SelectedRequestId);
+            if (accessSelections.TryGetValue(item.RequestId, out var observeOnly))
+                card.ObserveOnly = observeOnly;
+            Items.Add(card);
+        }
         ErrorMessage = null;
         OnPropertyChanged(nameof(PendingVisibility));
     }
@@ -105,13 +115,13 @@ public partial class AttendedPairingViewModel(
         OnPropertyChanged(nameof(PendingVisibility));
     }
 
-    public async Task AllowAsync(string requestId)
+    public async Task AllowAsync(string requestId, bool observeOnly)
     {
         if (!_busy.Add(requestId)) return;
         try
         {
             FeedbackMessage = "正在允许设备…";
-            var status = await coordinator.AllowAsync(requestId);
+            var status = await coordinator.AllowAsync(requestId, observeOnly);
             FeedbackMessage = status.State == "approved"
                 ? "已允许，正在完成证书配对…"
                 : "设备已经完成配对。";

@@ -46,17 +46,19 @@ public sealed class AttendedPairingCoordinator(
 
     public async Task<PairingRequestStatus> AllowAsync(
         string requestId,
+        bool observeOnly,
         CancellationToken cancellationToken = default) =>
-        await ActAsync(requestId, true, cancellationToken);
+        await ActAsync(requestId, true, observeOnly, cancellationToken);
 
     public async Task<PairingRequestStatus> RejectAsync(
         string requestId,
         CancellationToken cancellationToken = default) =>
-        await ActAsync(requestId, false, cancellationToken);
+        await ActAsync(requestId, false, false, cancellationToken);
 
     private async Task<PairingRequestStatus> ActAsync(
         string requestId,
         bool allow,
+        bool observeOnly,
         CancellationToken cancellationToken)
     {
         lock (_actionSync)
@@ -77,11 +79,22 @@ public sealed class AttendedPairingCoordinator(
             if (allow && !request.ReadyForApproval)
                 throw new AttendedPairingUnavailableException(
                     "安全连接仍在建立，暂时不能允许。");
-            var status = allow
-                ? await repository.AllowAsync(
-                    projection.Core, requestId, cancellationToken)
-                : await repository.RejectAsync(
+            PairingRequestStatus status;
+            if (allow)
+            {
+                await repository.SetAccessModeAsync(
+                    projection.Core,
+                    requestId,
+                    observeOnly ? "observe" : "operate",
+                    cancellationToken);
+                status = await repository.AllowAsync(
                     projection.Core, requestId, cancellationToken);
+            }
+            else
+            {
+                status = await repository.RejectAsync(
+                    projection.Core, requestId, cancellationToken);
+            }
             await RefreshNowAsync(cancellationToken);
             return status;
         }

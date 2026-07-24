@@ -1,5 +1,6 @@
 using Ligase.Host.Core.Models;
 using Ligase.Host.Core.Services;
+using Ligase.Host.Desktop.Services;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -11,12 +12,15 @@ namespace Ligase.Host.Desktop.Pages;
 public sealed partial class SettingsPage : Page
 {
     private readonly HostPreferencesService _preferences;
+    private readonly PairingNotificationService _notifications;
     private bool _loading;
 
     public SettingsPage()
     {
         _preferences = ((App)Application.Current)
             .Services.GetRequiredService<HostPreferencesService>();
+        _notifications = ((App)Application.Current)
+            .Services.GetRequiredService<PairingNotificationService>();
         InitializeComponent();
     }
 
@@ -98,5 +102,18 @@ public sealed partial class SettingsPage : Page
     private async void OnExitApplication(object sender, RoutedEventArgs e)
     {
         await ((App)Application.Current).ExitAsync();
+    }
+
+    private void OnTestNotification(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            _notifications.ShowTest();
+            SetSaveStatus("测试通知已发送；点击通知应返回此窗口。");
+        }
+        catch (Exception exception)
+        {
+            SetSaveStatus($"通知发送失败：{exception.Message}", isError: true);
+        }
     }
 }

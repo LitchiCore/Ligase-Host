@@ -20,8 +20,10 @@ public sealed class DeviceCard(ApolloDevice device)
             ? "跟随客户端显示设置"
             : $"固定模式 · {device.DisplayMode}";
     public string Permission { get; } =
-        $"权限 0x{device.Permissions:X8}" +
-        (device.AllowClientCommands ? " · 允许客户端命令" : string.Empty);
+        device.AccessMode == "operate"
+            ? "可操作 · 可启动、控制和结束串流"
+            : "仅观察 · 不允许控制或修改 Host";
+    public bool IsOperate { get; } = device.AccessMode == "operate";
 }
 
 public partial class DevicesViewModel(ApolloDeviceService devices) : ObservableObject
@@ -70,5 +72,26 @@ public partial class DevicesViewModel(ApolloDeviceService devices) : ObservableO
             OnPropertyChanged(nameof(ContentVisibility));
             OnPropertyChanged(nameof(EmptyVisibility));
         }
+    }
+
+    public async Task SetAccessModeAsync(
+        string uuid,
+        bool operate,
+        CancellationToken cancellationToken = default)
+    {
+        await devices.SetAccessModeAsync(
+            uuid,
+            operate ? "operate" : "observe",
+            cancellationToken);
+        await RefreshAsync(cancellationToken);
+    }
+
+    public async Task DeleteAsync(
+        string uuid,
+        bool endActiveSession,
+        CancellationToken cancellationToken = default)
+    {
+        await devices.DeleteAsync(uuid, endActiveSession, cancellationToken);
+        await RefreshAsync(cancellationToken);
     }
 }

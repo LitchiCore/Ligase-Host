@@ -54,7 +54,7 @@ public sealed class AttendedPairingCoordinatorTests
         await using var coordinator = new AttendedPairingCoordinator(repository);
         await coordinator.RefreshNowAsync();
 
-        var first = coordinator.AllowAsync(Request().RequestId);
+        var first = coordinator.AllowAsync(Request().RequestId, false);
         await Assert.ThrowsExceptionAsync<AttendedPairingUnavailableException>(
             () => coordinator.RejectAsync(Request().RequestId));
         completion.SetResult(new PairingRequestStatus(
@@ -83,7 +83,7 @@ public sealed class AttendedPairingCoordinatorTests
         await using var coordinator = new AttendedPairingCoordinator(repository);
         await coordinator.RefreshNowAsync();
 
-        var first = coordinator.AllowAsync(Request().RequestId);
+        var first = coordinator.AllowAsync(Request().RequestId, false);
         var second = coordinator.RejectAsync(secondRequest.RequestId);
         await repository.WaitForBothAsync();
 
@@ -127,6 +127,13 @@ public sealed class AttendedPairingCoordinatorTests
             CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
+        public Task SetAccessModeAsync(
+            ManagedPairingCore core,
+            string requestId,
+            string mode,
+            CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
         public Task<PairingRequestStatus> RejectAsync(
             ManagedPairingCore core,
             string requestId,
@@ -154,6 +161,13 @@ public sealed class AttendedPairingCoordinatorTests
             AllowCount++;
             return await completion.Task.WaitAsync(cancellationToken);
         }
+
+        public Task SetAccessModeAsync(
+            ManagedPairingCore core,
+            string requestId,
+            string mode,
+            CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
 
         public Task<PairingRequestStatus> RejectAsync(
             ManagedPairingCore core,
@@ -185,6 +199,13 @@ public sealed class AttendedPairingCoordinatorTests
             string requestId,
             CancellationToken cancellationToken = default) =>
             CompleteAsync(requestId, "approved", cancellationToken);
+
+        public Task SetAccessModeAsync(
+            ManagedPairingCore core,
+            string requestId,
+            string mode,
+            CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
 
         public Task<PairingRequestStatus> RejectAsync(
             ManagedPairingCore core,

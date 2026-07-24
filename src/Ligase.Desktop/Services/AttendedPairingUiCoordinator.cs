@@ -56,6 +56,7 @@ public sealed class AttendedPairingUiCoordinator : IDisposable
         _pairing.RequestRemoved += OnPairingRemoved;
         _pairing.ProjectionChanged += OnPairingProjectionChanged;
         _notifications.Activated += OnNotificationActivated;
+        _notifications.TestActivated += OnTestNotificationActivated;
         _singleInstance.RedirectedActivation += OnRedirectedActivation;
     }
 
@@ -150,6 +151,9 @@ public sealed class AttendedPairingUiCoordinator : IDisposable
             else
                 _ = ShowUnavailableAsync();
         });
+
+    private void OnTestNotificationActivated() =>
+        Enqueue(() => _showWindow?.Invoke());
 
     private void OnRedirectedActivation(AppActivationArguments arguments) =>
         Enqueue(() =>
@@ -246,6 +250,7 @@ public sealed class AttendedPairingUiCoordinator : IDisposable
         _pairing.RequestRemoved -= OnPairingRemoved;
         _pairing.ProjectionChanged -= OnPairingProjectionChanged;
         _notifications.Activated -= OnNotificationActivated;
+        _notifications.TestActivated -= OnTestNotificationActivated;
         _singleInstance.RedirectedActivation -= OnRedirectedActivation;
     }
 }
