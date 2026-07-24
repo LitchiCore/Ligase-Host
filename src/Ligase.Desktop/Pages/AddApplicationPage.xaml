@@ -3,7 +3,9 @@
     x:Name="RootPage"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-    xmlns:models="using:Ligase.Host.Core.Models">
+    xmlns:controls="using:Ligase.Host.Desktop.Controls"
+    xmlns:models="using:Ligase.Host.Core.Models"
+    xmlns:viewModels="using:Ligase.Host.Desktop.ViewModels">
     <Grid Margin="28,24,28,28" Background="{ThemeResource LigaseWindowBrush}">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
@@ -151,59 +153,82 @@
                         Margin="0,10,0,0"
                         IsIndeterminate="True"
                         Visibility="{x:Bind ViewModel.ScanningVisibility, Mode=OneWay}" />
-                    <ListView
+                    <ScrollViewer
                         Grid.Row="2"
                         Margin="0,12,0,0"
-                        ItemsSource="{x:Bind ViewModel.SteamGames, Mode=OneWay}"
-                        SelectionMode="None">
-                        <ListView.ItemContainerStyle>
-                            <Style TargetType="ListViewItem">
-                                <Setter Property="HorizontalContentAlignment" Value="Stretch" />
-                                <Setter Property="Margin" Value="0,0,0,10" />
-                                <Setter Property="Padding" Value="0" />
-                            </Style>
-                        </ListView.ItemContainerStyle>
-                        <ListView.ItemTemplate>
-                            <DataTemplate x:DataType="models:SteamGame">
-                                <Border Style="{StaticResource LigaseGameCardStyle}">
-                                    <Grid ColumnSpacing="14">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="*" />
-                                            <ColumnDefinition Width="Auto" />
-                                        </Grid.ColumnDefinitions>
-                                        <StackPanel Spacing="4">
-                                            <TextBlock FontSize="16" FontWeight="SemiBold" Text="{x:Bind Name}" />
-                                            <TextBlock
-                                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                                                Text="{x:Bind InstallPath}"
-                                                TextTrimming="CharacterEllipsis" />
-                                            <StackPanel Orientation="Horizontal" Spacing="12">
-                                                <TextBlock Style="{StaticResource LigaseCaptionTextStyle}" Text="{x:Bind AppIdLabel}" />
-                                                <TextBlock Style="{StaticResource LigaseCaptionTextStyle}" Text="{x:Bind SizeLabel}" />
-                                            </StackPanel>
-                                        </StackPanel>
-                                        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
-                                            <Button
-                                                Tag="{x:Bind}"
-                                                Click="OnFindSteamCover"
-                                                Style="{StaticResource LigaseSecondaryButtonStyle}"
-                                                Content="选封面" />
-                                            <Button
-                                                Tag="{x:Bind}"
-                                                IsEnabled="{Binding ViewModel.CanModifyLibrary, ElementName=RootPage}"
-                                                Click="OnAddSteam"
-                                                Style="{StaticResource LigaseQuietButtonStyle}">
-                                                <StackPanel Orientation="Horizontal" Spacing="6">
-                                                    <FontIcon FontSize="13" Glyph="&#xE710;" />
-                                                    <TextBlock Text="添加" />
-                                                </StackPanel>
-                                            </Button>
-                                        </StackPanel>
-                                    </Grid>
-                                </Border>
-                            </DataTemplate>
-                        </ListView.ItemTemplate>
-                    </ListView>
+                        VerticalScrollBarVisibility="Auto">
+                        <StackPanel Spacing="12">
+                            <TextBlock
+                                FontSize="18"
+                                FontWeight="SemiBold"
+                                Text="可添加"
+                                Visibility="{x:Bind ViewModel.SteamResults.AvailableVisibility, Mode=OneWay}" />
+                            <ListView
+                                ItemsSource="{x:Bind ViewModel.SteamResults.AvailableGames, Mode=OneWay}"
+                                ScrollViewer.VerticalScrollMode="Disabled"
+                                SelectionMode="None"
+                                Visibility="{x:Bind ViewModel.SteamResults.AvailableVisibility, Mode=OneWay}">
+                                <ListView.ItemContainerStyle>
+                                    <Style TargetType="ListViewItem">
+                                        <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                                        <Setter Property="Margin" Value="0,0,0,10" />
+                                        <Setter Property="Padding" Value="0" />
+                                    </Style>
+                                </ListView.ItemContainerStyle>
+                                <ListView.ItemTemplate>
+                                    <DataTemplate x:DataType="viewModels:SteamGameResultViewModel">
+                                        <controls:SteamGameResultCard
+                                            Result="{x:Bind}"
+                                            AddRequested="OnAddSteam"
+                                            FindCoverRequested="OnFindSteamCover"
+                                            RemoveRequested="OnRemoveSteam" />
+                                    </DataTemplate>
+                                </ListView.ItemTemplate>
+                            </ListView>
+
+                            <StackPanel
+                                Margin="0,6,0,0"
+                                Spacing="3"
+                                Visibility="{x:Bind ViewModel.SteamResults.AddedVisibility, Mode=OneWay}">
+                                <TextBlock FontSize="18" FontWeight="SemiBold" Text="已添加" />
+                                <TextBlock
+                                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                    Text="这些游戏已在 Host 和客户端游戏库中。移除只会删除游戏库记录，不会删除 Steam 文件。"
+                                    TextWrapping="Wrap" />
+                            </StackPanel>
+                            <ListView
+                                ItemsSource="{x:Bind ViewModel.SteamResults.AddedGames, Mode=OneWay}"
+                                ScrollViewer.VerticalScrollMode="Disabled"
+                                SelectionMode="None"
+                                Visibility="{x:Bind ViewModel.SteamResults.AddedVisibility, Mode=OneWay}">
+                                <ListView.ItemContainerStyle>
+                                    <Style TargetType="ListViewItem">
+                                        <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                                        <Setter Property="Margin" Value="0,0,0,10" />
+                                        <Setter Property="Padding" Value="0" />
+                                    </Style>
+                                </ListView.ItemContainerStyle>
+                                <ListView.ItemTemplate>
+                                    <DataTemplate x:DataType="viewModels:SteamGameResultViewModel">
+                                        <controls:SteamGameResultCard
+                                            Result="{x:Bind}"
+                                            AddRequested="OnAddSteam"
+                                            FindCoverRequested="OnFindSteamCover"
+                                            RemoveRequested="OnRemoveSteam" />
+                                    </DataTemplate>
+                                </ListView.ItemTemplate>
+                            </ListView>
+
+                            <TextBlock
+                                Margin="4,24"
+                                HorizontalAlignment="Center"
+                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                Text="没有符合当前搜索条件的 Steam 游戏。请缩短关键词或重新扫描。"
+                                TextAlignment="Center"
+                                TextWrapping="Wrap"
+                                Visibility="{x:Bind ViewModel.SteamResults.EmptyVisibility, Mode=OneWay}" />
+                        </StackPanel>
+                    </ScrollViewer>
                 </Grid>
             </TabViewItem>
 

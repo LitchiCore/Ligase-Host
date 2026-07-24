@@ -8,13 +8,12 @@ namespace Ligase.Host.Desktop.ViewModels;
 
 public partial class AddApplicationViewModel(
     ISteamLibraryService steamLibraryService,
+    IApplicationLibrary applicationLibrary,
     ILibraryAuthorityService authorityService,
     LibraryMutationCoordinator mutationCoordinator,
     CoverArtService coverArtService) : ObservableObject
 {
-    private IReadOnlyList<SteamGame> _allSteamGames = [];
-
-    public ObservableCollection<SteamGame> SteamGames { get; } = [];
+    public SteamGameResultsViewModel SteamResults { get; } = new();
     public ObservableCollection<CoverCandidate> CoverCandidates { get; } = [];
 
     [ObservableProperty]
@@ -61,7 +60,8 @@ public partial class AddApplicationViewModel(
     public bool HasAuthorityWarning => !string.IsNullOrWhiteSpace(AuthorityMessage);
     public Visibility ScanningVisibility => IsScanning ? Visibility.Visible : Visibility.Collapsed;
 
-    partial void OnSteamSearchTextChanged(string value) => ApplySteamFilter();
+    partial void OnSteamSearchTextChanged(string value) =>
+        SteamResults.ApplyFilter(value);
     partial void OnApplicationNameChanged(string value)
     {
         if (string.IsNullOrWhiteSpace(CoverSearchText) ||
@@ -73,6 +73,8 @@ public partial class AddApplicationViewModel(
     }
     partial void OnMessageChanged(string? value) => OnPropertyChanged(nameof(HasMessage));
     partial void OnIsScanningChanged(bool value) => OnPropertyChanged(nameof(ScanningVisibility));
+    partial void OnCanModifyLibraryChanged(bool value) =>
+        SteamResults.SetCanModifyLibrary(value);
 
     public async Task ScanSteamAsync(CancellationToken cancellationToken = default)
     {
@@ -81,8 +83,13 @@ public partial class AddApplicationViewModel(
         Message = null;
         try
         {
-            _allSteamGames = await steamLibraryService.DiscoverGamesAsync(cancellationToken);
-            ApplySteamFilter();
+            var discovery = steamLibraryService.DiscoverGamesAsync(cancellationToken);
+            var library = applicationLibrary.LoadAsync(cancellationToken);
+            await Task.WhenAll(discovery, library);
+            SteamResults.Reconcile(
+                await discovery,
+                (await library).Items);
+            SteamResults.ApplyFilter(SteamSearchText);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
@@ -94,13 +101,58 @@ public partial class AddApplicationViewModel(
         }
     }
 
-    public async Task AddSteamAsync(SteamGame game, CancellationToken cancellationToken = default)
+    public async Task AddSteamAsync(
+        SteamGameResultViewModel result,
+        CancellationToken cancellationToken = default)
     {
-        await EnsureWritableAsync(cancellationToken);
-        var coverPath = await ResolveAutomaticCoverAsync(game.Name, cancellationToken);
-        await mutationCoordinator.AddSteamAsync(game, coverPath, cancellationToken);
-        Message = $"已将“{game.Name}”添加并同步到当前 Ligase 核心。";
-        ResetCoverSelection();
+        if (result.IsAdded || !result.TryBeginMutation()) return;
+        try
+        {
+            await EnsureWritableAsync(cancellationToken);
+            var coverPath = await ResolveAutomaticCoverAsync(
+                result.Name,
+                cancellationToken);
+            var item = await mutationCoordinator.AddSteamAsync(
+                result.Game,
+                coverPath,
+                cancellationToken);
+            SteamResults.MarkAdded(result, item.Id);
+            Message = $"已将“{result.Name}”添加到游戏库。它现在位于下方“已添加”分组。";
+            ResetCoverSelection();
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            Message = $"未能添加“{result.Name}”：{exception.Message} 请确认 Host 核心正在运行后重试；其他搜索结果不受影响。";
+        }
+        finally
+        {
+            result.EndMutation();
+        }
+    }
+
+    public async Task RemoveSteamAsync(
+        SteamGameResultViewModel result,
+        CancellationToken cancellationToken = default)
+    {
+        if (!result.IsAdded || result.LibraryItemId is not Guid libraryItemId ||
+            !result.TryBeginMutation())
+            return;
+
+        try
+        {
+            await EnsureWritableAsync(cancellationToken);
+            await mutationCoordinator.RemoveAsync(libraryItemId, cancellationToken);
+            SteamResults.MarkRemoved(result);
+            Message = $"已将“{result.Name}”从游戏库移除。Steam 游戏文件仍保留在电脑上。";
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            Message = $"未能移除“{result.Name}”：{exception.Message} 项目仍保留在游戏库中，请刷新核心状态后重试。";
+        }
+        finally
+        {
+            result.EndMutation();
+        }
     }
 
     public async Task AddExecutableAsync(CancellationToken cancellationToken = default)
@@ -184,16 +236,6 @@ public partial class AddApplicationViewModel(
         {
             WorkingDirectory = Path.GetDirectoryName(path) ?? string.Empty;
         }
-    }
-
-    private void ApplySteamFilter()
-    {
-        var query = SteamSearchText.Trim();
-        var matches = string.IsNullOrEmpty(query)
-            ? _allSteamGames
-            : _allSteamGames.Where(game => SteamGameSearch.Matches(game, query));
-        SteamGames.Clear();
-        foreach (var game in matches) SteamGames.Add(game);
     }
 
     public async Task RefreshAuthorityAsync(CancellationToken cancellationToken = default)

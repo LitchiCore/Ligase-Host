@@ -1,4 +1,5 @@
 using Ligase.Host.Core.Models;
+using Ligase.Host.Desktop.Controls;
 using Ligase.Host.Desktop.ViewModels;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.UI.Xaml;
@@ -38,17 +39,29 @@ public sealed partial class AddApplicationPage : Page
 
     private async void OnAddSteam(object sender, RoutedEventArgs e)
     {
-        if ((sender as FrameworkElement)?.Tag is SteamGame game)
+        if (sender is SteamGameResultCard { Result: { } result })
+            await ViewModel.AddSteamAsync(result);
+    }
+
+    private async void OnRemoveSteam(object sender, RoutedEventArgs e)
+    {
+        if (sender is not SteamGameResultCard { Result: { } result }) return;
+
+        var dialog = new ContentDialog
         {
-            try
-            {
-                await ViewModel.AddSteamAsync(game);
-            }
-            catch (Exception exception)
-            {
-                ViewModel.Message = exception.Message;
-            }
-        }
+            XamlRoot = XamlRoot,
+            RequestedTheme = ActualTheme,
+            Title = $"移除“{result.Name}”？",
+            Content = "删除后，这个项目会从 Host 以及所有客户端的游戏库中消失。Steam 游戏程序和存档文件不会被删除。",
+            PrimaryButtonText = "从游戏库移除",
+            CloseButtonText = "取消",
+            DefaultButton = ContentDialogButton.Close,
+            PrimaryButtonStyle = (Style)Application.Current.Resources[
+                "LigaseDangerButtonStyle"]
+        };
+
+        if (await dialog.ShowAsync() == ContentDialogResult.Primary)
+            await ViewModel.RemoveSteamAsync(result);
     }
 
     private async void OnBrowseExecutable(object sender, RoutedEventArgs e)
@@ -90,7 +103,7 @@ public sealed partial class AddApplicationPage : Page
 
     private async void OnFindSteamCover(object sender, RoutedEventArgs e)
     {
-        if ((sender as FrameworkElement)?.Tag is SteamGame game)
-            await ViewModel.SearchCoversAsync(game.Name);
+        if (sender is SteamGameResultCard { Result: { } result })
+            await ViewModel.SearchCoversAsync(result.Name);
     }
 }
