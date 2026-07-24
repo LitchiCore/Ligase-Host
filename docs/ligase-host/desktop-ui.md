@@ -33,6 +33,38 @@ Each page emphasizes one primary action. Error text must explain both what
 happened and what the user can do now, and should offer retry, re-pair, or
 automatic repair instead of exposing HTTP status codes or exception text.
 
+## Local Windows shortcut preview boundary
+
+The first shortcut-import boundary accepts only local `.lnk` files that the
+user explicitly drops into Ligase Host. `WindowsShortcutResolver` reads each
+Shell Link through the Windows COM API and never starts or resolves the target
+by execution. Its typed preview returns:
+
+- `executable` for an existing local `.exe`, with normalized target, arguments,
+  working directory, optional existing icon source, and a SHA-256 duplicate key
+  over canonical target plus arguments;
+- `steamShortcut` with `SteamAppId` for `steam.exe -applaunch <id>` and
+  `steam://run|rungameid/<id>`, so UI can direct the user to the Steam flow;
+- `unsupported`, `risk`, or `invalid` plus a stable machine code for every
+  fail-closed result.
+
+Machine codes are `none`, `notShortcut`, `shortcutNotFound`,
+`damagedShortcut`, `networkLocation`, `targetMissing`, `targetIsDirectory`,
+`urlTarget`, `uwpTarget`, `scriptTarget`, `commandShellTarget`,
+`installerTarget`, `unsupportedTarget`, and `invalidSteamShortcut`. Network
+targets, URL/UWP entries, folders, scripts, command shells, installers, missing
+targets, and damaged links are never silently added.
+
+Arguments may contain private material. They remain only in the in-memory typed
+preview needed for a later confirmed add; preview `ToString`, logs, errors, and
+documentation must not include their complete value. The duplicate identity is
+a digest, not a printable target/argument concatenation.
+
+This service does not add applications. A later UI integration must show a
+preview and require explicit confirmation, then use
+`LibraryMutationCoordinator` under managed authority. Duplicate detection is
+based on canonical target plus arguments, never display name.
+
 ## Product boundary
 
 - `Ligase.Host.Desktop` owns setup, discovery, day-to-day host status, devices,
