@@ -5,12 +5,16 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Controls.Primitives;
 using WinRT.Interop;
 
 namespace Ligase.Host.Desktop;
 
 public sealed partial class MainWindow : Window
 {
+    private const double MinimumNavigationPaneWidth = 220;
+    private const double MaximumNavigationPaneWidth = 420;
+
     private readonly ApolloInstanceManager _core;
     private readonly ApolloCoreLocator _coreLocator;
     private readonly ILibraryAuthorityService _libraryAuthority;
@@ -139,6 +143,45 @@ public sealed partial class MainWindow : Window
         ContentFrame.Navigate(page, parameter);
     }
 
+    private void OnNavigationDisplayModeChanged(
+        NavigationView sender,
+        NavigationViewDisplayModeChangedEventArgs args) =>
+        UpdatePaneResizeThumb();
+
+    private void OnNavigationPaneChanged(NavigationView sender, object args) =>
+        UpdatePaneResizeThumb();
+
+    private void OnPaneResizeDragDelta(object sender, DragDeltaEventArgs args)
+    {
+        if (RootNavigation.DisplayMode != NavigationViewDisplayMode.Expanded ||
+            !RootNavigation.IsPaneOpen)
+            return;
+
+        RootNavigation.OpenPaneLength = Math.Clamp(
+            RootNavigation.OpenPaneLength + args.HorizontalChange,
+            MinimumNavigationPaneWidth,
+            MaximumNavigationPaneWidth);
+        UpdatePaneResizeThumb();
+    }
+
+    private void UpdatePaneResizeThumb()
+    {
+        var canResize =
+            RootNavigation.DisplayMode == NavigationViewDisplayMode.Expanded &&
+            RootNavigation.IsPaneOpen;
+        PaneResizeThumb.Visibility = canResize
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+        if (canResize)
+        {
+            PaneResizeThumb.Margin = new Thickness(
+                RootNavigation.OpenPaneLength - PaneResizeThumb.Width / 2,
+                0,
+                0,
+                0);
+        }
+    }
+
     private void OnWindowClosing(AppWindow sender, AppWindowClosingEventArgs args)
     {
         if (_isExiting) return;
@@ -172,13 +215,11 @@ public sealed partial class MainWindow : Window
             CoreRetryButton.Visibility = _core.IsRunning
                 ? Visibility.Collapsed
                 : Visibility.Visible;
-            HostStatusText.Text = _core.IsRunning ? "主机就绪" : "游戏库只读";
         }
         catch (ApolloCoreUnavailableException)
         {
             CoreStatusText.Text = _core.StartupError ?? "核心未运行 · 可在概览页启动";
             CoreRetryButton.Visibility = Visibility.Visible;
-            HostStatusText.Text = "需要处理";
         }
         await RefreshLibraryAuthorityAsync();
         if (ContentFrame.Content is GameLibraryPage libraryPage)

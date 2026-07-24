@@ -40,12 +40,18 @@
             </VisualStateManager.VisualStateGroups>
 
             <StackPanel Spacing="5">
-                <StackPanel Orientation="Horizontal" Spacing="8">
+                <Grid ColumnSpacing="8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
                     <TextBlock
                         FontSize="16"
                         FontWeight="SemiBold"
-                        Text="{Binding Result.Name, ElementName=Root}" />
+                        Text="{Binding Result.Name, ElementName=Root}"
+                        TextTrimming="CharacterEllipsis" />
                     <Border
+                        Grid.Column="1"
                         Padding="8,3"
                         Background="{ThemeResource LigaseAccentSubtleBrush}"
                         CornerRadius="8">
@@ -66,7 +72,7 @@
                                 Text="{Binding Result.StatusText, ElementName=Root}" />
                         </StackPanel>
                     </Border>
-                </StackPanel>
+                </Grid>
                 <TextBlock
                     Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                     Text="{Binding Result.InstallPath, ElementName=Root}"

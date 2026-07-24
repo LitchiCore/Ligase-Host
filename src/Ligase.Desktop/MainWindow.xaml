@@ -31,14 +31,6 @@
                     Foreground="White"
                     Glyph="&#xE71B;" />
             </Border>
-            <TextBlock
-                Grid.Column="1"
-                Margin="10,0,0,0"
-                VerticalAlignment="Center"
-                FontFamily="Segoe UI Variable Display"
-                FontSize="15"
-                FontWeight="SemiBold"
-                Text="Ligase Host" />
             <StackPanel
                 Grid.Column="2"
                 VerticalAlignment="Center"
@@ -55,21 +47,30 @@
                 <Border
                     x:Name="HostStatusBorder"
                     Padding="10,4"
-                    Background="{ThemeResource LigaseSuccessSubtleBrush}"
+                    Background="{ThemeResource LigaseCyanSubtleBrush}"
                     CornerRadius="10">
-                    <StackPanel Orientation="Horizontal" Spacing="6">
+                    <StackPanel Orientation="Horizontal" Spacing="7">
                         <Ellipse
                             x:Name="HostStatusDot"
                             Width="7"
                             Height="7"
                             VerticalAlignment="Center"
-                            Fill="{ThemeResource LigaseSuccessBrush}" />
+                            Fill="{ThemeResource LigaseCyanBrush}" />
                         <TextBlock
-                            x:Name="HostStatusText"
-                            x:Uid="HostReady"
+                            x:Name="CoreStatusText"
+                            MaxWidth="180"
+                            VerticalAlignment="Center"
                             FontSize="12"
-                            Foreground="{ThemeResource LigaseSuccessBrush}"
-                            Text="主机就绪" />
+                            Foreground="{ThemeResource LigaseCyanBrush}"
+                            Text="Core 正在初始化"
+                            TextTrimming="CharacterEllipsis" />
+                        <Button
+                            x:Name="CoreRetryButton"
+                            VerticalAlignment="Center"
+                            Click="OnRetryCore"
+                            Content="重新启动"
+                            Style="{StaticResource LigaseQuietButtonStyle}"
+                            Visibility="Collapsed" />
                     </StackPanel>
                 </Border>
             </StackPanel>
@@ -82,7 +83,11 @@
             IsSettingsVisible="True"
             IsTitleBarAutoPaddingEnabled="False"
             Background="{ThemeResource LigaseWindowBrush}"
-            PaneDisplayMode="Left"
+            CompactPaneLength="48"
+            DisplayModeChanged="OnNavigationDisplayModeChanged"
+            PaneDisplayMode="Auto"
+            PaneClosed="OnNavigationPaneChanged"
+            PaneOpened="OnNavigationPaneChanged"
             PaneTitle="控制中心"
             SelectionChanged="OnSelectionChanged">
             <NavigationView.MenuItems>
@@ -122,52 +127,16 @@
                     <NavigationViewItem.Icon><FontIcon Glyph="&#xE8BE;" /></NavigationViewItem.Icon>
                 </NavigationViewItem>
             </NavigationView.MenuItems>
-            <NavigationView.PaneFooter>
-                <Border
-                    Margin="8,12"
-                    Padding="12,10"
-                    Background="{ThemeResource LigaseSurfaceMutedBrush}"
-                    BorderBrush="{ThemeResource LigaseCardStrokeBrush}"
-                    BorderThickness="1"
-                    CornerRadius="10">
-                    <Grid ColumnSpacing="10">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="26" />
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="Auto" />
-                        </Grid.ColumnDefinitions>
-                        <Border
-                            Width="26"
-                            Height="26"
-                            Background="{ThemeResource LigaseCyanSubtleBrush}"
-                            CornerRadius="8">
-                            <FontIcon
-                                HorizontalAlignment="Center"
-                                VerticalAlignment="Center"
-                                FontSize="12"
-                                Foreground="{ThemeResource LigaseCyanBrush}"
-                                Glyph="&#xE950;" />
-                        </Border>
-                        <StackPanel Grid.Column="1" Spacing="2">
-                            <TextBlock Style="{StaticResource LigaseEyebrowTextStyle}" Text="APOLLO CORE" />
-                            <TextBlock
-                                x:Name="CoreStatusText"
-                                Foreground="{ThemeResource TextFillColorTertiaryBrush}"
-                                Style="{StaticResource LigaseCaptionTextStyle}"
-                                Text="正在初始化" />
-                        </StackPanel>
-                        <Button
-                            x:Name="CoreRetryButton"
-                            Grid.Column="2"
-                            VerticalAlignment="Center"
-                            Click="OnRetryCore"
-                            Content="重新启动"
-                            Style="{StaticResource LigaseQuietButtonStyle}"
-                            Visibility="Collapsed" />
-                    </Grid>
-                </Border>
-            </NavigationView.PaneFooter>
             <Frame x:Name="ContentFrame" />
         </NavigationView>
+        <Thumb
+            x:Name="PaneResizeThumb"
+            Grid.Row="1"
+            Width="6"
+            HorizontalAlignment="Left"
+            AutomationProperties.Name="调整导航栏宽度"
+            Background="Transparent"
+            DragDelta="OnPaneResizeDragDelta"
+            Visibility="Collapsed" />
     </Grid>
 </Window>
