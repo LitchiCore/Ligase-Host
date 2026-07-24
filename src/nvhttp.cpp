@@ -13,6 +13,7 @@
 #include <fstream>
 #include <iomanip>
 #include <mutex>
+#include <regex>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -714,15 +715,28 @@ namespace nvhttp {
       }
       named_cert_p->cert = std::move(client.cert);
       named_cert_p->uuid = uuid_util::uuid_t::generate().string();
-      // If the device is the first one paired with the server, assign full permission.
-      if (client_root.named_devices.empty()) {
-        named_cert_p->perm = PERM::_all;
+      const auto has_attended_access =
+        !sess.attended_request_id.empty() && attended_pairing_service;
+      const auto attended_access = has_attended_access
+        ? attended_pairing_service->access_mode_for_pairing(
+            sess.attended_request_id)
+        : attended_pairing::access_mode::operate;
+      if (has_attended_access) {
+        named_cert_p->perm =
+          attended_access == attended_pairing::access_mode::observe
+            ? PERM::_default
+            : PERM::_all;
       } else {
-        named_cert_p->perm = PERM::_default;
+        // Preserve the legacy PIN pairing ABI.
+        named_cert_p->perm = client_root.named_devices.empty()
+          ? PERM::_all
+          : PERM::_default;
       }
 
       named_cert_p->enable_legacy_ordering = true;
-      named_cert_p->allow_client_commands = true;
+      named_cert_p->allow_client_commands =
+        !has_attended_access ||
+        attended_access == attended_pairing::access_mode::operate;
       named_cert_p->always_use_virtual_display = false;
 
       add_authorized_client(named_cert_p);
@@ -1216,6 +1230,8 @@ namespace nvhttp {
       named_cert_node["uuid"] = named_cert->uuid;
       named_cert_node["display_mode"] = named_cert->display_mode;
       named_cert_node["perm"] = static_cast<uint32_t>(named_cert->perm);
+      named_cert_node["access_mode"] =
+        named_cert->perm == PERM::_all ? "operate" : "observe";
       named_cert_node["enable_legacy_ordering"] = named_cert->enable_legacy_ordering;
       named_cert_node["allow_client_commands"] = named_cert->allow_client_commands;
       named_cert_node["always_use_virtual_display"] = named_cert->always_use_virtual_display;
@@ -1429,7 +1445,7 @@ namespace nvhttp {
 
     bool ligase_authorized(resp_https_t response, req_https_t request) {
       auto named_cert_p = get_verified_cert(request);
-      if (!!(named_cert_p->perm & PERM::_all_actions)) {
+      if (!!(named_cert_p->perm & PERM::launch)) {
         return true;
       }
 
@@ -1848,6 +1864,204 @@ namespace nvhttp {
     );
   }
 
+  std::optional<std::string> ligase_canonical_path_uuid(
+    std::string_view path,
+    std::string_view prefix,
+    std::string_view suffix = {}
+  ) {
+    if (!path.starts_with(prefix) || !path.ends_with(suffix)) return {};
+    const auto start = prefix.size();
+    const auto count = path.size() - prefix.size() - suffix.size();
+    const auto value = std::string(path.substr(start, count));
+    static const std::regex canonical(
+      "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$");
+    return std::regex_match(value, canonical)
+      ? std::optional<std::string>(value)
+      : std::nullopt;
+  }
+
+  void ligase_pairing_access_local(resp_http_t response, req_http_t request) {
+    print_req<SimpleWeb::HTTP>(request);
+    if (!ligase_request_is_loopback(request) || !attended_pairing_service) {
+      send_ligase_json(
+        response,
+        SimpleWeb::StatusCode::client_error_not_found,
+        {{"code", "requestNotFound"}});
+      return;
+    }
+    const auto request_id = ligase_canonical_path_uuid(
+      request->path, "/ligase/v1/pairing/requests/", "/access");
+    if (!request_id) {
+      send_ligase_json(
+        response,
+        SimpleWeb::StatusCode::client_error_not_found,
+        {{"code", "requestNotFound"}});
+      return;
+    }
+    try {
+      const auto value = nlohmann::json::parse(request->content.string());
+      if (!value.is_object() || value.size() != 1 ||
+          !value.contains("mode") || !value["mode"].is_string()) {
+        send_ligase_json(
+          response,
+          SimpleWeb::StatusCode::client_error_bad_request,
+          {{"code", "invalidRequest"}});
+        return;
+      }
+      const auto mode = value["mode"].get<std::string>();
+      if (mode != "operate" && mode != "observe") {
+        send_ligase_json(
+          response,
+          SimpleWeb::StatusCode::client_error_bad_request,
+          {{"code", "invalidAccessMode"}});
+        return;
+      }
+      attended_pairing_service->set_access_mode(
+        *request_id,
+        mode == "observe"
+          ? attended_pairing::access_mode::observe
+          : attended_pairing::access_mode::operate,
+        attended_pairing::pairing_service::steady_clock::now());
+      response->write(SimpleWeb::StatusCode::success_no_content);
+    } catch (const attended_pairing::service_exception &error) {
+      const auto status = error.code() ==
+        attended_pairing::service_error::request_not_found
+          ? SimpleWeb::StatusCode::client_error_not_found
+          : SimpleWeb::StatusCode::client_error_conflict;
+      send_ligase_json(
+        response,
+        status,
+        {{"code", error.code() ==
+          attended_pairing::service_error::request_not_found
+            ? "requestNotFound"
+            : "invalidState"}});
+    } catch (...) {
+      send_ligase_json(
+        response,
+        SimpleWeb::StatusCode::client_error_bad_request,
+        {{"code", "invalidRequest"}});
+    }
+  }
+
+  void ligase_device_access_local(resp_http_t response, req_http_t request) {
+    print_req<SimpleWeb::HTTP>(request);
+    if (!ligase_request_is_loopback(request)) {
+      send_ligase_json(
+        response,
+        SimpleWeb::StatusCode::client_error_not_found,
+        {{"code", "deviceNotFound"}});
+      return;
+    }
+    const auto uuid = ligase_canonical_path_uuid(
+      request->path, "/ligase/v1/devices/", "/access");
+    if (!uuid) {
+      send_ligase_json(
+        response,
+        SimpleWeb::StatusCode::client_error_not_found,
+        {{"code", "deviceNotFound"}});
+      return;
+    }
+    try {
+      const auto value = nlohmann::json::parse(request->content.string());
+      if (!value.is_object() || value.size() != 1 ||
+          !value.contains("mode") || !value["mode"].is_string()) {
+        send_ligase_json(
+          response,
+          SimpleWeb::StatusCode::client_error_bad_request,
+          {{"code", "invalidRequest"}});
+        return;
+      }
+      const auto mode = value["mode"].get<std::string>();
+      if (mode != "operate" && mode != "observe") {
+        send_ligase_json(
+          response,
+          SimpleWeb::StatusCode::client_error_bad_request,
+          {{"code", "invalidAccessMode"}});
+        return;
+      }
+      for (const auto &device : client_root.named_devices) {
+        if (!ligase_uuid_equals(device->uuid, *uuid)) continue;
+        const auto permission = mode == "observe" ? PERM::_default : PERM::_all;
+        update_device_info(
+          device->uuid,
+          device->name,
+          device->display_mode,
+          device->do_cmds,
+          device->undo_cmds,
+          permission,
+          device->enable_legacy_ordering,
+          mode == "operate",
+          device->always_use_virtual_display);
+        send_ligase_json(
+          response,
+          SimpleWeb::StatusCode::success_ok,
+          {{"accessMode", mode}, {"uuid", *uuid}});
+        return;
+      }
+      send_ligase_json(
+        response,
+        SimpleWeb::StatusCode::client_error_not_found,
+        {{"code", "deviceNotFound"}});
+    } catch (...) {
+      send_ligase_json(
+        response,
+        SimpleWeb::StatusCode::client_error_bad_request,
+        {{"code", "invalidRequest"}});
+    }
+  }
+
+  void ligase_device_delete_local(resp_http_t response, req_http_t request) {
+    print_req<SimpleWeb::HTTP>(request);
+    if (!ligase_request_is_loopback(request)) {
+      send_ligase_json(
+        response,
+        SimpleWeb::StatusCode::client_error_not_found,
+        {{"code", "deviceNotFound"}});
+      return;
+    }
+    if (!request->content.string().empty()) {
+      send_ligase_json(
+        response,
+        SimpleWeb::StatusCode::client_error_bad_request,
+        {{"code", "unexpectedBody"}});
+      return;
+    }
+    const bool end_session = request->path.ends_with(
+      "/end-session-and-delete");
+    const auto uuid = ligase_canonical_path_uuid(
+      request->path,
+      "/ligase/v1/devices/",
+      end_session ? "/end-session-and-delete" : "");
+    if (!uuid) {
+      send_ligase_json(
+        response,
+        SimpleWeb::StatusCode::client_error_not_found,
+        {{"code", "deviceNotFound"}});
+      return;
+    }
+    const auto device = std::ranges::find_if(
+      client_root.named_devices,
+      [&](const auto &candidate) {
+        return ligase_uuid_equals(candidate->uuid, *uuid);
+      });
+    if (device == client_root.named_devices.end()) {
+      response->write(SimpleWeb::StatusCode::success_no_content);
+      return;
+    }
+    const auto persisted_uuid = (*device)->uuid;
+    const auto session = rtsp_stream::find_session(persisted_uuid);
+    if (session && !end_session) {
+      send_ligase_json(
+        response,
+        SimpleWeb::StatusCode::client_error_conflict,
+        {{"code", "deviceActive"}});
+      return;
+    }
+    if (session) stop_session(*session, true);
+    unpair_client(persisted_uuid);
+    response->write(SimpleWeb::StatusCode::success_no_content);
+  }
+
   void ligase_cancel_session_local(resp_http_t response, req_http_t request) {
     print_req<SimpleWeb::HTTP>(request);
     if (!ligase_request_is_loopback(request)) {
@@ -1997,7 +2211,7 @@ namespace nvhttp {
     apps.put("<xmlattr>.status_code", 200);
 
     auto named_cert_p = get_verified_cert(request);
-    if (!!(named_cert_p->perm & PERM::_all_actions)) {
+    if (!!(named_cert_p->perm & PERM::list)) {
       auto current_appid = proc::proc.running();
       auto should_hide_inactive_apps = config::input.enable_input_only_mode && current_appid > 0 && current_appid != proc::input_only_app_id;
 
@@ -2426,7 +2640,7 @@ namespace nvhttp {
 
     auto named_cert_p = get_verified_cert(request);
 
-    if (!(named_cert_p->perm & PERM::_all_actions)) {
+    if (!(named_cert_p->perm & PERM::list)) {
       BOOST_LOG(debug) << "Permission Get AppAsset denied for [" << named_cert_p->name << "] (" << (uint32_t)named_cert_p->perm << ")";
 
       fg.disable();
@@ -2694,6 +2908,15 @@ namespace nvhttp {
     http_server.resource["^/serverinfo$"]["GET"] = serverinfo<SimpleWeb::HTTP>;
     http_server.resource["^/pair$"]["GET"] = pair<SimpleWeb::HTTP>;
     http_server.resource["^/ligase/v1/devices$"]["GET"] = ligase_devices_local;
+    http_server.resource[
+      "^/ligase/v1/devices/[0-9a-f-]+/access$"]["PUT"] =
+      ligase_device_access_local;
+    http_server.resource[
+      "^/ligase/v1/devices/[0-9a-f-]+$"]["DELETE"] =
+      ligase_device_delete_local;
+    http_server.resource[
+      "^/ligase/v1/devices/[0-9a-f-]+/end-session-and-delete$"]["POST"] =
+      ligase_device_delete_local;
     http_server.resource["^/ligase/v1/session/cancel$"]["POST"] = ligase_cancel_session_local;
     http_server.resource["^/ligase/v1/authority/readback$"]["POST"] = ligase_authority_readback_local;
     http_server.resource["^/ligase/v1/authority/reload$"]["POST"] = ligase_authority_reload_local;
@@ -2705,6 +2928,9 @@ namespace nvhttp {
       http_server.resource["^/ligase/v1/pairing/requests/[^/]+/envelope$"]["PUT"] = attended_route;
       http_server.resource["^/ligase/v1/pairing/requests/[^/]+/allow$"]["POST"] = attended_route;
       http_server.resource["^/ligase/v1/pairing/requests/[^/]+/reject$"]["POST"] = attended_route;
+      http_server.resource[
+        "^/ligase/v1/pairing/requests/[0-9a-f-]+/access$"]["PUT"] =
+        ligase_pairing_access_local;
     }
 
     http_server.config.reuse_address = true;

@@ -16,6 +16,11 @@
 #include <vector>
 
 namespace attended_pairing {
+  enum class access_mode {
+    operate,
+    observe
+  };
+
   struct source_identity {
     std::string address;
     std::uint32_t scope_id = 0;
@@ -160,6 +165,14 @@ namespace attended_pairing {
     status_output reject(
       std::string_view request_id,
       steady_clock::time_point now
+    );
+    void set_access_mode(
+      std::string_view request_id,
+      access_mode mode,
+      steady_clock::time_point now
+    );
+    [[nodiscard]] access_mode access_mode_for_pairing(
+      std::string_view request_id
     );
 
     void bind_held_getservercert(

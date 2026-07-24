@@ -103,6 +103,7 @@ namespace attended_pairing {
     secret_owner pin;
     legacy_pairing_adapter *adapter = nullptr;
     std::optional<std::string> failure;
+    attended_pairing::access_mode access = attended_pairing::access_mode::operate;
 
     record(
       create_input source,
@@ -532,6 +533,32 @@ namespace attended_pairing {
       cleanup_terminal(value);
     }
     return project_status(value);
+  }
+
+  void pairing_service::set_access_mode(
+    std::string_view request_id,
+    attended_pairing::access_mode mode,
+    steady_clock::time_point now
+  ) {
+    std::scoped_lock lock(mutex_);
+    auto &value = lookup(request_id);
+    materialize_expiry(value, now);
+    if (value.lifetime.state() != request_state::pending) {
+      throw service_exception(
+        service_error::invalid_state, {}, value.lifetime.state());
+    }
+    value.access = mode;
+  }
+
+  attended_pairing::access_mode pairing_service::access_mode_for_pairing(
+    std::string_view request_id
+  ) {
+    std::scoped_lock lock(mutex_);
+    const auto found = records_.find(std::string(request_id));
+    if (found == records_.end()) {
+      throw service_exception(service_error::request_not_found);
+    }
+    return found->second->access;
   }
 
   void pairing_service::bind_held_getservercert(

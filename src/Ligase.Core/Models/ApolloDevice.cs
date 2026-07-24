@@ -13,6 +13,9 @@ public sealed class ApolloDevice
     [JsonPropertyName("perm")]
     public uint Permissions { get; init; }
 
+    [JsonPropertyName("access_mode")]
+    public string AccessMode { get; init; } = "observe";
+
     [JsonPropertyName("allow_client_commands")]
     public bool AllowClientCommands { get; init; }
 

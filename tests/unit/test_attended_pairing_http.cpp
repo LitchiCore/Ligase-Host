@@ -123,6 +123,31 @@ TEST(AttendedPairingHttp, CreateStatusSourceAndCancelAreFailClosed) {
   EXPECT_EQ(value.create().status, 409);
 }
 
+TEST(AttendedPairingHttp, PendingAccessDefaultsOperateAndExpiresFailClosed) {
+  harness value;
+  ASSERT_EQ(value.create().status, 201);
+  EXPECT_EQ(
+    value.service.access_mode_for_pairing(request_id),
+    access_mode::operate);
+
+  value.service.set_access_mode(
+    request_id,
+    access_mode::observe,
+    value.monotonic);
+  EXPECT_EQ(
+    value.service.access_mode_for_pairing(request_id),
+    access_mode::observe);
+
+  // The access selection is part of the pending transaction. A stale UI
+  // continuation cannot alter it after the request deadline.
+  EXPECT_THROW(
+    value.service.set_access_mode(
+      request_id,
+      access_mode::operate,
+      value.monotonic + std::chrono::seconds(121)),
+    service_exception);
+}
+
 TEST(AttendedPairingHttp, CanonicalRequestIdAcceptsFrozenUuidVersions) {
   harness value;
   value.create_body["requestId"] =

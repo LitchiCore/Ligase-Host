@@ -16,6 +16,11 @@ public interface IAttendedPairingRepository
         ManagedPairingCore core,
         string requestId,
         CancellationToken cancellationToken = default);
+    Task SetAccessModeAsync(
+        ManagedPairingCore core,
+        string requestId,
+        string mode,
+        CancellationToken cancellationToken = default);
     Task<PairingRequestStatus> RejectAsync(
         ManagedPairingCore core,
         string requestId,
@@ -145,6 +150,35 @@ public sealed class AttendedPairingRepository(
         CancellationToken cancellationToken = default) =>
         ActAsync(core, requestId, "allow", cancellationToken);
 
+    public async Task SetAccessModeAsync(
+        ManagedPairingCore core,
+        string requestId,
+        string mode,
+        CancellationToken cancellationToken = default)
+    {
+        if (mode is not ("operate" or "observe"))
+            throw new ArgumentOutOfRangeException(nameof(mode));
+        var current = await resolver.ResolveAsync(cancellationToken);
+        if (!string.Equals(
+                current.InstanceKey,
+                core.InstanceKey,
+                StringComparison.Ordinal))
+            throw new AttendedPairingUnavailableException(
+                "核心实例已经变化，旧配对请求已失效。请等待客户端重新发起。");
+        var canonicalRequestId = CanonicalRequestId(requestId);
+        using var response = await client.PutAsJsonAsync(
+            current.Endpoint.BuildUri(
+                $"/ligase/v1/pairing/requests/{canonicalRequestId}/access"),
+            new { mode },
+            cancellationToken);
+        if (response.StatusCode == HttpStatusCode.NoContent) return;
+        if (response.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.Conflict)
+            throw new AttendedPairingUnavailableException(
+                "该配对请求已经失效或状态已变化，请等待客户端重新发起。");
+        throw new AttendedPairingUnavailableException(
+            "无法设置设备权限。该设备尚未被允许。");
+    }
+
     public Task<PairingRequestStatus> RejectAsync(
         ManagedPairingCore core,
         string requestId,
@@ -166,9 +200,10 @@ public sealed class AttendedPairingRepository(
                 "核心实例已经变化，旧配对请求已失效。请等待客户端重新发起。");
 
         using var content = new ByteArrayContent([]);
+        var canonicalRequestId = CanonicalRequestId(requestId);
         using var response = await client.PostAsync(
             current.Endpoint.BuildUri(
-                $"/ligase/v1/pairing/requests/{requestId}/{action}"),
+                $"/ligase/v1/pairing/requests/{canonicalRequestId}/{action}"),
             content,
             cancellationToken);
         if (response.IsSuccessStatusCode)
@@ -195,4 +230,10 @@ public sealed class AttendedPairingRepository(
         throw new AttendedPairingUnavailableException(
             "无法更新配对请求。请确认核心仍在运行后重试。");
     }
+
+    private static string CanonicalRequestId(string requestId) =>
+        Guid.TryParseExact(requestId, "D", out var parsedRequestId)
+            ? parsedRequestId.ToString("D").ToLowerInvariant()
+            : throw new AttendedPairingUnavailableException(
+                "配对请求标识无效，请等待客户端重新发起。");
 }

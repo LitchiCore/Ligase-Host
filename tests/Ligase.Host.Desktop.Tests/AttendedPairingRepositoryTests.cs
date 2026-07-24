@@ -87,6 +87,47 @@ public sealed class AttendedPairingRepositoryTests
         Assert.AreEqual("approved", status.State);
     }
 
+    [TestMethod]
+    public async Task AccessSelectionUsesCanonicalRequestAndClosedJsonBody()
+    {
+        var handler = new RecordingHandler(async (request, cancellationToken) =>
+        {
+            Assert.AreEqual(HttpMethod.Put, request.Method);
+            Assert.AreEqual(
+                "/ligase/v1/pairing/requests/9dbbb480-9ef1-4e9e-bb1f-0c1d42dff8e4/access",
+                request.RequestUri!.AbsolutePath);
+            Assert.AreEqual(
+                """{"mode":"observe"}""",
+                await request.Content!.ReadAsStringAsync(cancellationToken));
+            return new HttpResponseMessage(HttpStatusCode.NoContent);
+        });
+        var repository = new AttendedPairingRepository(
+            new StaticResolver(Core),
+            new HttpClient(handler));
+
+        await repository.SetAccessModeAsync(
+            Core,
+            "9DBBB480-9EF1-4E9E-BB1F-0C1D42DFF8E4",
+            "observe");
+    }
+
+    [TestMethod]
+    public async Task AccessSelectionFailsClosedWhenManagedInstanceChanges()
+    {
+        var changed = Core with { StartNonce = "start-b" };
+        var repository = new AttendedPairingRepository(
+            new StaticResolver(changed),
+            new HttpClient(new RecordingHandler((_, _) =>
+                Task.FromException<HttpResponseMessage>(
+                    new AssertFailedException("HTTP must not be called")))));
+
+        await Assert.ThrowsExceptionAsync<AttendedPairingUnavailableException>(
+            () => repository.SetAccessModeAsync(
+                Core,
+                "9dbbb480-9ef1-4e9e-bb1f-0c1d42dff8e4",
+                "observe"));
+    }
+
     [DataTestMethod]
     [DataRow(" Phone", "192.168.1.2", null)]
     [DataRow("Phone", "192.168.001.2", null)]
