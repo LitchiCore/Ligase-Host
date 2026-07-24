@@ -774,6 +774,14 @@ namespace nvhttp {
       : "observe"sv;
   }
 
+  bool ligase_client_can_read_library(const crypto::named_cert_t &client) {
+    return !!(client.perm & PERM::list);
+  }
+
+  bool ligase_client_can_mutate(const crypto::named_cert_t &client) {
+    return !!(client.perm & PERM::launch);
+  }
+
   template <class T>
   void print_req(std::shared_ptr<typename SimpleWeb::ServerBase<T>::Request> request) {
     BOOST_LOG(debug) << "TUNNEL :: "sv << tunnel<T>::to_string;
@@ -1454,9 +1462,9 @@ namespace nvhttp {
       return result;
     }
 
-    bool ligase_authorized(resp_https_t response, req_https_t request) {
+    bool ligase_mutation_authorized(resp_https_t response, req_https_t request) {
       auto named_cert_p = get_verified_cert(request);
-      if (!!(named_cert_p->perm & PERM::launch)) {
+      if (ligase_client_can_mutate(*named_cert_p)) {
         return true;
       }
 
@@ -1640,7 +1648,13 @@ namespace nvhttp {
 
   void ligase_sync(resp_https_t response, req_https_t request) {
     print_req<SunshineHTTPS>(request);
-    if (!ligase_authorized(response, request)) {
+    auto named_cert_p = get_verified_cert(request);
+    if (!ligase_client_can_read_library(*named_cert_p)) {
+      send_ligase_json(
+        response,
+        SimpleWeb::StatusCode::client_error_forbidden,
+        {{"error", "permissionDenied"}}
+      );
       return;
     }
 
@@ -1666,7 +1680,7 @@ namespace nvhttp {
 
   void ligase_update_streaming(resp_https_t response, req_https_t request) {
     print_req<SunshineHTTPS>(request);
-    if (!ligase_authorized(response, request)) {
+    if (!ligase_mutation_authorized(response, request)) {
       return;
     }
     const auto request_json = parse_ligase_request(response, request);
@@ -1786,7 +1800,7 @@ namespace nvhttp {
 
   void ligase_update_library_sort(resp_https_t response, req_https_t request) {
     print_req<SunshineHTTPS>(request);
-    if (!ligase_authorized(response, request)) {
+    if (!ligase_mutation_authorized(response, request)) {
       return;
     }
     const auto request_json = parse_ligase_request(response, request);

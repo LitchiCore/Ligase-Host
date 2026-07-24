@@ -65,7 +65,10 @@ Core authorization remains authoritative:
 - launch/resume/cancel use the named-device permission;
 - all input injection paths use the live session permission;
 - Ligase Sync writes require launch permission;
-- read-only library and device projections remain available to observe mode.
+- HTTPS `GET /ligase/v1/sync`, `/applist`, and `/appasset` require list
+  permission and remain available to observe mode;
+- an observe client without list permission fails closed with no library names,
+  UUIDs, ordering, metadata, or cover content.
 
 Neither the Desktop UI nor Android can elevate access by editing a product
 projection. Android has no permission mutation or deletion entry point.

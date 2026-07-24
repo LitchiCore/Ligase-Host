@@ -26,6 +26,25 @@ TEST(HttpServerInfo, LigaseClientAccessModeFailsClosed) {
   EXPECT_EQ(ligase_client_access_mode(client), "observe");
 }
 
+TEST(HttpPermissions, ObserveCanReadButCannotMutate) {
+  crypto::named_cert_t client;
+  client.perm = crypto::PERM::_default;
+  client.allow_client_commands = false;
+
+  EXPECT_TRUE(ligase_client_can_read_library(client));
+  EXPECT_FALSE(ligase_client_can_mutate(client));
+
+  client.perm = crypto::PERM::_all;
+  client.allow_client_commands = true;
+  EXPECT_TRUE(ligase_client_can_read_library(client));
+  EXPECT_TRUE(ligase_client_can_mutate(client));
+
+  client.perm = crypto::PERM::view;
+  client.allow_client_commands = false;
+  EXPECT_FALSE(ligase_client_can_read_library(client));
+  EXPECT_FALSE(ligase_client_can_mutate(client));
+}
+
 struct pairing_input {
   std::shared_ptr<pair_session_t> session;
   /**

@@ -65,6 +65,20 @@ namespace nvhttp {
   ligase_client_access_mode(const crypto::named_cert_t &client);
 
   /**
+   * @brief Return whether a paired client may read the product library.
+   * @details Observe clients retain list permission while write/control
+   *          operations remain gated by launch permission.
+   */
+  bool
+  ligase_client_can_read_library(const crypto::named_cert_t &client);
+
+  /**
+   * @brief Return whether a paired client may mutate product state.
+   */
+  bool
+  ligase_client_can_mutate(const crypto::named_cert_t &client);
+
+  /**
    * @brief Start the nvhttp server.
    * @examples
    * nvhttp::start();
