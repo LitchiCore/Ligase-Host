@@ -24,11 +24,8 @@ namespace ligase::library::http {
         {"hdrEncodingSupported", dependencies.hdr_encoding_supported()}
       };
       return {200, std::move(sync)};
-    } catch (const std::exception &error) {
-      return {
-        404,
-        {{"error", "syncUnavailable"}, {"message", error.what()}}
-      };
+    } catch (const std::exception &) {
+      return {404, {{"error", "syncUnavailable"}}};
     }
   }
 }

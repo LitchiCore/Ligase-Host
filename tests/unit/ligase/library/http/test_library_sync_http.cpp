@@ -31,6 +31,7 @@ namespace {
     bool hdr_supported = true;
     bool missing = false;
     bool malformed = false;
+    bool load_failure = false;
     int loads = 0;
 
     sync_dependencies dependencies() {
@@ -47,6 +48,10 @@ namespace {
               1,
               "parse error",
               nullptr);
+          }
+          if (load_failure) {
+            throw std::runtime_error(
+              R"(cannot read D:\private\ligase-sync.json: injectedSecret)");
           }
           return sync;
         },
@@ -101,12 +106,8 @@ TEST(LibrarySyncHttp, MissingProjectionRetainsExistingNotFoundWire) {
   const auto response = handle_sync({.authorized = true}, state.dependencies());
 
   EXPECT_EQ(response.status, 404);
-  EXPECT_EQ(
-    response.body,
-    nlohmann::json({
-      {"error", "syncUnavailable"},
-      {"message", "Ligase sync file is not available"}
-    }));
+  EXPECT_EQ(response.body, nlohmann::json({{"error", "syncUnavailable"}}));
+  EXPECT_EQ(response.body.dump(), R"({"error":"syncUnavailable"})");
 }
 
 TEST(LibrarySyncHttp, MalformedProjectionRetainsExistingNotFoundWire) {
@@ -116,7 +117,19 @@ TEST(LibrarySyncHttp, MalformedProjectionRetainsExistingNotFoundWire) {
   const auto response = handle_sync({.authorized = true}, state.dependencies());
 
   EXPECT_EQ(response.status, 404);
-  EXPECT_EQ(response.body.at("error"), "syncUnavailable");
-  EXPECT_TRUE(response.body.at("message").is_string());
-  EXPECT_FALSE(response.body.at("message").get<std::string>().empty());
+  EXPECT_EQ(response.body, nlohmann::json({{"error", "syncUnavailable"}}));
+  EXPECT_EQ(response.body.dump(), R"({"error":"syncUnavailable"})");
+}
+
+TEST(LibrarySyncHttp, InternalLoadFailureDoesNotExposePathOrExceptionText) {
+  harness state;
+  state.load_failure = true;
+
+  const auto response = handle_sync({.authorized = true}, state.dependencies());
+
+  EXPECT_EQ(response.status, 404);
+  EXPECT_EQ(response.body, nlohmann::json({{"error", "syncUnavailable"}}));
+  EXPECT_EQ(response.body.dump(), R"({"error":"syncUnavailable"})");
+  EXPECT_EQ(response.body.dump().find("D:\\private"), std::string::npos);
+  EXPECT_EQ(response.body.dump().find("injectedSecret"), std::string::npos);
 }
