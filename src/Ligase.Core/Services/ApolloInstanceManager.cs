@@ -72,9 +72,16 @@ public sealed class ApolloInstanceManager(
             throw new InvalidOperationException(
                 "Ligase Host 的标准端口 48989 当前不可用。请关闭占用该端口的其他实例后重试。");
 
-        var configuration = string.Join(Environment.NewLine,
+        var configuration = BuildManagedConfiguration(paths, BasePort);
+        await File.WriteAllTextAsync(paths.ApolloConfigFile, configuration, cancellationToken);
+    }
+
+    internal static string BuildManagedConfiguration(LigasePaths paths, ushort basePort)
+    {
+        return string.Join(Environment.NewLine,
             "sunshine_name = Ligase Host",
-            $"port = {BasePort}",
+            "system_tray = disabled",
+            $"port = {basePort}",
             "address_family = both",
             "upnp = disabled",
             "origin_web_ui_allowed = pc",
@@ -84,7 +91,6 @@ public sealed class ApolloInstanceManager(
             $"pkey = {paths.ApolloPrivateKeyFile}",
             $"cert = {paths.ApolloCertificateFile}",
             string.Empty);
-        await File.WriteAllTextAsync(paths.ApolloConfigFile, configuration, cancellationToken);
     }
 
     public async Task StartAsync(CancellationToken cancellationToken = default)
