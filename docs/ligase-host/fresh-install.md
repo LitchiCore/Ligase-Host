@@ -10,12 +10,13 @@ Missing or mismatched artifacts fail closed.
 The Ligase installer is independent of the legacy Apollo CPack installer.
 It never calls Apollo's migration script and never imports an existing Apollo
 configuration, certificate, or state file. A fresh install creates one root
-bootstrap from the explicit `/DataRoot=` selection, or from the documented
-per-user default when no selection was supplied. An upgrade with a valid,
-accessible bootstrap preserves its bytes and data-root binding exactly.
-Malformed or inaccessible existing bootstrap state fails closed and is never
-silently replaced. Desktop creates the Host UUID, certificate, library, and
-managed configuration only when that selected data root has no identity.
+bootstrap from the Data Root page or the explicit `/DataRoot=` selection, or
+from the documented per-user default when no selection was supplied. An
+upgrade with a valid, accessible bootstrap preserves its bytes and data-root
+binding exactly. Malformed or inaccessible existing bootstrap state fails
+closed and is never silently replaced. Desktop creates the Host UUID,
+certificate, library, and managed configuration only when that selected data
+root has no identity.
 
 ## Structured installation layout
 
@@ -49,6 +50,23 @@ The legacy flat list is upgrade-cleanup input only; it is not a supported
 runtime layout or fallback search path. A missing structured payload fails
 closed. Product launch must not be rescued with repository/Debug binaries,
 hand-copied dependencies, or a child working-directory change.
+
+The Components page contains a selected-by-default **Create desktop shortcut**
+option. A user may clear it before installation. Install and upgrade remove
+only the exact Ligase-owned desktop shortcut before applying the current
+selection; uninstall removes that same exact shortcut. The Start Menu shortcut
+remains required and is independent of this option.
+
+Interactive installation is the preferred operator path: select the structured
+program directory on the Directory page and the identity/library directory on
+the Data Root page. Automation must invoke
+`Deployment/Invoke-LigaseInstaller.ps1`, which uses
+one tested Windows argv serializer and passes one serialized argument string
+to `Start-Process`; callers must not concatenate or pre-quote a native command
+line. The installer is still the final authority: it parses the
+original native argv once, rejects duplicate, malformed, unknown, split, UNC,
+device, root, relative, or non-canonical path arguments, and validates the
+final UI values before the first program, bootstrap, or firewall write.
 
 Desktop composition, first-route behavior, and installed-product acceptance are
 documented in [`desktop-ui.md`](desktop-ui.md). That document links here rather

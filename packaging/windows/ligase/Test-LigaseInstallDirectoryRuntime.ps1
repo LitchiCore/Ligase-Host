@@ -3,7 +3,8 @@ param(
   [Parameter(Mandatory)]
   [string] $MakeNsis,
   [Parameter(Mandatory)]
-  [string] $OutputRoot
+  [string] $OutputRoot,
+  [string] $DotNet = "dotnet.exe"
 )
 
 $ErrorActionPreference = "Stop"
@@ -20,12 +21,182 @@ $resolver = Join-Path $PSScriptRoot "Resolve-LigaseInstallDirectory.ps1"
   (Join-Path $PSScriptRoot "LigaseInstallDirectoryHarness.nsi") | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "harnessCompileFailed" }
 
+$argumentListRunnerRoot = Join-Path $root "argument-list-runner"
+$argumentListRunnerOutput = Join-Path $argumentListRunnerRoot "out"
+New-Item -ItemType Directory -Path $argumentListRunnerRoot -Force | Out-Null
+@'
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+</Project>
+'@ | Set-Content -LiteralPath (
+  Join-Path $argumentListRunnerRoot "ArgumentListRunner.csproj") -Encoding UTF8
+@'
+if (args.Length < 1)
+    return 90;
+var start = new System.Diagnostics.ProcessStartInfo(args[0])
+{
+    UseShellExecute = false,
+    CreateNoWindow = true,
+};
+foreach (var argument in args.Skip(1))
+    start.ArgumentList.Add(argument);
+using var process = System.Diagnostics.Process.Start(start);
+if (process is null)
+    return 91;
+await process.WaitForExitAsync();
+return process.ExitCode;
+'@ | Set-Content -LiteralPath (
+  Join-Path $argumentListRunnerRoot "Program.cs") -Encoding UTF8
+& $DotNet build (
+  Join-Path $argumentListRunnerRoot "ArgumentListRunner.csproj") `
+  -c Release -o $argumentListRunnerOutput --nologo | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "argumentListRunnerBuildFailed" }
+$argumentListRunner = Join-Path $argumentListRunnerOutput "ArgumentListRunner.dll"
+
+Add-Type -TypeDefinition @"
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Text;
+
+public static class LigaseRawProcess
+{
+    [StructLayout(LayoutKind.Sequential)]
+    private struct STARTUPINFO
+    {
+        public int cb;
+        public string lpReserved;
+        public string lpDesktop;
+        public string lpTitle;
+        public int dwX;
+        public int dwY;
+        public int dwXSize;
+        public int dwYSize;
+        public int dwXCountChars;
+        public int dwYCountChars;
+        public int dwFillAttribute;
+        public int dwFlags;
+        public short wShowWindow;
+        public short cbReserved2;
+        public IntPtr lpReserved2;
+        public IntPtr hStdInput;
+        public IntPtr hStdOutput;
+        public IntPtr hStdError;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PROCESS_INFORMATION
+    {
+        public IntPtr hProcess;
+        public IntPtr hThread;
+        public int dwProcessId;
+        public int dwThreadId;
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool CreateProcessW(
+        string applicationName,
+        StringBuilder commandLine,
+        IntPtr processAttributes,
+        IntPtr threadAttributes,
+        bool inheritHandles,
+        uint creationFlags,
+        IntPtr environment,
+        string currentDirectory,
+        ref STARTUPINFO startupInfo,
+        out PROCESS_INFORMATION processInformation);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetExitCodeProcess(IntPtr process, out uint exitCode);
+
+    [DllImport("kernel32.dll")]
+    private static extern bool CloseHandle(IntPtr handle);
+
+    public static int Run(string application, string commandLine)
+    {
+        var startup = new STARTUPINFO();
+        startup.cb = Marshal.SizeOf<STARTUPINFO>();
+        PROCESS_INFORMATION process;
+        if (!CreateProcessW(
+            application,
+            new StringBuilder(commandLine),
+            IntPtr.Zero,
+            IntPtr.Zero,
+            false,
+            0,
+            IntPtr.Zero,
+            null,
+            ref startup,
+            out process))
+            throw new Win32Exception(Marshal.GetLastWin32Error());
+        try
+        {
+            if (WaitForSingleObject(process.hProcess, 10000) != 0)
+                throw new InvalidOperationException("harnessProcessTimeout");
+            uint exitCode;
+            if (!GetExitCodeProcess(process.hProcess, out exitCode))
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            return unchecked((int)exitCode);
+        }
+        finally
+        {
+            CloseHandle(process.hThread);
+            CloseHandle(process.hProcess);
+        }
+    }
+}
+"@
+
+function ConvertTo-WindowsCommandLineArgument(
+  [Parameter(Mandatory)][AllowEmptyString()][string] $Value
+) {
+  if ($Value.Length -gt 0 -and $Value -notmatch '[\s"]') {
+    return $Value
+  }
+  $builder = [Text.StringBuilder]::new()
+  [void]$builder.Append('"')
+  $backslashes = 0
+  foreach ($character in $Value.ToCharArray()) {
+    if ($character -eq '\') {
+      $backslashes++
+      continue
+    }
+    if ($character -eq '"') {
+      [void]$builder.Append(('\' * (($backslashes * 2) + 1)))
+      [void]$builder.Append('"')
+      $backslashes = 0
+      continue
+    }
+    [void]$builder.Append(('\' * $backslashes))
+    $backslashes = 0
+    [void]$builder.Append($character)
+  }
+  [void]$builder.Append(('\' * ($backslashes * 2)))
+  [void]$builder.Append('"')
+  return $builder.ToString()
+}
+
 function Invoke-Harness(
   [Parameter(Mandatory)][string] $Name,
   [Parameter(Mandatory)][string[]] $Arguments,
   [Parameter(Mandatory)][bool] $ShouldSucceed,
+  [ValidateSet(
+    "PowerShellDirect",
+    "PowerShellStartProcess",
+    "PowerShellStartProcessUnsafe",
+    "ProcessStartInfo",
+    "RawWin32")]
+  [string] $LaunchMode = "PowerShellDirect",
   [string] $ExpectedInstallDirectory = "",
-  [string] $ExpectedDataRoot = ""
+  [string] $ExpectedDataRoot = "",
+  [string[]] $ForbiddenPaths = @()
 ) {
   $result = Join-Path $root "$Name.result"
   if (Test-Path -LiteralPath $result) {
@@ -35,7 +206,33 @@ function Invoke-Harness(
     Remove-Item -LiteralPath $harnessDiagnostic -Force
   }
   $nativeArguments = @($Arguments) + "/ResultFile=$result"
-  & $harness @nativeArguments
+  switch ($LaunchMode) {
+    "PowerShellDirect" {
+      & $harness @nativeArguments
+    }
+    "PowerShellStartProcess" {
+      $serialized = ($nativeArguments |
+        ForEach-Object { ConvertTo-WindowsCommandLineArgument $_ }) -join " "
+      $process = Start-Process -FilePath $harness `
+        -ArgumentList $serialized -PassThru -Wait -WindowStyle Hidden
+    }
+    "PowerShellStartProcessUnsafe" {
+      $process = Start-Process -FilePath $harness `
+        -ArgumentList $nativeArguments -PassThru -Wait -WindowStyle Hidden
+    }
+    "ProcessStartInfo" {
+      & $DotNet $argumentListRunner $harness @nativeArguments
+      if ($LASTEXITCODE -notin 0,12,13,14,15,16,17,18) {
+        throw "argumentListRunnerFailed:$LASTEXITCODE"
+      }
+    }
+    "RawWin32" {
+      $allArguments = @($harness) + $nativeArguments
+      $commandLine = ($allArguments |
+        ForEach-Object { ConvertTo-WindowsCommandLineArgument $_ }) -join " "
+      [void][LigaseRawProcess]::Run($harness, $commandLine)
+    }
+  }
   $deadline = [DateTime]::UtcNow.AddSeconds(5)
   do {
     Start-Sleep -Milliseconds 50
@@ -92,6 +289,11 @@ function Invoke-Harness(
       $exists) {
     throw "harnessNegativeAccepted:$Name"
   }
+  foreach ($forbiddenPath in $ForbiddenPaths) {
+    if (Test-Path -LiteralPath $forbiddenPath) {
+      throw "harnessNegativeWroteTarget:$Name"
+    }
+  }
   [ordered]@{
     name = $Name
     exitCode = $exitCode
@@ -101,13 +303,57 @@ function Invoke-Harness(
 
 $results = @(
   Invoke-Harness `
-    -Name "d-paths-with-spaces" `
+    -Name "d-paths-with-spaces-powershell-direct" `
     -Arguments @(
       '/InstallDirectory=D:\Program Files\Ligase Host',
       '/DataRoot=D:\Development\Ligase Data\Host') `
     -ShouldSucceed $true `
     -ExpectedInstallDirectory 'D:\Program Files\Ligase Host' `
     -ExpectedDataRoot 'D:\Development\Ligase Data\Host'
+  Invoke-Harness `
+    -Name "d-paths-with-spaces-start-process" `
+    -LaunchMode "PowerShellStartProcess" `
+    -Arguments @(
+      '/InstallDirectory=D:\Program Files\Ligase Host',
+      '/DataRoot=D:\Development\Ligase Data\Host') `
+    -ShouldSucceed $true `
+    -ExpectedInstallDirectory 'D:\Program Files\Ligase Host' `
+    -ExpectedDataRoot 'D:\Development\Ligase Data\Host'
+  Invoke-Harness `
+    -Name "d-paths-with-spaces-process-start-info" `
+    -LaunchMode "ProcessStartInfo" `
+    -Arguments @(
+      '/InstallDirectory=D:\Program Files\Ligase Host',
+      '/DataRoot=D:\Development\Ligase Data\Host') `
+    -ShouldSucceed $true `
+    -ExpectedInstallDirectory 'D:\Program Files\Ligase Host' `
+    -ExpectedDataRoot 'D:\Development\Ligase Data\Host'
+  Invoke-Harness `
+    -Name "d-paths-with-spaces-raw-win32" `
+    -LaunchMode "RawWin32" `
+    -Arguments @(
+      '/InstallDirectory=D:\Program Files\Ligase Host',
+      '/DataRoot=D:\Development\Ligase Data\Host') `
+    -ShouldSucceed $true `
+    -ExpectedInstallDirectory 'D:\Program Files\Ligase Host' `
+    -ExpectedDataRoot 'D:\Development\Ligase Data\Host'
+  Invoke-Harness `
+    -Name "unsafe-start-process-split-path" `
+    -LaunchMode "PowerShellStartProcessUnsafe" `
+    -Arguments @(
+      '/InstallDirectory=D:\Program Files\Ligase Host',
+      '/DataRoot=D:\Development\Ligase Data\Host') `
+    -ShouldSucceed $false
+  Invoke-Harness `
+    -Name "malformed-zero-write" `
+    -Arguments @(
+      "/InstallDirectory=$(Join-Path $root 'must-not-exist-install')",
+      "/DataRoot=$(Join-Path $root 'must-not-exist-data')",
+      "stray-token") `
+    -ShouldSucceed $false `
+    -ForbiddenPaths @(
+      (Join-Path $root "must-not-exist-install"),
+      (Join-Path $root "must-not-exist-data"))
   Invoke-Harness `
     -Name "duplicate-install" `
     -Arguments @(

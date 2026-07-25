@@ -173,6 +173,14 @@ public sealed class FreshInstallPackagingTests
 
         StringAssert.Contains(nsis, "SectionIn RO");
         StringAssert.Contains(nsis, "Section /o \"Ligase Virtual Display (optional)\"");
+        StringAssert.Contains(
+            nsis,
+            "Section \"Create desktop shortcut (optional)\" SEC_DESKTOP_SHORTCUT");
+        StringAssert.Contains(
+            nsis,
+            "CreateShortcut \"$DESKTOP\\Ligase Host.lnk\" \"$INSTDIR\\Ligase Host.exe\"");
+        StringAssert.Contains(nsis, "Delete \"$DESKTOP\\Ligase Host.lnk\"");
+        StringAssert.Contains(nsis, "Page custom DataRootPageCreate DataRootPageLeave");
         StringAssert.Contains(nsis, "-ConfigureFirewall");
         StringAssert.Contains(nsis, "-DataDisposition $3");
         StringAssert.Contains(nsis, "-Action InstallVirtualDisplay");
@@ -218,6 +226,24 @@ public sealed class FreshInstallPackagingTests
                 StringComparison.Ordinal));
         StringAssert.Contains(nsis, "\"InstallLocation\" \"$INSTDIR\"");
         StringAssert.Contains(build, "Resolve-LigaseInstallDirectory.ps1");
+        StringAssert.Contains(build, "Invoke-LigaseInstaller.ps1");
+        StringAssert.Contains(build, "Test-LigaseInstallDirectoryRuntime.ps1");
+        StringAssert.Contains(build, "installerArgumentRuntimeValidationFailed");
+        StringAssert.Contains(build, "-DotNet $DotNet");
+        var invoke = File.ReadAllText(
+            Path.Combine(
+                repo,
+                "packaging",
+                "windows",
+                "ligase",
+                "Invoke-LigaseInstaller.ps1"));
+        StringAssert.Contains(invoke, "ConvertTo-WindowsCommandLineArgument");
+        StringAssert.Contains(invoke, "Start-Process @startParameters");
+        Assert.IsFalse(
+            invoke.Contains(
+                "ArgumentList = @(",
+                StringComparison.Ordinal),
+            "The supported invocation seam must pass one tested serialized argv string.");
         Assert.IsFalse(
             nsis.Contains("Function .onVerifyInstDir", StringComparison.Ordinal));
         var requiredSection = nsis.IndexOf(
@@ -291,15 +317,21 @@ public sealed class FreshInstallPackagingTests
             "\"/InstallDirectory=D:\\Programs\\..\\Ligase Host\"",
             string.Empty,
             @"C:\Program Files\Ligase Host");
+        var splitByCaller = await RunInstallDirectoryResolverAsync(
+            "/InstallDirectory=D:\\Program Files\\Ligase Host /DataRoot=D:\\Ligase Data",
+            string.Empty,
+            @"C:\Program Files\Ligase Host");
 
         Assert.AreNotEqual(0, duplicate.ExitCode);
         Assert.AreNotEqual(0, relative.ExitCode);
         Assert.AreNotEqual(0, root.ExitCode);
         Assert.AreNotEqual(0, nonCanonical.ExitCode);
+        Assert.AreNotEqual(0, splitByCaller.ExitCode);
         Assert.AreEqual("installerArgumentsInvalid", duplicate.Error);
         Assert.AreEqual("installerArgumentsInvalid", relative.Error);
         Assert.AreEqual("installerArgumentsInvalid", root.Error);
         Assert.AreEqual("installerArgumentsInvalid", nonCanonical.Error);
+        Assert.AreEqual("installerArgumentsInvalid", splitByCaller.Error);
     }
 
     [TestMethod]
@@ -375,7 +407,8 @@ public sealed class FreshInstallPackagingTests
             UseShellExecute = false,
             CreateNoWindow = true
         };
-        start.Environment["LIGASE_INSTALL_RAW_PARAMETERS"] = rawParameters;
+        start.Environment["LIGASE_INSTALL_RAW_PARAMETERS"] =
+            $"\"C:\\Fixture\\Ligase Installer.exe\" {rawParameters}".TrimEnd();
         start.Environment["LIGASE_INSTALL_REGISTERED_LOCATION"] = registered;
         start.Environment["LIGASE_INSTALL_DEFAULT_LOCATION"] = defaultLocation;
         start.Environment["LIGASE_INSTALL_ARGUMENT_RESULT"] = resultPath;
@@ -408,6 +441,17 @@ public sealed class FreshInstallPackagingTests
 
     private static string FindRepositoryRoot()
     {
+        var configured = Environment.GetEnvironmentVariable("LIGASE_SOURCE_ROOT");
+        if (!string.IsNullOrWhiteSpace(configured))
+        {
+            var full = Path.GetFullPath(configured);
+            if (File.Exists(Path.Combine(full, "CMakeLists.txt")) &&
+                Directory.Exists(Path.Combine(full, ".git")))
+            {
+                return full;
+            }
+            throw new DirectoryNotFoundException("configuredRepositoryRootInvalid");
+        }
         var directory = new DirectoryInfo(AppContext.BaseDirectory);
         while (directory is not null)
         {

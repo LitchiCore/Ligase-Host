@@ -153,6 +153,8 @@ Copy-Item -LiteralPath (Join-Path $PSScriptRoot "Manage-LigaseInstallation.ps1")
   -Destination (Join-Path $temporaryStage "Deployment")
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "Resolve-LigaseInstallDirectory.ps1") `
   -Destination (Join-Path $temporaryStage "Deployment")
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot "Invoke-LigaseInstaller.ps1") `
+  -Destination (Join-Path $temporaryStage "Deployment")
 
 $artifactDefinitions = @(
   @{ role = "launcher"; relativePath = "Ligase Host.exe" },
@@ -192,6 +194,7 @@ $artifacts = $artifactDefinitions | ForEach-Object {
 $helperDefinitions = @(
   "Deployment/Manage-LigaseInstallation.ps1",
   "Deployment/Resolve-LigaseInstallDirectory.ps1",
+  "Deployment/Invoke-LigaseInstaller.ps1",
   "Deployment/Firewall/Manage-LigaseFirewall.ps1"
 )
 $privilegedHelpers = $helperDefinitions | ForEach-Object {
@@ -323,6 +326,14 @@ if (Test-Path -LiteralPath $stage) {
   Remove-Item -LiteralPath $stage -Recurse -Force
 }
 Move-Item -LiteralPath $temporaryStage -Destination $stage
+$installerArgumentValidation = & (
+  Join-Path $PSScriptRoot "Test-LigaseInstallDirectoryRuntime.ps1") `
+  -MakeNsis $MakeNsis `
+  -DotNet $DotNet `
+  -OutputRoot (Join-Path $work "installer-argument-runtime")
+if ($LASTEXITCODE -ne 0) {
+  throw "installerArgumentRuntimeValidationFailed:$installerArgumentValidation"
+}
 $nsisArguments = @(
   "/DStageDir=$stage",
   "/DOutputFile=$package"

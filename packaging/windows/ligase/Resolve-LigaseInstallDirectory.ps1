@@ -17,11 +17,13 @@ public static class LigaseCommandLine
     public static string[] Parse(string raw)
     {
         int count;
-        var pointer = CommandLineToArgvW("ligase-installer.exe " + raw, out count);
+        var pointer = CommandLineToArgvW(raw, out count);
         if (pointer == IntPtr.Zero)
             throw new InvalidOperationException("installArgumentsInvalid");
         try
         {
+            if (count < 1)
+                throw new InvalidOperationException("installArgumentsInvalid");
             var result = new string[count - 1];
             for (var index = 1; index < count; index++)
             {
@@ -89,6 +91,27 @@ function Read-Option(
   return $matches
 }
 
+function Assert-KnownArguments([string[]] $Arguments) {
+  foreach ($argument in $Arguments) {
+    if ($argument.StartsWith(
+        "/InstallDirectory=",
+        [StringComparison]::OrdinalIgnoreCase) -or
+      $argument.StartsWith(
+        "/DataRoot=",
+        [StringComparison]::OrdinalIgnoreCase) -or
+      $argument.StartsWith(
+        "/ResultFile=",
+        [StringComparison]::OrdinalIgnoreCase) -or
+      $argument.Equals("/S", [StringComparison]::OrdinalIgnoreCase) -or
+      $argument.Equals("/NCRC", [StringComparison]::OrdinalIgnoreCase) -or
+      $argument.StartsWith("/D=", [StringComparison]::OrdinalIgnoreCase) -or
+      $argument.StartsWith("_?=", [StringComparison]::OrdinalIgnoreCase)) {
+      continue
+    }
+    Fail 12
+  }
+}
+
 try {
   $raw = [Environment]::GetEnvironmentVariable(
     "LIGASE_INSTALL_RAW_PARAMETERS",
@@ -106,6 +129,7 @@ try {
   if ([string]::IsNullOrWhiteSpace($resultPath)) { Fail 18 }
 
   $arguments = [LigaseCommandLine]::Parse($raw)
+  Assert-KnownArguments $arguments
   $installOptions = @(Read-Option $arguments "InstallDirectory")
   $dataOptions = @(Read-Option $arguments "DataRoot")
 

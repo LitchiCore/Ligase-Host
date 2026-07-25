@@ -6,10 +6,7 @@ namespace Ligase.Host.Desktop.Tests;
 [TestClass]
 public sealed class DevelopmentRootScriptsTests
 {
-    private static readonly string RepositoryRoot = Path.GetFullPath(
-        Path.Combine(
-            AppContext.BaseDirectory,
-            "..", "..", "..", "..", "..", ".."));
+    private static readonly string RepositoryRoot = ResolveRepositoryRoot();
 
     [TestMethod]
     public void DevelopmentScriptsUseSharedRootResolver()
@@ -110,4 +107,15 @@ public sealed class DevelopmentRootScriptsTests
 
     private static string EscapePowerShell(string value) =>
         value.Replace("'", "''", StringComparison.Ordinal);
+
+    private static string ResolveRepositoryRoot()
+    {
+        var configured = Environment.GetEnvironmentVariable("LIGASE_SOURCE_ROOT");
+        return !string.IsNullOrWhiteSpace(configured)
+            ? Path.GetFullPath(configured)
+            : Path.GetFullPath(
+                Path.Combine(
+                    AppContext.BaseDirectory,
+                    "..", "..", "..", "..", "..", ".."));
+    }
 }

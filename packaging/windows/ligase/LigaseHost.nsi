@@ -15,10 +15,12 @@ ShowUninstDetails show
 !include "MUI2.nsh"
 !include "LogicLib.nsh"
 !include "FileFunc.nsh"
+!include "nsDialogs.nsh"
 !include "StrFunc.nsh"
 ${StrTrimNewLines}
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_DIRECTORY
+Page custom DataRootPageCreate DataRootPageLeave
 !insertmacro MUI_PAGE_COMPONENTS
 !insertmacro MUI_PAGE_INSTFILES
 !insertmacro MUI_PAGE_FINISH
@@ -28,6 +30,8 @@ ${StrTrimNewLines}
 
 Var SetupMutex
 Var DataRoot
+Var DataRootDialog
+Var DataRootText
 Var InstallParameters
 
 !include "InstallDirectoryValidation.nsh"
@@ -48,15 +52,27 @@ Function .onInit
   InitPluginsDir
   SetOutPath "$PLUGINSDIR"
   File /oname=Resolve-LigaseInstallDirectory.ps1 "${StageDir}\Deployment\Resolve-LigaseInstallDirectory.ps1"
-  ReadRegStr $2 HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Ligase Host" "InstallLocation"
-  ${If} $2 != ""
-    StrCpy $INSTDIR $2
+  ; One native argv parser owns both path options and upgrade fallback.
+  ; The result only pre-fills UI state; the required section validates the
+  ; original argv and final UI values again before any product write.
+  Call ResolveInstallerArguments
+FunctionEnd
+
+Function DataRootPageCreate
+  nsDialogs::Create 1018
+  Pop $DataRootDialog
+  ${If} $DataRootDialog == error
+    Abort
   ${EndIf}
-  StrCpy $0 $6
-  ${GetOptions} $0 "/InstallDirectory=" $3
-  ${If} $3 != ""
-    StrCpy $INSTDIR $3
-  ${EndIf}
+  ${NSD_CreateLabel} 0 0 100% 24u "Host data folder (identity, paired devices, library and settings). Choose an absolute local folder below a drive root."
+  Pop $0
+  ${NSD_CreateText} 0 32u 100% 13u "$DataRoot"
+  Pop $DataRootText
+  nsDialogs::Show
+FunctionEnd
+
+Function DataRootPageLeave
+  ${NSD_GetText} $DataRootText $DataRoot
 FunctionEnd
 
 Function un.onInit
@@ -82,9 +98,9 @@ Section "Ligase Host (required)" SEC_MAIN
   ; Then validate the final directory-page value. Both validations happen
   ; before SetOutPath or File can write to the selected installation root.
   ${If} $DataRoot == ""
-    StrCpy $InstallParameters '$\"/InstallDirectory=$INSTDIR$\"'
+    StrCpy $InstallParameters '$\"ligase-installer.exe$\" $\"/InstallDirectory=$INSTDIR$\"'
   ${Else}
-    StrCpy $InstallParameters '$\"/InstallDirectory=$INSTDIR$\" $\"/DataRoot=$DataRoot$\"'
+    StrCpy $InstallParameters '$\"ligase-installer.exe$\" $\"/InstallDirectory=$INSTDIR$\" $\"/DataRoot=$DataRoot$\"'
   ${EndIf}
   Call ResolveInstallerArguments
   SetOutPath "$INSTDIR"
@@ -98,6 +114,9 @@ Section "Ligase Host (required)" SEC_MAIN
     DetailPrint "Existing bootstrap, user data, and unknown files were not removed."
     Abort
   ${EndIf}
+  ; The exact owned desktop shortcut is selection-controlled on every install
+  ; and upgrade. Removing it here makes an unchecked upgrade deterministic.
+  Delete "$DESKTOP\Ligase Host.lnk"
   CreateDirectory "$SMPROGRAMS\Ligase Host"
   CreateShortcut "$SMPROGRAMS\Ligase Host\Ligase Host.lnk" "$INSTDIR\Ligase Host.exe"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Ligase Host" "DisplayName" "Ligase Host"
@@ -108,6 +127,10 @@ Section "Ligase Host (required)" SEC_MAIN
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Ligase Host" "Publisher" "Ligase"
   WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Ligase Host" "NoModify" 1
   WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Ligase Host" "NoRepair" 1
+SectionEnd
+
+Section "Create desktop shortcut (optional)" SEC_DESKTOP_SHORTCUT
+  CreateShortcut "$DESKTOP\Ligase Host.lnk" "$INSTDIR\Ligase Host.exe"
 SectionEnd
 
 Section /o "Ligase Virtual Display (optional)" SEC_VDISPLAY
@@ -139,6 +162,7 @@ Section "Uninstall"
   noDriver:
   Delete "$SMPROGRAMS\Ligase Host\Ligase Host.lnk"
   RMDir "$SMPROGRAMS\Ligase Host"
+  Delete "$DESKTOP\Ligase Host.lnk"
   DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Ligase Host"
   RMDir /r "$INSTDIR"
 SectionEnd

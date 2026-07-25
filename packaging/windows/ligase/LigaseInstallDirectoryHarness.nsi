@@ -36,9 +36,9 @@ Section
   ${EndIf}
   ; The selected value validation closes the same boundary as the directory UI.
   ${If} $DataRoot == ""
-    StrCpy $InstallParameters '$\"/InstallDirectory=$INSTDIR$\"'
+    StrCpy $InstallParameters '$\"ligase-installer.exe$\" $\"/InstallDirectory=$INSTDIR$\"'
   ${Else}
-    StrCpy $InstallParameters '$\"/InstallDirectory=$INSTDIR$\" $\"/DataRoot=$DataRoot$\"'
+    StrCpy $InstallParameters '$\"ligase-installer.exe$\" $\"/InstallDirectory=$INSTDIR$\" $\"/DataRoot=$DataRoot$\"'
   ${EndIf}
   Call ResolveInstallerArguments
   ${If} $HarnessResultFile == ""

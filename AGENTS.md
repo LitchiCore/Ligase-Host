@@ -19,6 +19,11 @@
   changing firewall rules, installing or removing a driver, and changing
   certificates require explicit authorization. Read-only inspection does not
   grant mutation authority.
+- Installer automation must use the repository's typed invocation seam and
+  native-argument harness. Do not pass paths with spaces through a flattened
+  `Start-Process -ArgumentList` array or reconstruct installer argv by string
+  concatenation. Interactive uninstall/install steps are handed to the user;
+  agents perform preflight and readback unless explicitly directed otherwise.
 - Link to the canonical documents under `docs/ligase-host/` for installer,
   lifecycle, protocol, firewall, and cross-client contracts. Do not duplicate
   scripts, wire schemas, route matrices, secrets, or security rules in a
