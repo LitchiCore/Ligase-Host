@@ -108,6 +108,22 @@ public sealed class VisualColorTokenTests
         StringAssert.Contains(
             mainWindow,
             "Foreground=\"{ThemeResource LigaseOnBrandBrush}\"");
+
+        var styles = File.ReadAllText(
+            FindRepositoryFile(
+                "src",
+                "Ligase.Desktop",
+                "Themes",
+                "Styles.xaml"));
+        StringAssert.Contains(
+            styles,
+            "x:Key=\"LigasePrimaryButtonStyle\"");
+        StringAssert.Contains(
+            styles,
+            "Value=\"{ThemeResource LigaseAccentBrush}\"");
+        StringAssert.Contains(
+            styles,
+            "Value=\"{ThemeResource LigaseOnBrandBrush}\"");
         Assert.IsFalse(
             mainWindow.Contains(
                 "Foreground=\"{ThemeResource LigaseSurfaceBrush}\"",

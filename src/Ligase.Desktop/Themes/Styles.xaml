@@ -62,6 +62,15 @@
         <Setter Property="Foreground" Value="{ThemeResource LigaseTextPrimaryBrush}" />
     </Style>
 
+    <Style x:Key="LigasePrimaryButtonStyle" TargetType="Button">
+        <Setter Property="MinHeight" Value="38" />
+        <Setter Property="Padding" Value="14,8" />
+        <Setter Property="CornerRadius" Value="9" />
+        <Setter Property="Background" Value="{ThemeResource LigaseAccentBrush}" />
+        <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="Foreground" Value="{ThemeResource LigaseOnBrandBrush}" />
+    </Style>
+
     <Style x:Key="LigaseQuietButtonStyle" TargetType="Button">
         <Setter Property="MinHeight" Value="34" />
         <Setter Property="Padding" Value="12,6" />
