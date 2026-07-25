@@ -112,6 +112,36 @@ function Assert-KnownArguments([string[]] $Arguments) {
   }
 }
 
+function Read-ExistingDataRoot([string] $BootstrapPath) {
+  if ([string]::IsNullOrWhiteSpace($BootstrapPath) -or
+      -not (Test-Path -LiteralPath $BootstrapPath -PathType Leaf)) {
+    return $null
+  }
+  try {
+    $bytes = [IO.File]::ReadAllBytes($BootstrapPath)
+    $text = [Text.UTF8Encoding]::new($false, $true).GetString($bytes)
+    if ([regex]::Matches($text, '"schemaVersion"\s*:').Count -ne 1 -or
+        [regex]::Matches($text, '"dataRoot"\s*:').Count -ne 1) {
+      Fail 18
+    }
+    $document = $text | ConvertFrom-Json
+    $properties = @($document.PSObject.Properties.Name)
+    if ($properties.Count -ne 2 -or
+        $properties -notcontains "schemaVersion" -or
+        $properties -notcontains "dataRoot" -or
+        $document.schemaVersion -ne 1) {
+      Fail 18
+    }
+    $resolved = Resolve-LocalPath ([string]$document.dataRoot)
+    if (-not (Test-Path -LiteralPath $resolved -PathType Container)) {
+      Fail 18
+    }
+    return $resolved
+  } catch {
+    Fail 18
+  }
+}
+
 try {
   $raw = [Environment]::GetEnvironmentVariable(
     "LIGASE_INSTALL_RAW_PARAMETERS",
@@ -124,9 +154,6 @@ try {
     [EnvironmentVariableTarget]::Process)
   $resultPath = [Environment]::GetEnvironmentVariable(
     "LIGASE_INSTALL_ARGUMENT_RESULT",
-    [EnvironmentVariableTarget]::Process)
-  $bootstrapPath = [Environment]::GetEnvironmentVariable(
-    "LIGASE_INSTALL_BOOTSTRAP_PATH",
     [EnvironmentVariableTarget]::Process)
   $programData = [Environment]::GetEnvironmentVariable(
     "LIGASE_INSTALL_PROGRAM_DATA",
@@ -147,35 +174,22 @@ try {
     $default
   }
   $installDirectory = Resolve-LocalPath $installCandidate
+  $bootstrapPath = Join-Path $installDirectory "ligase-bootstrap.json"
+  $existingDataRoot = Read-ExistingDataRoot $bootstrapPath
   $dataRootMode = "explicit"
-  $dataRoot = if ($dataOptions.Count -eq 1) {
-    Resolve-LocalPath $dataOptions[0]
-  } elseif (-not [string]::IsNullOrWhiteSpace($bootstrapPath) -and
-      (Test-Path -LiteralPath $bootstrapPath -PathType Leaf)) {
-    try {
-      $bytes = [IO.File]::ReadAllBytes($bootstrapPath)
-      $text = [Text.UTF8Encoding]::new($false, $true).GetString($bytes)
-      if ([regex]::Matches($text, '"schemaVersion"\s*:').Count -ne 1 -or
-          [regex]::Matches($text, '"dataRoot"\s*:').Count -ne 1) {
+  $dataRoot = if ($null -ne $existingDataRoot) {
+    if ($dataOptions.Count -eq 1) {
+      $requested = Resolve-LocalPath $dataOptions[0]
+      if (-not $requested.Equals(
+          $existingDataRoot,
+          [StringComparison]::OrdinalIgnoreCase)) {
         Fail 18
       }
-      $document = $text | ConvertFrom-Json
-      $properties = @($document.PSObject.Properties.Name)
-      if ($properties.Count -ne 2 -or
-          $properties -notcontains "schemaVersion" -or
-          $properties -notcontains "dataRoot" -or
-          $document.schemaVersion -ne 1) {
-        Fail 18
-      }
-      $resolved = Resolve-LocalPath ([string]$document.dataRoot)
-      if (-not (Test-Path -LiteralPath $resolved -PathType Container)) {
-        Fail 18
-      }
-      $dataRootMode = "existing"
-      $resolved
-    } catch {
-      Fail 18
     }
+    $dataRootMode = "existing"
+    $existingDataRoot
+  } elseif ($dataOptions.Count -eq 1) {
+    Resolve-LocalPath $dataOptions[0]
   } else {
     if ([string]::IsNullOrWhiteSpace($programData)) { Fail 18 }
     $base = Resolve-LocalPath (

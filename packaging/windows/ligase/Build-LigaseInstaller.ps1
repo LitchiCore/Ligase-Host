@@ -335,6 +335,8 @@ if ($LASTEXITCODE -ne 0) {
   throw "installerArgumentRuntimeValidationFailed:$installerArgumentValidation"
 }
 $nsisArguments = @(
+  "/INPUTCHARSET",
+  "UTF8",
   "/DStageDir=$stage",
   "/DOutputFile=$package"
 )

@@ -144,7 +144,11 @@ public static class LigaseInteractiveUser
 $mutex = [Threading.Mutex]::new($false, "Global\Ligase.Host.Installer.v1")
 $held = $false
 
-function Write-Outcome([string]$Code, [bool]$Success, [hashtable]$Fields = @{}) {
+function Write-Outcome(
+  [string]$Code,
+  [bool]$Success,
+  [System.Collections.IDictionary]$Fields = [ordered]@{}
+) {
   $value = [ordered]@{ code = $Code; success = $Success }
   foreach ($key in $Fields.Keys) { $value[$key] = $Fields[$key] }
   $value | ConvertTo-Json -Depth 8 -Compress
@@ -231,7 +235,7 @@ function Write-NewBootstrap([string]$RequestedDataRoot) {
       [Security.Principal.WellKnownSidType]::BuiltinAdministratorsSid, $null)
     $security = [Security.AccessControl.DirectorySecurity]::new()
     $security.SetAccessRuleProtection($true, $false)
-    $security.SetOwner($operatorSid)
+    $security.SetOwner($administratorsSid)
     $inheritance = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
       [Security.AccessControl.InheritanceFlags]::ObjectInherit
     $propagation = [Security.AccessControl.PropagationFlags]::None
@@ -244,18 +248,16 @@ function Write-NewBootstrap([string]$RequestedDataRoot) {
     Set-Acl -LiteralPath $root -AclObject $security
 
     $readback = Get-Acl -LiteralPath $root
-    $allowed = @($readback.Access | Where-Object {
-      $_.AccessControlType -eq "Allow" -and -not $_.IsInherited
-    })
-    $actualRules = @($allowed | ForEach-Object {
+    $explicitRules = @($readback.Access | Where-Object { -not $_.IsInherited })
+    $actualRules = @($explicitRules | ForEach-Object {
       $sid = $_.IdentityReference.Translate(
         [Security.Principal.SecurityIdentifier]).Value
-      "$sid|$([int]$_.FileSystemRights)|$([int]$_.InheritanceFlags)|$([int]$_.PropagationFlags)"
+      "$($_.AccessControlType)|$sid|$([int]$_.FileSystemRights)|$([int]$_.InheritanceFlags)|$([int]$_.PropagationFlags)"
     } | Sort-Object)
     $expectedRules = @(
-      "$($systemSid.Value)|$([int][Security.AccessControl.FileSystemRights]::FullControl)|$([int]$inheritance)|$([int]$propagation)",
-      "$($administratorsSid.Value)|$([int][Security.AccessControl.FileSystemRights]::FullControl)|$([int]$inheritance)|$([int]$propagation)",
-      "$($operatorSid.Value)|$([int](
+      "Allow|$($systemSid.Value)|$([int][Security.AccessControl.FileSystemRights]::FullControl)|$([int]$inheritance)|$([int]$propagation)",
+      "Allow|$($administratorsSid.Value)|$([int][Security.AccessControl.FileSystemRights]::FullControl)|$([int]$inheritance)|$([int]$propagation)",
+      "Allow|$($operatorSid.Value)|$([int](
         [Security.AccessControl.FileSystemRights]::Modify -bor
         [Security.AccessControl.FileSystemRights]::Synchronize))|$([int]$inheritance)|$([int]$propagation)"
     ) | Sort-Object
@@ -263,7 +265,7 @@ function Write-NewBootstrap([string]$RequestedDataRoot) {
       [Security.Principal.SecurityIdentifier]).Value
     if (-not $readback.AreAccessRulesProtected -or
         $readback.AreAuditRulesProtected -or
-        $owner -cne $operatorSid.Value -or
+        $owner -cne $administratorsSid.Value -or
         $actualRules.Count -ne $expectedRules.Count -or
         (Compare-Object $actualRules $expectedRules).Count -ne 0) {
       throw "dataRootAclMismatch"
@@ -290,25 +292,46 @@ function Write-NewBootstrap([string]$RequestedDataRoot) {
     throw "dataRootAclMismatch"
   }
   $temporary = $bootstrapPath + ".pending"
-  [IO.File]::WriteAllText(
-    $temporary,
-    (@{ schemaVersion = 1; dataRoot = $root } | ConvertTo-Json -Compress),
-    [Text.UTF8Encoding]::new($false))
-  Move-Item -LiteralPath $temporary -Destination $bootstrapPath -Force
-  $written = Read-ValidBootstrap
-  if ($null -eq $written -or
-      -not ([string]$written.dataRoot).Equals(
-        $root,
-        [StringComparison]::OrdinalIgnoreCase)) {
+  try {
+    [IO.File]::WriteAllText(
+      $temporary,
+      (@{ schemaVersion = 1; dataRoot = $root } | ConvertTo-Json -Compress),
+      [Text.UTF8Encoding]::new($false))
+    Move-Item -LiteralPath $temporary -Destination $bootstrapPath -Force
+    $written = Read-ValidBootstrap
+    if ($null -eq $written -or
+        -not ([string]$written.dataRoot).Equals(
+          $root,
+          [StringComparison]::OrdinalIgnoreCase)) {
+      throw "bootstrapDataRootMismatch"
+    }
+  } catch {
+    Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $bootstrapPath -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+    $script:freshDataRootCreated = $null
+    if ($_.Exception.Message -eq "bootstrapDataRootMismatch") {
+      throw
+    }
     throw "bootstrapDataRootMismatch"
   }
   return $root
 }
 
-function Test-CurrentOperatorDataRootAccess([string]$Root) {
+function Get-DataRootAccessState([string]$Root) {
+  if (-not (Test-Path -LiteralPath $Root -PathType Container)) {
+    return "missing"
+  }
   try {
-    $currentSid = [Security.Principal.WindowsIdentity]::GetCurrent().User
-    if ($null -eq $currentSid) { return $false }
+    $identity = [LigaseInteractiveUser]::OpenIdentity()
+    $operatorSid = $identity.User
+    if ($null -eq $operatorSid) { return "inaccessible" }
+  } catch {
+    return "inaccessible"
+  } finally {
+    if ($null -ne $identity) { $identity.Dispose() }
+  }
+  try {
     $systemSid = [Security.Principal.SecurityIdentifier]::new(
       [Security.Principal.WellKnownSidType]::LocalSystemSid, $null)
     $administratorsSid = [Security.Principal.SecurityIdentifier]::new(
@@ -317,14 +340,17 @@ function Test-CurrentOperatorDataRootAccess([string]$Root) {
     $ownerSid = ([Security.Principal.NTAccount]$security.Owner).Translate(
       [Security.Principal.SecurityIdentifier])
     if (-not $security.AreAccessRulesProtected -or
-        -not $ownerSid.Equals($currentSid)) {
-      return $false
+        -not $ownerSid.Equals($administratorsSid)) {
+      return "aclDrift"
     }
-    $explicitAllow = @($security.Access | Where-Object {
-      $_.AccessControlType -eq "Allow" -and -not $_.IsInherited
-    })
-    if ($explicitAllow.Count -ne 3) { return $false }
-    $actualRules = @($explicitAllow | ForEach-Object {
+    $explicitRules = @($security.Access | Where-Object { -not $_.IsInherited })
+    if ($explicitRules.Count -ne 3 -or
+        @($explicitRules | Where-Object {
+          $_.AccessControlType -ne "Allow"
+        }).Count -ne 0) {
+      return "aclDrift"
+    }
+    $actualRules = @($explicitRules | ForEach-Object {
       $sid = $_.IdentityReference.Translate(
         [Security.Principal.SecurityIdentifier]).Value
       "$sid,$([int]$_.FileSystemRights),$([int]$_.InheritanceFlags),$([int]$_.PropagationFlags)"
@@ -335,15 +361,22 @@ function Test-CurrentOperatorDataRootAccess([string]$Root) {
     $propagation = [int][Security.AccessControl.PropagationFlags]::None
     $actual = (@($actualRules | Sort-Object) -join "|")
     $expected = (@(
-      "$($currentSid.Value),$([int](
+      "$($operatorSid.Value),$([int](
         [Security.AccessControl.FileSystemRights]::Modify -bor
         [Security.AccessControl.FileSystemRights]::Synchronize)),$inheritance,$propagation",
       "$($systemSid.Value),$([int][Security.AccessControl.FileSystemRights]::FullControl),$inheritance,$propagation",
       "$($administratorsSid.Value),$([int][Security.AccessControl.FileSystemRights]::FullControl),$inheritance,$propagation"
     ) | Sort-Object) -join "|"
-    return $actual -ceq $expected
+    if ($actual -ceq $expected) { return "existing" }
+    $operatorRule = @($explicitRules | Where-Object {
+      $_.AccessControlType -eq "Allow" -and
+      $_.IdentityReference.Translate(
+        [Security.Principal.SecurityIdentifier]).Value -ceq $operatorSid.Value
+    })
+    if ($operatorRule.Count -eq 0) { return "wrongUser" }
+    return "aclDrift"
   } catch {
-    return $false
+    return "aclDrift"
   }
 }
 
@@ -751,14 +784,26 @@ try {
     }
     $legacyEntriesRemoved = Remove-LegacyFlatOwnedEntries $manifest
     if ($ConfigureFirewall) {
+      $firewallApplyCompleted = $false
       try {
         $null = Invoke-FirewallAction -FirewallAction Apply -Manifest $manifest
+        $firewallApplyCompleted = $true
         $firewallReadback = Get-FirewallReadback $manifest
         if ($firewallReadback.state -cne "configured" -or
             $firewallReadback.machineCode -cne "configured") {
           throw "firewallReadbackMismatch"
         }
       } catch {
+        if ($firewallApplyCompleted) {
+          try {
+            $null = Invoke-FirewallAction `
+              -FirewallAction Remove `
+              -Manifest $manifest
+          } catch {
+            # The install still fails closed. The original machine outcome is
+            # preserved while readback will expose any owned-rule residue.
+          }
+        }
         if ($null -eq $bootstrapBytes) {
           Remove-Item -LiteralPath $bootstrapPath -Force -ErrorAction SilentlyContinue
           if ($null -ne $script:freshDataRootCreated -and
@@ -775,7 +820,7 @@ try {
           [Convert]::ToBase64String($bootstrapBytes)) {
       throw "bootstrapChangedDuringUpgrade"
     }
-    Write-Outcome "installed" $true @{
+    Write-Outcome "installed" $true ([ordered]@{
       installMode = "packaged"
       dataRootState = if ($null -ne $existingBootstrap) { "existing" } else { "fresh" }
       dataRootAction = if ($null -ne $existingBootstrap) {
@@ -783,13 +828,9 @@ try {
       } else {
         "createdFreshBootstrap"
       }
-      legacyEntriesRemoved = $legacyEntriesRemoved
-      virtualDisplay = $virtualDisplay
-      driverTrust = $driverTrust
-      firewall = $firewallReadback
-      encoder = $encoder
-      restartRequired = $virtualDisplay.state -eq "rebootRequired"
-    }
+      firewallState = [string]$firewallReadback.state
+      firewallMachineCode = [string]$firewallReadback.machineCode
+    })
     exit 0
   }
 
@@ -821,13 +862,13 @@ try {
   } else {
     try {
       $bootstrap = Read-ValidBootstrap
-      if (Test-CurrentOperatorDataRootAccess ([string]$bootstrap.dataRoot)) {
-        "existing"
-      } else {
-        "inaccessible"
-      }
+      Get-DataRootAccessState ([string]$bootstrap.dataRoot)
     } catch {
-      "inaccessible"
+      if ($_.Exception.Message -eq "bootstrapDataRootUnavailable") {
+        "missing"
+      } else {
+        "aclDrift"
+      }
     }
   }
   Write-Outcome "readbackComplete" $true @{

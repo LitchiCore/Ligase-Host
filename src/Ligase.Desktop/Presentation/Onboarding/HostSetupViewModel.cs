@@ -130,9 +130,11 @@ public partial class HostSetupViewModel(
         RequiresSetup = snapshot.Setup.Status is
             InstallationSetupStatus.FirstRunRequired or
             InstallationSetupStatus.Incomplete or
-            InstallationSetupStatus.Failed;
+            InstallationSetupStatus.Failed ||
+            snapshot.DataRoot.Status != InstallationDataRootStatus.Existing;
         CanFinish =
             snapshot.Setup.Status == InstallationSetupStatus.Ready &&
+            snapshot.DataRoot.Status == InstallationDataRootStatus.Existing &&
             snapshot.HostRuntime.Status == HostRuntimeReadinessStatus.Ready &&
             snapshot.Desktop.Status == InstallationArtifactStatus.Available &&
             snapshot.ManagedCore.Status == InstallationArtifactStatus.Available &&
@@ -260,6 +262,10 @@ public partial class HostSetupViewModel(
     private static HostSetupStep MapHost(
         InstallationReadinessSnapshot snapshot)
     {
+        var dataRootFailure = MapDataRootFailure(snapshot.DataRoot.Status);
+        if (dataRootFailure is not null)
+            return dataRootFailure;
+
         if (snapshot.Setup.Status == InstallationSetupStatus.Failed)
         {
             return new(
@@ -305,6 +311,43 @@ public partial class HostSetupViewModel(
                     "尚未评估编码能力；基础设置完成不等于已可开始串流。"
             });
     }
+
+    private static HostSetupStep? MapDataRootFailure(
+        InstallationDataRootStatus status) =>
+        status switch
+        {
+            InstallationDataRootStatus.Missing => new(
+                "\uE783",
+                "Host 就绪",
+                "数据目录缺失",
+                "Host 数据目录不存在，无法读取身份、配对和设置。",
+                "请使用经过验证的安装程序修复；不会自动创建另一份身份。"),
+            InstallationDataRootStatus.WrongUser => new(
+                "\uE783",
+                "Host 就绪",
+                "Windows 账户不匹配",
+                "此 Host 数据属于另一 Windows 账户。",
+                "请切换到安装时的账户，或使用明确授权的修复流程。"),
+            InstallationDataRootStatus.AclDrift => new(
+                "\uE783",
+                "Host 就绪",
+                "数据目录权限异常",
+                "数据目录权限不符合安全要求。",
+                "请使用经过验证的安装程序明确修复；Host 不会自动放宽权限。"),
+            InstallationDataRootStatus.Inaccessible => new(
+                "\uE783",
+                "Host 就绪",
+                "数据目录不可访问",
+                "无法访问 Host 数据目录。",
+                "请检查磁盘和账户状态，再使用经过验证的安装程序修复。"),
+            InstallationDataRootStatus.Quarantined => new(
+                "\uE783",
+                "Host 就绪",
+                "Host 数据已隔离",
+                "当前安装没有可用的 Host 数据目录。",
+                "请使用经过验证的恢复流程选择要恢复的数据，不能自动重建身份。"),
+            _ => null
+        };
 
     private static string? BuildNotice(InstallationReadinessSnapshot snapshot)
     {

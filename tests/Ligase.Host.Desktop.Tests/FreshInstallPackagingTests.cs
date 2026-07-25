@@ -136,6 +136,7 @@ public sealed class FreshInstallPackagingTests
     [TestMethod]
     public async Task FreshInstallAcceptsExplicitAbsoluteDataRoot()
     {
+        RequireElevatedAclIntegration();
         using var fixture = new InstallFixture();
         var dataRoot = Path.Combine(fixture.Root, "explicit-data");
 
@@ -151,6 +152,14 @@ public sealed class FreshInstallPackagingTests
 
         var security = new DirectoryInfo(dataRoot).GetAccessControl();
         Assert.IsTrue(security.AreAccessRulesProtected);
+        var owner = security.GetOwner(
+            typeof(SecurityIdentifier)) as SecurityIdentifier;
+        Assert.IsNotNull(owner);
+        Assert.AreEqual(
+            new SecurityIdentifier(
+                WellKnownSidType.BuiltinAdministratorsSid,
+                null).Value,
+            owner.Value);
         var operatorSid = WindowsIdentity.GetCurrent().User!.Value;
         var systemSid = new SecurityIdentifier(
             WellKnownSidType.LocalSystemSid,
@@ -163,8 +172,10 @@ public sealed class FreshInstallPackagingTests
                 includeInherited: false,
                 targetType: typeof(SecurityIdentifier))
             .Cast<FileSystemAccessRule>()
-            .Where(rule => rule.AccessControlType == AccessControlType.Allow)
             .ToArray();
+        Assert.IsTrue(rules.All(rule =>
+            rule.AccessControlType == AccessControlType.Allow));
+        Assert.AreEqual(3, rules.Length);
         CollectionAssert.AreEquivalent(
             new[] { operatorSid, systemSid, administratorsSid },
             rules.Select(rule => ((SecurityIdentifier)rule.IdentityReference).Value)
@@ -202,6 +213,7 @@ public sealed class FreshInstallPackagingTests
     [TestMethod]
     public async Task FirewallIntegrationRequiresConfiguredReadbackAndRollsBackFreshState()
     {
+        RequireElevatedAclIntegration();
         using var fixture = new InstallFixture();
         fixture.ConfigureFirewallScript(configuredAfterApply: false);
         var dataRoot = Path.Combine(fixture.Root, "firewall-failure-data");
@@ -224,6 +236,7 @@ public sealed class FreshInstallPackagingTests
     [TestMethod]
     public async Task FirewallIntegrationReturnsCurrentConfiguredReadback()
     {
+        RequireElevatedAclIntegration();
         using var fixture = new InstallFixture();
         fixture.ConfigureFirewallScript(configuredAfterApply: true);
         var dataRoot = Path.Combine(fixture.Root, "firewall-success-data");
@@ -235,11 +248,12 @@ public sealed class FreshInstallPackagingTests
 
         Assert.AreEqual(0, result.ExitCode, result.Output);
         using var document = JsonDocument.Parse(result.Output);
-        var firewall = document.RootElement.GetProperty("firewall");
-        Assert.AreEqual("configured", firewall.GetProperty("state").GetString());
         Assert.AreEqual(
             "configured",
-            firewall.GetProperty("machineCode").GetString());
+            document.RootElement.GetProperty("firewallState").GetString());
+        Assert.AreEqual(
+            "configured",
+            document.RootElement.GetProperty("firewallMachineCode").GetString());
     }
 
     [TestMethod]
@@ -264,12 +278,19 @@ public sealed class FreshInstallPackagingTests
                 "windows",
                 "ligase",
                 "InstallDirectoryValidation.nsh"));
+        var management = File.ReadAllText(
+            Path.Combine(
+                repo,
+                "packaging",
+                "windows",
+                "ligase",
+                "Manage-LigaseInstallation.ps1"));
 
         StringAssert.Contains(nsis, "SectionIn RO");
-        StringAssert.Contains(nsis, "Section /o \"Ligase Virtual Display (optional)\"");
+        StringAssert.Contains(nsis, "Section /o \"Ligase 虚拟显示（可选）\"");
         StringAssert.Contains(
             nsis,
-            "Section \"Create desktop shortcut (optional)\" SEC_DESKTOP_SHORTCUT");
+            "Section \"创建桌面快捷方式（可选）\" SEC_DESKTOP_SHORTCUT");
         StringAssert.Contains(
             nsis,
             "CreateShortcut \"$DESKTOP\\Ligase Host.lnk\" \"$INSTDIR\\Ligase Host.exe\"");
@@ -277,8 +298,34 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(nsis, "Page custom DataRootPageCreate DataRootPageLeave");
         StringAssert.Contains(nsis, "Page custom InstallSummaryPageCreate");
         StringAssert.Contains(nsis, "Page custom InstallResultPageCreate");
-        StringAssert.Contains(nsis, "Advanced: use a custom data directory");
-        StringAssert.Contains(nsis, "Firewall: Ligase-owned exact rules verified");
+        StringAssert.Contains(nsis, "高级：使用其他本机目录");
+        StringAssert.Contains(nsis, "防火墙：Ligase 专属规则已精确验证");
+        StringAssert.Contains(
+            nsis,
+            "SectionGetFlags ${LIGASE_SECTION_DESKTOP_SHORTCUT}");
+        StringAssert.Contains(
+            nsis,
+            "SectionGetFlags ${LIGASE_SECTION_VIRTUAL_DISPLAY}");
+        StringAssert.Contains(nsis, "preservedExistingBootstrap");
+        StringAssert.Contains(nsis, "createdFreshBootstrap");
+        StringAssert.Contains(management, "$security.SetOwner($administratorsSid)");
+        StringAssert.Contains(management, "$explicitRules");
+        StringAssert.Contains(
+            management,
+            "$_.AccessControlType -ne \"Allow\"");
+        StringAssert.Contains(management, "Get-DataRootAccessState");
+        StringAssert.Contains(management, "return \"wrongUser\"");
+        StringAssert.Contains(management, "return \"aclDrift\"");
+        StringAssert.Contains(
+            management,
+            "-FirewallAction Remove");
+        StringAssert.Contains(
+            management,
+            "Remove-Item -LiteralPath $bootstrapPath");
+        Assert.IsFalse(
+            management.Contains(
+                "[Security.Principal.WindowsIdentity]::GetCurrent().User",
+                StringComparison.Ordinal));
         StringAssert.Contains(nsis, "-ConfigureFirewall");
         StringAssert.Contains(nsis, "-DataDisposition $3");
         StringAssert.Contains(nsis, "-Action InstallVirtualDisplay");
@@ -327,6 +374,8 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(build, "Invoke-LigaseInstaller.ps1");
         StringAssert.Contains(build, "Test-LigaseInstallDirectoryRuntime.ps1");
         StringAssert.Contains(build, "installerArgumentRuntimeValidationFailed");
+        StringAssert.Contains(build, "\"/INPUTCHARSET\"");
+        StringAssert.Contains(build, "\"UTF8\"");
         StringAssert.Contains(build, "-DotNet $DotNet");
         var invoke = File.ReadAllText(
             Path.Combine(
@@ -345,7 +394,7 @@ public sealed class FreshInstallPackagingTests
         Assert.IsFalse(
             nsis.Contains("Function .onVerifyInstDir", StringComparison.Ordinal));
         var requiredSection = nsis.IndexOf(
-            "Section \"Ligase Host (required)\"",
+            "Section \"Ligase Host（必需）\"",
             StringComparison.Ordinal);
         var originalValidation = nsis.IndexOf(
             "Call ResolveInstallerArguments",
@@ -389,10 +438,21 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(helper, "firewallReadbackMismatch");
     }
 
+    private static void RequireElevatedAclIntegration()
+    {
+        using var identity = WindowsIdentity.GetCurrent();
+        var principal = new WindowsPrincipal(identity);
+        if (!principal.IsInRole(WindowsBuiltInRole.Administrator))
+        {
+            Assert.Inconclusive(
+                "The exact Administrators-owned ACL integration gate requires an elevated test token.");
+        }
+    }
+
     [TestMethod]
     public async Task InstallDirectoryResolverSupportsExplicitDAndFreshProgramDataDefault()
     {
-        const string explicitD = @"D:\Program Files\Ligase Host";
+        const string explicitD = @"D:\Program Files\Ligase Host Unit";
         const string explicitDataD = @"D:\Development\Ligase Data\Host";
         const string registeredD = @"D:\Applications\Ligase Host";
 

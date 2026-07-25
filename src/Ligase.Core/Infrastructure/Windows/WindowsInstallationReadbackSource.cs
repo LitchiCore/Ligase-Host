@@ -221,7 +221,8 @@ public sealed class WindowsInstallationReadbackSource : IInstallationReadbackSou
             "caTrusted", "locallyTrustedSelfSigned", "untrusted", "missing", "expired");
         RequireAllowed(
             document.DataRootState,
-            "fresh", "existing", "quarantined", "inaccessible");
+            "fresh", "existing", "quarantined", "missing", "wrongUser",
+            "aclDrift", "inaccessible");
         var roles = document.Artifacts.Select(item => item.Role).ToArray();
         var roleSet = new HashSet<string>(roles, StringComparer.Ordinal);
         if (roles.Length != roleSet.Count ||

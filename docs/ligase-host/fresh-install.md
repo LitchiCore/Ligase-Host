@@ -77,18 +77,22 @@ device, root, relative, or non-canonical path arguments, and validates the
 final UI values before the first program, bootstrap, or firewall write.
 An empty or unconfirmed value never falls back to LocalAppData.
 
-Fresh instance directories are owned by the WTS interactive-session operator,
-not by the elevated credential account. The installer resolves that identity
-from the current interactive session and verifies it against the shell token.
-The instance directory disables inherited access and has exactly three
-allow entries: the operator has inheritable Modify access, while SYSTEM and
+Fresh instance directories are owned by the local Administrators group, never
+by the elevated credential account or the interactive operator. The installer
+resolves the Host operator from its WTS interactive session and verifies that
+identity against the shell token. The instance directory disables inherited
+access and has exactly three explicit allow entries and no explicit deny or
+additional entry: the operator has inheritable Modify access, while SYSTEM and
 the local Administrators group have inheritable Full Control. It grants
-neither Users nor Authenticated Users and adds no deny entry. The installer
-impersonates the resolved operator for a create/atomic-move/delete probe before
-writing the bootstrap. Session 0, missing or ambiguous session identity, ACL
-drift, or a failed write probe aborts and removes the fresh empty instance.
-Existing valid bootstrap bytes and ACLs are preserved during upgrade; insecure
-legacy ACL repair requires a separate explicit action.
+neither Users nor Authenticated Users. The installer impersonates the resolved
+operator for a create/atomic-move/delete probe before writing the bootstrap.
+Session 0, missing or ambiguous session identity, ACL drift, or a failed write
+probe aborts and removes the fresh empty instance. Existing valid bootstrap
+bytes and ACLs are preserved during upgrade; the data-directory control is
+locked to that existing binding. Readback reports a missing directory, an ACL
+drift, and a different interactive operator as distinct typed states; the last
+case is presented as “此 Host 数据属于另一 Windows 账户”. Insecure legacy ACL
+repair requires a separate explicit action.
 
 Desktop composition, first-route behavior, and installed-product acceptance are
 documented in [`desktop-ui.md`](desktop-ui.md). That document links here rather

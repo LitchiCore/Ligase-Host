@@ -58,6 +58,27 @@ public sealed class InstallationReadinessServiceTests
             snapshot.RecoveryAction);
     }
 
+    [DataTestMethod]
+    [DataRow("missing", InstallationDataRootStatus.Missing, "dataRootMissing")]
+    [DataRow("wrongUser", InstallationDataRootStatus.WrongUser, "dataRootWrongUser")]
+    [DataRow("aclDrift", InstallationDataRootStatus.AclDrift, "dataRootAclDrift")]
+    public async Task DataRootFailuresRemainDistinctTypedStates(
+        string wireState,
+        InstallationDataRootStatus expectedStatus,
+        string expectedCode)
+    {
+        var snapshot = await new InstallationReadinessService(
+            new FixedSource(Complete() with { DataRootState = wireState }),
+            ReadyProbe()).ReadAsync();
+
+        Assert.AreEqual(expectedStatus, snapshot.DataRoot.Status);
+        Assert.AreEqual(expectedCode, snapshot.DataRoot.MachineCode);
+        Assert.AreEqual(expectedCode, snapshot.MachineCode);
+        Assert.AreEqual(
+            InstallationRecoveryAction.RepairInstallation,
+            snapshot.DataRoot.RecoveryAction);
+    }
+
     [TestMethod]
     public async Task HashMismatchAndMixedPublisherTakePriority()
     {
@@ -145,6 +166,21 @@ public sealed class InstallationReadinessServiceTests
         Assert.AreEqual(3, result.Artifacts.Count);
         Assert.AreEqual("existing", result.DataRootState);
         Assert.AreEqual("locallyTrustedSelfSigned", result.DriverTrust.State);
+    }
+
+    [DataTestMethod]
+    [DataRow("missing")]
+    [DataRow("wrongUser")]
+    [DataRow("aclDrift")]
+    public void StrictParserAcceptsClosedDataRootFailureStates(string state)
+    {
+        var result = WindowsInstallationReadbackSource.Parse(
+            ReadbackJson().Replace(
+                "\"dataRootState\":\"existing\"",
+                $"\"dataRootState\":\"{state}\"",
+                StringComparison.Ordinal));
+
+        Assert.AreEqual(state, result.DataRootState);
     }
 
     [TestMethod]

@@ -16,6 +16,7 @@ ShowUninstDetails show
 !include "LogicLib.nsh"
 !include "FileFunc.nsh"
 !include "nsDialogs.nsh"
+!include "Sections.nsh"
 !include "StrFunc.nsh"
 ${StrTrimNewLines}
 !insertmacro MUI_PAGE_WELCOME
@@ -41,6 +42,11 @@ Var InstallParameters
 Var OriginalInstallParameters
 Var IntegrationResult
 Var ProgramDataRoot
+Var DesktopShortcutSummary
+Var VirtualDisplaySummary
+Var DataRootActionSummary
+!define LIGASE_SECTION_DESKTOP_SHORTCUT 1
+!define LIGASE_SECTION_VIRTUAL_DISPLAY 2
 
 !include "InstallDirectoryValidation.nsh"
 
@@ -50,9 +56,13 @@ Function .onInit
   Pop $SetupMutex
   Pop $1
   ${If} $1 = 183
-    MessageBox MB_OK|MB_ICONSTOP "Another Ligase install, repair, or uninstall is already running."
+    MessageBox MB_OK|MB_ICONSTOP "另一个 Ligase 安装、修复或卸载任务正在运行。"
     Abort
   ${EndIf}
+  StrCpy $IntegrationResult ""
+  StrCpy $DesktopShortcutSummary "否"
+  StrCpy $VirtualDisplaySummary "否"
+  StrCpy $DataRootActionSummary "新建"
   SetShellVarContext all
   StrCpy $ProgramDataRoot "$APPDATA"
   SetShellVarContext current
@@ -77,13 +87,20 @@ Function DataRootPageCreate
   ${If} $DataRootDialog == error
     Abort
   ${EndIf}
-  ${NSD_CreateLabel} 0 0 100% 28u "Host data contains identity, paired devices, library, and settings. Windows machine application data is used by default."
+  ${If} $DataRootSelectionMode == "existing"
+    ${NSD_CreateLabel} 0 0 100% 28u "将保留现有 Host 数据目录、身份和配对，不更改其访问权限。"
+  ${Else}
+    ${NSD_CreateLabel} 0 0 100% 28u "主机数据包含 Host 身份、已配对设备、游戏库和设置。安装程序会在 Windows 公共应用数据区自动创建专属目录，仅当前 Host 运行账户可访问。"
+  ${EndIf}
   Pop $0
-  ${NSD_CreateCheckbox} 0 34u 100% 12u "Advanced: use a custom data directory"
+  ${NSD_CreateCheckbox} 0 34u 100% 12u "高级：使用其他本机目录（将应用相同的受限权限）"
   Pop $DataRootAdvanced
   ${NSD_CreateText} 0 52u 100% 13u "$DataRoot"
   Pop $DataRootText
-  ${If} $DataRootSelectionMode == "explicit"
+  ${If} $DataRootSelectionMode == "existing"
+    EnableWindow $DataRootAdvanced 0
+    EnableWindow $DataRootText 0
+  ${ElseIf} $DataRootSelectionMode == "explicit"
     ${NSD_Check} $DataRootAdvanced
     EnableWindow $DataRootText 1
   ${Else}
@@ -94,6 +111,11 @@ Function DataRootPageCreate
 FunctionEnd
 
 Function DataRootAdvancedChanged
+  ${If} $DataRootSelectionMode == "existing"
+    EnableWindow $DataRootAdvanced 0
+    EnableWindow $DataRootText 0
+    Return
+  ${EndIf}
   ${NSD_GetState} $DataRootAdvanced $0
   ${If} $0 == ${BST_CHECKED}
     EnableWindow $DataRootText 1
@@ -103,6 +125,10 @@ Function DataRootAdvancedChanged
 FunctionEnd
 
 Function DataRootPageLeave
+  ${If} $DataRootSelectionMode == "existing"
+    StrCpy $DataRootMode "existing"
+    Return
+  ${EndIf}
   ${NSD_GetState} $DataRootAdvanced $0
   ${If} $0 == ${BST_CHECKED}
     ${NSD_GetText} $DataRootText $DataRoot
@@ -113,7 +139,7 @@ Function DataRootPageLeave
     ${EndIf}
   ${EndIf}
   ${If} $DataRoot == ""
-    MessageBox MB_OK|MB_ICONSTOP "The data directory could not be resolved. Setup will not silently use another location."
+    MessageBox MB_OK|MB_ICONSTOP "无法确定数据目录。安装程序不会静默改用其他位置。"
     Abort
   ${EndIf}
   StrCpy $InstallParameters '$\"ligase-installer.exe$\" $\"/InstallDirectory=$INSTDIR$\" $\"/DataRoot=$DataRoot$\"'
@@ -123,23 +149,42 @@ Function DataRootPageLeave
 FunctionEnd
 
 Function InstallSummaryPageCreate
+  SectionGetFlags ${LIGASE_SECTION_DESKTOP_SHORTCUT} $2
+  IntOp $2 $2 & ${SF_SELECTED}
+  ${If} $2 != 0
+    StrCpy $DesktopShortcutSummary "是"
+  ${Else}
+    StrCpy $DesktopShortcutSummary "否"
+  ${EndIf}
+  SectionGetFlags ${LIGASE_SECTION_VIRTUAL_DISPLAY} $3
+  IntOp $3 $3 & ${SF_SELECTED}
+  ${If} $3 != 0
+    StrCpy $VirtualDisplaySummary "是"
+  ${Else}
+    StrCpy $VirtualDisplaySummary "否"
+  ${EndIf}
+  ${If} $DataRootMode == "existing"
+    StrCpy $DataRootActionSummary "保留现有目录和身份"
+  ${Else}
+    StrCpy $DataRootActionSummary "新建并应用受限权限"
+  ${EndIf}
   nsDialogs::Create 1018
   Pop $0
   ${If} $0 == error
     Abort
   ${EndIf}
-  ${NSD_CreateLabel} 0 0 100% 18u "Confirm installation"
+  ${NSD_CreateLabel} 0 0 100% 18u "确认安装"
   Pop $1
-  ${NSD_CreateLabel} 0 24u 100% 72u "Program: $INSTDIR$\r$\nData: $DataRoot$\r$\nDesktop shortcut: selected on Components$\r$\nFirewall: Ligase-owned Private + LocalSubnet exact rules$\r$\nVirtual display: installed only when explicitly selected"
+  ${NSD_CreateLabel} 0 24u 100% 84u "程序目录：$INSTDIR$\r$\n数据目录：$DataRoot$\r$\n数据动作：$DataRootActionSummary$\r$\n创建桌面快捷方式：$DesktopShortcutSummary$\r$\n安装虚拟显示：$VirtualDisplaySummary$\r$\n防火墙：将申请本次安装的一次管理员授权，并在完成前精确读回 Ligase 专属规则"
   Pop $1
-  ${NSD_CreateLabel} 0 104u 100% 28u "Go Back to change a selection. Completion is shown only after integration readback succeeds."
+  ${NSD_CreateLabel} 0 116u 100% 24u "如需修改请返回。只有数据绑定与防火墙精确读回成功后才会显示完成。"
   Pop $1
   nsDialogs::Show
 FunctionEnd
 
 Function InstallSummaryPageLeave
   ${If} $DataRoot == ""
-    MessageBox MB_OK|MB_ICONSTOP "The data directory has not been confirmed."
+    MessageBox MB_OK|MB_ICONSTOP "尚未确认数据目录。"
     Abort
   ${EndIf}
 FunctionEnd
@@ -150,9 +195,9 @@ Function InstallResultPageCreate
   ${If} $0 == error
     Abort
   ${EndIf}
-  ${NSD_CreateLabel} 0 0 100% 18u "Installation result"
+  ${NSD_CreateLabel} 0 0 100% 18u "安装结果"
   Pop $1
-  ${NSD_CreateLabel} 0 24u 100% 84u "$IntegrationResult$\r$\nProgram: $INSTDIR$\r$\nData: $DataRoot$\r$\nFirewall: Ligase-owned exact rules verified"
+  ${NSD_CreateLabel} 0 24u 100% 96u "$IntegrationResult$\r$\n程序目录：$INSTDIR$\r$\n数据目录：$DataRoot$\r$\n数据动作：$DataRootActionSummary$\r$\n桌面快捷方式：$DesktopShortcutSummary$\r$\n虚拟显示：$VirtualDisplaySummary$\r$\n防火墙：Ligase 专属规则已精确验证"
   Pop $1
   nsDialogs::Show
 FunctionEnd
@@ -163,12 +208,12 @@ Function un.onInit
   Pop $SetupMutex
   Pop $1
   ${If} $1 = 183
-    MessageBox MB_OK|MB_ICONSTOP "Another Ligase install, repair, or uninstall is already running."
+    MessageBox MB_OK|MB_ICONSTOP "另一个 Ligase 安装、修复或卸载任务正在运行。"
     Abort
   ${EndIf}
 FunctionEnd
 
-Section "Ligase Host (required)" SEC_MAIN
+Section "Ligase Host（必需）" SEC_MAIN
   SectionIn RO
   ; Validate the original argv first so duplicates and malformed explicit
   ; options cannot be corrected or hidden by the directory page.
@@ -181,7 +226,7 @@ Section "Ligase Host (required)" SEC_MAIN
   ; Then validate the final directory-page value. Both validations happen
   ; before SetOutPath or File can write to the selected installation root.
   ${If} $DataRoot == ""
-    MessageBox MB_OK|MB_ICONSTOP "The data directory is empty. No installation data was written."
+    MessageBox MB_OK|MB_ICONSTOP "数据目录为空，未写入安装数据。"
     SetErrorLevel 10
     Quit
   ${EndIf}
@@ -193,14 +238,26 @@ Section "Ligase Host (required)" SEC_MAIN
   nsExec::ExecToStack 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\Deployment\Manage-LigaseInstallation.ps1" -Action Install -InstallDirectory "$INSTDIR" -DataRoot "$DataRoot" -ConfigureFirewall'
   Pop $0
   Pop $1
+  ${StrTrimNewLines} $1 $1
   ${If} $0 != 0
     DetailPrint "Ligase integration failed with machine outcome."
     DetailPrint "Existing bootstrap, user data, and unknown files were not removed."
-    MessageBox MB_OK|MB_ICONSTOP "Ligase integration validation failed. Data binding or firewall readback did not pass. Installation is incomplete."
+    MessageBox MB_OK|MB_ICONSTOP "Ligase 集成验证失败：数据绑定或防火墙读回未通过。安装未完成。"
     SetErrorLevel 10
     Quit
   ${EndIf}
-  StrCpy $IntegrationResult "Program files, data binding, and firewall rules were verified."
+  ${If} $DataRootMode == "existing"
+    StrCpy $2 '{"code":"installed","success":true,"installMode":"packaged","dataRootState":"existing","dataRootAction":"preservedExistingBootstrap","firewallState":"configured","firewallMachineCode":"configured"}'
+  ${Else}
+    StrCpy $2 '{"code":"installed","success":true,"installMode":"packaged","dataRootState":"fresh","dataRootAction":"createdFreshBootstrap","firewallState":"configured","firewallMachineCode":"configured"}'
+  ${EndIf}
+  ${If} $1 != $2
+    DetailPrint "Ligase integration returned an unknown or contradictory outcome."
+    MessageBox MB_OK|MB_ICONSTOP "Ligase 集成结果无效或相互矛盾。安装未完成。"
+    SetErrorLevel 10
+    Quit
+  ${EndIf}
+  StrCpy $IntegrationResult "程序文件、数据绑定和防火墙规则均已验证。"
   ; The exact owned desktop shortcut is selection-controlled on every install
   ; and upgrade. Removing it here makes an unchecked upgrade deterministic.
   Delete "$DESKTOP\Ligase Host.lnk"
@@ -216,27 +273,30 @@ Section "Ligase Host (required)" SEC_MAIN
   WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Ligase Host" "NoRepair" 1
 SectionEnd
 
-Section "Create desktop shortcut (optional)" SEC_DESKTOP_SHORTCUT
+Section "创建桌面快捷方式（可选）" SEC_DESKTOP_SHORTCUT
   CreateShortcut "$DESKTOP\Ligase Host.lnk" "$INSTDIR\Ligase Host.exe"
 SectionEnd
 
-Section /o "Ligase Virtual Display (optional)" SEC_VDISPLAY
+Section /o "Ligase 虚拟显示（可选）" SEC_VDISPLAY
+  StrCpy $VirtualDisplaySummary "未安装"
   MessageBox MB_YESNO|MB_ICONEXCLAMATION \
-    "SudoVDA currently uses a self-signed publisher certificate. Continuing adds that publisher to local trust stores so Windows can install the kernel driver. Physical desktop streaming does not require it. Continue?" \
+    "SudoVDA 当前使用自签名发布者证书。继续会将该发布者加入本机信任存储，以便 Windows 安装内核驱动。串流物理桌面不需要此组件。是否继续？" \
     /SD IDNO IDNO skipVirtualDisplay
   nsExec::ExecToStack 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\Deployment\Manage-LigaseInstallation.ps1" -Action InstallVirtualDisplay -InstallDirectory "$INSTDIR"'
   Pop $0
   Pop $1
   ${If} $0 != 0
-    DetailPrint "Virtual display was not installed; physical desktop streaming remains available."
+    StrCpy $VirtualDisplaySummary "失败（物理桌面串流仍可用）"
+    DetailPrint "虚拟显示未安装；物理桌面串流仍可用。"
   ${Else}
+    StrCpy $VirtualDisplaySummary "已安装"
   ${EndIf}
   skipVirtualDisplay:
 SectionEnd
 
-Section "Uninstall"
+Section "卸载"
   MessageBox MB_YESNO|MB_ICONQUESTION \
-    "Move Ligase personal data out of the active directory into recoverable quarantine? Choosing No preserves it in place." \
+    "是否将 Ligase 个人数据移入可恢复的隔离目录？选择“否”会将数据保留在原位置。" \
     /SD IDNO IDNO preserveData
   StrCpy $3 "Quarantine"
   Goto dataChoiceDone

@@ -30,6 +30,9 @@ public enum InstallationDataRootStatus
     Fresh,
     Existing,
     Quarantined,
+    Missing,
+    WrongUser,
+    AclDrift,
     Inaccessible
 }
 

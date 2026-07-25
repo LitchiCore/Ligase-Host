@@ -311,13 +311,37 @@ $chineseProgramPath =
 $chineseDataPath =
   "D:\" + ([string][char]0x4E3B) + ([char]0x673A) +
   ([char]0x6570) + ([char]0x636E) + "\Ligase Host"
+$spaceProgramPath = 'D:\Program Files\Ligase Host Harness'
+$existingInstall = Join-Path $root "existing-install"
+$existingData = Join-Path $root "existing-data"
+New-Item -ItemType Directory -Path $existingInstall, $existingData -Force |
+  Out-Null
+[IO.File]::WriteAllText(
+  (Join-Path $existingInstall "ligase-bootstrap.json"),
+  (@{ schemaVersion = 1; dataRoot = $existingData } |
+    ConvertTo-Json -Compress),
+  [Text.UTF8Encoding]::new($false))
 
 $results = @(
   Invoke-Harness `
-    -Name "fresh-programdata-next-back-next" `
-    -Arguments @('/InstallDirectory=D:\Program Files\Ligase Host') `
+    -Name "upgrade-preserves-existing-data-root" `
+    -Arguments @(
+      "/InstallDirectory=$existingInstall",
+      "/DataRoot=$existingData") `
     -ShouldSucceed $true `
-    -ExpectedInstallDirectory 'D:\Program Files\Ligase Host' `
+    -ExpectedInstallDirectory $existingInstall `
+    -ExpectedDataRoot $existingData
+  Invoke-Harness `
+    -Name "upgrade-rejects-data-root-change" `
+    -Arguments @(
+      "/InstallDirectory=$existingInstall",
+      "/DataRoot=$(Join-Path $root 'different-data')") `
+    -ShouldSucceed $false
+  Invoke-Harness `
+    -Name "fresh-programdata-next-back-next" `
+    -Arguments @("/InstallDirectory=$spaceProgramPath") `
+    -ShouldSucceed $true `
+    -ExpectedInstallDirectory $spaceProgramPath `
     -ExpectedDataRootPattern ('^' +
       [regex]::Escape((Join-Path $env:ProgramData 'Ligase Host\Instances\')) +
       '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
@@ -332,43 +356,43 @@ $results = @(
   Invoke-Harness `
     -Name "d-paths-with-spaces-powershell-direct" `
     -Arguments @(
-      '/InstallDirectory=D:\Program Files\Ligase Host',
+      "/InstallDirectory=$spaceProgramPath",
       '/DataRoot=D:\Development\Ligase Data\Host') `
     -ShouldSucceed $true `
-    -ExpectedInstallDirectory 'D:\Program Files\Ligase Host' `
+    -ExpectedInstallDirectory $spaceProgramPath `
     -ExpectedDataRoot 'D:\Development\Ligase Data\Host'
   Invoke-Harness `
     -Name "d-paths-with-spaces-start-process" `
     -LaunchMode "PowerShellStartProcess" `
     -Arguments @(
-      '/InstallDirectory=D:\Program Files\Ligase Host',
+      "/InstallDirectory=$spaceProgramPath",
       '/DataRoot=D:\Development\Ligase Data\Host') `
     -ShouldSucceed $true `
-    -ExpectedInstallDirectory 'D:\Program Files\Ligase Host' `
+    -ExpectedInstallDirectory $spaceProgramPath `
     -ExpectedDataRoot 'D:\Development\Ligase Data\Host'
   Invoke-Harness `
     -Name "d-paths-with-spaces-process-start-info" `
     -LaunchMode "ProcessStartInfo" `
     -Arguments @(
-      '/InstallDirectory=D:\Program Files\Ligase Host',
+      "/InstallDirectory=$spaceProgramPath",
       '/DataRoot=D:\Development\Ligase Data\Host') `
     -ShouldSucceed $true `
-    -ExpectedInstallDirectory 'D:\Program Files\Ligase Host' `
+    -ExpectedInstallDirectory $spaceProgramPath `
     -ExpectedDataRoot 'D:\Development\Ligase Data\Host'
   Invoke-Harness `
     -Name "d-paths-with-spaces-raw-win32" `
     -LaunchMode "RawWin32" `
     -Arguments @(
-      '/InstallDirectory=D:\Program Files\Ligase Host',
+      "/InstallDirectory=$spaceProgramPath",
       '/DataRoot=D:\Development\Ligase Data\Host') `
     -ShouldSucceed $true `
-    -ExpectedInstallDirectory 'D:\Program Files\Ligase Host' `
+    -ExpectedInstallDirectory $spaceProgramPath `
     -ExpectedDataRoot 'D:\Development\Ligase Data\Host'
   Invoke-Harness `
     -Name "unsafe-start-process-split-path" `
     -LaunchMode "PowerShellStartProcessUnsafe" `
     -Arguments @(
-      '/InstallDirectory=D:\Program Files\Ligase Host',
+      "/InstallDirectory=$spaceProgramPath",
       '/DataRoot=D:\Development\Ligase Data\Host') `
     -ShouldSucceed $false
   Invoke-Harness `

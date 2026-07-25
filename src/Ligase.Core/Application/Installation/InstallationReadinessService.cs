@@ -251,6 +251,9 @@ public sealed class InstallationReadinessService(
             "fresh" => InstallationDataRootStatus.Fresh,
             "existing" => InstallationDataRootStatus.Existing,
             "quarantined" => InstallationDataRootStatus.Quarantined,
+            "missing" => InstallationDataRootStatus.Missing,
+            "wrongUser" => InstallationDataRootStatus.WrongUser,
+            "aclDrift" => InstallationDataRootStatus.AclDrift,
             _ => InstallationDataRootStatus.Inaccessible
         };
         var ready = status == InstallationDataRootStatus.Existing;
@@ -261,6 +264,9 @@ public sealed class InstallationReadinessService(
                 InstallationDataRootStatus.Fresh => "dataRootFresh",
                 InstallationDataRootStatus.Existing => "dataRootReady",
                 InstallationDataRootStatus.Quarantined => "dataRootQuarantined",
+                InstallationDataRootStatus.Missing => "dataRootMissing",
+                InstallationDataRootStatus.WrongUser => "dataRootWrongUser",
+                InstallationDataRootStatus.AclDrift => "dataRootAclDrift",
                 _ => "dataRootInaccessible"
             },
             ready
@@ -341,7 +347,10 @@ public sealed class InstallationReadinessService(
         }
         if (setup.Status != InstallationSetupStatus.Ready)
             return (setup.MachineCode, setup.RecoveryAction);
-        if (dataRoot.Status == InstallationDataRootStatus.Inaccessible)
+        if (dataRoot.Status is InstallationDataRootStatus.Missing
+            or InstallationDataRootStatus.WrongUser
+            or InstallationDataRootStatus.AclDrift
+            or InstallationDataRootStatus.Inaccessible)
             return (dataRoot.MachineCode, dataRoot.RecoveryAction);
         if (signing.Status is InstallationSigningStatus.Invalid
             or InstallationSigningStatus.MixedPublisher)

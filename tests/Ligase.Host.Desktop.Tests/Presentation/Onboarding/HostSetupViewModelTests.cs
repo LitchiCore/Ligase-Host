@@ -59,6 +59,65 @@ public sealed class HostSetupViewModelTests
         StringAssert.Contains(viewModel.HostReadiness.Detail, "不等于已可开始串流");
     }
 
+    [DataTestMethod]
+    [DataRow(
+        InstallationDataRootStatus.Missing,
+        "dataRootMissing",
+        "数据目录缺失",
+        "Host 数据目录不存在")]
+    [DataRow(
+        InstallationDataRootStatus.WrongUser,
+        "dataRootWrongUser",
+        "Windows 账户不匹配",
+        "此 Host 数据属于另一 Windows 账户")]
+    [DataRow(
+        InstallationDataRootStatus.AclDrift,
+        "dataRootAclDrift",
+        "数据目录权限异常",
+        "数据目录权限不符合安全要求")]
+    [DataRow(
+        InstallationDataRootStatus.Inaccessible,
+        "dataRootInaccessible",
+        "数据目录不可访问",
+        "无法访问 Host 数据目录")]
+    public async Task DataRootFailuresUseTypedHostPresentation(
+        InstallationDataRootStatus status,
+        string machineCode,
+        string expectedStatus,
+        string expectedDescription)
+    {
+        var viewModel = ViewModel(Snapshot(
+            dataRoot: new(
+                status,
+                machineCode,
+                InstallationRecoveryAction.RepairInstallation)));
+
+        await viewModel.LoadAsync();
+
+        Assert.IsTrue(viewModel.RequiresSetup);
+        Assert.IsFalse(viewModel.CanFinish);
+        Assert.AreEqual(expectedStatus, viewModel.HostReadiness.Status);
+        StringAssert.Contains(
+            viewModel.HostReadiness.Description,
+            expectedDescription);
+    }
+
+    [TestMethod]
+    public async Task ReadyDataRootPreservesReadyHostPresentation()
+    {
+        var viewModel = ViewModel(Snapshot(
+            dataRoot: new(
+                InstallationDataRootStatus.Existing,
+                "dataRootReady",
+                InstallationRecoveryAction.None)));
+
+        await viewModel.LoadAsync();
+
+        Assert.IsFalse(viewModel.RequiresSetup);
+        Assert.IsTrue(viewModel.CanFinish);
+        Assert.AreEqual("基础设置完成", viewModel.HostReadiness.Status);
+    }
+
     [TestMethod]
     public async Task DevelopmentSigningAndLocalSelfSignedDriverAreDisclosed()
     {
