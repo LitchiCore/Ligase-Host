@@ -187,6 +187,7 @@ public sealed class FreshInstallPackagingTests
             "Only the explicit uninstall section may recursively remove the owned install root.");
         StringAssert.Contains(build, "-p:Platform=$Platform");
         StringAssert.Contains(build, "-p:LigaseStructuredPackage=true");
+        StringAssert.Contains(build, "desktopCleanFailed");
         StringAssert.Contains(build, "Test-LigaseDesktopPayload.ps1");
         StringAssert.Contains(build, "Test-LigaseDesktopStartup.ps1");
         StringAssert.Contains(build, "-Filter \"Ligase.GameWatcher.*\"");
