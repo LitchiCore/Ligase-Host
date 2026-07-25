@@ -60,6 +60,25 @@
 
 ## Git、文档与回报
 
+- 每个任务必须按以下状态机主动回报，不得完成后静默进入 idle：
+  `RECEIVED/STARTED`、`AUDIT_READY`（范围与预计时间）、`BLOCKED` 或阶段更新、
+  `SOURCE_FROZEN`（适用时）、`CANDIDATE_READY`（适用时）、`COMMITTED`、
+  `FINAL/STOP`。不适用状态可以省略，但开始、阻塞、提交和最终状态不得省略。
+- 开始回报必须写明基线 HEAD、worktree/index 状态、精确 allowlist、已排除的 peer
+  WIP、是否占用 build/product/installer/runtime 窗口，以及预计完成时间。超过
+  30 分钟的任务至少每 20–30 分钟或每个实质里程碑回报一次；没有新证据时不得刷屏。
+- 遇到阻塞必须立即回报：精确失败证据、责任 owner、已释放或仍占用的系统窗口、
+  是否需要用户/peer/协调动作，以及解除阻塞后的预计剩余时间。不得只写“等待”。
+- `SOURCE_FROZEN` 或 `CANDIDATE_READY` 必须声明冻结 source HEAD、候选完整路径/
+  size/SHA、已通过的分层自动门、是否发生任何系统 mutation，以及候选是否获准运行。
+  后续源码或候选字节漂移会使旧门失效。
+- commit/push 或候选验证完成后，必须在进入 idle 前直接向协调任务发送结构化
+  final；只通知 peer 或写 `PEER_ALREADY_NOTIFIED` 不足以完成协调回报。final 至少
+  包含完整 commit/remote SHA、精确范围、测试分层、installed/runtime 真实门、
+  当前产品/端口/UAC/firewall/driver 状态、剩余 worktree 所有权和下一依赖。
+- 等待审议、授权、用户动作或其他 owner 时，应明确发送
+  `WAITING_<CONDITION>`，写出唯一解除条件，并释放 build/product/installer/runtime
+  窗口。条件到达后必须主动恢复并发送新阶段更新，不能依赖协调任务猜测任务状态。
 - 每个任务 final 与 commit handoff 必须声明 `DOC_IMPACT=UPDATED|NONE` 并说明
   理由。用户行为/UI flow、typed owner/依赖、installation layout/launcher/
   bootstrap、protocol/security/error/session、permission/UAC/firewall/driver
