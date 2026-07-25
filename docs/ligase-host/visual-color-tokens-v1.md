@@ -1,7 +1,13 @@
 # Ligase cross-platform color tokens v1
 
-Status: proposed for Host and Android review. Do not implement until both sides
-record `ACCEPT`.
+Status: FROZEN / ACCEPTED by Host, Android, and Web. This contract supersedes
+the historical proposal at Host commit
+`ac35ee8affcecd048e68d54d6b2d2e5f9eea8fe2`.
+
+The canonical machine-readable projection is
+`docs/ligase-host/visual-color-tokens-v1.json`. This document owns semantic
+meaning, accessibility, and platform-derived-state constraints. Platform
+resources are projections, never a second palette authority.
 
 This contract defines semantic color roles shared by Ligase Host and Ligase
 Android. WinUI and Material 3 retain their native hover, pressed, ripple,
@@ -33,7 +39,7 @@ The implementation must remove the MainWindow NavigationView override and map
 all Ligase pages to one ThemeResource source. It must not modify the upstream
 Apollo Web UI.
 
-## Frozen machine names and proposed values
+## Frozen machine names and values
 
 Machine names are lower camel case and are not page or component names.
 
@@ -46,12 +52,12 @@ Machine names are lower camel case and are not page or component names.
 | `surfaceVariant` | `#EEF2F8` | `#2A2E39` | Secondary groups, navigation pane and quiet containers |
 | `textPrimary` | `#20232C` | `#F5F7FB` | Titles and normal body text |
 | `textSecondary` | `#555D6D` | `#B8C0CE` | Supporting text and metadata |
-| `border` | `#8B94A5` | `#747D8E` | Meaningful control/card boundary and divider |
+| `border` | `#8B94A5` | `#747D8E` | Decorative divider and card outline; not a meaningful control boundary |
 | `selected` | `#E7E5FF` | `#35315C` | Selected container background; normal text/icons use `textPrimary`, while `brandPrimary` is limited to the indicator or a key icon |
 | `success` | `#13795B` | `#56D19B` | Ready, paired, online, completed |
 | `warning` | `#8A4F00` | `#F4B860` | Degraded state or action needed without data loss |
 | `errorDanger` | `#B42318` | `#FF7B72` | Error and destructive action; always pair with text/icon/confirmation |
-| `disabled` | `#6B7382` | `#8D96A6` | Essential disabled content readability floor; do not dim it again below the contrast requirement |
+| `disabled` | `#555D6D` | `#B8C0CE` | Essential disabled label readability floor; intentionally equals `textSecondary` in each mode |
 | `focus` | `#4F46C7` | `#B8B1FF` | Keyboard/gamepad focus ring |
 
 Canonical machine-readable form:
@@ -72,7 +78,7 @@ Canonical machine-readable form:
     "success": "#13795B",
     "warning": "#8A4F00",
     "errorDanger": "#B42318",
-    "disabled": "#6B7382",
+    "disabled": "#555D6D",
     "focus": "#4F46C7"
   },
   "dark": {
@@ -88,7 +94,7 @@ Canonical machine-readable form:
     "success": "#56D19B",
     "warning": "#F4B860",
     "errorDanger": "#FF7B72",
-    "disabled": "#8D96A6",
+    "disabled": "#B8C0CE",
     "focus": "#B8B1FF"
   }
 }
@@ -97,8 +103,8 @@ Canonical machine-readable form:
 ## Accessibility rules
 
 - Normal text and status text must reach at least `4.5:1`.
-- Large text, key icons, focus rings, and meaningful control boundaries must
-  reach at least `3:1`.
+- Large text, key icons, focus rings, and any boundary required to identify a
+  control must reach at least `3:1`.
 - Selected state uses `selected` plus an active indicator, key icon, font
   weight, or equivalent non-color affordance. Normal selected text and icons
   use `textPrimary`. `brandPrimary` is limited to the active indicator or a
@@ -106,9 +112,15 @@ Canonical machine-readable form:
 - Success, warning, and error/danger use an icon or explicit text label.
 - Destructive actions require a textual verb and confirmation; red is not the
   only signal.
+- `border` is a decorative divider/card-outline color. It does not promise
+  `3:1` on every surface and must not be the only affordance for identifying a
+  control, input, selection, or focus state. Meaningful boundaries use
+  `textSecondary`, `focus`, `brandPrimary`, or a filled shape whose final
+  contrast reaches `3:1`.
 - Platform-generated hover, pressed, ripple, and disabled treatments may
   derive from these tokens, but must not reduce essential text below the
-  required contrast.
+  required contrast. Essential disabled labels use `disabled` directly and
+  must not receive an additional whole-component alpha.
 
 Measured representative text/status pairs:
 
@@ -120,13 +132,16 @@ Measured representative text/status pairs:
 | `success` on `surface` | `5.37:1` | `8.21:1` |
 | `warning` on `surface` | `6.56:1` | `8.87:1` |
 | `errorDanger` on `surface` | `6.57:1` | `6.22:1` |
-| `disabled` on `surface` | `4.77:1` | `5.27:1` |
+| `disabled` on `surface` | `6.62:1` | `8.57:1` |
+| `disabled` on `background` | `6.18:1` | `9.78:1` |
+| `disabled` on `surfaceVariant` | `5.89:1` | `7.41:1` |
+| `disabled` on `selected` | `5.37:1` | `6.57:1` |
 | `focus` on `background` | `6.46:1` | `9.19:1` |
 | `textPrimary` on `selected` | `12.74:1` | `11.22:1` |
 | `brandPrimary` on `selected` | `4.35:1` | `6.17:1` |
 
-Before implementation, automated tests must recompute these values from the
-machine table rather than trusting this prose table.
+Automated tests must recompute these values from the machine-readable table
+rather than trusting this prose table.
 
 ## Platform mapping
 
@@ -215,9 +230,24 @@ decoration, but must not apply an additional whole-component alpha that lowers
 essential disabled text below `4.5:1`. Native focus behavior may derive shape
 and animation, while the visible focus color remains `focus`.
 
+Hover, pressed, ripple, and other state layers may mix the relevant semantic
+token with the current `surface` or `background` using platform-native alpha.
+They must not introduce a new solid hue or change the semantic owner. Shadows,
+scrims, and overlays are platform primitives rather than additional semantic
+tokens: light mode derives their base from `textPrimary`, dark mode from
+`background`; alpha, blur, and elevation may remain platform-specific.
+Gradients may combine reviewed tokens, such as `brandPrimary` to
+`brandSecondary` or `selected` to `surfaceVariant`, but may not add a third
+palette color.
+
+Web UI chrome maps its CSS custom properties to these same semantic tokens.
+Layout artwork and user-authored preview content may retain content colors, but
+must not use those colors as alternate brand, status, selection, focus, or
+control-boundary semantics.
+
 ## Implementation boundary
 
-After cross-platform acceptance:
+After cross-platform acceptance and a fixed `FROZEN / ACCEPTED` commit:
 
 1. centralize WinUI colors and brushes in `Themes/Colors.xaml`;
 2. remove duplicate page/window resource dictionaries;
