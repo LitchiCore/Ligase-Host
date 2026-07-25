@@ -1,5 +1,7 @@
 using System.Diagnostics;
+using System.Security.AccessControl;
 using System.Security.Cryptography;
+using System.Security.Principal;
 using System.Text;
 using System.Text.Json;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
@@ -146,6 +148,98 @@ public sealed class FreshInstallPackagingTests
         Assert.AreEqual(
             Path.GetFullPath(dataRoot),
             document.RootElement.GetProperty("dataRoot").GetString());
+
+        var security = new DirectoryInfo(dataRoot).GetAccessControl();
+        Assert.IsTrue(security.AreAccessRulesProtected);
+        var operatorSid = WindowsIdentity.GetCurrent().User!.Value;
+        var systemSid = new SecurityIdentifier(
+            WellKnownSidType.LocalSystemSid,
+            null).Value;
+        var administratorsSid = new SecurityIdentifier(
+            WellKnownSidType.BuiltinAdministratorsSid,
+            null).Value;
+        var rules = security.GetAccessRules(
+                includeExplicit: true,
+                includeInherited: false,
+                targetType: typeof(SecurityIdentifier))
+            .Cast<FileSystemAccessRule>()
+            .Where(rule => rule.AccessControlType == AccessControlType.Allow)
+            .ToArray();
+        CollectionAssert.AreEquivalent(
+            new[] { operatorSid, systemSid, administratorsSid },
+            rules.Select(rule => ((SecurityIdentifier)rule.IdentityReference).Value)
+                .ToArray());
+        Assert.IsFalse(rules.Any(rule =>
+            ((SecurityIdentifier)rule.IdentityReference).IsWellKnown(
+                WellKnownSidType.BuiltinUsersSid) ||
+            ((SecurityIdentifier)rule.IdentityReference).IsWellKnown(
+                WellKnownSidType.AuthenticatedUserSid)));
+
+        var readback = await fixture.RunAsync("Readback");
+        Assert.AreEqual(0, readback.ExitCode, readback.Output);
+        using var readbackDocument = JsonDocument.Parse(readback.Output);
+        Assert.AreEqual(
+            "existing",
+            readbackDocument.RootElement.GetProperty("dataRootState").GetString());
+    }
+
+    [TestMethod]
+    public async Task FreshInstallRequiresAResolvedDataRootAndWritesNothing()
+    {
+        using var fixture = new InstallFixture();
+
+        var result = await fixture.RunAsync("Install");
+
+        Assert.AreEqual(10, result.ExitCode);
+        using var document = JsonDocument.Parse(result.Output);
+        Assert.AreEqual(
+            "dataRootRequired",
+            document.RootElement.GetProperty("code").GetString());
+        Assert.IsFalse(File.Exists(
+            Path.Combine(fixture.Root, "ligase-bootstrap.json")));
+    }
+
+    [TestMethod]
+    public async Task FirewallIntegrationRequiresConfiguredReadbackAndRollsBackFreshState()
+    {
+        using var fixture = new InstallFixture();
+        fixture.ConfigureFirewallScript(configuredAfterApply: false);
+        var dataRoot = Path.Combine(fixture.Root, "firewall-failure-data");
+
+        var result = await fixture.RunAsync(
+            "Install",
+            dataRoot,
+            configureFirewall: true);
+
+        Assert.AreEqual(10, result.ExitCode);
+        using var document = JsonDocument.Parse(result.Output);
+        Assert.AreEqual(
+            "firewallReadbackMismatch",
+            document.RootElement.GetProperty("code").GetString());
+        Assert.IsFalse(File.Exists(
+            Path.Combine(fixture.Root, "ligase-bootstrap.json")));
+        Assert.IsFalse(Directory.Exists(dataRoot));
+    }
+
+    [TestMethod]
+    public async Task FirewallIntegrationReturnsCurrentConfiguredReadback()
+    {
+        using var fixture = new InstallFixture();
+        fixture.ConfigureFirewallScript(configuredAfterApply: true);
+        var dataRoot = Path.Combine(fixture.Root, "firewall-success-data");
+
+        var result = await fixture.RunAsync(
+            "Install",
+            dataRoot,
+            configureFirewall: true);
+
+        Assert.AreEqual(0, result.ExitCode, result.Output);
+        using var document = JsonDocument.Parse(result.Output);
+        var firewall = document.RootElement.GetProperty("firewall");
+        Assert.AreEqual("configured", firewall.GetProperty("state").GetString());
+        Assert.AreEqual(
+            "configured",
+            firewall.GetProperty("machineCode").GetString());
     }
 
     [TestMethod]
@@ -181,6 +275,10 @@ public sealed class FreshInstallPackagingTests
             "CreateShortcut \"$DESKTOP\\Ligase Host.lnk\" \"$INSTDIR\\Ligase Host.exe\"");
         StringAssert.Contains(nsis, "Delete \"$DESKTOP\\Ligase Host.lnk\"");
         StringAssert.Contains(nsis, "Page custom DataRootPageCreate DataRootPageLeave");
+        StringAssert.Contains(nsis, "Page custom InstallSummaryPageCreate");
+        StringAssert.Contains(nsis, "Page custom InstallResultPageCreate");
+        StringAssert.Contains(nsis, "Advanced: use a custom data directory");
+        StringAssert.Contains(nsis, "Firewall: Ligase-owned exact rules verified");
         StringAssert.Contains(nsis, "-ConfigureFirewall");
         StringAssert.Contains(nsis, "-DataDisposition $3");
         StringAssert.Contains(nsis, "-Action InstallVirtualDisplay");
@@ -271,13 +369,28 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(validationInclude, "SetErrorLevel $0");
         StringAssert.Contains(
             validationInclude,
+            "LIGASE_INSTALL_PROGRAM_DATA");
+        StringAssert.Contains(
+            validationInclude,
             "SetEnvironmentVariableW(w \"LIGASE_INSTALL_RAW_PARAMETERS\", w r9)");
         Assert.IsFalse(
             harness.Contains("SetOutPath \"$INSTDIR\"", StringComparison.Ordinal));
+        var helper = File.ReadAllText(Path.Combine(
+            repo,
+            "packaging",
+            "windows",
+            "ligase",
+            "Manage-LigaseInstallation.ps1"));
+        StringAssert.Contains(helper, "throw \"dataRootRequired\"");
+        StringAssert.Contains(helper, "ProcessIdToSessionId");
+        StringAssert.Contains(helper, "WTSQuerySessionInformation");
+        StringAssert.Contains(helper, "SetAccessRuleProtection($true, $false)");
+        StringAssert.Contains(helper, "Invoke-FirewallAction");
+        StringAssert.Contains(helper, "firewallReadbackMismatch");
     }
 
     [TestMethod]
-    public async Task InstallDirectoryResolverSupportsExplicitDAndRegisteredUpgrade()
+    public async Task InstallDirectoryResolverSupportsExplicitDAndFreshProgramDataDefault()
     {
         const string explicitD = @"D:\Program Files\Ligase Host";
         const string explicitDataD = @"D:\Development\Ligase Data\Host";
@@ -295,7 +408,14 @@ public sealed class FreshInstallPackagingTests
         Assert.AreEqual(0, explicitResult.ExitCode, explicitResult.Error);
         Assert.AreEqual($"{explicitD}|{explicitDataD}", explicitResult.Output);
         Assert.AreEqual(0, upgradeResult.ExitCode, upgradeResult.Error);
-        Assert.AreEqual($"{registeredD}|", upgradeResult.Output);
+        StringAssert.StartsWith(
+            upgradeResult.Output,
+            registeredD + @"|D:\ProgramDataFixture\Ligase Host\Instances\");
+        StringAssert.Matches(
+            upgradeResult.Output,
+            new System.Text.RegularExpressions.Regex(
+                @"\|D:\\ProgramDataFixture\\Ligase Host\\Instances\\" +
+                @"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"));
     }
 
     [TestMethod]
@@ -412,6 +532,9 @@ public sealed class FreshInstallPackagingTests
         start.Environment["LIGASE_INSTALL_REGISTERED_LOCATION"] = registered;
         start.Environment["LIGASE_INSTALL_DEFAULT_LOCATION"] = defaultLocation;
         start.Environment["LIGASE_INSTALL_ARGUMENT_RESULT"] = resultPath;
+        start.Environment["LIGASE_INSTALL_BOOTSTRAP_PATH"] =
+            Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"), "bootstrap.json");
+        start.Environment["LIGASE_INSTALL_PROGRAM_DATA"] = @"D:\ProgramDataFixture";
         start.ArgumentList.Add("-NoProfile");
         start.ArgumentList.Add("-NonInteractive");
         start.ArgumentList.Add("-ExecutionPolicy");
@@ -537,7 +660,8 @@ public sealed class FreshInstallPackagingTests
 
         public async Task<(int ExitCode, string Output)> RunAsync(
             string action,
-            string? dataRoot = null)
+            string? dataRoot = null,
+            bool configureFirewall = false)
         {
             var start = new ProcessStartInfo
             {
@@ -562,6 +686,8 @@ public sealed class FreshInstallPackagingTests
                 start.ArgumentList.Add("-DataRoot");
                 start.ArgumentList.Add(dataRoot);
             }
+            if (configureFirewall)
+                start.ArgumentList.Add("-ConfigureFirewall");
             using var process = Process.Start(start)
                 ?? throw new InvalidOperationException("testProcessStartFailed");
             var stdout = process.StandardOutput.ReadToEndAsync();
@@ -570,6 +696,48 @@ public sealed class FreshInstallPackagingTests
             var error = await stderr;
             Assert.AreEqual(string.Empty, error, error);
             return (process.ExitCode, (await stdout).Trim());
+        }
+
+        public void ConfigureFirewallScript(bool configuredAfterApply)
+        {
+            var directory = Path.Combine(Root, "Deployment", "Firewall");
+            Directory.CreateDirectory(directory);
+            File.WriteAllText(
+                Path.Combine(directory, "ligase-firewall-v1.json"),
+                "{}",
+                new UTF8Encoding(false));
+            var configured = configuredAfterApply ? "$true" : "$false";
+            File.WriteAllText(
+                Path.Combine(directory, "Manage-LigaseFirewall.ps1"),
+                $$"""
+                param(
+                  [string]$Action,
+                  [string]$Manifest,
+                  [string]$Program,
+                  [int]$BasePort)
+                $marker = Join-Path $PSScriptRoot "configured.marker"
+                if ($Action -eq "Apply") {
+                  if ({{configured}}) {
+                    [IO.File]::WriteAllText($marker, "configured")
+                  }
+                  @{ code = $(if ({{configured}}) { "configured" } else { "notConfigured" });
+                     configured = {{configured}} } | ConvertTo-Json -Compress
+                  exit 0
+                }
+                if ($Action -eq "Readback") {
+                  $isConfigured = Test-Path -LiteralPath $marker
+                  @{ code = $(if ($isConfigured) { "configured" } else { "notConfigured" });
+                     configured = $isConfigured } | ConvertTo-Json -Compress
+                  exit 0
+                }
+                if ($Action -eq "Remove") {
+                  Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
+                  @{ code = "removed"; configured = $false } | ConvertTo-Json -Compress
+                  exit 0
+                }
+                exit 1
+                """,
+                new UTF8Encoding(false));
         }
 
         public void SetLegacyOwnedEntries(string[] entries)

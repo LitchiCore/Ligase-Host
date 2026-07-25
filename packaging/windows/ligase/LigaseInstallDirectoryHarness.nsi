@@ -13,10 +13,15 @@ ${StrTrimNewLines}
 Var InstallParameters
 Var HarnessResultFile
 Var DataRoot
+Var DataRootMode
+Var ProgramDataRoot
 
 !include "InstallDirectoryValidation.nsh"
 
 Function .onInit
+  SetShellVarContext all
+  StrCpy $ProgramDataRoot "$APPDATA"
+  SetShellVarContext current
   System::Call 'kernel32::GetCommandLineW() w .r0'
   StrCpy $InstallParameters $0
   ${GetParameters} $6
@@ -41,12 +46,20 @@ Section
     StrCpy $InstallParameters '$\"ligase-installer.exe$\" $\"/InstallDirectory=$INSTDIR$\" $\"/DataRoot=$DataRoot$\"'
   ${EndIf}
   Call ResolveInstallerArguments
+  ; Controlled UI lifecycle: DataRoot page Next, Back, then Next again. The
+  ; selected value is converted to an explicit validated pair each time and
+  ; must remain byte-for-byte stable without creating either directory.
+  StrCpy $InstallParameters '$\"ligase-installer.exe$\" $\"/InstallDirectory=$INSTDIR$\" $\"/DataRoot=$DataRoot$\"'
+  Call ResolveInstallerArguments
+  StrCpy $InstallParameters '$\"ligase-installer.exe$\" $\"/InstallDirectory=$INSTDIR$\" $\"/DataRoot=$DataRoot$\"'
+  Call ResolveInstallerArguments
   ${If} $HarnessResultFile == ""
     SetErrorLevel 19
     Quit
   ${EndIf}
   FileOpen $5 "$HarnessResultFile" w
-  FileWrite $5 "$INSTDIR$\r$\n$DataRoot"
+  FileWriteWord $5 0xFEFF
+  FileWriteUTF16LE $5 "$INSTDIR$\r$\n$DataRoot"
   FileClose $5
   SetErrorLevel 0
 SectionEnd

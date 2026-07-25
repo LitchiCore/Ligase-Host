@@ -10,8 +10,13 @@ Missing or mismatched artifacts fail closed.
 The Ligase installer is independent of the legacy Apollo CPack installer.
 It never calls Apollo's migration script and never imports an existing Apollo
 configuration, certificate, or state file. A fresh install creates one root
-bootstrap from the Data Root page or the explicit `/DataRoot=` selection, or
-from the documented per-user default when no selection was supplied. An
+bootstrap from the confirmed Data Root selection. Fresh installs propose one
+machine-scoped
+`%ProgramData%\Ligase Host\Instances\<canonical-lowercase-UUID>` path; the
+proposal is generated once without creating the directory and remains stable
+across Back/Next navigation. Ordinary users do not need to choose a path.
+The advanced option accepts an explicit `/DataRoot=`-equivalent local path
+through the same canonical validator. An
 upgrade with a valid, accessible bootstrap preserves its bytes and data-root
 binding exactly. Malformed or inaccessible existing bootstrap state fails
 closed and is never silently replaced. Desktop creates the Host UUID,
@@ -58,8 +63,11 @@ selection; uninstall removes that same exact shortcut. The Start Menu shortcut
 remains required and is independent of this option.
 
 Interactive installation is the preferred operator path: select the structured
-program directory on the Directory page and the identity/library directory on
-the Data Root page. Automation must invoke
+program directory, review the proposed machine data directory, and use the
+advanced custom-directory control only when needed. The confirmation page
+shows the final program path, data path, desktop-shortcut selection, virtual
+display selection, and exact Ligase-owned firewall action before any product
+or data write. Automation must invoke
 `Deployment/Invoke-LigaseInstaller.ps1`, which uses
 one tested Windows argv serializer and passes one serialized argument string
 to `Start-Process`; callers must not concatenate or pre-quote a native command
@@ -67,6 +75,20 @@ line. The installer is still the final authority: it parses the
 original native argv once, rejects duplicate, malformed, unknown, split, UNC,
 device, root, relative, or non-canonical path arguments, and validates the
 final UI values before the first program, bootstrap, or firewall write.
+An empty or unconfirmed value never falls back to LocalAppData.
+
+Fresh instance directories are owned by the WTS interactive-session operator,
+not by the elevated credential account. The installer resolves that identity
+from the current interactive session and verifies it against the shell token.
+The instance directory disables inherited access and has exactly three
+allow entries: the operator has inheritable Modify access, while SYSTEM and
+the local Administrators group have inheritable Full Control. It grants
+neither Users nor Authenticated Users and adds no deny entry. The installer
+impersonates the resolved operator for a create/atomic-move/delete probe before
+writing the bootstrap. Session 0, missing or ambiguous session identity, ACL
+drift, or a failed write probe aborts and removes the fresh empty instance.
+Existing valid bootstrap bytes and ACLs are preserved during upgrade; insecure
+legacy ACL repair requires a separate explicit action.
 
 Desktop composition, first-route behavior, and installed-product acceptance are
 documented in [`desktop-ui.md`](desktop-ui.md). That document links here rather
@@ -113,6 +135,12 @@ Firewall installation uses only the Ligase-owned manifest and
 `sunshine.exe`, and the exact product port family. It never disables Windows
 Firewall and never removes non-owned Apollo/Sunshine rules. Historical broad
 rules remain a separately disclosed, opt-in cleanup decision.
+Apply is followed by an independent exact readback. Both owned TCP and UDP
+rules must match program, ports, Private profile, LocalSubnet, inbound allow,
+and blocked edge traversal before the integration outcome can be successful.
+Bootstrap or firewall mismatch aborts the installer and prevents its completion
+page from claiming success. The result page repeats the exact data path and
+the verified firewall state.
 
 `Manage-LigaseInstallation.ps1` is the typed action seam used by NSIS and
 automation. `DryRun` and `Readback` are ordinary-user, zero-mutation actions.

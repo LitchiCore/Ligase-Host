@@ -196,6 +196,7 @@ function Invoke-Harness(
   [string] $LaunchMode = "PowerShellDirect",
   [string] $ExpectedInstallDirectory = "",
   [string] $ExpectedDataRoot = "",
+  [string] $ExpectedDataRootPattern = "",
   [string[]] $ForbiddenPaths = @()
 ) {
   $result = Join-Path $root "$Name.result"
@@ -242,7 +243,7 @@ function Invoke-Harness(
       @()
     }
     $enoughDiagnostics = if ($ShouldSucceed) {
-      @($diagnosticLines).Count -ge 2
+      @($diagnosticLines).Count -ge 4
     } else {
       @($diagnosticLines).Count -ge 1
     }
@@ -264,7 +265,7 @@ function Invoke-Harness(
   }
   $exists = Test-Path -LiteralPath $result -PathType Leaf
   if ($ShouldSucceed) {
-    if (@($resolverCodes).Count -ne 2 -or
+    if (@($resolverCodes).Count -ne 4 -or
         @($resolverCodes.Where({ $_ -ne 0 })).Count -ne 0 -or
         -not $exists) {
       $detail = if (Test-Path -LiteralPath $harnessDiagnostic) {
@@ -279,9 +280,12 @@ function Invoke-Harness(
         -not $actual[0].Equals(
           $ExpectedInstallDirectory,
           [StringComparison]::OrdinalIgnoreCase) -or
-        -not $actual[1].Equals(
-          $ExpectedDataRoot,
-          [StringComparison]::OrdinalIgnoreCase)) {
+        (($ExpectedDataRootPattern.Length -eq 0 -and
+          -not $actual[1].Equals(
+            $ExpectedDataRoot,
+            [StringComparison]::OrdinalIgnoreCase)) -or
+         ($ExpectedDataRootPattern.Length -gt 0 -and
+          $actual[1] -notmatch $ExpectedDataRootPattern))) {
       throw "harnessResultMismatch:$Name"
     }
   } elseif (@($resolverCodes).Count -lt 1 -or
@@ -301,7 +305,30 @@ function Invoke-Harness(
   }
 }
 
+$chineseProgramPath =
+  "D:\" + ([string][char]0x7A0B) + ([char]0x5E8F) +
+  ([char]0x6587) + ([char]0x4EF6) + "\Ligase Host"
+$chineseDataPath =
+  "D:\" + ([string][char]0x4E3B) + ([char]0x673A) +
+  ([char]0x6570) + ([char]0x636E) + "\Ligase Host"
+
 $results = @(
+  Invoke-Harness `
+    -Name "fresh-programdata-next-back-next" `
+    -Arguments @('/InstallDirectory=D:\Program Files\Ligase Host') `
+    -ShouldSucceed $true `
+    -ExpectedInstallDirectory 'D:\Program Files\Ligase Host' `
+    -ExpectedDataRootPattern ('^' +
+      [regex]::Escape((Join-Path $env:ProgramData 'Ligase Host\Instances\')) +
+      '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
+  Invoke-Harness `
+    -Name "custom-chinese-path-next-back-next" `
+    -Arguments @(
+      "/InstallDirectory=$chineseProgramPath",
+      "/DataRoot=$chineseDataPath") `
+    -ShouldSucceed $true `
+    -ExpectedInstallDirectory $chineseProgramPath `
+    -ExpectedDataRoot $chineseDataPath
   Invoke-Harness `
     -Name "d-paths-with-spaces-powershell-direct" `
     -Arguments @(

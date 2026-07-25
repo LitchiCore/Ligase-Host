@@ -22,6 +22,125 @@ $ErrorActionPreference = "Stop"
 $installRoot = [IO.Path]::GetFullPath($InstallDirectory)
 $manifestPath = Join-Path $installRoot "ligase-install-manifest.json"
 $bootstrapPath = Join-Path $installRoot "ligase-bootstrap.json"
+$script:freshDataRootCreated = $null
+
+Add-Type -TypeDefinition @"
+using System;
+using System.ComponentModel;
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+using System.Security.Principal;
+
+public static class LigaseInteractiveUser
+{
+    private const uint TOKEN_QUERY = 0x0008;
+    private const uint TOKEN_DUPLICATE = 0x0002;
+    private const uint TOKEN_IMPERSONATE = 0x0004;
+
+    private enum WTS_INFO_CLASS
+    {
+        WTSUserName = 5,
+        WTSDomainName = 7
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool ProcessIdToSessionId(
+        uint processId, out uint sessionId);
+
+    [DllImport("Wtsapi32.dll", CharSet = CharSet.Unicode)]
+    private static extern bool WTSQuerySessionInformation(
+        IntPtr server, int sessionId, WTS_INFO_CLASS infoClass,
+        out IntPtr buffer, out int bytesReturned);
+
+    [DllImport("Wtsapi32.dll")]
+    private static extern void WTSFreeMemory(IntPtr memory);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool OpenProcessToken(
+        IntPtr processHandle, uint desiredAccess, out IntPtr tokenHandle);
+
+    [DllImport("kernel32.dll")]
+    private static extern bool CloseHandle(IntPtr handle);
+
+    private static string ReadSessionValue(
+        int sessionId, WTS_INFO_CLASS infoClass)
+    {
+        IntPtr buffer;
+        int bytes;
+        if (!WTSQuerySessionInformation(
+            IntPtr.Zero, sessionId, infoClass, out buffer, out bytes) ||
+            buffer == IntPtr.Zero)
+            throw new InvalidOperationException("interactiveOperatorUnavailable");
+        try
+        {
+            return Marshal.PtrToStringUni(buffer) ?? "";
+        }
+        finally
+        {
+            WTSFreeMemory(buffer);
+        }
+    }
+
+    public static WindowsIdentity OpenIdentity()
+    {
+        uint sessionId;
+        if (!ProcessIdToSessionId(
+            unchecked((uint)Process.GetCurrentProcess().Id), out sessionId) ||
+            sessionId == 0)
+            throw new InvalidOperationException("interactiveOperatorUnavailable");
+
+        var user = ReadSessionValue(
+            unchecked((int)sessionId), WTS_INFO_CLASS.WTSUserName);
+        var domain = ReadSessionValue(
+            unchecked((int)sessionId), WTS_INFO_CLASS.WTSDomainName);
+        if (String.IsNullOrWhiteSpace(user))
+            throw new InvalidOperationException("interactiveOperatorUnavailable");
+        var account = String.IsNullOrWhiteSpace(domain)
+            ? user
+            : domain + "\\" + user;
+        var expectedSid = ((NTAccount)new NTAccount(account)).Translate(
+            typeof(SecurityIdentifier)) as SecurityIdentifier;
+        if (expectedSid == null)
+            throw new InvalidOperationException("interactiveOperatorUnavailable");
+
+        foreach (var process in Process.GetProcessesByName("explorer"))
+        {
+            using (process)
+            {
+                try
+                {
+                    if (process.SessionId != sessionId)
+                        continue;
+                    IntPtr token;
+                    if (!OpenProcessToken(
+                        process.Handle,
+                        TOKEN_QUERY | TOKEN_DUPLICATE | TOKEN_IMPERSONATE,
+                        out token))
+                        continue;
+                    WindowsIdentity identity;
+                    try
+                    {
+                        identity = new WindowsIdentity(token);
+                    }
+                    finally
+                    {
+                        CloseHandle(token);
+                    }
+                    if (identity.User != null &&
+                        identity.User.Equals(expectedSid))
+                        return identity;
+                    identity.Dispose();
+                }
+                catch
+                {
+                    // Other sessions and protected processes are ignored.
+                }
+            }
+        }
+        throw new InvalidOperationException("interactiveOperatorUnavailable");
+    }
+}
+"@
 $mutex = [Threading.Mutex]::new($false, "Global\Ligase.Host.Installer.v1")
 $held = $false
 
@@ -88,23 +207,181 @@ function Read-ValidBootstrap {
 }
 
 function Write-NewBootstrap([string]$RequestedDataRoot) {
-  $root = if ([string]::IsNullOrWhiteSpace($RequestedDataRoot)) {
-    Join-Path ([Environment]::GetFolderPath("LocalApplicationData")) `
-      ("Ligase Host\Instances\" + [guid]::NewGuid().ToString("D"))
-  } else {
-    if (-not [IO.Path]::IsPathRooted($RequestedDataRoot)) {
-      throw "dataRootNotAbsolute"
-    }
-    [IO.Path]::GetFullPath($RequestedDataRoot)
+  if ([string]::IsNullOrWhiteSpace($RequestedDataRoot)) {
+    throw "dataRootRequired"
   }
-  New-Item -ItemType Directory -Path $root -Force | Out-Null
+  if (-not [IO.Path]::IsPathRooted($RequestedDataRoot)) {
+    throw "dataRootNotAbsolute"
+  }
+  $root = [IO.Path]::GetFullPath($RequestedDataRoot)
+  if (Test-Path -LiteralPath $root) {
+    throw "freshDataRootAlreadyExists"
+  }
+  New-Item -ItemType Directory -Path $root | Out-Null
+  $script:freshDataRootCreated = $root
+  try {
+    $operator = [LigaseInteractiveUser]::OpenIdentity()
+    if ($null -eq $operator.User) {
+      throw "interactiveOperatorUnavailable"
+    }
+    $operatorSid = $operator.User
+    $systemSid = [Security.Principal.SecurityIdentifier]::new(
+      [Security.Principal.WellKnownSidType]::LocalSystemSid, $null)
+    $administratorsSid = [Security.Principal.SecurityIdentifier]::new(
+      [Security.Principal.WellKnownSidType]::BuiltinAdministratorsSid, $null)
+    $security = [Security.AccessControl.DirectorySecurity]::new()
+    $security.SetAccessRuleProtection($true, $false)
+    $security.SetOwner($operatorSid)
+    $inheritance = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
+      [Security.AccessControl.InheritanceFlags]::ObjectInherit
+    $propagation = [Security.AccessControl.PropagationFlags]::None
+    $security.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
+      $systemSid, "FullControl", $inheritance, $propagation, "Allow"))
+    $security.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
+      $administratorsSid, "FullControl", $inheritance, $propagation, "Allow"))
+    $security.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
+      $operatorSid, "Modify", $inheritance, $propagation, "Allow"))
+    Set-Acl -LiteralPath $root -AclObject $security
+
+    $readback = Get-Acl -LiteralPath $root
+    $allowed = @($readback.Access | Where-Object {
+      $_.AccessControlType -eq "Allow" -and -not $_.IsInherited
+    })
+    $actualRules = @($allowed | ForEach-Object {
+      $sid = $_.IdentityReference.Translate(
+        [Security.Principal.SecurityIdentifier]).Value
+      "$sid|$([int]$_.FileSystemRights)|$([int]$_.InheritanceFlags)|$([int]$_.PropagationFlags)"
+    } | Sort-Object)
+    $expectedRules = @(
+      "$($systemSid.Value)|$([int][Security.AccessControl.FileSystemRights]::FullControl)|$([int]$inheritance)|$([int]$propagation)",
+      "$($administratorsSid.Value)|$([int][Security.AccessControl.FileSystemRights]::FullControl)|$([int]$inheritance)|$([int]$propagation)",
+      "$($operatorSid.Value)|$([int](
+        [Security.AccessControl.FileSystemRights]::Modify -bor
+        [Security.AccessControl.FileSystemRights]::Synchronize))|$([int]$inheritance)|$([int]$propagation)"
+    ) | Sort-Object
+    $owner = ([Security.Principal.NTAccount]$readback.Owner).Translate(
+      [Security.Principal.SecurityIdentifier]).Value
+    if (-not $readback.AreAccessRulesProtected -or
+        $readback.AreAuditRulesProtected -or
+        $owner -cne $operatorSid.Value -or
+        $actualRules.Count -ne $expectedRules.Count -or
+        (Compare-Object $actualRules $expectedRules).Count -ne 0) {
+      throw "dataRootAclMismatch"
+    }
+
+    $context = $operator.Impersonate()
+    try {
+      $probe = Join-Path $root (".ligase-access-" + [guid]::NewGuid().ToString("N"))
+      $moved = "$probe.moved"
+      [IO.File]::WriteAllText($probe, "probe", [Text.UTF8Encoding]::new($false))
+      Move-Item -LiteralPath $probe -Destination $moved
+      Remove-Item -LiteralPath $moved -Force
+    } finally {
+      $context.Dispose()
+      $operator.Dispose()
+    }
+  } catch {
+    Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+    $script:freshDataRootCreated = $null
+    if ($_.Exception.Message -in @(
+        "interactiveOperatorUnavailable", "dataRootAclMismatch")) {
+      throw
+    }
+    throw "dataRootAclMismatch"
+  }
   $temporary = $bootstrapPath + ".pending"
   [IO.File]::WriteAllText(
     $temporary,
     (@{ schemaVersion = 1; dataRoot = $root } | ConvertTo-Json -Compress),
     [Text.UTF8Encoding]::new($false))
   Move-Item -LiteralPath $temporary -Destination $bootstrapPath -Force
+  $written = Read-ValidBootstrap
+  if ($null -eq $written -or
+      -not ([string]$written.dataRoot).Equals(
+        $root,
+        [StringComparison]::OrdinalIgnoreCase)) {
+    throw "bootstrapDataRootMismatch"
+  }
   return $root
+}
+
+function Test-CurrentOperatorDataRootAccess([string]$Root) {
+  try {
+    $currentSid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+    if ($null -eq $currentSid) { return $false }
+    $systemSid = [Security.Principal.SecurityIdentifier]::new(
+      [Security.Principal.WellKnownSidType]::LocalSystemSid, $null)
+    $administratorsSid = [Security.Principal.SecurityIdentifier]::new(
+      [Security.Principal.WellKnownSidType]::BuiltinAdministratorsSid, $null)
+    $security = Get-Acl -LiteralPath $Root
+    $ownerSid = ([Security.Principal.NTAccount]$security.Owner).Translate(
+      [Security.Principal.SecurityIdentifier])
+    if (-not $security.AreAccessRulesProtected -or
+        -not $ownerSid.Equals($currentSid)) {
+      return $false
+    }
+    $explicitAllow = @($security.Access | Where-Object {
+      $_.AccessControlType -eq "Allow" -and -not $_.IsInherited
+    })
+    if ($explicitAllow.Count -ne 3) { return $false }
+    $actualRules = @($explicitAllow | ForEach-Object {
+      $sid = $_.IdentityReference.Translate(
+        [Security.Principal.SecurityIdentifier]).Value
+      "$sid,$([int]$_.FileSystemRights),$([int]$_.InheritanceFlags),$([int]$_.PropagationFlags)"
+    })
+    $inheritance = [int](
+      [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
+      [Security.AccessControl.InheritanceFlags]::ObjectInherit)
+    $propagation = [int][Security.AccessControl.PropagationFlags]::None
+    $actual = (@($actualRules | Sort-Object) -join "|")
+    $expected = (@(
+      "$($currentSid.Value),$([int](
+        [Security.AccessControl.FileSystemRights]::Modify -bor
+        [Security.AccessControl.FileSystemRights]::Synchronize)),$inheritance,$propagation",
+      "$($systemSid.Value),$([int][Security.AccessControl.FileSystemRights]::FullControl),$inheritance,$propagation",
+      "$($administratorsSid.Value),$([int][Security.AccessControl.FileSystemRights]::FullControl),$inheritance,$propagation"
+    ) | Sort-Object) -join "|"
+    return $actual -ceq $expected
+  } catch {
+    return $false
+  }
+}
+
+function Invoke-FirewallAction(
+  [Parameter(Mandatory)][ValidateSet("Apply", "Remove", "Readback")]
+  [string]$FirewallAction,
+  [Parameter(Mandatory)]$Manifest
+) {
+  $script = Join-Path $installRoot $Manifest.firewall.script
+  $arguments = @(
+    "-NoProfile",
+    "-NonInteractive",
+    "-ExecutionPolicy", "Bypass",
+    "-File", $script,
+    "-Action", $FirewallAction,
+    "-Manifest", (Join-Path $installRoot $Manifest.firewall.manifest),
+    "-Program", (Join-Path $installRoot "Core/sunshine.exe"),
+    "-BasePort", ([string]$Manifest.firewall.basePort)
+  )
+  $output = @(& powershell.exe @arguments 2>&1)
+  $exitCode = $LASTEXITCODE
+  if ($exitCode -ne 0) {
+    throw "firewall$($FirewallAction)Failed"
+  }
+  try {
+    $result = $output[-1] | ConvertFrom-Json
+  } catch {
+    throw "firewall$($FirewallAction)Failed"
+  }
+  if ($FirewallAction -in @("Apply", "Readback") -and
+      (-not [bool]$result.configured -or
+       [string]$result.code -cne "configured")) {
+    throw "firewallReadbackMismatch"
+  }
+  if ($FirewallAction -eq "Remove" -and [bool]$result.configured) {
+    throw "firewallRemoveFailed"
+  }
+  return $result
 }
 
 function Remove-LegacyFlatOwnedEntries($Manifest) {
@@ -214,12 +491,19 @@ function Get-FirewallReadback($Manifest) {
   $firewall = $Manifest.firewall
   $script = Join-Path $installRoot $firewall.script
   try {
-    $raw = & $script `
+    $raw = @(& powershell.exe `
+      -NoProfile `
+      -NonInteractive `
+      -ExecutionPolicy Bypass `
+      -File $script `
       -Action Readback `
       -Manifest (Join-Path $installRoot $firewall.manifest) `
       -Program (Join-Path $installRoot "Core/sunshine.exe") `
-      -BasePort $firewall.basePort
-    $owned = $raw | ConvertFrom-Json
+      -BasePort $firewall.basePort 2>&1)
+    if ($LASTEXITCODE -ne 0 -or $raw.Count -eq 0) {
+      throw "firewallReadbackFailed"
+    }
+    $owned = $raw[-1] | ConvertFrom-Json
     $legacy = @(Get-NetFirewallRule -PolicyStore ActiveStore -ErrorAction Stop |
       Where-Object {
         $_.Enabled -eq "True" -and
@@ -467,16 +751,23 @@ try {
     }
     $legacyEntriesRemoved = Remove-LegacyFlatOwnedEntries $manifest
     if ($ConfigureFirewall) {
-      & (Join-Path $installRoot $manifest.firewall.script) `
-        -Action Apply `
-        -Manifest (Join-Path $installRoot $manifest.firewall.manifest) `
-        -Program (Join-Path $installRoot "Core/sunshine.exe") `
-        -BasePort $manifest.firewall.basePort | Out-Null
-      if ($LASTEXITCODE -ne 0) {
+      try {
+        $null = Invoke-FirewallAction -FirewallAction Apply -Manifest $manifest
+        $firewallReadback = Get-FirewallReadback $manifest
+        if ($firewallReadback.state -cne "configured" -or
+            $firewallReadback.machineCode -cne "configured") {
+          throw "firewallReadbackMismatch"
+        }
+      } catch {
         if ($null -eq $bootstrapBytes) {
           Remove-Item -LiteralPath $bootstrapPath -Force -ErrorAction SilentlyContinue
+          if ($null -ne $script:freshDataRootCreated -and
+              (Test-Path -LiteralPath $script:freshDataRootCreated)) {
+            Remove-Item -LiteralPath $script:freshDataRootCreated `
+              -Recurse -Force -ErrorAction SilentlyContinue
+          }
         }
-        throw "firewallApplyFailed"
+        throw
       }
     }
     if ($null -ne $bootstrapBytes -and
@@ -504,12 +795,7 @@ try {
 
   if ($Action -eq "Uninstall") {
     if ($ConfigureFirewall) {
-      & (Join-Path $installRoot $manifest.firewall.script) `
-        -Action Remove `
-        -Manifest (Join-Path $installRoot $manifest.firewall.manifest) `
-        -Program (Join-Path $installRoot "Core/sunshine.exe") `
-        -BasePort $manifest.firewall.basePort | Out-Null
-      if ($LASTEXITCODE -ne 0) { throw "firewallRemoveFailed" }
+      $null = Invoke-FirewallAction -FirewallAction Remove -Manifest $manifest
     }
     $dataRootState = "preserved"
     if ($DataDisposition -eq "Quarantine" -and (Test-Path -LiteralPath $bootstrapPath)) {
@@ -534,8 +820,12 @@ try {
     "fresh"
   } else {
     try {
-      $null = Read-ValidBootstrap
-      "existing"
+      $bootstrap = Read-ValidBootstrap
+      if (Test-CurrentOperatorDataRootAccess ([string]$bootstrap.dataRoot)) {
+        "existing"
+      } else {
+        "inaccessible"
+      }
     } catch {
       "inaccessible"
     }
@@ -561,9 +851,15 @@ try {
     "bootstrapInvalid",
     "bootstrapDataRootUnavailable",
     "bootstrapChangedDuringUpgrade",
+    "bootstrapDataRootMismatch",
+    "dataRootRequired",
     "dataRootNotAbsolute",
+    "freshDataRootAlreadyExists",
+    "interactiveOperatorUnavailable",
+    "dataRootAclMismatch",
     "uninstallerSignatureInvalid",
     "firewallApplyFailed",
+    "firewallReadbackMismatch",
     "firewallRemoveFailed",
     "virtualDisplayInstallFailed",
     "virtualDisplayUninstallFailed")

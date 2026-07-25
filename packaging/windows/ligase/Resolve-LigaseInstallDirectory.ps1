@@ -125,6 +125,12 @@ try {
   $resultPath = [Environment]::GetEnvironmentVariable(
     "LIGASE_INSTALL_ARGUMENT_RESULT",
     [EnvironmentVariableTarget]::Process)
+  $bootstrapPath = [Environment]::GetEnvironmentVariable(
+    "LIGASE_INSTALL_BOOTSTRAP_PATH",
+    [EnvironmentVariableTarget]::Process)
+  $programData = [Environment]::GetEnvironmentVariable(
+    "LIGASE_INSTALL_PROGRAM_DATA",
+    [EnvironmentVariableTarget]::Process)
   if ([string]::IsNullOrWhiteSpace($raw)) { $raw = "" }
   if ([string]::IsNullOrWhiteSpace($resultPath)) { Fail 18 }
 
@@ -141,10 +147,42 @@ try {
     $default
   }
   $installDirectory = Resolve-LocalPath $installCandidate
+  $dataRootMode = "explicit"
   $dataRoot = if ($dataOptions.Count -eq 1) {
     Resolve-LocalPath $dataOptions[0]
+  } elseif (-not [string]::IsNullOrWhiteSpace($bootstrapPath) -and
+      (Test-Path -LiteralPath $bootstrapPath -PathType Leaf)) {
+    try {
+      $bytes = [IO.File]::ReadAllBytes($bootstrapPath)
+      $text = [Text.UTF8Encoding]::new($false, $true).GetString($bytes)
+      if ([regex]::Matches($text, '"schemaVersion"\s*:').Count -ne 1 -or
+          [regex]::Matches($text, '"dataRoot"\s*:').Count -ne 1) {
+        Fail 18
+      }
+      $document = $text | ConvertFrom-Json
+      $properties = @($document.PSObject.Properties.Name)
+      if ($properties.Count -ne 2 -or
+          $properties -notcontains "schemaVersion" -or
+          $properties -notcontains "dataRoot" -or
+          $document.schemaVersion -ne 1) {
+        Fail 18
+      }
+      $resolved = Resolve-LocalPath ([string]$document.dataRoot)
+      if (-not (Test-Path -LiteralPath $resolved -PathType Container)) {
+        Fail 18
+      }
+      $dataRootMode = "existing"
+      $resolved
+    } catch {
+      Fail 18
+    }
   } else {
-    ""
+    if ([string]::IsNullOrWhiteSpace($programData)) { Fail 18 }
+    $base = Resolve-LocalPath (
+      Join-Path ([IO.Path]::GetFullPath($programData)) "Ligase Host")
+    $dataRootMode = "freshDefault"
+    Resolve-LocalPath (
+      Join-Path $base ("Instances\" + [guid]::NewGuid().ToString("D")))
   }
 
   $parent = Split-Path -Parent $resultPath
@@ -156,7 +194,8 @@ try {
       $installDirectory,
       $dataRoot,
       ($installOptions.Count -eq 1).ToString().ToLowerInvariant(),
-      ($dataOptions.Count -eq 1).ToString().ToLowerInvariant()
+      ($dataOptions.Count -eq 1).ToString().ToLowerInvariant(),
+      $dataRootMode
     ),
     [Text.Encoding]::Unicode)
   Move-Item -LiteralPath $pending -Destination $resultPath -Force

@@ -10,6 +10,10 @@ Function ResolveInstallerArguments
   System::Call 'kernel32::SetEnvironmentVariableW(w "LIGASE_INSTALL_DEFAULT_LOCATION", w r7)'
   StrCpy $6 "$PLUGINSDIR\installer-arguments.result"
   System::Call 'kernel32::SetEnvironmentVariableW(w "LIGASE_INSTALL_ARGUMENT_RESULT", w r6)'
+  StrCpy $6 "$INSTDIR\ligase-bootstrap.json"
+  System::Call 'kernel32::SetEnvironmentVariableW(w "LIGASE_INSTALL_BOOTSTRAP_PATH", w r6)'
+  StrCpy $6 "$ProgramDataRoot"
+  System::Call 'kernel32::SetEnvironmentVariableW(w "LIGASE_INSTALL_PROGRAM_DATA", w r6)'
   ; NSIS extracts a native plugin named System.dll into $PLUGINSDIR. Running
   ; Add-Type from that directory shadows the .NET reference assembly.
   SetOutPath "$TEMP"
@@ -26,6 +30,8 @@ Function ResolveInstallerArguments
   System::Call 'kernel32::SetEnvironmentVariableW(w "LIGASE_INSTALL_REGISTERED_LOCATION", p 0)'
   System::Call 'kernel32::SetEnvironmentVariableW(w "LIGASE_INSTALL_DEFAULT_LOCATION", p 0)'
   System::Call 'kernel32::SetEnvironmentVariableW(w "LIGASE_INSTALL_ARGUMENT_RESULT", p 0)'
+  System::Call 'kernel32::SetEnvironmentVariableW(w "LIGASE_INSTALL_BOOTSTRAP_PATH", p 0)'
+  System::Call 'kernel32::SetEnvironmentVariableW(w "LIGASE_INSTALL_PROGRAM_DATA", p 0)'
   ${If} $0 == 0
   ${AndIf} ${FileExists} "$PLUGINSDIR\installer-arguments.result"
     FileOpen $3 "$PLUGINSDIR\installer-arguments.result" r
@@ -33,11 +39,13 @@ Function ResolveInstallerArguments
     FileReadUTF16LE $3 $DataRoot
     FileReadUTF16LE $3 $5
     FileReadUTF16LE $3 $6
+    FileReadUTF16LE $3 $DataRootMode
     FileClose $3
     ${StrTrimNewLines} $INSTDIR $INSTDIR
     ${StrTrimNewLines} $DataRoot $DataRoot
     ${StrTrimNewLines} $5 $5
     ${StrTrimNewLines} $6 $6
+    ${StrTrimNewLines} $DataRootMode $DataRootMode
   ${Else}
     !ifdef LIGASE_VALIDATION_HARNESS
       SetErrorLevel $0
