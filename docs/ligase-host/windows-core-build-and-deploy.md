@@ -13,8 +13,12 @@ Apollo instance, register a service, or modify the system `PATH`.
 - Build type: `Release`
 
 The build script verifies the fixed SHA-256 of both downloaded archives.
-Toolchains, build output, and deploy output live below
-`%LOCALAPPDATA%\LigaseBuild`.
+Toolchains, build output, and deploy output live below the development build
+root. Set `LIGASE_BUILD_ROOT` to an absolute directory on the development
+drive. When it is unset, scripts retain the legacy-compatible
+`%LOCALAPPDATA%\LigaseBuild` default. `LIGASE_TEMP_ROOT` is available to
+scripts that need disposable development files; its default is
+`<build-root>\temp`. Neither variable changes the product data root.
 
 ## Build command
 
@@ -23,6 +27,13 @@ Run this command from the repository root:
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass `
   -File .\scripts\ligase\build-windows-core.ps1
+```
+
+For the current development-drive layout:
+
+```powershell
+$env:LIGASE_BUILD_ROOT = "D:\Development\Ligase\Build"
+$env:LIGASE_TEMP_ROOT = "D:\Development\Ligase\Build\temp"
 ```
 
 The script downloads and verifies the toolchain, installs the documented
@@ -43,7 +54,7 @@ terminating or replacing another instance.
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass `
   -File .\scripts\ligase\start-parallel-core.ps1 `
-  -DeployDirectory "$env:LOCALAPPDATA\LigaseBuild\deploy\<commit>" `
+  -DeployDirectory "$env:LIGASE_BUILD_ROOT\deploy\<commit>" `
   -BasePort 49989
 ```
 

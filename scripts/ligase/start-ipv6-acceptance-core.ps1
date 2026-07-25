@@ -1,12 +1,23 @@
 [CmdletBinding()]
 param(
-    [string]$Binary = "$env:LOCALAPPDATA\LigaseBuild\deploy\7d7a06de\sunshine.exe",
-    [string]$ProjectionRoot = "$env:LOCALAPPDATA\LigaseBuild\deploy\14d56844",
-    [string]$AcceptanceRoot = "$env:LOCALAPPDATA\LigaseBuild\acceptance",
+    [string]$Binary,
+    [string]$ProjectionRoot,
+    [string]$AcceptanceRoot,
     [int]$BasePort = 50989
 )
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot "Resolve-DevelopmentRoot.ps1")
+$developmentBuildRoot = Resolve-LigaseBuildRoot
+if ([string]::IsNullOrWhiteSpace($Binary)) {
+    $Binary = Join-Path $developmentBuildRoot "deploy\7d7a06de\sunshine.exe"
+}
+if ([string]::IsNullOrWhiteSpace($ProjectionRoot)) {
+    $ProjectionRoot = Join-Path $developmentBuildRoot "deploy\14d56844"
+}
+if ([string]::IsNullOrWhiteSpace($AcceptanceRoot)) {
+    $AcceptanceRoot = Join-Path $developmentBuildRoot "acceptance"
+}
 
 function Invoke-LoopbackCurlConfig {
     param([Parameter(Mandatory)] [string]$Configuration)

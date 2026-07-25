@@ -1,11 +1,17 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)] [string]$Binary,
-    [string]$RunRoot = (Join-Path $env:LOCALAPPDATA "LigaseBuild\acceptance"),
+    [string]$RunRoot,
     [ValidateRange(1024, 65000)] [int]$Port = 51989
 )
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot "Resolve-DevelopmentRoot.ps1")
+if ([string]::IsNullOrWhiteSpace($RunRoot)) {
+    $RunRoot = Join-Path (Resolve-LigaseBuildRoot) "acceptance"
+}
+$RunRoot = [IO.Path]::GetFullPath(
+    [Environment]::ExpandEnvironmentVariables($RunRoot))
 Add-Type -AssemblyName System.Net.Http
 $runId = "authority-p1-" + (Get-Date -Format "yyyyMMdd-HHmmss")
 $root = Join-Path $RunRoot $runId

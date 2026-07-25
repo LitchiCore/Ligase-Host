@@ -4,9 +4,7 @@ param(
   [string]$Configuration = "Release",
   [ValidateSet("x64")]
   [string]$Platform = "x64",
-  [Parameter(Mandatory)]
   [string]$CppBuildRoot,
-  [Parameter(Mandatory)]
   [string]$OutputRoot,
   [string]$DotNet = "dotnet.exe",
   [string]$CMake = "cmake.exe",
@@ -20,6 +18,15 @@ param(
 
 $ErrorActionPreference = "Stop"
 $sourceRoot = (Resolve-Path (Join-Path $PSScriptRoot "../../..")).Path
+. (Join-Path $sourceRoot "scripts/ligase/Resolve-DevelopmentRoot.ps1")
+$developmentBuildRoot = Resolve-LigaseBuildRoot
+$shortHead = (& git -C $sourceRoot rev-parse --short=8 HEAD).Trim()
+if ([string]::IsNullOrWhiteSpace($CppBuildRoot)) {
+  $CppBuildRoot = Join-Path $developmentBuildRoot "build\$shortHead"
+}
+if ([string]::IsNullOrWhiteSpace($OutputRoot)) {
+  $OutputRoot = Join-Path $developmentBuildRoot "artifacts\fresh-install"
+}
 $cppRoot = [IO.Path]::GetFullPath($CppBuildRoot)
 $output = [IO.Path]::GetFullPath($OutputRoot)
 $head = (& git -C $sourceRoot rev-parse HEAD).Trim()

@@ -1,10 +1,12 @@
 [CmdletBinding()]
 param(
-    [string]$BuildRoot = (Join-Path $env:LOCALAPPDATA "LigaseBuild"),
+    [string]$BuildRoot,
     [int]$Parallel = 8
 )
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot "Resolve-DevelopmentRoot.ps1")
+$BuildRoot = Resolve-LigaseBuildRoot -ExplicitRoot $BuildRoot
 
 $msysRelease = "2026-03-22"
 $msysArchiveName = "msys2-base-x86_64-20260322.sfx.exe"
