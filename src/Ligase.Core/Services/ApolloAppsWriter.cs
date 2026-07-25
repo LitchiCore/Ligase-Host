@@ -1,11 +1,31 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Ligase.Host.Core.Domain.Installation;
 using Ligase.Host.Core.Models;
 
 namespace Ligase.Host.Core.Services;
 
-public sealed class ApolloAppsWriter(LigasePaths paths) : IApolloAppsWriter
+public sealed class ApolloAppsWriter : IApolloAppsWriter
 {
+    private readonly LigasePaths _paths;
+    private readonly InstallationLayout _installationLayout;
+
+    public ApolloAppsWriter(LigasePaths paths)
+        : this(
+            paths,
+            InstallationLayoutResolver.ResolveFromDesktopBase(
+                AppContext.BaseDirectory))
+    {
+    }
+
+    public ApolloAppsWriter(
+        LigasePaths paths,
+        InstallationLayout installationLayout)
+    {
+        _paths = paths;
+        _installationLayout = installationLayout;
+    }
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         WriteIndented = true,
@@ -16,7 +36,7 @@ public sealed class ApolloAppsWriter(LigasePaths paths) : IApolloAppsWriter
         IReadOnlyCollection<LibraryItem> items,
         CancellationToken cancellationToken = default)
     {
-        Directory.CreateDirectory(paths.ApolloDirectory);
+        Directory.CreateDirectory(_paths.ApolloDirectory);
         var apps = items
             // Apollo injects its own Virtual Display entry when its driver is available.
             .Where(item => item.Kind != LibraryItemKind.VirtualDesktop)
@@ -37,12 +57,12 @@ public sealed class ApolloAppsWriter(LigasePaths paths) : IApolloAppsWriter
             .Replace("\"waitAll\":", "\"wait-all\":")
             .Replace("\"autoDetach\":", "\"auto-detach\":");
 
-        var temporaryPath = paths.ApolloAppsFile + ".tmp";
+        var temporaryPath = _paths.ApolloAppsFile + ".tmp";
         await File.WriteAllTextAsync(temporaryPath, json, cancellationToken);
-        File.Move(temporaryPath, paths.ApolloAppsFile, true);
+        File.Move(temporaryPath, _paths.ApolloAppsFile, true);
     }
 
-    private static object CreateApp(LibraryItem item)
+    private object CreateApp(LibraryItem item)
     {
         if (item.Kind == LibraryItemKind.Desktop)
         {
@@ -66,7 +86,7 @@ public sealed class ApolloAppsWriter(LigasePaths paths) : IApolloAppsWriter
                 name = item.Name,
                 cmd = command,
                 imagePath = item.CoverImagePath,
-                workingDir = AppContext.BaseDirectory,
+                workingDir = Path.GetDirectoryName(watcher),
                 waitAll = true,
                 autoDetach = false
             };
@@ -87,11 +107,11 @@ public sealed class ApolloAppsWriter(LigasePaths paths) : IApolloAppsWriter
 
     private static string Quote(string value) => $"\"{value.Replace("\"", "\\\"")}\"";
 
-    private static string FindWatcherExecutable()
+    private string FindWatcherExecutable()
     {
         var candidates = new[]
         {
-            Path.Combine(AppContext.BaseDirectory, "Ligase.GameWatcher.exe"),
+            _installationLayout.GameWatcherExecutable,
             Path.GetFullPath(Path.Combine(
                 AppContext.BaseDirectory,
                 "..", "..", "..", "..", "..", "..",

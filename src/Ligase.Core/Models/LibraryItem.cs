@@ -1,5 +1,7 @@
 using System.Text.Json.Serialization;
 
+using Ligase.Host.Core.Domain.Installation;
+
 namespace Ligase.Host.Core.Models;
 
 public sealed class LibraryItem
@@ -68,9 +70,13 @@ public sealed class LibraryItem
     public string? DisplayCoverPath => CoverImagePath ?? Kind switch
     {
         LibraryItemKind.Desktop => Path.Combine(
-            AppContext.BaseDirectory, "Apollo", "assets", "desktop.png"),
+            InstallationLayoutResolver.ResolveFromDesktopBase(
+                AppContext.BaseDirectory).CoreAssetsDirectory,
+            "desktop.png"),
         LibraryItemKind.VirtualDesktop => Path.Combine(
-            AppContext.BaseDirectory, "Apollo", "assets", "virtual_desktop.png"),
+            InstallationLayoutResolver.ResolveFromDesktopBase(
+                AppContext.BaseDirectory).CoreAssetsDirectory,
+            "virtual_desktop.png"),
         _ => null
     };
 }

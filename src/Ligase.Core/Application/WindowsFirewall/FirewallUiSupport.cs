@@ -1,4 +1,5 @@
 using Ligase.Host.Core.Domain.WindowsFirewall;
+using Ligase.Host.Core.Domain.Installation;
 
 namespace Ligase.Host.Core.Application.WindowsFirewall;
 
@@ -11,9 +12,9 @@ public static class FirewallDeploymentConvention
     public static FirewallDeploymentAssets Resolve(string desktopOutputDirectory)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(desktopOutputDirectory);
-        var directory = Path.Combine(
-            Path.GetFullPath(desktopOutputDirectory),
-            DirectoryName);
+        var layout = InstallationLayoutResolver.ResolveFromDesktopBase(
+            desktopOutputDirectory);
+        var directory = layout.FirewallDirectory;
         var script = Path.Combine(directory, ScriptFileName);
         var manifest = Path.Combine(directory, ManifestFileName);
         var hasScript = File.Exists(script);

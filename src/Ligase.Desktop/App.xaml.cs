@@ -1,6 +1,7 @@
 using Ligase.Host.Core.Application.LayoutCatalog;
 using Ligase.Host.Core.Application.Installation;
 using Ligase.Host.Core.Application.WindowsFirewall;
+using Ligase.Host.Core.Domain.Installation;
 using Ligase.Host.Core.Infrastructure.Storage;
 using Ligase.Host.Core.Infrastructure.Windows;
 using Ligase.Host.Desktop.Platform.Windows.Firewall;
@@ -29,13 +30,15 @@ public partial class App : Application
         _host = Microsoft.Extensions.Hosting.Host.CreateDefaultBuilder()
             .ConfigureServices(services =>
             {
+                var installationLayout =
+                    InstallationLayoutResolver.ResolveFromDesktopBase(
+                        AppContext.BaseDirectory);
                 var paths = LigasePaths.CreateFromCommandLine(
                     Environment.GetCommandLineArgs(),
                     environmentDataRoot: Environment.GetEnvironmentVariable(
                         "LIGASE_DATA_ROOT"),
-                    bootstrapFile: Path.Combine(
-                        AppContext.BaseDirectory,
-                        "ligase-bootstrap.json"));
+                    bootstrapFile: installationLayout.BootstrapPath);
+                services.AddSingleton(installationLayout);
                 services.AddSingleton(paths);
                 services.AddSingleton<ILayoutCatalogRepository>(_ =>
                     new JsonLayoutCatalogRepository(

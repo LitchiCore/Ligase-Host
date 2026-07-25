@@ -37,7 +37,10 @@
   <PropertyGroup>
     <GameWatcherProject>$(MSBuildProjectDirectory)\..\..\tools\Ligase.GameWatcher\Ligase.GameWatcher.csproj</GameWatcherProject>
   </PropertyGroup>
-  <Target Name="CopyGameWatcher" AfterTargets="Build">
+  <Target
+    Name="CopyGameWatcher"
+    AfterTargets="Build"
+    Condition="'$(LigaseStructuredPackage)' != 'true'">
     <MSBuild
       Projects="$(GameWatcherProject)"
       Targets="GetTargetPath"
@@ -63,7 +66,10 @@
       DestinationFolder="$(TargetDir)"
       SkipUnchangedFiles="true" />
   </Target>
-  <Target Name="CopyLigaseSystemCovers" AfterTargets="Build">
+  <Target
+    Name="CopyLigaseSystemCovers"
+    AfterTargets="Build"
+    Condition="'$(LigaseStructuredPackage)' != 'true'">
     <ItemGroup>
       <_LigaseSystemCovers Include="$(MSBuildProjectDirectory)\..\..\src_assets\common\assets\desktop.png" />
       <_LigaseSystemCovers Include="$(MSBuildProjectDirectory)\..\..\src_assets\common\assets\desktop-alt.png" />

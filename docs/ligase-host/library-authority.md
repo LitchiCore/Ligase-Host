@@ -24,14 +24,16 @@ handlers must repeat the authority check.
 
 ## Explicit product data root
 
-Managed deployments place `ligase-bootstrap.json` beside the desktop executable
-with `{ "dataRoot": "<absolute-directory>" }`. This lets the user keep launching
-the EXE directly while binding it to one explicit product root. Automation may
-instead use `--data-root <absolute-directory>` or the child-process environment
-variable `LIGASE_DATA_ROOT`. Command line wins over environment, which wins over
-the bootstrap file. This is the product data boundary used by the desktop, its
-managed core, and every generated projection. A relative, missing, or duplicate
-command-line value is rejected.
+Managed structured deployments place `ligase-bootstrap.json` at the
+installation root and resolve it through the typed `InstallationLayout`
+authority; the Desktop executable lives under `Desktop/`. The bootstrap
+contains `{ "dataRoot": "<absolute-directory>" }` and binds the installation
+to one explicit product root without relying on the process working directory.
+Automation may instead use `--data-root <absolute-directory>` or the
+child-process environment variable `LIGASE_DATA_ROOT`. Command line wins over
+environment, which wins over the typed bootstrap path. This is the product data
+boundary used by the desktop, its managed core, and every generated projection.
+A relative, missing, or duplicate command-line value is rejected.
 
 An ordinary unpackaged first run without this option still uses
 `%LOCALAPPDATA%\Ligase Host`. Deployment and acceptance automation must pass an

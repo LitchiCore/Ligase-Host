@@ -11,6 +11,7 @@ param(
   [string]$Action = "DryRun",
   [Parameter(Mandatory)]
   [string]$InstallDirectory,
+  [string]$DataRoot,
   [ValidateSet("Preserve", "Quarantine")]
   [string]$DataDisposition = "Preserve",
   [switch]$ConfigureFirewall,
@@ -37,6 +38,7 @@ function Read-Manifest {
   $raw = Get-Content -LiteralPath $manifestPath -Raw
   $document = $raw | ConvertFrom-Json
   if ($document.schemaVersion -ne 1 -or
+      $document.installLayout -ne "structured-v1" -or
       $document.platform -ne "x64" -or
       $document.configuration -notin @("Debug", "Release") -or
       $document.installMode -ne "packaged" -or
@@ -44,6 +46,105 @@ function Read-Manifest {
     throw "installManifestInvalid"
   }
   return $document
+}
+
+function Read-ValidBootstrap {
+  if (-not (Test-Path -LiteralPath $bootstrapPath -PathType Leaf)) {
+    return $null
+  }
+  $raw = [IO.File]::ReadAllBytes($bootstrapPath)
+  try {
+    $utf8 = [Text.UTF8Encoding]::new($false, $true)
+    $json = $utf8.GetString($raw)
+    if ([regex]::Matches($json, '"schemaVersion"\s*:').Count -ne 1 -or
+        [regex]::Matches($json, '"dataRoot"\s*:').Count -ne 1) {
+      throw "bootstrapInvalid"
+    }
+    $bootstrap = $json | ConvertFrom-Json
+    $properties = @($bootstrap.PSObject.Properties.Name)
+    if ($properties.Count -ne 2 -or
+        $properties -notcontains "schemaVersion" -or
+        $properties -notcontains "dataRoot" -or
+        $bootstrap.schemaVersion -ne 1 -or
+        [string]::IsNullOrWhiteSpace([string]$bootstrap.dataRoot) -or
+        -not [IO.Path]::IsPathRooted([string]$bootstrap.dataRoot)) {
+      throw "bootstrapInvalid"
+    }
+    $canonical = [IO.Path]::GetFullPath([string]$bootstrap.dataRoot)
+    if (-not (Test-Path -LiteralPath $canonical -PathType Container)) {
+      throw "bootstrapDataRootUnavailable"
+    }
+    return [ordered]@{
+      bytes = $raw
+      dataRoot = $canonical
+    }
+  } catch {
+    if ($_.Exception.Message -in @(
+        "bootstrapInvalid", "bootstrapDataRootUnavailable")) {
+      throw
+    }
+    throw "bootstrapInvalid"
+  }
+}
+
+function Write-NewBootstrap([string]$RequestedDataRoot) {
+  $root = if ([string]::IsNullOrWhiteSpace($RequestedDataRoot)) {
+    Join-Path ([Environment]::GetFolderPath("LocalApplicationData")) `
+      ("Ligase Host\Instances\" + [guid]::NewGuid().ToString("D"))
+  } else {
+    if (-not [IO.Path]::IsPathRooted($RequestedDataRoot)) {
+      throw "dataRootNotAbsolute"
+    }
+    [IO.Path]::GetFullPath($RequestedDataRoot)
+  }
+  New-Item -ItemType Directory -Path $root -Force | Out-Null
+  $temporary = $bootstrapPath + ".pending"
+  [IO.File]::WriteAllText(
+    $temporary,
+    (@{ schemaVersion = 1; dataRoot = $root } | ConvertTo-Json -Compress),
+    [Text.UTF8Encoding]::new($false))
+  Move-Item -LiteralPath $temporary -Destination $bootstrapPath -Force
+  return $root
+}
+
+function Remove-LegacyFlatOwnedEntries($Manifest) {
+  $removed = 0
+  $candidateDirectories = [Collections.Generic.HashSet[string]]::new(
+    [StringComparer]::OrdinalIgnoreCase)
+  foreach ($relative in @($Manifest.legacyFlatOwnedEntries)) {
+    if ([string]::IsNullOrWhiteSpace([string]$relative) -or
+        [IO.Path]::IsPathRooted([string]$relative) -or
+        ([string]$relative).Contains("..")) {
+      throw "installManifestInvalid"
+    }
+    $path = [IO.Path]::GetFullPath((Join-Path $installRoot $relative))
+    if (-not $path.StartsWith(
+        $installRoot.TrimEnd("\") + "\",
+        [StringComparison]::OrdinalIgnoreCase)) {
+      throw "installManifestInvalid"
+    }
+    if (Test-Path -LiteralPath $path -PathType Leaf) {
+      Remove-Item -LiteralPath $path -Force
+      ++$removed
+      $parent = [IO.Path]::GetDirectoryName($path)
+      while (-not [string]::IsNullOrWhiteSpace($parent) -and
+          -not [string]::Equals(
+            $parent,
+            $installRoot,
+            [StringComparison]::OrdinalIgnoreCase)) {
+        $null = $candidateDirectories.Add($parent)
+        $parent = [IO.Path]::GetDirectoryName($parent)
+      }
+    }
+  }
+  foreach ($path in @($candidateDirectories) |
+      Sort-Object { $_.Length } -Descending) {
+    if ((Test-Path -LiteralPath $path -PathType Container) -and
+        @(Get-ChildItem -LiteralPath $path -Force).Count -eq 0) {
+      Remove-Item -LiteralPath $path -Force
+    }
+  }
+  return $removed
 }
 
 function Test-Artifacts($Manifest) {
@@ -116,7 +217,7 @@ function Get-FirewallReadback($Manifest) {
     $raw = & $script `
       -Action Readback `
       -Manifest (Join-Path $installRoot $firewall.manifest) `
-      -Program (Join-Path $installRoot "Apollo/sunshine.exe") `
+      -Program (Join-Path $installRoot "Core/sunshine.exe") `
       -BasePort $firewall.basePort
     $owned = $raw | ConvertFrom-Json
     $legacy = @(Get-NetFirewallRule -PolicyStore ActiveStore -ErrorAction Stop |
@@ -256,7 +357,7 @@ try {
     $after = @(Get-DriverCertificateLocations $thumbprint)
     $ownedStores = @($after | Where-Object { $before -notcontains $_ })
     [IO.File]::WriteAllText(
-      (Join-Path $installRoot "Drivers/sudovda/.ligase-driver-ownership.json"),
+      (Join-Path $installRoot "Deployment/Drivers/sudovda/.ligase-driver-ownership.json"),
       (@{
         schemaVersion = 1
         certificateThumbprint = $thumbprint
@@ -274,7 +375,7 @@ try {
   if ($Action -eq "UninstallVirtualDisplay") {
     & (Join-Path $installRoot $manifest.virtualDisplay.uninstaller) | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "virtualDisplayUninstallFailed" }
-    $marker = Join-Path $installRoot "Drivers/sudovda/.ligase-driver-ownership.json"
+    $marker = Join-Path $installRoot "Deployment/Drivers/sudovda/.ligase-driver-ownership.json"
     $removed = 0
     if ((Test-Path -LiteralPath $marker) -and -not (Test-DependentVirtualDisplay)) {
       $ownership = Get-Content -LiteralPath $marker -Raw | ConvertFrom-Json
@@ -321,6 +422,7 @@ try {
   }
 
   if ($Action -eq "DryRun") {
+    $existingBootstrap = Read-ValidBootstrap
     Write-Outcome "dryRunReady" $true @{
       installMode = "packaged"
       artifacts = $artifacts
@@ -329,7 +431,13 @@ try {
       firewall = $firewallReadback
       encoder = $encoder
       firewallAction = if ($ConfigureFirewall) { "applyOwnedExactRules" } else { "none" }
-      dataRootAction = "createFreshInstance"
+      dataRootAction = if ($null -ne $existingBootstrap) {
+        "preserveExistingBootstrap"
+      } elseif (-not [string]::IsNullOrWhiteSpace($DataRoot)) {
+        "createExplicitDataRoot"
+      } else {
+        "createDefaultFreshInstance"
+      }
       restartRequired = $virtualDisplay.state -eq "rebootRequired"
     }
     exit 0
@@ -348,26 +456,43 @@ try {
         throw "uninstallerSignatureInvalid"
       }
     }
-    $dataRoot = Join-Path ([Environment]::GetFolderPath("LocalApplicationData")) `
-      ("Ligase Host\Instances\" + [guid]::NewGuid().ToString("D"))
-    [IO.File]::WriteAllText(
-      $bootstrapPath,
-      (@{ schemaVersion = 1; dataRoot = $dataRoot } | ConvertTo-Json -Compress),
-      [Text.UTF8Encoding]::new($false))
+    $existingBootstrap = Read-ValidBootstrap
+    $bootstrapBytes = if ($null -ne $existingBootstrap) {
+      [byte[]]$existingBootstrap.bytes
+    } else { $null }
+    $dataRoot = if ($null -ne $existingBootstrap) {
+      [string]$existingBootstrap.dataRoot
+    } else {
+      Write-NewBootstrap $DataRoot
+    }
+    $legacyEntriesRemoved = Remove-LegacyFlatOwnedEntries $manifest
     if ($ConfigureFirewall) {
       & (Join-Path $installRoot $manifest.firewall.script) `
         -Action Apply `
         -Manifest (Join-Path $installRoot $manifest.firewall.manifest) `
-        -Program (Join-Path $installRoot "Apollo/sunshine.exe") `
+        -Program (Join-Path $installRoot "Core/sunshine.exe") `
         -BasePort $manifest.firewall.basePort | Out-Null
       if ($LASTEXITCODE -ne 0) {
-        Remove-Item -LiteralPath $bootstrapPath -Force -ErrorAction SilentlyContinue
+        if ($null -eq $bootstrapBytes) {
+          Remove-Item -LiteralPath $bootstrapPath -Force -ErrorAction SilentlyContinue
+        }
         throw "firewallApplyFailed"
       }
     }
+    if ($null -ne $bootstrapBytes -and
+        [Convert]::ToBase64String([IO.File]::ReadAllBytes($bootstrapPath)) -cne
+          [Convert]::ToBase64String($bootstrapBytes)) {
+      throw "bootstrapChangedDuringUpgrade"
+    }
     Write-Outcome "installed" $true @{
       installMode = "packaged"
-      dataRootState = "fresh"
+      dataRootState = if ($null -ne $existingBootstrap) { "existing" } else { "fresh" }
+      dataRootAction = if ($null -ne $existingBootstrap) {
+        "preservedExistingBootstrap"
+      } else {
+        "createdFreshBootstrap"
+      }
+      legacyEntriesRemoved = $legacyEntriesRemoved
       virtualDisplay = $virtualDisplay
       driverTrust = $driverTrust
       firewall = $firewallReadback
@@ -382,7 +507,7 @@ try {
       & (Join-Path $installRoot $manifest.firewall.script) `
         -Action Remove `
         -Manifest (Join-Path $installRoot $manifest.firewall.manifest) `
-        -Program (Join-Path $installRoot "Apollo/sunshine.exe") `
+        -Program (Join-Path $installRoot "Core/sunshine.exe") `
         -BasePort $manifest.firewall.basePort | Out-Null
       if ($LASTEXITCODE -ne 0) { throw "firewallRemoveFailed" }
     }
@@ -405,13 +530,16 @@ try {
     exit 0
   }
 
-  $bootstrapState = if (-not (Test-Path -LiteralPath $bootstrapPath)) { "fresh" }
-    else {
-      try {
-        $bootstrap = Get-Content -LiteralPath $bootstrapPath -Raw | ConvertFrom-Json
-        if (Test-Path -LiteralPath $bootstrap.dataRoot) { "existing" } else { "fresh" }
-      } catch { "inaccessible" }
+  $bootstrapState = if (-not (Test-Path -LiteralPath $bootstrapPath)) {
+    "fresh"
+  } else {
+    try {
+      $null = Read-ValidBootstrap
+      "existing"
+    } catch {
+      "inaccessible"
     }
+  }
   Write-Outcome "readbackComplete" $true @{
     installMode = "packaged"
     sourceHead = [string]$manifest.sourceHead
@@ -430,6 +558,10 @@ try {
     "installManifestInvalid",
     "artifactReadbackFailed",
     "helperSignatureInvalid",
+    "bootstrapInvalid",
+    "bootstrapDataRootUnavailable",
+    "bootstrapChangedDuringUpgrade",
+    "dataRootNotAbsolute",
     "uninstallerSignatureInvalid",
     "firewallApplyFailed",
     "firewallRemoveFailed",

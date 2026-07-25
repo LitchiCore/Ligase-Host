@@ -66,6 +66,14 @@ public sealed class GameWatcherDeploymentTests
         StringAssert.Contains((string?)copy.Attribute("Condition"), "$(TargetDir)");
     }
 
+    [TestMethod]
+    public void StructuredPackageDoesNotFlattenWatcherIntoDesktopOutput()
+    {
+        var condition = (string?)CopyTarget().Attribute("Condition");
+
+        Assert.AreEqual("'$(LigaseStructuredPackage)' != 'true'", condition);
+    }
+
     private static XDocument LoadProject() => XDocument.Load(ProjectFile);
 
     private static XElement CopyTarget() => LoadProject()

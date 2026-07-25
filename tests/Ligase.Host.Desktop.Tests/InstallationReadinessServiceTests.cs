@@ -184,13 +184,19 @@ public sealed class InstallationReadinessServiceTests
         Directory.CreateDirectory(root);
         try
         {
-            var script = Path.Combine(root, "Manage-LigaseInstallation.ps1");
+            var deployment = Path.Combine(root, "Deployment");
+            Directory.CreateDirectory(Path.Combine(root, "Desktop"));
+            Directory.CreateDirectory(deployment);
+            var script = Path.Combine(
+                deployment,
+                "Manage-LigaseInstallation.ps1");
             File.WriteAllText(script, "# readback-only test", Encoding.UTF8);
             var hash = Convert.ToHexString(
                 SHA256.HashData(File.ReadAllBytes(script))).ToLowerInvariant();
             var manifest = new
             {
                 schemaVersion = 1,
+                installLayout = "structured-v1",
                 sourceHead = new string('0', 40),
                 configuration = "Release",
                 platform = "x64",
@@ -201,7 +207,7 @@ public sealed class InstallationReadinessServiceTests
                 {
                     new
                     {
-                        relativePath = "Manage-LigaseInstallation.ps1",
+                        relativePath = "Deployment/Manage-LigaseInstallation.ps1",
                         unsignedContentSha256 = hash,
                         signedArtifactSha256 = hash,
                         signerSubject = (string?)null,
@@ -211,7 +217,9 @@ public sealed class InstallationReadinessServiceTests
                 },
                 virtualDisplay = new { },
                 firewall = new { },
-                encoder = new { }
+                encoder = new { },
+                ownedEntries = Array.Empty<string>(),
+                legacyFlatOwnedEntries = Array.Empty<string>()
             };
             File.WriteAllText(
                 Path.Combine(root, "ligase-install-manifest.json"),

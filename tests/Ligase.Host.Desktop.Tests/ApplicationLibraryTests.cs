@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Ligase.Host.Core.Domain.Installation;
 using Ligase.Host.Core.Models;
 using Ligase.Host.Core.Services;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
@@ -332,6 +333,40 @@ public sealed class ApplicationLibraryTests
         Assert.AreEqual(item.Id.ToString(), app.GetProperty("uuid").GetString());
         StringAssert.Contains(app.GetProperty("cmd").GetString(), "--steam-app-id 42");
         Assert.IsFalse(app.GetProperty("auto-detach").GetBoolean());
+    }
+
+    [TestMethod]
+    public async Task ApolloWriterUsesTheTypedStructuredWatcherPathAndWorkingDirectory()
+    {
+        var paths = new LigasePaths(_temporaryDirectory);
+        var installRoot = Path.Combine(_temporaryDirectory, "installed");
+        var desktop = Path.Combine(installRoot, "Desktop");
+        Directory.CreateDirectory(desktop);
+        File.WriteAllText(
+            Path.Combine(installRoot, "ligase-install-manifest.json"),
+            """{"schemaVersion":1,"installMode":"packaged","installLayout":"structured-v1"}""");
+        var layout = InstallationLayoutResolver.ResolveFromDesktopBase(desktop);
+        Directory.CreateDirectory(Path.GetDirectoryName(layout.GameWatcherExecutable)!);
+        File.WriteAllText(layout.GameWatcherExecutable, "fixture");
+        var writer = new ApolloAppsWriter(paths, layout);
+        var item = new LibraryItem
+        {
+            Kind = LibraryItemKind.Steam,
+            Name = "Structured Game",
+            SteamAppId = 42,
+            SteamInstallPath = @"D:\Steam\steamapps\common\Test"
+        };
+
+        await writer.WriteAsync([item]);
+
+        using var json = JsonDocument.Parse(await File.ReadAllTextAsync(paths.ApolloAppsFile));
+        var app = json.RootElement.GetProperty("apps")[0];
+        StringAssert.Contains(
+            app.GetProperty("cmd").GetString(),
+            layout.GameWatcherExecutable);
+        Assert.AreEqual(
+            Path.GetDirectoryName(layout.GameWatcherExecutable),
+            app.GetProperty("working-dir").GetString());
     }
 
     [TestMethod]

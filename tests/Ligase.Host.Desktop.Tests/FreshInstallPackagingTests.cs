@@ -21,7 +21,7 @@ public sealed class FreshInstallPackagingTests
         Assert.AreEqual("dryRunReady", document.RootElement.GetProperty("code").GetString());
         Assert.IsTrue(document.RootElement.GetProperty("success").GetBoolean());
         Assert.AreEqual(
-            "createFreshInstance",
+            "createDefaultFreshInstance",
             document.RootElement.GetProperty("dataRootAction").GetString());
         Assert.AreEqual(3, document.RootElement.GetProperty("artifacts").GetArrayLength());
         Assert.IsFalse(File.Exists(Path.Combine(fixture.Root, "ligase-bootstrap.json")));
@@ -32,7 +32,7 @@ public sealed class FreshInstallPackagingTests
     {
         using var fixture = new InstallFixture();
         await File.AppendAllTextAsync(
-            Path.Combine(fixture.Root, "Apollo", "sunshine.exe"),
+            Path.Combine(fixture.Root, "Core", "sunshine.exe"),
             "changed");
 
         var result = await fixture.RunAsync("Readback");
@@ -62,6 +62,93 @@ public sealed class FreshInstallPackagingTests
     }
 
     [TestMethod]
+    public async Task UpgradePreservesValidBootstrapBytesAndRemovesOnlyOwnedLegacyFiles()
+    {
+        using var fixture = new InstallFixture();
+        var dataRoot = Path.Combine(fixture.Root, "existing-data");
+        Directory.CreateDirectory(dataRoot);
+        var bootstrap = Path.Combine(fixture.Root, "ligase-bootstrap.json");
+        var original = Encoding.UTF8.GetBytes(
+            $"{{ \"schemaVersion\": 1, \"dataRoot\": {JsonSerializer.Serialize(dataRoot)} }}");
+        await File.WriteAllBytesAsync(bootstrap, original);
+        Directory.CreateDirectory(Path.Combine(fixture.Root, "legacy-locale"));
+        await File.WriteAllTextAsync(
+            Path.Combine(fixture.Root, "legacy-locale", "legacy-owned.dll"),
+            "owned");
+        await File.WriteAllTextAsync(
+            Path.Combine(fixture.Root, "unknown-user-file.txt"),
+            "preserve");
+        fixture.SetLegacyOwnedEntries(["legacy-locale/legacy-owned.dll"]);
+
+        var result = await fixture.RunAsync("Install");
+
+        Assert.AreEqual(0, result.ExitCode, result.Output);
+        CollectionAssert.AreEqual(original, await File.ReadAllBytesAsync(bootstrap));
+        Assert.IsFalse(File.Exists(
+            Path.Combine(fixture.Root, "legacy-locale", "legacy-owned.dll")));
+        Assert.IsFalse(Directory.Exists(
+            Path.Combine(fixture.Root, "legacy-locale")));
+        Assert.IsTrue(File.Exists(Path.Combine(fixture.Root, "unknown-user-file.txt")));
+    }
+
+    [TestMethod]
+    public async Task InvalidExistingBootstrapFailsClosedWithoutReplacement()
+    {
+        using var fixture = new InstallFixture();
+        var bootstrap = Path.Combine(fixture.Root, "ligase-bootstrap.json");
+        var original = Encoding.UTF8.GetBytes(
+            "{\"schemaVersion\":1,\"dataRoot\":\"relative\"}");
+        await File.WriteAllBytesAsync(bootstrap, original);
+
+        var result = await fixture.RunAsync("Install");
+
+        Assert.AreEqual(10, result.ExitCode);
+        CollectionAssert.AreEqual(original, await File.ReadAllBytesAsync(bootstrap));
+        using var document = JsonDocument.Parse(result.Output);
+        Assert.AreEqual(
+            "bootstrapInvalid",
+            document.RootElement.GetProperty("code").GetString());
+    }
+
+    [TestMethod]
+    public async Task DuplicateBootstrapAuthorityFailsClosedWithoutReplacement()
+    {
+        using var fixture = new InstallFixture();
+        var dataRoot = Path.Combine(fixture.Root, "existing-data");
+        Directory.CreateDirectory(dataRoot);
+        var bootstrap = Path.Combine(fixture.Root, "ligase-bootstrap.json");
+        var original = Encoding.UTF8.GetBytes(
+            $$"""{"schemaVersion":1,"dataRoot":{{JsonSerializer.Serialize(dataRoot)}},"dataRoot":{{JsonSerializer.Serialize(dataRoot)}}}""");
+        await File.WriteAllBytesAsync(bootstrap, original);
+
+        var result = await fixture.RunAsync("Install");
+
+        Assert.AreEqual(10, result.ExitCode);
+        CollectionAssert.AreEqual(original, await File.ReadAllBytesAsync(bootstrap));
+        using var document = JsonDocument.Parse(result.Output);
+        Assert.AreEqual(
+            "bootstrapInvalid",
+            document.RootElement.GetProperty("code").GetString());
+    }
+
+    [TestMethod]
+    public async Task FreshInstallAcceptsExplicitAbsoluteDataRoot()
+    {
+        using var fixture = new InstallFixture();
+        var dataRoot = Path.Combine(fixture.Root, "explicit-data");
+
+        var result = await fixture.RunAsync("Install", dataRoot);
+
+        Assert.AreEqual(0, result.ExitCode, result.Output);
+        using var document = JsonDocument.Parse(
+            await File.ReadAllTextAsync(
+                Path.Combine(fixture.Root, "ligase-bootstrap.json")));
+        Assert.AreEqual(
+            Path.GetFullPath(dataRoot),
+            document.RootElement.GetProperty("dataRoot").GetString());
+    }
+
+    [TestMethod]
     public void NsIsOwnsOnlyLigaseIntegrationAndKeepsVirtualDisplayOptional()
     {
         var repo = FindRepositoryRoot();
@@ -78,9 +165,20 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(nsis, "-Action UninstallVirtualDisplay");
         Assert.IsFalse(nsis.Contains("migrate-config", StringComparison.Ordinal));
         Assert.IsFalse(nsis.Contains("add-firewall-rule.bat", StringComparison.Ordinal));
+        Assert.AreEqual(
+            1,
+            System.Text.RegularExpressions.Regex.Matches(
+                nsis,
+                "RMDir /r \"\\$INSTDIR\"").Count,
+            "Only the explicit uninstall section may recursively remove the owned install root.");
         StringAssert.Contains(build, "-p:Platform=$Platform");
+        StringAssert.Contains(build, "-p:LigaseStructuredPackage=true");
+        StringAssert.Contains(build, "-Filter \"Ligase.GameWatcher.*\"");
         StringAssert.Contains(build, "tools/Ligase.GameWatcher/Ligase.GameWatcher.csproj");
-        StringAssert.Contains(build, "Apollo/sunshine.exe");
+        StringAssert.Contains(build, "Core/sunshine.exe");
+        StringAssert.Contains(
+            nsis,
+            "$INSTDIR\\Desktop\\Ligase.Host.Desktop.exe");
     }
 
     private static string FindRepositoryRoot()
@@ -114,20 +212,25 @@ public sealed class FreshInstallPackagingTests
             Root = Path.Combine(
                 Path.GetTempPath(),
                 "ligase-install-test-" + Guid.NewGuid().ToString("N"));
-            Directory.CreateDirectory(Path.Combine(Root, "Apollo"));
-            WriteArtifact("Ligase.Host.Desktop.exe", "desktop");
-            WriteArtifact(Path.Combine("Apollo", "sunshine.exe"), "core");
-            WriteArtifact("Ligase.GameWatcher.exe", "watcher");
+            Directory.CreateDirectory(Path.Combine(Root, "Core"));
+            WriteArtifact(
+                Path.Combine("Desktop", "Ligase.Host.Desktop.exe"),
+                "desktop");
+            WriteArtifact(Path.Combine("Core", "sunshine.exe"), "core");
+            WriteArtifact(
+                Path.Combine("Tools", "GameWatcher", "Ligase.GameWatcher.exe"),
+                "watcher");
 
             var artifacts = new[]
             {
-                Artifact("desktop", "Ligase.Host.Desktop.exe"),
-                Artifact("managedCore", "Apollo/sunshine.exe"),
-                Artifact("gameWatcher", "Ligase.GameWatcher.exe")
+                Artifact("desktop", "Desktop/Ligase.Host.Desktop.exe"),
+                Artifact("managedCore", "Core/sunshine.exe"),
+                Artifact("gameWatcher", "Tools/GameWatcher/Ligase.GameWatcher.exe")
             };
             var manifest = new
             {
                 schemaVersion = 1,
+                installLayout = "structured-v1",
                 sourceHead = new string('a', 40),
                 configuration = "Release",
                 platform = "x64",
@@ -138,8 +241,8 @@ public sealed class FreshInstallPackagingTests
                 virtualDisplay = new
                 {
                     required = false,
-                    installer = "Drivers/sudovda/install.bat",
-                    uninstaller = "Drivers/sudovda/uninstall.bat",
+                    installer = "Deployment/Drivers/sudovda/install.bat",
+                    uninstaller = "Deployment/Drivers/sudovda/uninstall.bat",
                     certificateThumbprint = "",
                     selfSigned = true,
                     timestamped = false,
@@ -148,10 +251,12 @@ public sealed class FreshInstallPackagingTests
                 firewall = new
                 {
                     required = false,
-                    manifest = "Firewall/ligase-firewall-v1.json",
-                    script = "Firewall/Manage-LigaseFirewall.ps1",
+                    manifest = "Deployment/Firewall/ligase-firewall-v1.json",
+                    script = "Deployment/Firewall/Manage-LigaseFirewall.ps1",
                     basePort = 48989
-                }
+                },
+                ownedEntries = Array.Empty<string>(),
+                legacyFlatOwnedEntries = Array.Empty<string>()
             };
             File.WriteAllText(
                 Path.Combine(Root, "ligase-install-manifest.json"),
@@ -161,7 +266,9 @@ public sealed class FreshInstallPackagingTests
 
         public string Root { get; }
 
-        public async Task<(int ExitCode, string Output)> RunAsync(string action)
+        public async Task<(int ExitCode, string Output)> RunAsync(
+            string action,
+            string? dataRoot = null)
         {
             var start = new ProcessStartInfo
             {
@@ -181,6 +288,11 @@ public sealed class FreshInstallPackagingTests
             start.ArgumentList.Add(action);
             start.ArgumentList.Add("-InstallDirectory");
             start.ArgumentList.Add(Root);
+            if (dataRoot is not null)
+            {
+                start.ArgumentList.Add("-DataRoot");
+                start.ArgumentList.Add(dataRoot);
+            }
             using var process = Process.Start(start)
                 ?? throw new InvalidOperationException("testProcessStartFailed");
             var stdout = process.StandardOutput.ReadToEndAsync();
@@ -189,6 +301,19 @@ public sealed class FreshInstallPackagingTests
             var error = await stderr;
             Assert.AreEqual(string.Empty, error, error);
             return (process.ExitCode, (await stdout).Trim());
+        }
+
+        public void SetLegacyOwnedEntries(string[] entries)
+        {
+            var path = Path.Combine(Root, "ligase-install-manifest.json");
+            var node = System.Text.Json.Nodes.JsonNode.Parse(
+                File.ReadAllText(path))!.AsObject();
+            node["legacyFlatOwnedEntries"] =
+                JsonSerializer.SerializeToNode(entries);
+            File.WriteAllText(
+                path,
+                node.ToJsonString(),
+                new UTF8Encoding(false));
         }
 
         public void Dispose()

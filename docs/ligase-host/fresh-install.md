@@ -8,11 +8,38 @@ relative path, byte length, and SHA-256 of all three required executables.
 Missing or mismatched artifacts fail closed.
 
 The Ligase installer is independent of the legacy Apollo CPack installer.
-It never calls Apollo's migration script, never imports an existing Apollo
-configuration, certificate, state file, or Ligase data root, and never searches
-old install directories. Each successful install writes a bootstrap containing
-a newly generated instance root. Desktop creates the Host UUID, certificate,
-library, and managed configuration on first launch.
+It never calls Apollo's migration script and never imports an existing Apollo
+configuration, certificate, or state file. A fresh install creates one root
+bootstrap from the explicit `/DataRoot=` selection, or from the documented
+per-user default when no selection was supplied. An upgrade with a valid,
+accessible bootstrap preserves its bytes and data-root binding exactly.
+Malformed or inaccessible existing bootstrap state fails closed and is never
+silently replaced. Desktop creates the Host UUID, certificate, library, and
+managed configuration only when that selected data root has no identity.
+
+## Structured installation layout
+
+`installLayout: "structured-v1"` has one typed path authority:
+`InstallationLayoutResolver`. Product code resolves it from the Desktop
+installation entry and never depends on the current working directory or
+scattered parent-directory guesses. The installation root contains only
+top-level state/installer entries and these owned trees:
+
+- `Desktop/` contains the desktop executable and all private .NET, WinUI,
+  runtime, native, and locale dependencies;
+- `Core/` contains the managed `sunshine.exe` and its assets;
+- `Tools/GameWatcher/` contains the self-contained watcher;
+- `Deployment/Firewall/` and `Deployment/Drivers/` contain privileged
+  deployment assets, while `Deployment/Manage-LigaseInstallation.ps1` is the
+  action seam;
+- `ligase-install-manifest.json`, `ligase-bootstrap.json`, and
+  `Uninstall.exe` remain at the installation root.
+
+The Start Menu shortcut points to
+`Desktop/Ligase.Host.Desktop.exe`. Every required executable is addressed by
+its manifest `relativePath` and verified by hash. Upgrading a legacy flat
+installation removes only exact paths listed by the new manifest's
+`legacyFlatOwnedEntries`; unknown files and all user data are retained.
 
 The managed Core and GameWatcher are required. SudoVDA is optional: without it,
 physical-desktop streaming remains available while virtual-display-only
@@ -67,4 +94,5 @@ Uninstall always removes owned program files and Ligase-owned firewall rules.
 Personal data is preserved by default. The explicit clean-reset choice moves
 the active instance root to a recoverable quarantine rather than deleting
 identity, pairing, library, covers, layouts, preferences, stream settings, or
-logs in place. A later reinstall always receives a new root and identity.
+logs in place. A later fresh reinstall receives a new root and identity;
+ordinary repair/upgrade preserves a valid existing bootstrap.

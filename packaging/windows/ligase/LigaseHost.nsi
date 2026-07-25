@@ -13,6 +13,7 @@ ShowUninstDetails show
 
 !include "MUI2.nsh"
 !include "LogicLib.nsh"
+!include "FileFunc.nsh"
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_COMPONENTS
@@ -23,6 +24,7 @@ ShowUninstDetails show
 !insertmacro MUI_LANGUAGE "SimpChinese"
 
 Var SetupMutex
+Var DataRoot
 
 Function .onInit
   System::Call 'kernel32::CreateMutexW(p 0, i 0, w "Global\Ligase.Host.Setup.v1") p .r0 ?e'
@@ -32,6 +34,8 @@ Function .onInit
     MessageBox MB_OK|MB_ICONSTOP "Another Ligase install, repair, or uninstall is already running."
     Abort
   ${EndIf}
+  ${GetParameters} $0
+  ${GetOptions} $0 "/DataRoot=" $DataRoot
 FunctionEnd
 
 Function un.onInit
@@ -49,23 +53,23 @@ Section "Ligase Host (required)" SEC_MAIN
   SetOutPath "$INSTDIR"
   File /r "${StageDir}\*"
   WriteUninstaller "$INSTDIR\Uninstall.exe"
-  nsExec::ExecToStack 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\Manage-LigaseInstallation.ps1" -Action Install -InstallDirectory "$INSTDIR" -ConfigureFirewall'
+  nsExec::ExecToStack 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\Deployment\Manage-LigaseInstallation.ps1" -Action Install -InstallDirectory "$INSTDIR" -DataRoot "$DataRoot" -ConfigureFirewall'
   Pop $0
   Pop $1
   ${If} $0 != 0
     DetailPrint "Ligase integration failed with machine outcome."
-    RMDir /r "$INSTDIR"
+    DetailPrint "Existing bootstrap, user data, and unknown files were not removed."
     Abort
   ${EndIf}
   CreateDirectory "$SMPROGRAMS\Ligase Host"
-  CreateShortcut "$SMPROGRAMS\Ligase Host\Ligase Host.lnk" "$INSTDIR\Ligase.Host.Desktop.exe"
+  CreateShortcut "$SMPROGRAMS\Ligase Host\Ligase Host.lnk" "$INSTDIR\Desktop\Ligase.Host.Desktop.exe"
 SectionEnd
 
 Section /o "Ligase Virtual Display (optional)" SEC_VDISPLAY
   MessageBox MB_YESNO|MB_ICONEXCLAMATION \
     "SudoVDA currently uses a self-signed publisher certificate. Continuing adds that publisher to local trust stores so Windows can install the kernel driver. Physical desktop streaming does not require it. Continue?" \
     /SD IDNO IDNO skipVirtualDisplay
-  nsExec::ExecToStack 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\Manage-LigaseInstallation.ps1" -Action InstallVirtualDisplay -InstallDirectory "$INSTDIR"'
+  nsExec::ExecToStack 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\Deployment\Manage-LigaseInstallation.ps1" -Action InstallVirtualDisplay -InstallDirectory "$INSTDIR"'
   Pop $0
   Pop $1
   ${If} $0 != 0
@@ -84,9 +88,9 @@ Section "Uninstall"
   preserveData:
   StrCpy $3 "Preserve"
   dataChoiceDone:
-  nsExec::ExecToLog 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\Manage-LigaseInstallation.ps1" -Action Uninstall -InstallDirectory "$INSTDIR" -DataDisposition $3 -ConfigureFirewall'
-  IfFileExists "$INSTDIR\Drivers\sudovda\.ligase-driver-ownership.json" 0 noDriver
-  nsExec::ExecToLog 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\Manage-LigaseInstallation.ps1" -Action UninstallVirtualDisplay -InstallDirectory "$INSTDIR"'
+  nsExec::ExecToLog 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\Deployment\Manage-LigaseInstallation.ps1" -Action Uninstall -InstallDirectory "$INSTDIR" -DataDisposition $3 -ConfigureFirewall'
+  IfFileExists "$INSTDIR\Deployment\Drivers\sudovda\.ligase-driver-ownership.json" 0 noDriver
+  nsExec::ExecToLog 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\Deployment\Manage-LigaseInstallation.ps1" -Action UninstallVirtualDisplay -InstallDirectory "$INSTDIR"'
   noDriver:
   Delete "$SMPROGRAMS\Ligase Host\Ligase Host.lnk"
   RMDir "$SMPROGRAMS\Ligase Host"

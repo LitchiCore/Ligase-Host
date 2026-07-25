@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text.Json;
 using Ligase.Host.Core.Application.WindowsFirewall;
+using Ligase.Host.Core.Domain.Installation;
 using Ligase.Host.Core.Domain.WindowsFirewall;
 
 namespace Ligase.Host.Core.Services;
@@ -60,6 +61,7 @@ public sealed class ApolloInstanceManager
     private readonly ApolloPortAllocator _portAllocator;
     private readonly IManagedApolloProcessFactory _processFactory;
     private readonly ApolloLifecycleTimeouts _timeouts;
+    private readonly InstallationLayout _installationLayout;
     private readonly SemaphoreSlim _lifecycleGate = new(1, 1);
     private readonly object _stopSync = new();
     private IManagedApolloProcess? _process;
@@ -74,7 +76,22 @@ public sealed class ApolloInstanceManager
             paths,
             portAllocator,
             new SystemManagedApolloProcessFactory(),
-            ApolloLifecycleTimeouts.Default)
+            ApolloLifecycleTimeouts.Default,
+            InstallationLayoutResolver.ResolveFromDesktopBase(
+                AppContext.BaseDirectory))
+    {
+    }
+
+    public ApolloInstanceManager(
+        LigasePaths paths,
+        ApolloPortAllocator portAllocator,
+        InstallationLayout installationLayout)
+        : this(
+            paths,
+            portAllocator,
+            new SystemManagedApolloProcessFactory(),
+            ApolloLifecycleTimeouts.Default,
+            installationLayout)
     {
     }
 
@@ -82,12 +99,16 @@ public sealed class ApolloInstanceManager
         LigasePaths paths,
         ApolloPortAllocator portAllocator,
         IManagedApolloProcessFactory processFactory,
-        ApolloLifecycleTimeouts timeouts)
+        ApolloLifecycleTimeouts timeouts,
+        InstallationLayout? installationLayout = null)
     {
         _paths = paths;
         _portAllocator = portAllocator;
         _processFactory = processFactory;
         _timeouts = timeouts;
+        _installationLayout = installationLayout ??
+            InstallationLayoutResolver.ResolveFromDesktopBase(
+                AppContext.BaseDirectory);
     }
 
     public event Action? StatusChanged;
@@ -556,11 +577,12 @@ public sealed class ApolloInstanceManager
         BasePort = 0;
     }
 
-    private static string? FindBundledExecutable()
+    private string? FindBundledExecutable()
     {
         var baseDirectory = AppContext.BaseDirectory;
         var candidates = new[]
         {
+            _installationLayout.CoreExecutable,
             Path.Combine(baseDirectory, "Apollo", "sunshine.exe"),
             Path.Combine(baseDirectory, "sunshine.exe"),
             Path.GetFullPath(Path.Combine(

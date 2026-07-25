@@ -7,8 +7,7 @@ using Ligase.Host.Core.Domain.Installation;
 
 namespace Ligase.Host.Core.Infrastructure.Windows;
 
-public sealed class WindowsInstallationReadbackSource(
-    string? installationDirectory = null) : IInstallationReadbackSource
+public sealed class WindowsInstallationReadbackSource : IInstallationReadbackSource
 {
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -17,16 +16,32 @@ public sealed class WindowsInstallationReadbackSource(
         UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow
     };
 
-    private readonly string _installationDirectory = Path.GetFullPath(
-        installationDirectory ?? AppContext.BaseDirectory);
+    private readonly InstallationLayout _layout;
+
+    public WindowsInstallationReadbackSource()
+        : this(InstallationLayoutResolver.ResolveFromDesktopBase(
+            AppContext.BaseDirectory))
+    {
+    }
+
+    public WindowsInstallationReadbackSource(InstallationLayout layout)
+    {
+        _layout = layout;
+    }
+
+    internal WindowsInstallationReadbackSource(string installationDirectory)
+        : this(InstallationLayoutResolver.ResolveFromDesktopBase(
+            installationDirectory))
+    {
+    }
 
     public async Task<InstallationReadbackData?> ReadAsync(
         CancellationToken cancellationToken = default)
     {
         var script = Path.Combine(
-            _installationDirectory,
+            _layout.DeploymentDirectory,
             "Manage-LigaseInstallation.ps1");
-        if (!ValidateDeployment(_installationDirectory))
+        if (!ValidateDeployment(_layout))
             return null;
 
         var startInfo = new ProcessStartInfo
@@ -46,7 +61,7 @@ public sealed class WindowsInstallationReadbackSource(
         startInfo.ArgumentList.Add("-Action");
         startInfo.ArgumentList.Add("Readback");
         startInfo.ArgumentList.Add("-InstallDirectory");
-        startInfo.ArgumentList.Add(_installationDirectory);
+        startInfo.ArgumentList.Add(_layout.RootDirectory);
 
         Process? process = null;
         try
@@ -95,15 +110,15 @@ public sealed class WindowsInstallationReadbackSource(
         }
     }
 
-    internal static bool ValidateDeployment(string installationDirectory)
+    internal static bool ValidateDeployment(InstallationLayout layout)
     {
         try
         {
             var manifestPath = Path.Combine(
-                installationDirectory,
+                layout.RootDirectory,
                 "ligase-install-manifest.json");
             var scriptPath = Path.Combine(
-                installationDirectory,
+                layout.DeploymentDirectory,
                 "Manage-LigaseInstallation.ps1");
             if (!File.Exists(manifestPath) || !File.Exists(scriptPath))
                 return false;
@@ -113,15 +128,17 @@ public sealed class WindowsInstallationReadbackSource(
             var root = document.RootElement;
             var expectedRoot = new HashSet<string>(
                 [
-                    "schemaVersion", "sourceHead", "configuration", "platform",
+                    "schemaVersion", "installLayout", "sourceHead", "configuration", "platform",
                     "installMode", "releaseKind", "artifacts",
-                    "privilegedHelpers", "virtualDisplay", "firewall", "encoder"
+                    "privilegedHelpers", "virtualDisplay", "firewall", "encoder",
+                    "ownedEntries", "legacyFlatOwnedEntries"
                 ],
                 StringComparer.Ordinal);
             if (root.ValueKind != JsonValueKind.Object ||
                 !expectedRoot.SetEquals(
                     root.EnumerateObject().Select(property => property.Name)) ||
                 root.GetProperty("schemaVersion").GetInt32() != 1 ||
+                root.GetProperty("installLayout").GetString() != "structured-v1" ||
                 root.GetProperty("installMode").GetString() != "packaged" ||
                 root.GetProperty("privilegedHelpers").ValueKind !=
                     JsonValueKind.Array)
@@ -133,7 +150,7 @@ public sealed class WindowsInstallationReadbackSource(
                 .SingleOrDefault(item =>
                     item.TryGetProperty("relativePath", out var relativePath) &&
                     relativePath.GetString() ==
-                        "Manage-LigaseInstallation.ps1");
+                        "Deployment/Manage-LigaseInstallation.ps1");
             if (helper.ValueKind != JsonValueKind.Object)
                 return false;
             var expectedHelper = new HashSet<string>(
@@ -171,6 +188,11 @@ public sealed class WindowsInstallationReadbackSource(
             return false;
         }
     }
+
+    internal static bool ValidateDeployment(string installationDirectory) =>
+        ValidateDeployment(
+            InstallationLayoutResolver.ResolveFromDesktopBase(
+                Path.Combine(installationDirectory, "Desktop")));
 
     internal static InstallationReadbackData Parse(string json)
     {
