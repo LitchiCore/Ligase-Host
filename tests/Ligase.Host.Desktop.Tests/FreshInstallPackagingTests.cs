@@ -190,6 +190,8 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(build, "build-server shutdown");
         StringAssert.Contains(build, "desktopBuildServerShutdownFailed");
         StringAssert.Contains(build, "-p:UseSharedCompilation=false");
+        StringAssert.Contains(build, "-p:UseArtifactsOutput=true");
+        StringAssert.Contains(build, "-p:ArtifactsPath=$dotnetArtifacts");
         StringAssert.Contains(build, "-nodeReuse:false");
         StringAssert.Contains(build, "desktopCleanFailed");
         StringAssert.Contains(build, "Test-LigaseDesktopPayload.ps1");

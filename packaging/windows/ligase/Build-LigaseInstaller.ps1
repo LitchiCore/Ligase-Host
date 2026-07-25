@@ -53,6 +53,7 @@ $work = Join-Path $output "work-$head-$Configuration-$Platform"
 $desktop = Join-Path $work "desktop"
 $watcher = Join-Path $work "watcher"
 $launcher = Join-Path $work "launcher"
+$dotnetArtifacts = Join-Path $work "dotnet-artifacts"
 $stage = Join-Path $work "stage"
 $label = if ($ReleaseKind -eq "UnsignedDev") { "UNSIGNED-DEV" } else { "release" }
 $package = Join-Path $output "Ligase-Host-$head-$Configuration-$Platform-$label-installer.exe"
@@ -71,11 +72,13 @@ if (-not $SkipBuild) {
   if ($LASTEXITCODE -ne 0) { throw "desktopBuildServerShutdownFailed" }
   & $DotNet clean (Join-Path $sourceRoot "src/Ligase.Desktop/Ligase.Host.Desktop.csproj") `
     -c $Configuration -p:Platform=$Platform -p:UseSharedCompilation=false `
+    -p:UseArtifactsOutput=true -p:ArtifactsPath=$dotnetArtifacts `
     -nodeReuse:false -r win-x64
   if ($LASTEXITCODE -ne 0) { throw "desktopCleanFailed" }
   & $DotNet publish (Join-Path $sourceRoot "src/Ligase.Desktop/Ligase.Host.Desktop.csproj") `
     -c $Configuration -p:Platform=$Platform -p:LigaseStructuredPackage=true `
     -p:UseSharedCompilation=false -nodeReuse:false `
+    -p:UseArtifactsOutput=true -p:ArtifactsPath=$dotnetArtifacts `
     -r win-x64 --self-contained true -o $desktop
   if ($LASTEXITCODE -ne 0) { throw "desktopPublishFailed" }
   $desktopPayloadValidation = & (Join-Path $PSScriptRoot "Test-LigaseDesktopPayload.ps1") `
