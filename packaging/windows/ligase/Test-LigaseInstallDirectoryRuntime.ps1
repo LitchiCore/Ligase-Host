@@ -242,9 +242,9 @@ function Invoke-Harness(
       @()
     }
     $enoughDiagnostics = if ($ShouldSucceed) {
-      $diagnosticLines.Count -ge 2
+      @($diagnosticLines).Count -ge 2
     } else {
-      $diagnosticLines.Count -ge 1
+      @($diagnosticLines).Count -ge 1
     }
   } until (
     ([DateTime]::UtcNow -ge $deadline) -or
@@ -253,19 +253,19 @@ function Invoke-Harness(
       (Test-Path -LiteralPath $result -PathType Leaf))))
   $resolverCodes = @($diagnosticLines | ForEach-Object {
     $parts = $_ -split '\|', 3
-    if ($parts.Count -ge 2 -and $parts[1] -match '^[0-9]+$') {
+    if (@($parts).Count -ge 2 -and $parts[1] -match '^[0-9]+$') {
       [int]$parts[1]
     }
   })
-  $exitCode = if ($resolverCodes.Count -gt 0) {
+  $exitCode = if (@($resolverCodes).Count -gt 0) {
     $resolverCodes[-1]
   } else {
     255
   }
   $exists = Test-Path -LiteralPath $result -PathType Leaf
   if ($ShouldSucceed) {
-    if ($resolverCodes.Count -ne 2 -or
-        $resolverCodes.Where({ $_ -ne 0 }).Count -ne 0 -or
+    if (@($resolverCodes).Count -ne 2 -or
+        @($resolverCodes.Where({ $_ -ne 0 })).Count -ne 0 -or
         -not $exists) {
       $detail = if (Test-Path -LiteralPath $harnessDiagnostic) {
         [IO.File]::ReadAllText($harnessDiagnostic)
@@ -275,7 +275,7 @@ function Invoke-Harness(
       throw "harnessPositiveFailed:${Name}:$detail"
     }
     $actual = @([IO.File]::ReadAllLines($result))
-    if ($actual.Count -ne 2 -or
+    if (@($actual).Count -ne 2 -or
         -not $actual[0].Equals(
           $ExpectedInstallDirectory,
           [StringComparison]::OrdinalIgnoreCase) -or
@@ -284,7 +284,7 @@ function Invoke-Harness(
           [StringComparison]::OrdinalIgnoreCase)) {
       throw "harnessResultMismatch:$Name"
     }
-  } elseif ($resolverCodes.Count -lt 1 -or
+  } elseif (@($resolverCodes).Count -lt 1 -or
       $resolverCodes[0] -eq 0 -or
       $exists) {
     throw "harnessNegativeAccepted:$Name"
