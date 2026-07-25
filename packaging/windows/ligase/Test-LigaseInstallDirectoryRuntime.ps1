@@ -305,6 +305,85 @@ function Invoke-Harness(
   }
 }
 
+function Invoke-FailureFlowHarness(
+  [Parameter(Mandatory)]
+  [ValidateSet(
+    "helperFailure",
+    "migrationFailure",
+    "integrationFailure",
+    "rollbackFailure",
+    "silentProvisional")]
+  [string] $FailureMode,
+  [Parameter(Mandatory)][string] $ExpectedCode,
+  [Parameter(Mandatory)][string] $ExpectedRollback
+) {
+  $caseRoot = Join-Path $root "failure-flow-$FailureMode"
+  New-Item -ItemType Directory -Path $caseRoot -Force | Out-Null
+  $result = Join-Path $caseRoot "result.txt"
+  $evidence = Join-Path $caseRoot "last-outcome.json"
+  $nativeArguments = @(
+    "/InstallDirectory=$(Join-Path $caseRoot 'program')",
+    "/DataRoot=$(Join-Path $caseRoot 'data')",
+    "/ResultFile=$result",
+    "/EvidenceFile=$evidence",
+    "/FailureMode=$FailureMode")
+  $serialized = ($nativeArguments |
+    ForEach-Object { ConvertTo-WindowsCommandLineArgument $_ }) -join " "
+  $process = Start-Process -FilePath $harness `
+    -ArgumentList $serialized -PassThru -Wait -WindowStyle Hidden
+  $nativeExitCode = $process.ExitCode
+  if ($nativeExitCode -eq 0) {
+    throw "failureFlowNativeExitWasZero:$FailureMode"
+  }
+  $deadline = [DateTime]::UtcNow.AddSeconds(5)
+  while (
+    [DateTime]::UtcNow -lt $deadline -and
+    (-not (Test-Path -LiteralPath $result -PathType Leaf) -or
+     -not (Test-Path -LiteralPath $evidence -PathType Leaf))
+  ) {
+    Start-Sleep -Milliseconds 50
+  }
+  if (-not (Test-Path -LiteralPath $result -PathType Leaf) -or
+      -not (Test-Path -LiteralPath $evidence -PathType Leaf)) {
+    throw "failureFlowEvidenceMissing:$FailureMode"
+  }
+  $lines = @([IO.File]::ReadAllLines($result, [Text.Encoding]::Unicode))
+  if (@($lines).Count -ne 3 -or
+      $lines[0] -cne "failed" -or
+      $lines[1] -cne $ExpectedCode -or
+      $lines[2] -cne $ExpectedRollback) {
+    throw "failureFlowResultMismatch:$FailureMode"
+  }
+  $document = [IO.File]::ReadAllText(
+    $evidence, [Text.Encoding]::Unicode) | ConvertFrom-Json
+  if (
+    $document.schemaVersion -ne 1 -or
+    $document.phase -cne "failed" -or
+    $document.success -ne $false -or
+    $document.resultCode -cne $ExpectedCode -or
+    $document.helper.exitCode -ne 10 -or
+    $document.rollback.state -cne $ExpectedRollback -or
+    $document.firewall.state -cne "failed" -or
+    $document.displayedSuccess -ne $false -or
+    $document.displayedFailure -ne $true
+  ) {
+    throw "failureFlowEvidenceMismatch:$FailureMode"
+  }
+  if ((Test-Path -LiteralPath (Join-Path $caseRoot "program")) -or
+      (Test-Path -LiteralPath (Join-Path $caseRoot "data"))) {
+    throw "failureFlowUnexpectedProductWrite:$FailureMode"
+  }
+  [ordered]@{
+    name = "normal-pages-$FailureMode"
+    nativeExitCode = $nativeExitCode
+    machineFailure = $true
+    displayedSuccess = $false
+    displayedFailure = $true
+    evidenceReadable = $true
+    rollback = $ExpectedRollback
+  }
+}
+
 $chineseProgramPath =
   "D:\" + ([string][char]0x7A0B) + ([char]0x5E8F) +
   ([char]0x6587) + ([char]0x4EF6) + "\Ligase Host"
@@ -533,7 +612,31 @@ $results += Invoke-Harness `
   -Arguments @("/InstallDirectory=$reparseInstall") `
   -ShouldSucceed $false
 
+$failureFlowResults = @(
+  Invoke-FailureFlowHarness `
+    -FailureMode "helperFailure" `
+    -ExpectedCode "installationIntegrationFailed" `
+    -ExpectedRollback "completed"
+  Invoke-FailureFlowHarness `
+    -FailureMode "migrationFailure" `
+    -ExpectedCode "dataRootMigrationReadbackFailed" `
+    -ExpectedRollback "completed"
+  Invoke-FailureFlowHarness `
+    -FailureMode "integrationFailure" `
+    -ExpectedCode "installationFinalReadbackFailed" `
+    -ExpectedRollback "completed"
+  Invoke-FailureFlowHarness `
+    -FailureMode "rollbackFailure" `
+    -ExpectedCode "installationActionFailed" `
+    -ExpectedRollback "failed"
+  Invoke-FailureFlowHarness `
+    -FailureMode "silentProvisional" `
+    -ExpectedCode "installationFinalReadbackRequired" `
+    -ExpectedRollback "notRequired"
+)
+
 [ordered]@{
   code = "installDirectoryRuntimeHarnessPassed"
   cases = $results
+  failureFlows = $failureFlowResults
 } | ConvertTo-Json -Depth 4 -Compress

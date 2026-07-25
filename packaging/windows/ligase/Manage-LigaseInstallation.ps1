@@ -3,6 +3,8 @@ param(
   [ValidateSet(
     "DryRun",
     "Install",
+    "FinalizeInstall",
+    "RecordEvidence",
     "Readback",
     "Uninstall",
     "InstallVirtualDisplay",
@@ -16,7 +18,40 @@ param(
   [string]$DataDisposition = "Preserve",
   [switch]$ConfigureFirewall,
   [switch]$MigrateDataRoot,
-  [switch]$ConfirmLegacyTrustCleanup
+  [switch]$ConfirmLegacyTrustCleanup,
+  [ValidateSet(
+    "initialized",
+    "confirmed",
+    "integrating",
+    "finalReadback",
+    "succeeded",
+    "failed",
+    "cancelled")]
+  [string]$EvidencePhase = "initialized",
+  [ValidateSet("unknown", "true", "false")]
+  [string]$EvidenceSuccess = "unknown",
+  [string]$EvidenceResultCode = "notStarted",
+  [ValidateSet(
+    "none",
+    "createFresh",
+    "preserveExisting",
+    "migrateToStandard")]
+  [string]$EvidenceDataRootAction = "none",
+  [string]$EvidenceDataRootSource,
+  [int]$EvidenceHelperExit = -1,
+  [ValidateSet("notRequired", "completed", "failed", "unknown")]
+  [string]$EvidenceRollback = "notRequired",
+  [ValidateSet("notChecked", "configured", "failed", "residual", "unknown")]
+  [string]$EvidenceFirewall = "notChecked",
+  [ValidateSet("unknown", "absent", "empty", "nonEmpty")]
+  [string]$EvidenceInstallResidue = "unknown",
+  [ValidateSet("unknown", "absent", "empty", "nonEmpty")]
+  [string]$EvidenceDataRootResidue = "unknown",
+  [string]$EvidenceManifestPath,
+  [switch]$DesktopShortcutSelected,
+  [switch]$VirtualDisplaySelected,
+  [ValidateSet("notSelected", "installed", "failed", "declined", "unknown")]
+  [string]$VirtualDisplayOutcome = "unknown"
 )
 
 $ErrorActionPreference = "Stop"
@@ -25,6 +60,7 @@ $manifestPath = Join-Path $installRoot "ligase-install-manifest.json"
 $bootstrapPath = Join-Path $installRoot "ligase-bootstrap.json"
 $script:freshDataRootCreated = $null
 $script:migrationRollback = $null
+$script:rollbackResult = "notRequired"
 
 Add-Type -TypeDefinition @"
 using System;
@@ -195,6 +231,95 @@ function Write-Outcome(
   $value = [ordered]@{ code = $Code; success = $Success }
   foreach ($key in $Fields.Keys) { $value[$key] = $Fields[$key] }
   $value | ConvertTo-Json -Depth 8 -Compress
+}
+
+function Get-SafePathProjection([string]$Path) {
+  if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
+  $full = [IO.Path]::GetFullPath($Path)
+  $root = [IO.Path]::GetPathRoot($full)
+  $leaf = Split-Path -Leaf $full.TrimEnd('\')
+  return [ordered]@{
+    volume = $root.TrimEnd('\')
+    leaf = $leaf
+    sha256 = Get-ByteSha256 (
+      [Text.Encoding]::UTF8.GetBytes($full.ToUpperInvariant()))
+  }
+}
+
+function Get-EvidenceSourceHead {
+  $candidate = if (-not [string]::IsNullOrWhiteSpace($EvidenceManifestPath)) {
+    [IO.Path]::GetFullPath($EvidenceManifestPath)
+  } else {
+    $manifestPath
+  }
+  if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+    throw "installManifestMissing"
+  }
+  $document = [IO.File]::ReadAllText($candidate) | ConvertFrom-Json
+  $sourceHead = [string]$document.sourceHead
+  if ($sourceHead -notmatch '^[0-9a-f]{40}$') {
+    throw "installManifestInvalid"
+  }
+  return $sourceHead
+}
+
+function Get-InstallerEvidencePath {
+  $common = [Environment]::GetFolderPath(
+    [Environment+SpecialFolder]::CommonApplicationData)
+  if ([string]::IsNullOrWhiteSpace($common)) {
+    throw "installerEvidenceUnavailable"
+  }
+  return Join-Path $common "Ligase Host\Installer\last-outcome.json"
+}
+
+function Write-InstallerEvidence {
+  $evidencePath = Get-InstallerEvidencePath
+  $evidenceDirectory = Split-Path -Parent $evidencePath
+  if (-not (Test-Path -LiteralPath $evidenceDirectory -PathType Container)) {
+    New-Item -ItemType Directory -Path $evidenceDirectory -Force | Out-Null
+  }
+  Set-SecureDataRootAcl $evidenceDirectory
+  $document = [ordered]@{
+    schemaVersion = 1
+    candidateSourceHead = Get-EvidenceSourceHead
+    phase = $EvidencePhase
+    success = if ($EvidenceSuccess -eq "unknown") {
+      $null
+    } else {
+      $EvidenceSuccess -eq "true"
+    }
+    resultCode = $EvidenceResultCode
+    installDirectory = Get-SafePathProjection $installRoot
+    dataRoot = [ordered]@{
+      action = $EvidenceDataRootAction
+      source = Get-SafePathProjection $EvidenceDataRootSource
+      target = Get-SafePathProjection $DataRoot
+    }
+    helper = [ordered]@{
+      exitCode = $EvidenceHelperExit
+      resultCode = $EvidenceResultCode
+    }
+    rollback = [ordered]@{ state = $EvidenceRollback }
+    firewall = [ordered]@{ state = $EvidenceFirewall }
+    residuals = [ordered]@{
+      installDirectory = $EvidenceInstallResidue
+      dataRoot = $EvidenceDataRootResidue
+    }
+    timestampUtc = [DateTime]::UtcNow.ToString(
+      "yyyy-MM-ddTHH:mm:ss.fffZ",
+      [Globalization.CultureInfo]::InvariantCulture)
+  }
+  $temporary = "$evidencePath.tmp"
+  try {
+    [IO.File]::WriteAllText(
+      $temporary,
+      ($document | ConvertTo-Json -Depth 8 -Compress),
+      [Text.UTF8Encoding]::new($false))
+    Move-Item -LiteralPath $temporary -Destination $evidencePath -Force
+  } finally {
+    Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
+  }
+  return $document
 }
 
 function Read-Manifest {
@@ -629,7 +754,10 @@ function Remove-OwnedMigrationDirectory(
 }
 
 function Restore-Migration {
-  if ($null -eq $script:migrationRollback) { return }
+  if ($null -eq $script:migrationRollback) {
+    $script:rollbackResult = "notRequired"
+    return $script:rollbackResult
+  }
   $temporary = "$bootstrapPath.rollback"
   try {
     [IO.File]::WriteAllBytes(
@@ -649,6 +777,11 @@ function Restore-Migration {
         Remove-Item -LiteralPath $directory -Force
       }
     }
+    $script:rollbackResult = "completed"
+    return $script:rollbackResult
+  } catch {
+    $script:rollbackResult = "failed"
+    throw
   } finally {
     Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
     $script:migrationRollback = $null
@@ -1081,11 +1214,98 @@ function Test-DependentVirtualDisplay {
   }
 }
 
+function Assert-ShortcutTarget([string]$ShortcutPath, [string]$ExpectedTarget) {
+  if (-not (Test-Path -LiteralPath $ShortcutPath -PathType Leaf)) {
+    throw "installationFinalReadbackFailed"
+  }
+  $shell = New-Object -ComObject WScript.Shell
+  try {
+    $target = [IO.Path]::GetFullPath(
+      [string]$shell.CreateShortcut($ShortcutPath).TargetPath)
+  } finally {
+    [Runtime.InteropServices.Marshal]::FinalReleaseComObject($shell) | Out-Null
+  }
+  if (-not $target.Equals(
+      [IO.Path]::GetFullPath($ExpectedTarget),
+      [StringComparison]::OrdinalIgnoreCase)) {
+    throw "installationFinalReadbackFailed"
+  }
+}
+
+function Assert-FinalInstallReadback($Manifest) {
+  $null = Test-Artifacts $Manifest
+  $bootstrap = Read-ValidBootstrap
+  if ($null -eq $bootstrap -or
+      (-not [string]::IsNullOrWhiteSpace($DataRoot) -and
+       -not ([string]$bootstrap.dataRoot).Equals(
+         [IO.Path]::GetFullPath($DataRoot),
+         [StringComparison]::OrdinalIgnoreCase)) -or
+      (Get-DataRootAccessState ([string]$bootstrap.dataRoot)) -cne "existing") {
+    throw "installationFinalReadbackFailed"
+  }
+  $uninstallKey =
+    "Registry::HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\CurrentVersion\Uninstall\Ligase Host"
+  $registration = Get-ItemProperty -LiteralPath $uninstallKey
+  $launcher = Join-Path $installRoot "Ligase Host.exe"
+  if (
+    -not ([string]$registration.InstallLocation).Equals(
+      $installRoot, [StringComparison]::OrdinalIgnoreCase) -or
+    -not ([string]$registration.DisplayIcon).Equals(
+      $launcher, [StringComparison]::OrdinalIgnoreCase) -or
+    -not ([string]$registration.UninstallString).Equals(
+      ('"' + (Join-Path $installRoot "Uninstall.exe") + '"'),
+      [StringComparison]::Ordinal)
+  ) {
+    throw "installationFinalReadbackFailed"
+  }
+  $commonPrograms = [Environment]::GetFolderPath(
+    [Environment+SpecialFolder]::CommonPrograms)
+  Assert-ShortcutTarget (
+    Join-Path $commonPrograms "Ligase Host\Ligase Host.lnk") $launcher
+  $desktop = [Environment]::GetFolderPath(
+    [Environment+SpecialFolder]::CommonDesktopDirectory)
+  $desktopShortcut = Join-Path $desktop "Ligase Host.lnk"
+  if ($DesktopShortcutSelected) {
+    Assert-ShortcutTarget $desktopShortcut $launcher
+  } elseif (Test-Path -LiteralPath $desktopShortcut) {
+    throw "installationFinalReadbackFailed"
+  }
+  $firewall = Get-FirewallReadback $Manifest
+  if ($firewall.state -cne "configured" -or
+      $firewall.machineCode -cne "configured") {
+    throw "installationFinalReadbackFailed"
+  }
+  if ($VirtualDisplaySelected -and $VirtualDisplayOutcome -cne "installed") {
+    throw "installationFinalReadbackFailed"
+  }
+  if ($VirtualDisplaySelected) {
+    $display = Get-VirtualDisplay
+    if ($display.state -notin @("available", "rebootRequired")) {
+      throw "installationFinalReadbackFailed"
+    }
+  }
+  return [ordered]@{
+    dataRoot = [string]$bootstrap.dataRoot
+    firewall = $firewall
+  }
+}
+
 try {
   $held = $mutex.WaitOne([TimeSpan]::FromSeconds(2))
   if (-not $held) {
     Write-Outcome "installerBusy" $false
     exit 20
+  }
+  if ($Action -eq "RecordEvidence") {
+    if ($EvidenceResultCode -notmatch '^[a-z][A-Za-z0-9]{0,63}$') {
+      throw "installerEvidenceInvalid"
+    }
+    $written = Write-InstallerEvidence
+    Write-Outcome "installerEvidenceRecorded" $true @{
+      phase = [string]$written.phase
+      resultCode = [string]$written.resultCode
+    }
+    exit 0
   }
   $manifest = Read-Manifest
   $artifacts = Test-Artifacts $manifest
@@ -1097,6 +1317,48 @@ try {
     machineCode = "encoderProbePendingFirstLaunch"
     requiredForInstall = $false
     requiredForStreaming = $true
+  }
+
+  if ($Action -eq "FinalizeInstall") {
+    $EvidencePhase = "finalReadback"
+    $EvidenceResultCode = "installationFinalReadbackFailed"
+    $EvidenceHelperExit = 0
+    $EvidenceRollback = "notRequired"
+    try {
+      $final = Assert-FinalInstallReadback $manifest
+      $EvidencePhase = "succeeded"
+      $EvidenceSuccess = "true"
+      $EvidenceResultCode = "installed"
+      $EvidenceFirewall = "configured"
+      $EvidenceInstallResidue = "nonEmpty"
+      $EvidenceDataRootResidue = "nonEmpty"
+      $null = Write-InstallerEvidence
+      Write-Outcome "installationFinalized" $true @{
+        dataRootState = "existing"
+        firewallState = [string]$final.firewall.state
+      }
+      exit 0
+    } catch {
+      $EvidencePhase = "failed"
+      $EvidenceSuccess = "false"
+      $EvidenceFirewall = "failed"
+      $EvidenceInstallResidue = if (
+        Test-Path -LiteralPath $installRoot -PathType Container) {
+        if (@(Get-ChildItem -LiteralPath $installRoot -Force).Count -eq 0) {
+          "empty"
+        } else { "nonEmpty" }
+      } else { "absent" }
+      $EvidenceDataRootResidue = if (
+        -not [string]::IsNullOrWhiteSpace($DataRoot) -and
+        (Test-Path -LiteralPath $DataRoot -PathType Container)) {
+        if (@(Get-ChildItem -LiteralPath $DataRoot -Force).Count -eq 0) {
+          "empty"
+        } else { "nonEmpty" }
+      } else { "absent" }
+      $null = Write-InstallerEvidence
+      Write-Outcome "installationFinalReadbackFailed" $false
+      exit 10
+    }
   }
 
   if ($Action -eq "InstallVirtualDisplay") {
@@ -1258,6 +1520,14 @@ try {
             Remove-Item -LiteralPath $script:freshDataRootCreated `
               -Recurse -Force -ErrorAction SilentlyContinue
           }
+          $script:rollbackResult = if (
+            (Test-Path -LiteralPath $bootstrapPath) -or
+            ($null -ne $script:freshDataRootCreated -and
+             (Test-Path -LiteralPath $script:freshDataRootCreated))) {
+            "failed"
+          } else {
+            "completed"
+          }
         }
         throw
       }
@@ -1353,11 +1623,9 @@ try {
   }
   exit 0
 } catch {
+  $originalMessage = [string]$_.Exception.Message
   if ($null -ne $script:migrationRollback) {
-    try { Restore-Migration } catch {
-      # The stable machine outcome below remains fail closed. Recovery failure
-      # is intentionally not expanded with paths or exception text.
-    }
+    try { $null = Restore-Migration } catch { $script:rollbackResult = "failed" }
   }
   $knownCodes = @(
     "installManifestMissing",
@@ -1392,12 +1660,52 @@ try {
     "firewallReadbackMismatch",
     "firewallRemoveFailed",
     "virtualDisplayInstallFailed",
-    "virtualDisplayUninstallFailed")
-  $message = [string]$_.Exception.Message
-  $code = if ($knownCodes -contains $message) {
-    $message
+    "virtualDisplayUninstallFailed",
+    "installationFinalReadbackFailed",
+    "installerEvidenceInvalid",
+    "installerEvidenceUnavailable")
+  $code = if ($knownCodes -contains $originalMessage) {
+    $originalMessage
   } else {
     "installationActionFailed"
+  }
+  if ($Action -eq "Install") {
+    $EvidencePhase = "failed"
+    $EvidenceSuccess = "false"
+    $EvidenceResultCode = $code
+    $EvidenceHelperExit = 10
+    $EvidenceRollback = $script:rollbackResult
+    $EvidenceFirewall = try {
+      $state = Get-FirewallReadback $manifest
+      if ($state.state -eq "configured") { "residual" } else { "failed" }
+    } catch { "unknown" }
+    $EvidenceDataRootAction = if ($MigrateDataRoot) {
+      "migrateToStandard"
+    } elseif ($null -ne $existingBootstrap) {
+      "preserveExisting"
+    } else {
+      "createFresh"
+    }
+    $EvidenceDataRootSource = if ($null -ne $existingBootstrap) {
+      [string]$existingBootstrap.dataRoot
+    } else { "" }
+    $EvidenceInstallResidue = if (
+      Test-Path -LiteralPath $installRoot -PathType Container) {
+      if (@(Get-ChildItem -LiteralPath $installRoot -Force).Count -eq 0) {
+        "empty"
+      } else { "nonEmpty" }
+    } else { "absent" }
+    $EvidenceDataRootResidue = if (
+      -not [string]::IsNullOrWhiteSpace($DataRoot) -and
+      (Test-Path -LiteralPath $DataRoot -PathType Container)) {
+      if (@(Get-ChildItem -LiteralPath $DataRoot -Force).Count -eq 0) {
+        "empty"
+      } else { "nonEmpty" }
+    } else { "absent" }
+    try { $null = Write-InstallerEvidence } catch {
+      # Wire output remains a stable machine code even if evidence persistence
+      # itself fails. NSIS records the secondary failure before showing UI.
+    }
   }
   Write-Outcome $code $false
   exit 10

@@ -134,6 +134,38 @@ changing its ACL is a separate user-authorized cleanup action. The result page
 states that the migration completed and shows the retained rollback-evidence
 path without logging file contents or secrets.
 
+Every installer invocation owns one persistent typed outcome at
+`%ProgramData%\Ligase Host\Installer\last-outcome.json`. The evidence directory
+uses the same protected Administrators-owned ACL shape as an instance root:
+SYSTEM and Administrators have Full Control, and the WTS interactive Host
+operator has Modify; broad local-user groups and explicit deny or additional
+entries are not accepted. The file is atomically replaced and contains only a
+closed schema: candidate source commit, phase, stable result code, safe
+volume/leaf/hash projections for program and data paths, DataRoot action,
+helper exit code, rollback state, firewall readback state, bounded residue
+states, and an UTC timestamp. It never contains exception text, stack traces,
+command lines, raw bootstrap or authority documents, certificates, tokens, or
+other secrets. Initialization, confirmation, cancellation, integration
+failure, final readback, and success each update this same evidence.
+
+The install UI treats helper success as provisional. After all selected
+sections run, the installed helper must independently read back manifest-owned
+program assets, the bootstrap and secure DataRoot, ARP registration, the exact
+Start Menu and selected Desktop shortcut state, selected virtual-display
+outcome, and both owned firewall rules. Only that final exact readback permits
+the Chinese success result and ordinary Finish page. Helper failure, migration
+failure, contradictory output, selected-component failure, or final readback
+failure instead terminates the shared GUI/silent final section with a Chinese
+failure state on the install-progress page, records a non-success machine
+outcome, and exits with a nonzero native process code without showing the
+normal success Result or Finish page. Silent `/S` uses the same final section;
+it cannot skip final readback or convert a failed typed outcome into process
+exit code zero. Rollback is
+reported as `notRequired`, `completed`, or `failed`; rollback failure is never
+discarded. Any install-root or DataRoot residue that cannot be safely removed
+is classified in the evidence rather than being presented as a successful
+empty installation.
+
 Desktop composition, first-route behavior, and installed-product acceptance are
 documented in [`desktop-ui.md`](desktop-ui.md). That document links here rather
 than duplicating manifest, script, cleanup, or privileged-action rules.

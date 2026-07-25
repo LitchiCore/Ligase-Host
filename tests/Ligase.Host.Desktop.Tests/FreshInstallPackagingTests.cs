@@ -471,6 +471,22 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(nsis, "Page custom DataRootPageCreate DataRootPageLeave");
         StringAssert.Contains(nsis, "Page custom InstallSummaryPageCreate");
         StringAssert.Contains(nsis, "Page custom InstallResultPageCreate");
+        StringAssert.Contains(
+            nsis,
+            "Page custom InstallResultPageCreate InstallResultPageLeave");
+        StringAssert.Contains(nsis, "MUI_CUSTOMFUNCTION_ABORT InstallerUserAbort");
+        StringAssert.Contains(nsis, "Function .onInstFailed");
+        StringAssert.Contains(nsis, "Function .onGUIEnd");
+        StringAssert.Contains(nsis, "-Action RecordEvidence");
+        StringAssert.Contains(nsis, "-Action FinalizeInstall");
+        StringAssert.Contains(nsis, "Section -Finalize SEC_FINALIZE");
+        StringAssert.Contains(nsis, "Call FinalizeInstallTerminal");
+        StringAssert.Contains(nsis, "SetErrorLevel 10");
+        StringAssert.Contains(nsis, "Abort");
+        StringAssert.Contains(nsis, "installationFinalReadbackFailed");
+        StringAssert.Contains(
+            nsis,
+            "安装最终读回失败。未将本次操作标记为成功");
         StringAssert.Contains(nsis, "高级：使用其他本机目录");
         StringAssert.Contains(nsis, "防火墙：Ligase 专属规则已精确验证");
         StringAssert.Contains(
@@ -492,6 +508,27 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(management, "Get-DataRootAccessState");
         StringAssert.Contains(management, "return \"wrongUser\"");
         StringAssert.Contains(management, "return \"aclDrift\"");
+        StringAssert.Contains(management, "\"RecordEvidence\"");
+        StringAssert.Contains(management, "\"FinalizeInstall\"");
+        StringAssert.Contains(management, "function Write-InstallerEvidence");
+        StringAssert.Contains(
+            management,
+            "Ligase Host\\Installer\\last-outcome.json");
+        StringAssert.Contains(management, "candidateSourceHead");
+        StringAssert.Contains(management, "timestampUtc");
+        StringAssert.Contains(management, "function Get-SafePathProjection");
+        StringAssert.Contains(management, "function Assert-FinalInstallReadback");
+        StringAssert.Contains(management, "$script:rollbackResult = \"failed\"");
+        StringAssert.Contains(management, "installationFinalReadbackFailed");
+        Assert.IsFalse(
+            management.Contains(
+                "exceptionText =",
+                StringComparison.OrdinalIgnoreCase),
+            "Persistent installer evidence must not serialize exception text.");
+        StringAssert.Contains(harness, "displayedSuccess");
+        StringAssert.Contains(harness, "displayedFailure");
+        StringAssert.Contains(harness, "rollbackFailure");
+        StringAssert.Contains(harness, "silentProvisional");
         StringAssert.Contains(
             management,
             "-FirewallAction Remove");
@@ -562,6 +599,7 @@ public sealed class FreshInstallPackagingTests
                 "Invoke-LigaseInstaller.ps1"));
         StringAssert.Contains(invoke, "ConvertTo-WindowsCommandLineArgument");
         StringAssert.Contains(invoke, "Start-Process @startParameters");
+        StringAssert.Contains(invoke, "exit $process.ExitCode");
         Assert.IsFalse(
             invoke.Contains(
                 "ArgumentList = @(",
