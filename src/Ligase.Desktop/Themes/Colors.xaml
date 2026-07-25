@@ -17,7 +17,7 @@
             <Color x:Key="LigaseSuccessColor">#13795B</Color>
             <Color x:Key="LigaseWarningColor">#8A4F00</Color>
             <Color x:Key="LigaseErrorDangerColor">#B42318</Color>
-            <Color x:Key="LigaseDisabledColor">#6B7382</Color>
+            <Color x:Key="LigaseDisabledColor">#555D6D</Color>
             <Color x:Key="LigaseFocusColor">#4F46C7</Color>
 
             <SolidColorBrush x:Key="LigaseBrandPrimaryBrush" Color="{ThemeResource LigaseBrandPrimaryColor}" />
@@ -49,7 +49,7 @@
             <Color x:Key="LigaseSuccessColor">#13795B</Color>
             <Color x:Key="LigaseWarningColor">#8A4F00</Color>
             <Color x:Key="LigaseErrorDangerColor">#B42318</Color>
-            <Color x:Key="LigaseDisabledColor">#6B7382</Color>
+            <Color x:Key="LigaseDisabledColor">#555D6D</Color>
             <Color x:Key="LigaseFocusColor">#4F46C7</Color>
 
             <SolidColorBrush x:Key="LigaseBrandPrimaryBrush" Color="{ThemeResource LigaseBrandPrimaryColor}" />
@@ -81,7 +81,7 @@
             <Color x:Key="LigaseSuccessColor">#56D19B</Color>
             <Color x:Key="LigaseWarningColor">#F4B860</Color>
             <Color x:Key="LigaseErrorDangerColor">#FF7B72</Color>
-            <Color x:Key="LigaseDisabledColor">#8D96A6</Color>
+            <Color x:Key="LigaseDisabledColor">#B8C0CE</Color>
             <Color x:Key="LigaseFocusColor">#B8B1FF</Color>
 
             <SolidColorBrush x:Key="LigaseBrandPrimaryBrush" Color="{ThemeResource LigaseBrandPrimaryColor}" />
