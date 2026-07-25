@@ -101,6 +101,8 @@
         </ResourceDictionary>
     </ResourceDictionary.ThemeDictionaries>
 
+    <SolidColorBrush x:Key="LigaseOnBrandBrush" Color="{ThemeResource LigaseSurfaceColor}" />
+
     <!-- WinUI/component aliases. These contain no independent color values. -->
     <SolidColorBrush x:Key="LigaseWindowBrush" Color="{ThemeResource LigaseBackgroundColor}" />
     <SolidColorBrush x:Key="LigasePaneBrush" Color="{ThemeResource LigaseSurfaceVariantColor}" />

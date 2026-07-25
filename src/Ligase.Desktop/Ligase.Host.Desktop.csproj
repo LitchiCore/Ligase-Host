@@ -81,4 +81,27 @@
       DestinationFolder="$(TargetDir)Apollo\assets"
       SkipUnchangedFiles="true" />
   </Target>
+  <Target
+    Name="CopyLigaseWinUiResourcesToStructuredPublish"
+    AfterTargets="Publish"
+    Condition="'$(LigaseStructuredPackage)' == 'true'">
+    <ItemGroup>
+      <_LigaseWinUiPri Include="$(TargetDir)$(AssemblyName).pri" />
+      <_LigaseWinUiXbf Include="$(TargetDir)**\*.xbf" />
+    </ItemGroup>
+    <Error
+      Condition="!Exists('$(TargetDir)$(AssemblyName).pri')"
+      Text="The generated WinUI PRI is missing from '$(TargetDir)$(AssemblyName).pri'." />
+    <Error
+      Condition="'@(_LigaseWinUiXbf)' == ''"
+      Text="The generated WinUI XBF resources are missing from '$(TargetDir)'." />
+    <Copy
+      SourceFiles="@(_LigaseWinUiPri)"
+      DestinationFolder="$(PublishDir)"
+      SkipUnchangedFiles="true" />
+    <Copy
+      SourceFiles="@(_LigaseWinUiXbf)"
+      DestinationFiles="@(_LigaseWinUiXbf->'$(PublishDir)%(RecursiveDir)%(Filename)%(Extension)')"
+      SkipUnchangedFiles="true" />
+  </Target>
 </Project>

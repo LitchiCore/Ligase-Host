@@ -28,7 +28,7 @@
                     HorizontalAlignment="Center"
                     VerticalAlignment="Center"
                     FontSize="14"
-                    Foreground="{ThemeResource LigaseSurfaceBrush}"
+                    Foreground="{ThemeResource LigaseOnBrandBrush}"
                     Glyph="&#xE71B;" />
             </Border>
             <StackPanel

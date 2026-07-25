@@ -187,6 +187,7 @@ public sealed class FreshInstallPackagingTests
             "Only the explicit uninstall section may recursively remove the owned install root.");
         StringAssert.Contains(build, "-p:Platform=$Platform");
         StringAssert.Contains(build, "-p:LigaseStructuredPackage=true");
+        StringAssert.Contains(build, "Test-LigaseDesktopPayload.ps1");
         StringAssert.Contains(build, "-Filter \"Ligase.GameWatcher.*\"");
         StringAssert.Contains(build, "tools/Ligase.GameWatcher/Ligase.GameWatcher.csproj");
         StringAssert.Contains(build, "Core/sunshine.exe");
@@ -285,6 +286,61 @@ public sealed class FreshInstallPackagingTests
         Assert.AreEqual("installerArgumentsInvalid", relative.Error);
         Assert.AreEqual("installerArgumentsInvalid", root.Error);
         Assert.AreEqual("installerArgumentsInvalid", nonCanonical.Error);
+    }
+
+    [TestMethod]
+    public async Task DesktopPayloadValidatorFailsClosedWithoutGeneratedWinUiResources()
+    {
+        var repo = FindRepositoryRoot();
+        var root = Path.Combine(
+            Path.GetTempPath(),
+            "ligase-desktop-payload-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        await File.WriteAllTextAsync(
+            Path.Combine(root, "Ligase.Host.Desktop.exe"),
+            "fixture");
+        try
+        {
+            var start = new ProcessStartInfo
+            {
+                FileName = "powershell.exe",
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            start.ArgumentList.Add("-NoProfile");
+            start.ArgumentList.Add("-NonInteractive");
+            start.ArgumentList.Add("-ExecutionPolicy");
+            start.ArgumentList.Add("Bypass");
+            start.ArgumentList.Add("-File");
+            start.ArgumentList.Add(Path.Combine(
+                repo,
+                "packaging",
+                "windows",
+                "ligase",
+                "Test-LigaseDesktopPayload.ps1"));
+            start.ArgumentList.Add("-DesktopDirectory");
+            start.ArgumentList.Add(root);
+            start.ArgumentList.Add("-SourceRoot");
+            start.ArgumentList.Add(repo);
+            using var process = Process.Start(start)
+                ?? throw new InvalidOperationException("testProcessStartFailed");
+            var output = await process.StandardOutput.ReadToEndAsync();
+            await process.WaitForExitAsync();
+
+            Assert.AreEqual(10, process.ExitCode);
+            using var document = JsonDocument.Parse(output);
+            Assert.AreEqual(
+                "desktopRuntimeAssetMissing",
+                document.RootElement.GetProperty("code").GetString());
+            Assert.IsFalse(document.RootElement.GetProperty("success").GetBoolean());
+            Assert.IsFalse(output.Contains(root, StringComparison.Ordinal));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
     }
 
     private static async Task<(int ExitCode, string Output, string Error)>

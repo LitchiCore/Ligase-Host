@@ -70,6 +70,11 @@ if (-not $SkipBuild) {
     -c $Configuration -p:Platform=$Platform -p:LigaseStructuredPackage=true `
     -r win-x64 --self-contained true -o $desktop
   if ($LASTEXITCODE -ne 0) { throw "desktopPublishFailed" }
+  $desktopPayloadValidation = & (Join-Path $PSScriptRoot "Test-LigaseDesktopPayload.ps1") `
+    -DesktopDirectory $desktop -SourceRoot $sourceRoot
+  if ($LASTEXITCODE -ne 0) {
+    throw "desktopPayloadValidationFailed:$desktopPayloadValidation"
+  }
   & $DotNet publish (Join-Path $sourceRoot "tools/Ligase.GameWatcher/Ligase.GameWatcher.csproj") `
     -c $Configuration -p:Platform=$Platform -r win-x64 --self-contained true -o $watcher
   if ($LASTEXITCODE -ne 0) { throw "gameWatcherPublishFailed" }

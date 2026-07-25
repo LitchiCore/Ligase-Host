@@ -96,6 +96,25 @@ public sealed class VisualColorTokenTests
     }
 
     [TestMethod]
+    public void TitleBarBrandGlyph_UsesTopLevelThemeAwareBrushAlias()
+    {
+        var aliases = LoadBrushAliases();
+        Assert.AreEqual(
+            "{ThemeResource LigaseSurfaceColor}",
+            aliases["LigaseOnBrandBrush"]);
+
+        var mainWindow = File.ReadAllText(
+            FindRepositoryFile("src", "Ligase.Desktop", "MainWindow.xaml"));
+        StringAssert.Contains(
+            mainWindow,
+            "Foreground=\"{ThemeResource LigaseOnBrandBrush}\"");
+        Assert.IsFalse(
+            mainWindow.Contains(
+                "Foreground=\"{ThemeResource LigaseSurfaceBrush}\"",
+                StringComparison.Ordinal));
+    }
+
+    [TestMethod]
     public void RawApplicationColors_AreLimitedToDocumentedMediaOverlayException()
     {
         var desktopRoot = FindRepositoryDirectory("src", "Ligase.Desktop");
