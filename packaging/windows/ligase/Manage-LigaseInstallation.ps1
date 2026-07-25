@@ -15,6 +15,7 @@ param(
   [ValidateSet("Preserve", "Quarantine")]
   [string]$DataDisposition = "Preserve",
   [switch]$ConfigureFirewall,
+  [switch]$MigrateDataRoot,
   [switch]$ConfirmLegacyTrustCleanup
 )
 
@@ -23,6 +24,7 @@ $installRoot = [IO.Path]::GetFullPath($InstallDirectory)
 $manifestPath = Join-Path $installRoot "ligase-install-manifest.json"
 $bootstrapPath = Join-Path $installRoot "ligase-bootstrap.json"
 $script:freshDataRootCreated = $null
+$script:migrationRollback = $null
 
 Add-Type -TypeDefinition @"
 using System;
@@ -138,6 +140,47 @@ public static class LigaseInteractiveUser
             }
         }
         throw new InvalidOperationException("interactiveOperatorUnavailable");
+    }
+}
+"@
+
+Add-Type -TypeDefinition @"
+using System;
+using System.IO;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+
+public static class LigaseFileIdentity
+{
+    [StructLayout(LayoutKind.Sequential)]
+    private struct BY_HANDLE_FILE_INFORMATION
+    {
+        public uint FileAttributes;
+        public System.Runtime.InteropServices.ComTypes.FILETIME CreationTime;
+        public System.Runtime.InteropServices.ComTypes.FILETIME LastAccessTime;
+        public System.Runtime.InteropServices.ComTypes.FILETIME LastWriteTime;
+        public uint VolumeSerialNumber;
+        public uint FileSizeHigh;
+        public uint FileSizeLow;
+        public uint NumberOfLinks;
+        public uint FileIndexHigh;
+        public uint FileIndexLow;
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetFileInformationByHandle(
+        SafeFileHandle handle, out BY_HANDLE_FILE_INFORMATION information);
+
+    public static uint GetLinkCount(string path)
+    {
+        using (var stream = new FileStream(
+            path, FileMode.Open, FileAccess.Read, FileShare.Read))
+        {
+            BY_HANDLE_FILE_INFORMATION information;
+            if (!GetFileInformationByHandle(stream.SafeFileHandle, out information))
+                throw new IOException("dataRootEnumerationFailed");
+            return information.NumberOfLinks;
+        }
     }
 }
 "@
@@ -377,6 +420,396 @@ function Get-DataRootAccessState([string]$Root) {
     return "aclDrift"
   } catch {
     return "aclDrift"
+  }
+}
+
+function Assert-CanonicalLocalDataRoot([string]$Candidate) {
+  if ([string]::IsNullOrWhiteSpace($Candidate) -or
+      $Candidate -notmatch '^[A-Za-z]:\\' -or
+      $Candidate.StartsWith("\\", [StringComparison]::Ordinal) -or
+      $Candidate.StartsWith("\\?\", [StringComparison]::Ordinal) -or
+      $Candidate.StartsWith("\\.\", [StringComparison]::Ordinal)) {
+    throw "dataRootMigrationPathInvalid"
+  }
+  $full = [IO.Path]::GetFullPath($Candidate)
+  $root = [IO.Path]::GetPathRoot($full)
+  if ($full.TrimEnd('\') -eq $root.TrimEnd('\') -or
+      -not $Candidate.Equals($full, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "dataRootMigrationPathInvalid"
+  }
+  try {
+    if ([IO.DriveInfo]::new($root).DriveType -ne [IO.DriveType]::Fixed) {
+      throw "dataRootMigrationPathInvalid"
+    }
+  } catch {
+    throw "dataRootMigrationPathInvalid"
+  }
+  return $full
+}
+
+function Get-ByteSha256([byte[]]$Bytes) {
+  $algorithm = [Security.Cryptography.SHA256]::Create()
+  try {
+    return ([BitConverter]::ToString(
+      $algorithm.ComputeHash($Bytes))).Replace("-", "").ToLowerInvariant()
+  } finally {
+    $algorithm.Dispose()
+  }
+}
+
+function Get-InteractiveOperatorProfile {
+  $identity = [LigaseInteractiveUser]::OpenIdentity()
+  try {
+    if ($null -eq $identity.User) { throw "interactiveOperatorUnavailable" }
+    $sid = $identity.User.Value
+    $profile = Get-ItemPropertyValue -LiteralPath (
+      "Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$sid") `
+      -Name ProfileImagePath
+    $profilePath = [Environment]::ExpandEnvironmentVariables([string]$profile)
+    return [ordered]@{
+      sid = $sid
+      localAppData = Assert-CanonicalLocalDataRoot (
+        Join-Path ([IO.Path]::GetFullPath($profilePath)) "AppData\Local")
+    }
+  } finally {
+    $identity.Dispose()
+  }
+}
+
+function Set-SecureDataRootAcl([string]$Root) {
+  $operator = [LigaseInteractiveUser]::OpenIdentity()
+  try {
+    if ($null -eq $operator.User) { throw "interactiveOperatorUnavailable" }
+    $operatorSid = $operator.User
+    $systemSid = [Security.Principal.SecurityIdentifier]::new(
+      [Security.Principal.WellKnownSidType]::LocalSystemSid, $null)
+    $administratorsSid = [Security.Principal.SecurityIdentifier]::new(
+      [Security.Principal.WellKnownSidType]::BuiltinAdministratorsSid, $null)
+    $inheritance = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
+      [Security.AccessControl.InheritanceFlags]::ObjectInherit
+    $propagation = [Security.AccessControl.PropagationFlags]::None
+    $security = [Security.AccessControl.DirectorySecurity]::new()
+    $security.SetAccessRuleProtection($true, $false)
+    $security.SetOwner($administratorsSid)
+    $security.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
+      $systemSid, "FullControl", $inheritance, $propagation, "Allow"))
+    $security.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
+      $administratorsSid, "FullControl", $inheritance, $propagation, "Allow"))
+    $security.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
+      $operatorSid, "Modify", $inheritance, $propagation, "Allow"))
+    Set-Acl -LiteralPath $Root -AclObject $security
+    if ((Get-DataRootAccessState $Root) -cne "existing") {
+      throw "dataRootAclMismatch"
+    }
+    $context = $operator.Impersonate()
+    try {
+      $probe = Join-Path $Root (".ligase-access-" + [guid]::NewGuid().ToString("N"))
+      $moved = "$probe.moved"
+      [IO.File]::WriteAllText($probe, "probe", [Text.UTF8Encoding]::new($false))
+      Move-Item -LiteralPath $probe -Destination $moved
+      Remove-Item -LiteralPath $moved -Force
+    } finally {
+      $context.Dispose()
+    }
+  } finally {
+    $operator.Dispose()
+  }
+}
+
+function Get-DataRootSnapshot(
+  [string]$Root,
+  [string]$ExcludedRelativePath = ""
+) {
+  $rootPath = (Assert-CanonicalLocalDataRoot $Root).TrimEnd('\')
+  $rootItem = Get-Item -LiteralPath $rootPath -Force
+  if (($rootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw "dataRootMigrationReparsePoint"
+  }
+  $entries = [Collections.Generic.List[object]]::new()
+  $totalBytes = [int64]0
+  foreach ($item in @(Get-ChildItem -LiteralPath $rootPath -Recurse -Force)) {
+    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+      throw "dataRootMigrationReparsePoint"
+    }
+    $prefix = $rootPath + '\'
+    if (-not $item.FullName.StartsWith(
+        $prefix, [StringComparison]::OrdinalIgnoreCase)) {
+      throw "dataRootMigrationEnumerationFailed"
+    }
+    $relative = $item.FullName.Substring($prefix.Length)
+    if (-not [string]::IsNullOrWhiteSpace($ExcludedRelativePath) -and
+        $relative -ceq $ExcludedRelativePath) {
+      continue
+    }
+    if ($item.PSIsContainer) {
+      $entries.Add([ordered]@{ path = $relative; kind = "directory"; size = 0; sha256 = "" })
+    } else {
+      if ([LigaseFileIdentity]::GetLinkCount($item.FullName) -ne 1) {
+        throw "dataRootMigrationHardLink"
+      }
+      $totalBytes += [int64]$item.Length
+      $entries.Add([ordered]@{
+        path = $relative
+        kind = "file"
+        size = [int64]$item.Length
+        sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $item.FullName).Hash
+      })
+    }
+    if ($entries.Count -gt 100000 -or $totalBytes -gt 10737418240) {
+      throw "dataRootMigrationTooLarge"
+    }
+  }
+  foreach ($relative in @("ligase-authority.json", "library.json", "ligase-sync.json")) {
+    $path = Join-Path $rootPath $relative
+    if (Test-Path -LiteralPath $path -PathType Leaf) {
+      try {
+        $raw = [IO.File]::ReadAllText($path, [Text.UTF8Encoding]::new($false, $true))
+        $null = $raw | ConvertFrom-Json
+      } catch {
+        throw "dataRootMigrationJsonInvalid"
+      }
+    }
+  }
+  $canonical = @($entries | Sort-Object kind, path) |
+    ConvertTo-Json -Depth 4 -Compress
+  return [ordered]@{
+    entries = $entries
+    count = $entries.Count
+    bytes = $totalBytes
+    fingerprint = Get-ByteSha256 ([Text.Encoding]::UTF8.GetBytes($canonical))
+  }
+}
+
+function Get-OperatorDataRootSnapshot([string]$Root) {
+  $operator = [LigaseInteractiveUser]::OpenIdentity()
+  try {
+    $context = $operator.Impersonate()
+    try {
+      return Get-DataRootSnapshot $Root
+    } finally {
+      $context.Dispose()
+    }
+  } catch {
+    if ($_.Exception.Message -like "dataRootMigration*") { throw }
+    throw "dataRootMigrationNotEligible"
+  } finally {
+    $operator.Dispose()
+  }
+}
+
+function Assert-DataRootSnapshotEqual($Expected, $Actual) {
+  if ($Expected.count -ne $Actual.count -or
+      $Expected.bytes -ne $Actual.bytes -or
+      $Expected.fingerprint -cne $Actual.fingerprint) {
+    throw "dataRootMigrationSourceChanged"
+  }
+}
+
+function Assert-ProductsStopped {
+  foreach ($name in @(
+      "Ligase Host", "Ligase.Host.Desktop", "sunshine", "Ligase.GameWatcher")) {
+    if (@(Get-Process -Name $name -ErrorAction SilentlyContinue).Count -gt 0) {
+      throw "dataRootMigrationProcessRunning"
+    }
+  }
+}
+
+function Remove-OwnedMigrationDirectory(
+  [string]$Directory,
+  [string]$MarkerName,
+  [string]$MarkerValue
+) {
+  if (-not (Test-Path -LiteralPath $Directory -PathType Container)) { return }
+  $marker = Join-Path $Directory $MarkerName
+  if (-not (Test-Path -LiteralPath $marker -PathType Leaf) -or
+      [IO.File]::ReadAllText($marker) -cne $MarkerValue) {
+    throw "dataRootMigrationOwnershipMismatch"
+  }
+  Remove-Item -LiteralPath $Directory -Recurse -Force
+}
+
+function Restore-Migration {
+  if ($null -eq $script:migrationRollback) { return }
+  $temporary = "$bootstrapPath.rollback"
+  try {
+    [IO.File]::WriteAllBytes(
+      $temporary, [byte[]]$script:migrationRollback.bootstrapBytes)
+    Move-Item -LiteralPath $temporary -Destination $bootstrapPath -Force
+    if ($script:migrationRollback.targetCreated -and
+        (Test-Path -LiteralPath $script:migrationRollback.target)) {
+      Remove-OwnedMigrationDirectory `
+        $script:migrationRollback.target `
+        $script:migrationRollback.markerName `
+        $script:migrationRollback.markerValue
+    }
+    foreach ($directory in @($script:migrationRollback.createdParents |
+        Sort-Object { $_.Length } -Descending)) {
+      if ((Test-Path -LiteralPath $directory -PathType Container) -and
+          @(Get-ChildItem -LiteralPath $directory -Force).Count -eq 0) {
+        Remove-Item -LiteralPath $directory -Force
+      }
+    }
+  } finally {
+    Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
+    $script:migrationRollback = $null
+  }
+}
+
+function Invoke-DataRootMigration($ExistingBootstrap, [string]$RequestedTarget) {
+  Assert-ProductsStopped
+  $source = Assert-CanonicalLocalDataRoot ([string]$ExistingBootstrap.dataRoot)
+  $target = Assert-CanonicalLocalDataRoot $RequestedTarget
+  $profile = Get-InteractiveOperatorProfile
+  $legacyBase = Join-Path ([string]$profile.localAppData) "Ligase Host\Instances"
+  $legacyPrefix = [IO.Path]::GetFullPath($legacyBase).TrimEnd('\') + '\'
+  if (-not $source.StartsWith(
+      $legacyPrefix, [StringComparison]::OrdinalIgnoreCase) -or
+      (Get-DataRootAccessState $source) -cne "aclDrift") {
+    throw "dataRootMigrationNotEligible"
+  }
+  $sourceAcl = Get-Acl -LiteralPath $source
+  $operatorRules = @($sourceAcl.Access | Where-Object {
+    $_.AccessControlType -eq "Allow" -and
+    $_.IdentityReference.Translate(
+      [Security.Principal.SecurityIdentifier]).Value -ceq [string]$profile.sid
+  })
+  if ($operatorRules.Count -eq 0) {
+    throw "dataRootMigrationNotEligible"
+  }
+  $sourceAclSddl = $sourceAcl.GetSecurityDescriptorSddlForm("All")
+  $sourceId = [guid]::Empty
+  if (-not [guid]::TryParseExact(
+      $source.Substring($legacyPrefix.Length), "D", [ref]$sourceId)) {
+    throw "dataRootMigrationNotEligible"
+  }
+  $programDataBase = Join-Path (
+    [Environment]::GetFolderPath("CommonApplicationData")) "Ligase Host\Instances"
+  $targetPrefix = [IO.Path]::GetFullPath($programDataBase).TrimEnd('\') + '\'
+  $targetId = [guid]::Empty
+  if (-not $target.StartsWith(
+      $targetPrefix, [StringComparison]::OrdinalIgnoreCase) -or
+      -not [guid]::TryParseExact(
+        $target.Substring($targetPrefix.Length), "D", [ref]$targetId) -or
+      (Test-Path -LiteralPath $target)) {
+    throw "dataRootMigrationTargetInvalid"
+  }
+  $bootstrapHash = Get-ByteSha256 ([byte[]]$ExistingBootstrap.bytes)
+  $before = Get-OperatorDataRootSnapshot $source
+  $transactionId = [guid]::NewGuid().ToString("N")
+  $markerName = ".ligase-migration-$transactionId"
+  $markerValue = [guid]::NewGuid().ToString("N")
+  $pending = "$target.pending-$transactionId"
+  $targetCreated = $false
+  $createdParents = [Collections.Generic.List[string]]::new()
+  try {
+    $parent = Split-Path -Parent $target
+    $missing = [Collections.Generic.Stack[string]]::new()
+    while (-not (Test-Path -LiteralPath $parent)) {
+      $missing.Push($parent)
+      $parent = Split-Path -Parent $parent
+    }
+    foreach ($directory in $missing) {
+      $null = New-Item -ItemType Directory -Path $directory
+      $createdParents.Add($directory)
+    }
+    New-Item -ItemType Directory -Path $pending | Out-Null
+    [IO.File]::WriteAllText(
+      (Join-Path $pending $markerName),
+      $markerValue,
+      [Text.UTF8Encoding]::new($false))
+    Set-SecureDataRootAcl $pending
+    foreach ($entry in @($before.entries | Where-Object { $_.kind -eq "directory" } |
+        Sort-Object { $_.path.Length })) {
+      $null = New-Item -ItemType Directory -Path (Join-Path $pending $entry.path)
+    }
+    foreach ($entry in @($before.entries | Where-Object { $_.kind -eq "file" })) {
+      $destination = Join-Path $pending $entry.path
+      $parent = Split-Path -Parent $destination
+      if (-not (Test-Path -LiteralPath $parent)) {
+        $null = New-Item -ItemType Directory -Path $parent
+      }
+      Copy-Item -LiteralPath (Join-Path $source $entry.path) -Destination $destination
+    }
+    $markerPath = Join-Path $pending $markerName
+    Remove-Item -LiteralPath $markerPath -Force
+    try {
+      Assert-DataRootSnapshotEqual $before (Get-DataRootSnapshot $pending)
+    } finally {
+      if (Test-Path -LiteralPath $pending -PathType Container) {
+        [IO.File]::WriteAllText(
+          $markerPath,
+          $markerValue,
+          [Text.UTF8Encoding]::new($false))
+      }
+    }
+    Assert-DataRootSnapshotEqual $before (Get-OperatorDataRootSnapshot $source)
+    if ((Get-Acl -LiteralPath $source).GetSecurityDescriptorSddlForm("All") -cne
+        $sourceAclSddl) {
+      throw "dataRootMigrationSourceChanged"
+    }
+    $currentBootstrapHash = Get-ByteSha256 (
+      [IO.File]::ReadAllBytes($bootstrapPath))
+    if ($currentBootstrapHash -cne $bootstrapHash) {
+      throw "bootstrapChangedDuringMigration"
+    }
+    Assert-ProductsStopped
+    Move-Item -LiteralPath $pending -Destination $target
+    $targetCreated = $true
+    $temporary = "$bootstrapPath.migration"
+    [IO.File]::WriteAllText(
+      $temporary,
+      (@{ schemaVersion = 1; dataRoot = $target } | ConvertTo-Json -Compress),
+      [Text.UTF8Encoding]::new($false))
+    Move-Item -LiteralPath $temporary -Destination $bootstrapPath -Force
+    $readback = Read-ValidBootstrap
+    if ($readback.dataRoot -cne $target -or
+        (Get-DataRootAccessState $target) -cne "existing") {
+      throw "dataRootMigrationReadbackFailed"
+    }
+    Assert-DataRootSnapshotEqual $before (Get-OperatorDataRootSnapshot $source)
+    if ((Get-Acl -LiteralPath $source).GetSecurityDescriptorSddlForm("All") -cne
+        $sourceAclSddl) {
+      throw "dataRootMigrationSourceChanged"
+    }
+    $script:migrationRollback = [ordered]@{
+      bootstrapBytes = [byte[]]$ExistingBootstrap.bytes
+      target = $target
+      targetCreated = $true
+      createdParents = @($createdParents)
+      markerName = $markerName
+      markerValue = $markerValue
+      snapshot = $before
+    }
+    return $target
+  } catch {
+    $cleanupFailed = $false
+    if (Test-Path -LiteralPath $pending -PathType Container) {
+      try {
+        Remove-OwnedMigrationDirectory $pending $markerName $markerValue
+      } catch {
+        $cleanupFailed = $true
+      }
+    }
+    if ($targetCreated -and (Test-Path -LiteralPath $target)) {
+      try {
+        Remove-OwnedMigrationDirectory $target $markerName $markerValue
+      } catch {
+        $cleanupFailed = $true
+      }
+    }
+    foreach ($directory in @($createdParents | Sort-Object { $_.Length } -Descending)) {
+      if ((Test-Path -LiteralPath $directory -PathType Container) -and
+          @(Get-ChildItem -LiteralPath $directory -Force).Count -eq 0) {
+        Remove-Item -LiteralPath $directory -Force -ErrorAction SilentlyContinue
+      }
+    }
+    $temporary = "$bootstrapPath.rollback"
+    [IO.File]::WriteAllBytes($temporary, [byte[]]$ExistingBootstrap.bytes)
+    Move-Item -LiteralPath $temporary -Destination $bootstrapPath -Force
+    if ($cleanupFailed) {
+      throw "dataRootMigrationOwnershipMismatch"
+    }
+    throw
   }
 }
 
@@ -748,7 +1181,9 @@ try {
       firewall = $firewallReadback
       encoder = $encoder
       firewallAction = if ($ConfigureFirewall) { "applyOwnedExactRules" } else { "none" }
-      dataRootAction = if ($null -ne $existingBootstrap) {
+      dataRootAction = if ($MigrateDataRoot) {
+        "migrateToStandardDataRoot"
+      } elseif ($null -ne $existingBootstrap) {
         "preserveExistingBootstrap"
       } elseif (-not [string]::IsNullOrWhiteSpace($DataRoot)) {
         "createExplicitDataRoot"
@@ -777,7 +1212,17 @@ try {
     $bootstrapBytes = if ($null -ne $existingBootstrap) {
       [byte[]]$existingBootstrap.bytes
     } else { $null }
-    $dataRoot = if ($null -ne $existingBootstrap) {
+    if ($MigrateDataRoot -and $null -eq $existingBootstrap) {
+      throw "dataRootMigrationNotEligible"
+    }
+    if (-not $MigrateDataRoot -and $null -ne $existingBootstrap -and
+        (Get-DataRootAccessState ([string]$existingBootstrap.dataRoot)) -cne
+          "existing") {
+      throw "dataRootExistingUnsafe"
+    }
+    $dataRoot = if ($MigrateDataRoot) {
+      Invoke-DataRootMigration $existingBootstrap $DataRoot
+    } elseif ($null -ne $existingBootstrap) {
       [string]$existingBootstrap.dataRoot
     } else {
       Write-NewBootstrap $DataRoot
@@ -804,7 +1249,9 @@ try {
             # preserved while readback will expose any owned-rule residue.
           }
         }
-        if ($null -eq $bootstrapBytes) {
+        if ($null -ne $script:migrationRollback) {
+          Restore-Migration
+        } elseif ($null -eq $bootstrapBytes) {
           Remove-Item -LiteralPath $bootstrapPath -Force -ErrorAction SilentlyContinue
           if ($null -ne $script:freshDataRootCreated -and
               (Test-Path -LiteralPath $script:freshDataRootCreated)) {
@@ -815,15 +1262,37 @@ try {
         throw
       }
     }
-    if ($null -ne $bootstrapBytes -and
+    if ($MigrateDataRoot) {
+      Assert-ProductsStopped
+      $migrationReadback = Read-ValidBootstrap
+      if ($migrationReadback.dataRoot -cne $dataRoot -or
+          (Get-DataRootAccessState $dataRoot) -cne "existing") {
+        Restore-Migration
+        throw "dataRootMigrationReadbackFailed"
+      }
+      Assert-DataRootSnapshotEqual $script:migrationRollback.snapshot (
+        Get-DataRootSnapshot $dataRoot $script:migrationRollback.markerName)
+      $marker = Join-Path $dataRoot $script:migrationRollback.markerName
+      if ([IO.File]::ReadAllText($marker) -cne
+          $script:migrationRollback.markerValue) {
+        Restore-Migration
+        throw "dataRootMigrationOwnershipMismatch"
+      }
+      Remove-Item -LiteralPath $marker -Force
+      $script:migrationRollback = $null
+    } elseif ($null -ne $bootstrapBytes -and
         [Convert]::ToBase64String([IO.File]::ReadAllBytes($bootstrapPath)) -cne
           [Convert]::ToBase64String($bootstrapBytes)) {
       throw "bootstrapChangedDuringUpgrade"
     }
     Write-Outcome "installed" $true ([ordered]@{
       installMode = "packaged"
-      dataRootState = if ($null -ne $existingBootstrap) { "existing" } else { "fresh" }
-      dataRootAction = if ($null -ne $existingBootstrap) {
+      dataRootState = if ($MigrateDataRoot -or $null -ne $existingBootstrap) {
+        "existing"
+      } else { "fresh" }
+      dataRootAction = if ($MigrateDataRoot) {
+        "migratedToStandardDataRoot"
+      } elseif ($null -ne $existingBootstrap) {
         "preservedExistingBootstrap"
       } else {
         "createdFreshBootstrap"
@@ -884,6 +1353,12 @@ try {
   }
   exit 0
 } catch {
+  if ($null -ne $script:migrationRollback) {
+    try { Restore-Migration } catch {
+      # The stable machine outcome below remains fail closed. Recovery failure
+      # is intentionally not expanded with paths or exception text.
+    }
+  }
   $knownCodes = @(
     "installManifestMissing",
     "installManifestInvalid",
@@ -898,6 +1373,20 @@ try {
     "freshDataRootAlreadyExists",
     "interactiveOperatorUnavailable",
     "dataRootAclMismatch",
+    "dataRootExistingUnsafe",
+    "dataRootMigrationPathInvalid",
+    "dataRootMigrationNotEligible",
+    "dataRootMigrationTargetInvalid",
+    "dataRootMigrationReparsePoint",
+    "dataRootMigrationHardLink",
+    "dataRootMigrationTooLarge",
+    "dataRootMigrationEnumerationFailed",
+    "dataRootMigrationJsonInvalid",
+    "dataRootMigrationSourceChanged",
+    "dataRootMigrationProcessRunning",
+    "dataRootMigrationReadbackFailed",
+    "dataRootMigrationOwnershipMismatch",
+    "bootstrapChangedDuringMigration",
     "uninstallerSignatureInvalid",
     "firewallApplyFailed",
     "firewallReadbackMismatch",

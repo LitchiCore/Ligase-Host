@@ -333,7 +333,7 @@ public partial class HostSetupViewModel(
                 "Host 就绪",
                 "数据目录权限异常",
                 "数据目录权限不符合安全要求。",
-                "请使用经过验证的安装程序明确修复；Host 不会自动放宽权限。"),
+                "若这是当前账户 LocalAppData 下的旧版目录，请使用经过验证的安装程序迁移到标准安全目录；Host 不会静默放宽原目录权限。"),
             InstallationDataRootStatus.Inaccessible => new(
                 "\uE783",
                 "Host 就绪",

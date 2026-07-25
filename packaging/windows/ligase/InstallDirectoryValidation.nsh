@@ -37,12 +37,20 @@ Function ResolveInstallerArguments
     FileReadUTF16LE $3 $5
     FileReadUTF16LE $3 $6
     FileReadUTF16LE $3 $DataRootMode
+    !ifdef LIGASE_VALIDATION_HARNESS
+      FileReadUTF16LE $3 $4
+    !else
+      FileReadUTF16LE $3 $DataRootSource
+    !endif
     FileClose $3
     ${StrTrimNewLines} $INSTDIR $INSTDIR
     ${StrTrimNewLines} $DataRoot $DataRoot
     ${StrTrimNewLines} $5 $5
     ${StrTrimNewLines} $6 $6
     ${StrTrimNewLines} $DataRootMode $DataRootMode
+    !ifndef LIGASE_VALIDATION_HARNESS
+      ${StrTrimNewLines} $DataRootSource $DataRootSource
+    !endif
   ${Else}
     !ifdef LIGASE_VALIDATION_HARNESS
       SetErrorLevel $0

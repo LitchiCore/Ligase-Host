@@ -91,8 +91,48 @@ probe aborts and removes the fresh empty instance. Existing valid bootstrap
 bytes and ACLs are preserved during upgrade; the data-directory control is
 locked to that existing binding. Readback reports a missing directory, an ACL
 drift, and a different interactive operator as distinct typed states; the last
-case is presented as “此 Host 数据属于另一 Windows 账户”. Insecure legacy ACL
-repair requires a separate explicit action.
+case is presented as “此 Host 数据属于另一 Windows 账户”.
+
+An upgrade may offer one automatic migration only for a narrowly identified
+legacy instance: the bootstrap is valid, its canonical fixed-disk path is
+exactly one UUID child below the current WTS operator's LocalAppData
+`Ligase Host/Instances` directory, the same operator is represented in the
+source ACL, the source is enumerable and readable under that operator token,
+and readback classifies the inherited legacy ACL as `aclDrift`. A wrong user,
+missing or inaccessible directory, quarantine, reparse point, UNC/device/root
+path, unknown location, or an already-standard ProgramData directory with ACL
+drift fails closed. The migration flow never silently repairs the source ACL
+or changes its identity.
+
+The installer generates one stable target UUID for the current UI session and
+shows the source, the exact
+`%ProgramData%\Ligase Host\Instances\<canonical-lowercase-UUID>` target, and
+the migration action before any write. Back/Next navigation does not regenerate
+that target. The privileged helper is the sole migration owner. Under the
+single installer gate and with Desktop, Core, GameWatcher, and launcher
+processes stopped, it records the exact bootstrap bytes/hash and a bounded
+source snapshot, rejects reparse points and hard links, and copies files plus
+empty directories into a uniquely owned pending directory. The snapshot is an
+exact relative-path, kind, size, and SHA-256 set with both entry-count and byte
+limits. Required authority, library, and Sync JSON files are parsed only to
+prove strict UTF-8 JSON readability; their contents and identity semantics are
+never logged, interpreted, or rewritten.
+
+The pending root receives the same Administrators-owned exact ACL as a fresh
+root and must pass the WTS operator create/atomic-replace probe. A random
+transaction marker proves pending/target ownership before rollback cleanup;
+the marker is removed only after final target verification and is never part
+of product data. Before
+switching authority, the helper repeats the source exact-set, source ACL, and
+bootstrap hash checks. It then atomically installs the target and bootstrap and
+requires immediate `Existing` readback. Any failure restores the original
+bootstrap bytes, removes only the pending/target paths created by that
+transaction, and leaves the source bytes, path, and ACL unchanged. A later
+firewall integration failure performs the same compensation. On success the
+old source remains unchanged as explicit rollback evidence; deleting or
+changing its ACL is a separate user-authorized cleanup action. The result page
+states that the migration completed and shows the retained rollback-evidence
+path without logging file contents or secrets.
 
 Desktop composition, first-route behavior, and installed-product acceptance are
 documented in [`desktop-ui.md`](desktop-ui.md). That document links here rather

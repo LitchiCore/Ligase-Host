@@ -3,6 +3,7 @@ $ErrorActionPreference = "Stop"
 Add-Type -TypeDefinition @"
 using System;
 using System.Runtime.InteropServices;
+using System.Security.Principal;
 
 public static class LigaseCommandLine
 {
@@ -41,6 +42,51 @@ public static class LigaseCommandLine
         }
     }
 }
+
+public static class LigaseInteractiveSession
+{
+    private enum WTS_INFO_CLASS { WTSUserName = 5, WTSDomainName = 7 }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool ProcessIdToSessionId(
+        uint processId, out uint sessionId);
+
+    [DllImport("Wtsapi32.dll", CharSet = CharSet.Unicode)]
+    private static extern bool WTSQuerySessionInformation(
+        IntPtr server, int sessionId, WTS_INFO_CLASS infoClass,
+        out IntPtr buffer, out int bytesReturned);
+
+    [DllImport("Wtsapi32.dll")]
+    private static extern void WTSFreeMemory(IntPtr memory);
+
+    private static string Read(int sessionId, WTS_INFO_CLASS infoClass)
+    {
+        IntPtr buffer;
+        int bytes;
+        if (!WTSQuerySessionInformation(
+            IntPtr.Zero, sessionId, infoClass, out buffer, out bytes) ||
+            buffer == IntPtr.Zero)
+            throw new InvalidOperationException("interactiveOperatorUnavailable");
+        try { return Marshal.PtrToStringUni(buffer) ?? ""; }
+        finally { WTSFreeMemory(buffer); }
+    }
+
+    public static string GetSid()
+    {
+        uint sessionId;
+        if (!ProcessIdToSessionId(
+            unchecked((uint)System.Diagnostics.Process.GetCurrentProcess().Id),
+            out sessionId) || sessionId == 0)
+            throw new InvalidOperationException("interactiveOperatorUnavailable");
+        var user = Read((int)sessionId, WTS_INFO_CLASS.WTSUserName);
+        var domain = Read((int)sessionId, WTS_INFO_CLASS.WTSDomainName);
+        if (String.IsNullOrWhiteSpace(user))
+            throw new InvalidOperationException("interactiveOperatorUnavailable");
+        var account = String.IsNullOrWhiteSpace(domain) ? user : domain + "\\" + user;
+        return ((SecurityIdentifier)new NTAccount(account).Translate(
+            typeof(SecurityIdentifier))).Value;
+    }
+}
 "@
 
 function Fail([int] $ExitCode) {
@@ -62,6 +108,13 @@ function Resolve-LocalPath([string] $Candidate) {
   if ([string]::IsNullOrWhiteSpace($root) -or
       $full.TrimEnd('\') -eq $root.TrimEnd('\')) {
     Fail 16
+  }
+  try {
+    if ([IO.DriveInfo]::new($root).DriveType -ne [IO.DriveType]::Fixed) {
+      Fail 15
+    }
+  } catch {
+    Fail 15
   }
   if (-not $Candidate.Equals($full, [StringComparison]::OrdinalIgnoreCase)) {
     Fail 17
@@ -142,6 +195,97 @@ function Read-ExistingDataRoot([string] $BootstrapPath) {
   }
 }
 
+function Get-InteractiveOperatorLocalAppData {
+  try {
+    $sid = [LigaseInteractiveSession]::GetSid()
+    $profile = Get-ItemPropertyValue -LiteralPath (
+      "Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$sid") `
+      -Name ProfileImagePath
+    $profilePath = [Environment]::ExpandEnvironmentVariables([string]$profile)
+    return Resolve-LocalPath (Join-Path ([IO.Path]::GetFullPath($profilePath)) "AppData\Local")
+  } catch {
+    Fail 18
+  }
+}
+
+function Test-LegacyMigrationEligible([string] $Root) {
+  try {
+    $operatorLocalAppData = Get-InteractiveOperatorLocalAppData
+    $legacyBase = Resolve-LocalPath (Join-Path $operatorLocalAppData "Ligase Host\Instances")
+    $prefix = $legacyBase.TrimEnd('\') + '\'
+    if (-not $Root.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
+      return $false
+    }
+    $relative = $Root.Substring($prefix.Length)
+    $id = [guid]::Empty
+    if ($relative.Contains([IO.Path]::DirectorySeparatorChar) -or
+        -not [guid]::TryParseExact($relative, "D", [ref]$id)) {
+      return $false
+    }
+    $item = Get-Item -LiteralPath $Root -Force
+    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+      return $false
+    }
+    $security = Get-Acl -LiteralPath $Root
+    $operatorSid = [LigaseInteractiveSession]::GetSid()
+    $operatorRules = @($security.Access | Where-Object {
+      $_.AccessControlType -eq "Allow" -and
+      $_.IdentityReference.Translate(
+        [Security.Principal.SecurityIdentifier]).Value -ceq $operatorSid
+    })
+    return -not $security.AreAccessRulesProtected -and
+      $operatorRules.Count -gt 0
+  } catch {
+    return $false
+  }
+}
+
+function Test-ExactExistingDataRoot([string] $Root) {
+  try {
+    $item = Get-Item -LiteralPath $Root -Force
+    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+      return $false
+    }
+    $operatorSid = [LigaseInteractiveSession]::GetSid()
+    $systemSid = [Security.Principal.SecurityIdentifier]::new(
+      [Security.Principal.WellKnownSidType]::LocalSystemSid, $null)
+    $administratorsSid = [Security.Principal.SecurityIdentifier]::new(
+      [Security.Principal.WellKnownSidType]::BuiltinAdministratorsSid, $null)
+    $security = Get-Acl -LiteralPath $Root
+    $owner = ([Security.Principal.NTAccount]$security.Owner).Translate(
+      [Security.Principal.SecurityIdentifier]).Value
+    $rules = @($security.Access | Where-Object { -not $_.IsInherited })
+    if (-not $security.AreAccessRulesProtected -or
+        $owner -cne $administratorsSid.Value -or
+        $rules.Count -ne 3 -or
+        @($rules | Where-Object {
+          $_.AccessControlType -ne "Allow"
+        }).Count -ne 0) {
+      return $false
+    }
+    $inheritance = [int](
+      [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
+      [Security.AccessControl.InheritanceFlags]::ObjectInherit)
+    $propagation = [int][Security.AccessControl.PropagationFlags]::None
+    $actual = @($rules | ForEach-Object {
+      $sid = $_.IdentityReference.Translate(
+        [Security.Principal.SecurityIdentifier]).Value
+      "$sid,$([int]$_.FileSystemRights),$([int]$_.InheritanceFlags),$([int]$_.PropagationFlags)"
+    } | Sort-Object)
+    $expected = @(
+      "$operatorSid,$([int](
+        [Security.AccessControl.FileSystemRights]::Modify -bor
+        [Security.AccessControl.FileSystemRights]::Synchronize)),$inheritance,$propagation",
+      "$($systemSid.Value),$([int][Security.AccessControl.FileSystemRights]::FullControl),$inheritance,$propagation",
+      "$($administratorsSid.Value),$([int][Security.AccessControl.FileSystemRights]::FullControl),$inheritance,$propagation"
+    ) | Sort-Object
+    return $actual.Count -eq $expected.Count -and
+      (Compare-Object $actual $expected).Count -eq 0
+  } catch {
+    return $false
+  }
+}
+
 try {
   $raw = [Environment]::GetEnvironmentVariable(
     "LIGASE_INSTALL_RAW_PARAMETERS",
@@ -177,17 +321,46 @@ try {
   $bootstrapPath = Join-Path $installDirectory "ligase-bootstrap.json"
   $existingDataRoot = Read-ExistingDataRoot $bootstrapPath
   $dataRootMode = "explicit"
+  $dataRootSource = ""
   $dataRoot = if ($null -ne $existingDataRoot) {
-    if ($dataOptions.Count -eq 1) {
-      $requested = Resolve-LocalPath $dataOptions[0]
-      if (-not $requested.Equals(
-          $existingDataRoot,
-          [StringComparison]::OrdinalIgnoreCase)) {
-        Fail 18
+    if (Test-LegacyMigrationEligible $existingDataRoot) {
+      if ([string]::IsNullOrWhiteSpace($programData)) { Fail 18 }
+      $dataRootSource = $existingDataRoot
+      $standardBase = Resolve-LocalPath (
+        Join-Path ([IO.Path]::GetFullPath($programData)) "Ligase Host\Instances")
+      if ($dataOptions.Count -eq 1) {
+        $requested = Resolve-LocalPath $dataOptions[0]
+        $prefix = $standardBase.TrimEnd('\') + '\'
+        if (-not $requested.StartsWith(
+            $prefix, [StringComparison]::OrdinalIgnoreCase)) {
+          Fail 18
+        }
+        $relative = $requested.Substring($prefix.Length)
+        $id = [guid]::Empty
+        if ($relative.Contains([IO.Path]::DirectorySeparatorChar) -or
+            -not [guid]::TryParseExact($relative, "D", [ref]$id)) {
+          Fail 18
+        }
+        $requested
+      } else {
+        Resolve-LocalPath (
+          Join-Path $standardBase ([guid]::NewGuid().ToString("D")))
       }
+      $dataRootMode = "migration"
+    } elseif (Test-ExactExistingDataRoot $existingDataRoot) {
+      if ($dataOptions.Count -eq 1) {
+        $requested = Resolve-LocalPath $dataOptions[0]
+        if (-not $requested.Equals(
+            $existingDataRoot,
+            [StringComparison]::OrdinalIgnoreCase)) {
+          Fail 18
+        }
+      }
+      $dataRootMode = "existing"
+      $existingDataRoot
+    } else {
+      Fail 18
     }
-    $dataRootMode = "existing"
-    $existingDataRoot
   } elseif ($dataOptions.Count -eq 1) {
     Resolve-LocalPath $dataOptions[0]
   } else {
@@ -209,7 +382,8 @@ try {
       $dataRoot,
       ($installOptions.Count -eq 1).ToString().ToLowerInvariant(),
       ($dataOptions.Count -eq 1).ToString().ToLowerInvariant(),
-      $dataRootMode
+      $dataRootMode,
+      $dataRootSource
     ),
     [Text.Encoding]::Unicode)
   Move-Item -LiteralPath $pending -Destination $resultPath -Force

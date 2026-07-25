@@ -103,6 +103,25 @@ public sealed class HostSetupViewModelTests
     }
 
     [TestMethod]
+    public async Task LegacyAclDriftRecommendsStandardMigrationWithoutSilentRepair()
+    {
+        var viewModel = ViewModel(Snapshot(
+            dataRoot: new(
+                InstallationDataRootStatus.AclDrift,
+                "dataRootAclDrift",
+                InstallationRecoveryAction.RepairInstallation)));
+
+        await viewModel.LoadAsync();
+
+        StringAssert.Contains(
+            viewModel.HostReadiness.Detail,
+            "迁移到标准安全目录");
+        StringAssert.Contains(
+            viewModel.HostReadiness.Detail,
+            "不会静默放宽");
+    }
+
+    [TestMethod]
     public async Task ReadyDataRootPreservesReadyHostPresentation()
     {
         var viewModel = ViewModel(Snapshot(

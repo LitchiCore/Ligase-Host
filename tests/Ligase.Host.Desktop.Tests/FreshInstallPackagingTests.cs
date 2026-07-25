@@ -66,13 +66,13 @@ public sealed class FreshInstallPackagingTests
     [TestMethod]
     public async Task UpgradePreservesValidBootstrapBytesAndRemovesOnlyOwnedLegacyFiles()
     {
+        RequireElevatedAclIntegration();
         using var fixture = new InstallFixture();
         var dataRoot = Path.Combine(fixture.Root, "existing-data");
-        Directory.CreateDirectory(dataRoot);
         var bootstrap = Path.Combine(fixture.Root, "ligase-bootstrap.json");
-        var original = Encoding.UTF8.GetBytes(
-            $"{{ \"schemaVersion\": 1, \"dataRoot\": {JsonSerializer.Serialize(dataRoot)} }}");
-        await File.WriteAllBytesAsync(bootstrap, original);
+        var initial = await fixture.RunAsync("Install", dataRoot);
+        Assert.AreEqual(0, initial.ExitCode, initial.Output);
+        var original = await File.ReadAllBytesAsync(bootstrap);
         Directory.CreateDirectory(Path.Combine(fixture.Root, "legacy-locale"));
         await File.WriteAllTextAsync(
             Path.Combine(fixture.Root, "legacy-locale", "legacy-owned.dll"),
@@ -91,6 +91,179 @@ public sealed class FreshInstallPackagingTests
         Assert.IsFalse(Directory.Exists(
             Path.Combine(fixture.Root, "legacy-locale")));
         Assert.IsTrue(File.Exists(Path.Combine(fixture.Root, "unknown-user-file.txt")));
+    }
+
+    [TestMethod]
+    public async Task MigrationRejectsUnknownExistingRootWithoutChangingBootstrapOrSource()
+    {
+        using var fixture = new InstallFixture();
+        var source = Path.Combine(fixture.Root, "unknown-existing-data");
+        Directory.CreateDirectory(source);
+        await File.WriteAllTextAsync(
+            Path.Combine(source, "library.json"),
+            "{\"revision\":1}",
+            new UTF8Encoding(false));
+        var bootstrap = Path.Combine(fixture.Root, "ligase-bootstrap.json");
+        var originalBootstrap = Encoding.UTF8.GetBytes(
+            $"{{\"schemaVersion\":1,\"dataRoot\":{JsonSerializer.Serialize(source)}}}");
+        await File.WriteAllBytesAsync(bootstrap, originalBootstrap);
+        var originalLibrary = await File.ReadAllBytesAsync(
+            Path.Combine(source, "library.json"));
+        var target = Path.Combine(fixture.Root, "migration-target");
+
+        var result = await fixture.RunAsync(
+            "Install",
+            target,
+            migrateDataRoot: true);
+
+        Assert.AreEqual(10, result.ExitCode, result.Output);
+        using var document = JsonDocument.Parse(result.Output);
+        Assert.AreEqual(
+            "dataRootMigrationNotEligible",
+            document.RootElement.GetProperty("code").GetString());
+        CollectionAssert.AreEqual(
+            originalBootstrap,
+            await File.ReadAllBytesAsync(bootstrap));
+        CollectionAssert.AreEqual(
+            originalLibrary,
+            await File.ReadAllBytesAsync(Path.Combine(source, "library.json")));
+        Assert.IsFalse(Directory.Exists(target));
+    }
+
+    [TestMethod]
+    public async Task UpgradeRejectsInheritedExistingAclInsteadOfSilentlyPreservingIt()
+    {
+        using var fixture = new InstallFixture();
+        var source = Path.Combine(fixture.Root, "legacy-inherited-data");
+        Directory.CreateDirectory(source);
+        var bootstrap = Path.Combine(fixture.Root, "ligase-bootstrap.json");
+        var original = Encoding.UTF8.GetBytes(
+            $"{{\"schemaVersion\":1,\"dataRoot\":{JsonSerializer.Serialize(source)}}}");
+        await File.WriteAllBytesAsync(bootstrap, original);
+
+        var result = await fixture.RunAsync("Install");
+
+        Assert.AreEqual(10, result.ExitCode, result.Output);
+        using var document = JsonDocument.Parse(result.Output);
+        Assert.AreEqual(
+            "dataRootExistingUnsafe",
+            document.RootElement.GetProperty("code").GetString());
+        CollectionAssert.AreEqual(original, await File.ReadAllBytesAsync(bootstrap));
+        Assert.IsTrue(Directory.Exists(source));
+    }
+
+    [TestMethod]
+    public async Task ElevatedMigrationCopiesExactSetAppliesAclAndKeepsRollbackEvidence()
+    {
+        RequireElevatedAclIntegration();
+        using var fixture = new InstallFixture();
+        var id = Guid.NewGuid().ToString("D");
+        var source = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "Ligase Host",
+            "Instances",
+            id);
+        var target = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+            "Ligase Host",
+            "Instances",
+            Guid.NewGuid().ToString("D"));
+        try
+        {
+            Directory.CreateDirectory(Path.Combine(source, "empty"));
+            await File.WriteAllTextAsync(
+                Path.Combine(source, "library.json"),
+                "{\"revision\":1}",
+                new UTF8Encoding(false));
+            var sourceHash = Convert.ToHexString(
+                SHA256.HashData(await File.ReadAllBytesAsync(
+                    Path.Combine(source, "library.json"))));
+            await fixture.WriteBootstrapAsync(source);
+
+            var result = await fixture.RunAsync(
+                "Install",
+                target,
+                migrateDataRoot: true);
+
+            Assert.AreEqual(0, result.ExitCode, result.Output);
+            using var outcome = JsonDocument.Parse(result.Output);
+            Assert.AreEqual(
+                "migratedToStandardDataRoot",
+                outcome.RootElement.GetProperty("dataRootAction").GetString());
+            Assert.IsTrue(Directory.Exists(Path.Combine(source, "empty")));
+            Assert.IsTrue(Directory.Exists(Path.Combine(target, "empty")));
+            Assert.AreEqual(
+                sourceHash,
+                Convert.ToHexString(SHA256.HashData(
+                    await File.ReadAllBytesAsync(Path.Combine(target, "library.json")))));
+            using var bootstrap = JsonDocument.Parse(
+                await File.ReadAllTextAsync(
+                    Path.Combine(fixture.Root, "ligase-bootstrap.json")));
+            Assert.AreEqual(
+                target,
+                bootstrap.RootElement.GetProperty("dataRoot").GetString());
+            AssertExactDataRootAcl(target);
+        }
+        finally
+        {
+            CleanupMigrationDirectory(target);
+            CleanupMigrationDirectory(source);
+        }
+    }
+
+    [TestMethod]
+    public async Task ElevatedMigrationFirewallFailureRestoresBootstrapAndAllowsRetry()
+    {
+        RequireElevatedAclIntegration();
+        using var fixture = new InstallFixture();
+        var source = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "Ligase Host",
+            "Instances",
+            Guid.NewGuid().ToString("D"));
+        var target = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+            "Ligase Host",
+            "Instances",
+            Guid.NewGuid().ToString("D"));
+        try
+        {
+            Directory.CreateDirectory(source);
+            await File.WriteAllTextAsync(
+                Path.Combine(source, "ligase-sync.json"),
+                "{\"revision\":1}",
+                new UTF8Encoding(false));
+            await fixture.WriteBootstrapAsync(source);
+            var bootstrapPath = Path.Combine(fixture.Root, "ligase-bootstrap.json");
+            var original = await File.ReadAllBytesAsync(bootstrapPath);
+            fixture.ConfigureFirewallScript(configuredAfterApply: false);
+
+            var failed = await fixture.RunAsync(
+                "Install",
+                target,
+                configureFirewall: true,
+                migrateDataRoot: true);
+
+            Assert.AreEqual(10, failed.ExitCode, failed.Output);
+            CollectionAssert.AreEqual(original, await File.ReadAllBytesAsync(bootstrapPath));
+            Assert.IsTrue(Directory.Exists(source));
+            Assert.IsFalse(Directory.Exists(target));
+
+            fixture.ConfigureFirewallScript(configuredAfterApply: true);
+            var retried = await fixture.RunAsync(
+                "Install",
+                target,
+                configureFirewall: true,
+                migrateDataRoot: true);
+            Assert.AreEqual(0, retried.ExitCode, retried.Output);
+            Assert.IsTrue(Directory.Exists(source));
+            Assert.IsTrue(Directory.Exists(target));
+        }
+        finally
+        {
+            CleanupMigrationDirectory(target);
+            CleanupMigrationDirectory(source);
+        }
     }
 
     [TestMethod]
@@ -308,6 +481,9 @@ public sealed class FreshInstallPackagingTests
             "SectionGetFlags ${LIGASE_SECTION_VIRTUAL_DISPLAY}");
         StringAssert.Contains(nsis, "preservedExistingBootstrap");
         StringAssert.Contains(nsis, "createdFreshBootstrap");
+        StringAssert.Contains(nsis, "migratedToStandardDataRoot");
+        StringAssert.Contains(nsis, "旧数据目录：$DataRootSource");
+        StringAssert.Contains(nsis, "-MigrateDataRoot");
         StringAssert.Contains(management, "$security.SetOwner($administratorsSid)");
         StringAssert.Contains(management, "$explicitRules");
         StringAssert.Contains(
@@ -436,6 +612,15 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(helper, "SetAccessRuleProtection($true, $false)");
         StringAssert.Contains(helper, "Invoke-FirewallAction");
         StringAssert.Contains(helper, "firewallReadbackMismatch");
+        StringAssert.Contains(helper, "Get-OperatorDataRootSnapshot");
+        StringAssert.Contains(helper, "LigaseFileIdentity]::GetLinkCount");
+        StringAssert.Contains(helper, "dataRootMigrationHardLink");
+        StringAssert.Contains(helper, "dataRootMigrationSourceChanged");
+        StringAssert.Contains(helper, "dataRootMigrationOwnershipMismatch");
+        StringAssert.Contains(helper, "Remove-OwnedMigrationDirectory");
+        StringAssert.Contains(helper, "Restore-Migration");
+        StringAssert.Contains(helper, "migratedToStandardDataRoot");
+        StringAssert.Contains(validationInclude, "FileReadUTF16LE $3 $DataRootSource");
     }
 
     private static void RequireElevatedAclIntegration()
@@ -447,6 +632,35 @@ public sealed class FreshInstallPackagingTests
             Assert.Inconclusive(
                 "The exact Administrators-owned ACL integration gate requires an elevated test token.");
         }
+    }
+
+    private static void AssertExactDataRootAcl(string root)
+    {
+        var security = new DirectoryInfo(root).GetAccessControl();
+        Assert.IsTrue(security.AreAccessRulesProtected);
+        var owner = security.GetOwner(
+            typeof(SecurityIdentifier)) as SecurityIdentifier;
+        Assert.IsNotNull(owner);
+        Assert.AreEqual(
+            new SecurityIdentifier(
+                WellKnownSidType.BuiltinAdministratorsSid,
+                null).Value,
+            owner.Value);
+        var rules = security.GetAccessRules(
+                includeExplicit: true,
+                includeInherited: false,
+                targetType: typeof(SecurityIdentifier))
+            .Cast<FileSystemAccessRule>()
+            .ToArray();
+        Assert.AreEqual(3, rules.Length);
+        Assert.IsTrue(rules.All(rule =>
+            rule.AccessControlType == AccessControlType.Allow));
+    }
+
+    private static void CleanupMigrationDirectory(string path)
+    {
+        if (Directory.Exists(path))
+            Directory.Delete(path, recursive: true);
     }
 
     [TestMethod]
@@ -721,7 +935,8 @@ public sealed class FreshInstallPackagingTests
         public async Task<(int ExitCode, string Output)> RunAsync(
             string action,
             string? dataRoot = null,
-            bool configureFirewall = false)
+            bool configureFirewall = false,
+            bool migrateDataRoot = false)
         {
             var start = new ProcessStartInfo
             {
@@ -748,6 +963,8 @@ public sealed class FreshInstallPackagingTests
             }
             if (configureFirewall)
                 start.ArgumentList.Add("-ConfigureFirewall");
+            if (migrateDataRoot)
+                start.ArgumentList.Add("-MigrateDataRoot");
             using var process = Process.Start(start)
                 ?? throw new InvalidOperationException("testProcessStartFailed");
             var stdout = process.StandardOutput.ReadToEndAsync();
@@ -799,6 +1016,16 @@ public sealed class FreshInstallPackagingTests
                 """,
                 new UTF8Encoding(false));
         }
+
+        public Task WriteBootstrapAsync(string dataRoot) =>
+            File.WriteAllTextAsync(
+                Path.Combine(Root, "ligase-bootstrap.json"),
+                JsonSerializer.Serialize(new
+                {
+                    schemaVersion = 1,
+                    dataRoot = Path.GetFullPath(dataRoot)
+                }),
+                new UTF8Encoding(false));
 
         public void SetLegacyOwnedEntries(string[] entries)
         {

@@ -324,13 +324,11 @@ New-Item -ItemType Directory -Path $existingInstall, $existingData -Force |
 
 $results = @(
   Invoke-Harness `
-    -Name "upgrade-preserves-existing-data-root" `
+    -Name "upgrade-rejects-inherited-existing-acl" `
     -Arguments @(
       "/InstallDirectory=$existingInstall",
       "/DataRoot=$existingData") `
-    -ShouldSucceed $true `
-    -ExpectedInstallDirectory $existingInstall `
-    -ExpectedDataRoot $existingData
+    -ShouldSucceed $false
   Invoke-Harness `
     -Name "upgrade-rejects-data-root-change" `
     -Arguments @(
@@ -338,7 +336,7 @@ $results = @(
       "/DataRoot=$(Join-Path $root 'different-data')") `
     -ShouldSucceed $false
   Invoke-Harness `
-    -Name "fresh-programdata-next-back-next" `
+    -Name "fresh-session-stable-programdata-uuid-next-back-next" `
     -Arguments @("/InstallDirectory=$spaceProgramPath") `
     -ShouldSucceed $true `
     -ExpectedInstallDirectory $spaceProgramPath `
@@ -489,6 +487,51 @@ $results = @(
       '/DataRoot=D:\Development\..\Ligase Data') `
     -ShouldSucceed $false
 )
+
+$standardDriftInstall = Join-Path $root "standard-drift-install"
+$standardDriftData = Join-Path $root "ProgramDataFixture\Ligase Host\Instances\00000000-0000-0000-0000-000000000001"
+New-Item -ItemType Directory -Path $standardDriftInstall, $standardDriftData -Force |
+  Out-Null
+[IO.File]::WriteAllText(
+  (Join-Path $standardDriftInstall "ligase-bootstrap.json"),
+  (@{ schemaVersion = 1; dataRoot = $standardDriftData } |
+    ConvertTo-Json -Compress),
+  [Text.UTF8Encoding]::new($false))
+$results += Invoke-Harness `
+  -Name "standard-programdata-inherited-acl-drift-rejected" `
+  -Arguments @("/InstallDirectory=$standardDriftInstall") `
+  -ShouldSucceed $false
+
+$missingInstall = Join-Path $root "missing-existing-install"
+New-Item -ItemType Directory -Path $missingInstall -Force | Out-Null
+[IO.File]::WriteAllText(
+  (Join-Path $missingInstall "ligase-bootstrap.json"),
+  (@{
+      schemaVersion = 1
+      dataRoot = (Join-Path $root "missing-existing-data")
+    } | ConvertTo-Json -Compress),
+  [Text.UTF8Encoding]::new($false))
+$results += Invoke-Harness `
+  -Name "missing-existing-data-root-rejected" `
+  -Arguments @("/InstallDirectory=$missingInstall") `
+  -ShouldSucceed $false
+
+$reparseInstall = Join-Path $root "reparse-existing-install"
+$reparseTarget = Join-Path $root "reparse-target"
+$reparseData = Join-Path $root "reparse-existing-data"
+New-Item -ItemType Directory -Path $reparseInstall, $reparseTarget -Force |
+  Out-Null
+New-Item -ItemType Junction -Path $reparseData -Target $reparseTarget |
+  Out-Null
+[IO.File]::WriteAllText(
+  (Join-Path $reparseInstall "ligase-bootstrap.json"),
+  (@{ schemaVersion = 1; dataRoot = $reparseData } |
+    ConvertTo-Json -Compress),
+  [Text.UTF8Encoding]::new($false))
+$results += Invoke-Harness `
+  -Name "reparse-existing-data-root-rejected" `
+  -Arguments @("/InstallDirectory=$reparseInstall") `
+  -ShouldSucceed $false
 
 [ordered]@{
   code = "installDirectoryRuntimeHarnessPassed"
