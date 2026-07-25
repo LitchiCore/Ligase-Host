@@ -148,6 +148,19 @@ public sealed class InstallationReadinessServiceTests
     }
 
     [TestMethod]
+    public void StrictParserAcceptsStructuredRootLauncherArtifact()
+    {
+        var withLauncher = ReadbackJson().Replace(
+            "{\"role\":\"desktop\"",
+            "{\"role\":\"launcher\",\"available\":true,\"version\":\"1.0.0.0\",\"hashMatches\":true,\"machineCode\":\"available\",\"signatureStatus\":\"nonRelease\"},{\"role\":\"desktop\"",
+            StringComparison.Ordinal);
+        var result = WindowsInstallationReadbackSource.Parse(withLauncher);
+
+        Assert.AreEqual(4, result.Artifacts.Count);
+        Assert.AreEqual("launcher", result.Artifacts[0].Role);
+    }
+
+    [TestMethod]
     public void StrictParserRejectsMalformedNoiseAndUnknownEnum()
     {
         AssertJsonFailure(() => WindowsInstallationReadbackSource.Parse("{"));

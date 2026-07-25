@@ -190,10 +190,15 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(build, "Test-LigaseDesktopPayload.ps1");
         StringAssert.Contains(build, "-Filter \"Ligase.GameWatcher.*\"");
         StringAssert.Contains(build, "tools/Ligase.GameWatcher/Ligase.GameWatcher.csproj");
+        StringAssert.Contains(build, "tools/Ligase.Host.Launcher/Ligase.Host.Launcher.csproj");
         StringAssert.Contains(build, "Core/sunshine.exe");
         StringAssert.Contains(
             nsis,
-            "$INSTDIR\\Desktop\\Ligase.Host.Desktop.exe");
+            "$INSTDIR\\Ligase Host.exe");
+        Assert.IsFalse(
+            nsis.Contains(
+                "CreateShortcut \"$SMPROGRAMS\\Ligase Host\\Ligase Host.lnk\" \"$INSTDIR\\Desktop",
+                StringComparison.Ordinal));
         StringAssert.Contains(nsis, "InstallDirRegKey HKLM");
         StringAssert.Contains(nsis, "GetCommandLineW() w .r0");
         StringAssert.Contains(nsis, "/InstallDirectory=");

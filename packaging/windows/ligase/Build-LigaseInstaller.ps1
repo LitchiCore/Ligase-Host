@@ -52,6 +52,7 @@ if ($LASTEXITCODE -ne 0 -or $head -notmatch '^[0-9a-f]{40}$') {
 $work = Join-Path $output "work-$head-$Configuration-$Platform"
 $desktop = Join-Path $work "desktop"
 $watcher = Join-Path $work "watcher"
+$launcher = Join-Path $work "launcher"
 $stage = Join-Path $work "stage"
 $label = if ($ReleaseKind -eq "UnsignedDev") { "UNSIGNED-DEV" } else { "release" }
 $package = Join-Path $output "Ligase-Host-$head-$Configuration-$Platform-$label-installer.exe"
@@ -78,12 +79,22 @@ if (-not $SkipBuild) {
   & $DotNet publish (Join-Path $sourceRoot "tools/Ligase.GameWatcher/Ligase.GameWatcher.csproj") `
     -c $Configuration -p:Platform=$Platform -r win-x64 --self-contained true -o $watcher
   if ($LASTEXITCODE -ne 0) { throw "gameWatcherPublishFailed" }
+  & $DotNet publish (Join-Path $sourceRoot "tools/Ligase.Host.Launcher/Ligase.Host.Launcher.csproj") `
+    -c $Configuration -p:LigaseLauncherNative=true -r win-x64 --self-contained true -o $launcher
+  if ($LASTEXITCODE -ne 0) { throw "launcherPublishFailed" }
+  $launcherRuntimeValidation = & (Join-Path $PSScriptRoot "Test-LigaseRootLauncher.ps1") `
+    -LauncherPath (Join-Path $launcher "Ligase Host.exe")
+  if ($LASTEXITCODE -ne 0) {
+    throw "launcherRuntimeValidationFailed:$launcherRuntimeValidation"
+  }
 }
 
 $coreBinary = Join-Path $cppRoot "sunshine.exe"
 $desktopBinary = Join-Path $desktop "Ligase.Host.Desktop.exe"
 $watcherBinary = Join-Path $watcher "Ligase.GameWatcher.exe"
+$launcherBinary = Join-Path $launcher "Ligase Host.exe"
 foreach ($entry in @(
+  @{ code = "launcherArtifactMissing"; path = $launcherBinary },
   @{ code = "desktopArtifactMissing"; path = $desktopBinary },
   @{ code = "managedCoreArtifactMissing"; path = $coreBinary },
   @{ code = "gameWatcherArtifactMissing"; path = $watcherBinary }
@@ -98,6 +109,7 @@ if (Test-Path -LiteralPath $temporaryStage) {
   Remove-Item -LiteralPath $temporaryStage -Recurse -Force
 }
 New-Item -ItemType Directory -Path $temporaryStage | Out-Null
+Copy-Item -LiteralPath $launcherBinary -Destination (Join-Path $temporaryStage "Ligase Host.exe")
 New-Item -ItemType Directory -Path (Join-Path $temporaryStage "Desktop") | Out-Null
 Get-ChildItem -LiteralPath $desktop | ForEach-Object {
   Copy-Item -LiteralPath $_.FullName `
@@ -129,6 +141,7 @@ Copy-Item -LiteralPath (Join-Path $PSScriptRoot "Resolve-LigaseInstallDirectory.
   -Destination (Join-Path $temporaryStage "Deployment")
 
 $artifactDefinitions = @(
+  @{ role = "launcher"; relativePath = "Ligase Host.exe" },
   @{ role = "desktop"; relativePath = "Desktop/Ligase.Host.Desktop.exe" },
   @{ role = "managedCore"; relativePath = "Core/sunshine.exe" },
   @{ role = "gameWatcher"; relativePath = "Tools/GameWatcher/Ligase.GameWatcher.exe" }

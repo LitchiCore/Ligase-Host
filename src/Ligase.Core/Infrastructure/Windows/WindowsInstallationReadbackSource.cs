@@ -223,9 +223,10 @@ public sealed class WindowsInstallationReadbackSource : IInstallationReadbackSou
             document.DataRootState,
             "fresh", "existing", "quarantined", "inaccessible");
         var roles = document.Artifacts.Select(item => item.Role).ToArray();
-        if (roles.Length != 3 ||
-            !new HashSet<string>(roles, StringComparer.Ordinal).SetEquals(
-                ["desktop", "managedCore", "gameWatcher"]))
+        var roleSet = new HashSet<string>(roles, StringComparer.Ordinal);
+        if (roles.Length != roleSet.Count ||
+            !(roleSet.SetEquals(["desktop", "managedCore", "gameWatcher"]) ||
+              roleSet.SetEquals(["launcher", "desktop", "managedCore", "gameWatcher"])))
             throw new JsonException("installationReadbackInvalid");
         foreach (var artifact in document.Artifacts)
         {

@@ -15,5 +15,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\Ligase.Core\Ligase.Host.Core.csproj" />
     <ProjectReference Include="..\..\src\Ligase.Desktop\Ligase.Host.Desktop.csproj" />
+    <ProjectReference Include="..\..\tools\Ligase.Host.Launcher\Ligase.Host.Launcher.csproj"
+                      AdditionalProperties="PublishAot=false" />
   </ItemGroup>
 </Project>

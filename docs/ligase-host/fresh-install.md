@@ -2,9 +2,9 @@
 
 The Windows release artifact is built by
 `packaging/windows/ligase/Build-LigaseInstaller.ps1`. It accepts one explicit
-C++ build root and builds Desktop, managed Core, and GameWatcher from the same
+C++ build root and builds the native root launcher, Desktop, managed Core, and GameWatcher from the same
 Git HEAD, configuration, and x64 platform. The staging manifest records the
-relative path, byte length, and SHA-256 of all three required executables.
+relative path, byte length, and SHA-256 of all four required executables.
 Missing or mismatched artifacts fail closed.
 
 The Ligase installer is independent of the legacy Apollo CPack installer.
@@ -32,10 +32,14 @@ top-level state/installer entries and these owned trees:
 - `Deployment/Firewall/` and `Deployment/Drivers/` contain privileged
   deployment assets, while `Deployment/Manage-LigaseInstallation.ps1` is the
   action seam;
+- `Ligase Host.exe` is the native root launcher. It validates the structured
+  manifest and Desktop hash, forwards arguments without changing the child
+  working directory, and contains no product state or secrets;
 - `ligase-install-manifest.json`, `ligase-bootstrap.json`, and
   `Uninstall.exe` remain at the installation root.
 
 The Start Menu shortcut points to
+`Ligase Host.exe`; the real WinUI application remains
 `Desktop/Ligase.Host.Desktop.exe`. Every required executable is addressed by
 its manifest `relativePath` and verified by hash. Upgrading a legacy flat
 installation removes only exact paths listed by the new manifest's

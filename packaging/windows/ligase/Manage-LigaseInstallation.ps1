@@ -150,7 +150,7 @@ function Remove-LegacyFlatOwnedEntries($Manifest) {
 function Test-Artifacts($Manifest) {
   $states = @()
   foreach ($artifact in $Manifest.artifacts) {
-    if ($artifact.role -notin @("desktop", "managedCore", "gameWatcher") -or
+    if ($artifact.role -notin @("launcher", "desktop", "managedCore", "gameWatcher") -or
         [IO.Path]::IsPathRooted([string]$artifact.relativePath) -or
         ([string]$artifact.relativePath).Contains("..")) {
       throw "installManifestInvalid"
