@@ -156,6 +156,20 @@ public sealed class FreshInstallPackagingTests
             Path.Combine(repo, "packaging", "windows", "ligase", "LigaseHost.nsi"));
         var build = File.ReadAllText(
             Path.Combine(repo, "packaging", "windows", "ligase", "Build-LigaseInstaller.ps1"));
+        var harness = File.ReadAllText(
+            Path.Combine(
+                repo,
+                "packaging",
+                "windows",
+                "ligase",
+                "LigaseInstallDirectoryHarness.nsi"));
+        var validationInclude = File.ReadAllText(
+            Path.Combine(
+                repo,
+                "packaging",
+                "windows",
+                "ligase",
+                "InstallDirectoryValidation.nsh"));
 
         StringAssert.Contains(nsis, "SectionIn RO");
         StringAssert.Contains(nsis, "Section /o \"Ligase Virtual Display (optional)\"");
@@ -180,9 +194,41 @@ public sealed class FreshInstallPackagingTests
             nsis,
             "$INSTDIR\\Desktop\\Ligase.Host.Desktop.exe");
         StringAssert.Contains(nsis, "InstallDirRegKey HKLM");
+        StringAssert.Contains(nsis, "GetCommandLineW() w .r0");
+        StringAssert.Contains(nsis, "${StrStr} $InstallDirectoryOptionPresent");
         StringAssert.Contains(nsis, "/InstallDirectory=");
         StringAssert.Contains(nsis, "\"InstallLocation\" \"$INSTDIR\"");
         StringAssert.Contains(build, "Resolve-LigaseInstallDirectory.ps1");
+        Assert.IsFalse(
+            nsis.Contains("Function .onVerifyInstDir", StringComparison.Ordinal));
+        var requiredSection = nsis.IndexOf(
+            "Section \"Ligase Host (required)\"",
+            StringComparison.Ordinal);
+        var originalValidation = nsis.IndexOf(
+            "Call ResolveInstallDirectory",
+            requiredSection,
+            StringComparison.Ordinal);
+        var finalValidation = nsis.IndexOf(
+            "Call ResolveInstallDirectory",
+            originalValidation + 1,
+            StringComparison.Ordinal);
+        var firstWrite = nsis.IndexOf(
+            "SetOutPath \"$INSTDIR\"",
+            requiredSection,
+            StringComparison.Ordinal);
+        Assert.IsTrue(requiredSection >= 0);
+        Assert.IsTrue(originalValidation > requiredSection);
+        Assert.IsTrue(finalValidation > originalValidation);
+        Assert.IsTrue(firstWrite > finalValidation);
+        StringAssert.Contains(
+            harness,
+            "!include \"InstallDirectoryValidation.nsh\"");
+        StringAssert.Contains(validationInclude, "SetErrorLevel $0");
+        StringAssert.Contains(
+            validationInclude,
+            "SetEnvironmentVariableW(w \"LIGASE_INSTALL_RAW_PARAMETERS\", w r9)");
+        Assert.IsFalse(
+            harness.Contains("SetOutPath \"$INSTDIR\"", StringComparison.Ordinal));
     }
 
     [TestMethod]

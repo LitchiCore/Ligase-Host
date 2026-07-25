@@ -15,6 +15,8 @@ ShowUninstDetails show
 !include "MUI2.nsh"
 !include "LogicLib.nsh"
 !include "FileFunc.nsh"
+!include "StrFunc.nsh"
+${StrStr}
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_COMPONENTS
@@ -27,24 +29,9 @@ ShowUninstDetails show
 Var SetupMutex
 Var DataRoot
 Var InstallParameters
+Var InstallDirectoryOptionPresent
 
-Function ResolveInstallDirectory
-  System::Call 'kernel32::SetEnvironmentVariableW(w "LIGASE_INSTALL_RAW_PARAMETERS", w "$InstallParameters")'
-  ReadRegStr $2 HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Ligase Host" "InstallLocation"
-  System::Call 'kernel32::SetEnvironmentVariableW(w "LIGASE_INSTALL_REGISTERED_LOCATION", w "$2")'
-  System::Call 'kernel32::SetEnvironmentVariableW(w "LIGASE_INSTALL_DEFAULT_LOCATION", w "$PROGRAMFILES64\Ligase Host")'
-  nsExec::ExecToStack 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\Resolve-LigaseInstallDirectory.ps1"'
-  Pop $0
-  Pop $1
-  System::Call 'kernel32::SetEnvironmentVariableW(w "LIGASE_INSTALL_RAW_PARAMETERS", p 0)'
-  System::Call 'kernel32::SetEnvironmentVariableW(w "LIGASE_INSTALL_REGISTERED_LOCATION", p 0)'
-  System::Call 'kernel32::SetEnvironmentVariableW(w "LIGASE_INSTALL_DEFAULT_LOCATION", p 0)'
-  ${If} $0 != 0
-    MessageBox MB_OK|MB_ICONSTOP "The installation directory is invalid. Choose an absolute local folder below a drive root."
-    Abort
-  ${EndIf}
-  StrCpy $INSTDIR $1
-FunctionEnd
+!include "InstallDirectoryValidation.nsh"
 
 Function .onInit
   SetRegView 64
@@ -55,12 +42,25 @@ Function .onInit
     MessageBox MB_OK|MB_ICONSTOP "Another Ligase install, repair, or uninstall is already running."
     Abort
   ${EndIf}
-  ${GetParameters} $InstallParameters
-  ${GetOptions} $InstallParameters "/DataRoot=" $DataRoot
+  ; Preserve the exact native command line for duplicate/malformed validation.
+  System::Call 'kernel32::GetCommandLineW() w .r0'
+  StrCpy $InstallParameters $0
+  ${StrStr} $InstallDirectoryOptionPresent $InstallParameters "/InstallDirectory"
+  ${GetParameters} $6
+  StrCpy $0 $6
+  ${GetOptions} $0 "/DataRoot=" $DataRoot
   InitPluginsDir
   SetOutPath "$PLUGINSDIR"
   File /oname=Resolve-LigaseInstallDirectory.ps1 "${StageDir}\Deployment\Resolve-LigaseInstallDirectory.ps1"
-  Call ResolveInstallDirectory
+  ReadRegStr $2 HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Ligase Host" "InstallLocation"
+  ${If} $2 != ""
+    StrCpy $INSTDIR $2
+  ${EndIf}
+  StrCpy $0 $6
+  ${GetOptions} $0 "/InstallDirectory=" $3
+  ${If} $3 != ""
+    StrCpy $INSTDIR $3
+  ${EndIf}
 FunctionEnd
 
 Function un.onInit
@@ -74,13 +74,19 @@ Function un.onInit
   ${EndIf}
 FunctionEnd
 
-Function .onVerifyInstDir
-  StrCpy $InstallParameters '$\"/InstallDirectory=$INSTDIR$\"'
-  Call ResolveInstallDirectory
-FunctionEnd
-
 Section "Ligase Host (required)" SEC_MAIN
   SectionIn RO
+  ; Validate the original argv first so duplicates and malformed explicit
+  ; options cannot be corrected or hidden by the directory page.
+  StrCpy $4 $INSTDIR
+  Call ResolveInstallDirectory
+  ${If} $InstallDirectoryOptionPresent == ""
+    StrCpy $INSTDIR $4
+  ${EndIf}
+  ; Then validate the final directory-page value. Both validations happen
+  ; before SetOutPath or File can write to the selected installation root.
+  StrCpy $InstallParameters '$\"/InstallDirectory=$INSTDIR$\"'
+  Call ResolveInstallDirectory
   SetOutPath "$INSTDIR"
   File /r "${StageDir}\*"
   WriteUninstaller "$INSTDIR\Uninstall.exe"
