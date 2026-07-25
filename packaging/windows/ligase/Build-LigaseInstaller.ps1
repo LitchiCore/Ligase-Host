@@ -67,11 +67,15 @@ if ($ReleaseKind -eq "PublicRelease" -and (
 if (-not $SkipBuild) {
   & $CMake --build $cppRoot --config $Configuration --target sunshine --parallel
   if ($LASTEXITCODE -ne 0) { throw "coreBuildFailed" }
+  & $DotNet build-server shutdown
+  if ($LASTEXITCODE -ne 0) { throw "desktopBuildServerShutdownFailed" }
   & $DotNet clean (Join-Path $sourceRoot "src/Ligase.Desktop/Ligase.Host.Desktop.csproj") `
-    -c $Configuration -p:Platform=$Platform -r win-x64
+    -c $Configuration -p:Platform=$Platform -p:UseSharedCompilation=false `
+    -nodeReuse:false -r win-x64
   if ($LASTEXITCODE -ne 0) { throw "desktopCleanFailed" }
   & $DotNet publish (Join-Path $sourceRoot "src/Ligase.Desktop/Ligase.Host.Desktop.csproj") `
     -c $Configuration -p:Platform=$Platform -p:LigaseStructuredPackage=true `
+    -p:UseSharedCompilation=false -nodeReuse:false `
     -r win-x64 --self-contained true -o $desktop
   if ($LASTEXITCODE -ne 0) { throw "desktopPublishFailed" }
   $desktopPayloadValidation = & (Join-Path $PSScriptRoot "Test-LigaseDesktopPayload.ps1") `
