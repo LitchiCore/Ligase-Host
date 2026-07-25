@@ -370,6 +370,35 @@ public sealed class ApplicationLibraryTests
     }
 
     [TestMethod]
+    public async Task StructuredApolloWriterFailsClosedWhenTypedWatcherIsMissing()
+    {
+        var paths = new LigasePaths(_temporaryDirectory);
+        var installRoot = Path.Combine(_temporaryDirectory, "installed-missing-watcher");
+        var desktop = Path.Combine(installRoot, "Desktop");
+        Directory.CreateDirectory(desktop);
+        File.WriteAllText(
+            Path.Combine(installRoot, "ligase-install-manifest.json"),
+            """{"schemaVersion":1,"installMode":"packaged","installLayout":"structured-v1"}""");
+        var layout = InstallationLayoutResolver.ResolveFromDesktopBase(desktop);
+        var legacyLure = Path.Combine(desktop, "Ligase.GameWatcher.exe");
+        File.WriteAllText(legacyLure, "must-not-be-used");
+        var writer = new ApolloAppsWriter(paths, layout);
+        var item = new LibraryItem
+        {
+            Kind = LibraryItemKind.Steam,
+            Name = "Structured Game",
+            SteamAppId = 42,
+            SteamInstallPath = @"D:\Steam\steamapps\common\Test"
+        };
+
+        var exception = await Assert.ThrowsExceptionAsync<FileNotFoundException>(
+            () => writer.WriteAsync([item]));
+
+        Assert.AreEqual("managedGameWatcherUnavailable", exception.Message);
+        Assert.IsFalse(File.Exists(paths.ApolloAppsFile));
+    }
+
+    [TestMethod]
     public async Task ApolloWriterUsesDesktopEntryAndLeavesVirtualDisplayToApollo()
     {
         var paths = new LigasePaths(_temporaryDirectory);

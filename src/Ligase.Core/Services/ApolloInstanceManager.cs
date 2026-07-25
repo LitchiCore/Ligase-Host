@@ -579,6 +579,11 @@ public sealed class ApolloInstanceManager
 
     private string? FindBundledExecutable()
     {
+        if (_installationLayout.Kind is not InstallationLayoutKind.Development)
+            return File.Exists(_installationLayout.CoreExecutable)
+                ? _installationLayout.CoreExecutable
+                : null;
+
         var baseDirectory = AppContext.BaseDirectory;
         var candidates = new[]
         {

@@ -42,9 +42,12 @@ public static class InstallationLayoutResolver
             return CreateStructured(parent, desktop);
         }
         if (looksStructured &&
-            parent is not null &&
-            File.Exists(Path.Combine(parent, "ligase-install-manifest.json")))
-            throw new InvalidDataException("structuredInstallManifestInvalid");
+            parent is not null)
+        {
+            if (File.Exists(Path.Combine(parent, "ligase-install-manifest.json")))
+                throw new InvalidDataException("structuredInstallManifestInvalid");
+            throw new InvalidDataException("structuredInstallManifestMissing");
+        }
         if (IsManifest(desktop, expectedLayout: null))
             return CreateLegacy(desktop);
         return CreateDevelopment(desktop);

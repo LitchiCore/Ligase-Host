@@ -109,6 +109,13 @@ public sealed class ApolloAppsWriter : IApolloAppsWriter
 
     private string FindWatcherExecutable()
     {
+        if (_installationLayout.Kind is not InstallationLayoutKind.Development)
+        {
+            if (File.Exists(_installationLayout.GameWatcherExecutable))
+                return _installationLayout.GameWatcherExecutable;
+            throw new FileNotFoundException("managedGameWatcherUnavailable");
+        }
+
         var candidates = new[]
         {
             _installationLayout.GameWatcherExecutable,

@@ -42,9 +42,21 @@ public sealed class InstallationLayoutTests
                 fixture.Desktop));
     }
 
+    [TestMethod]
+    public void MissingStructuredManifestFailsClosedInsteadOfBecomingDevelopment()
+    {
+        using var fixture = new LayoutFixture(validManifest: null);
+
+        var exception = Assert.ThrowsException<InvalidDataException>(
+            () => InstallationLayoutResolver.ResolveFromDesktopBase(
+                fixture.Desktop));
+
+        Assert.AreEqual("structuredInstallManifestMissing", exception.Message);
+    }
+
     private sealed class LayoutFixture : IDisposable
     {
-        public LayoutFixture(bool validManifest)
+        public LayoutFixture(bool? validManifest)
         {
             Root = Path.Combine(
                 Environment.GetEnvironmentVariable("LIGASE_TEMP_ROOT")
@@ -52,13 +64,16 @@ public sealed class InstallationLayoutTests
                 "installation-layout-" + Guid.NewGuid().ToString("N"));
             Desktop = Path.Combine(Root, "Desktop");
             Directory.CreateDirectory(Desktop);
-            File.WriteAllText(
-                Path.Combine(Root, "ligase-install-manifest.json"),
-                validManifest
-                    ? """
-                      {"schemaVersion":1,"installMode":"packaged","installLayout":"structured-v1"}
-                      """
-                    : """{"schemaVersion":1,"installMode":"packaged"}""");
+            if (validManifest is not null)
+            {
+                File.WriteAllText(
+                    Path.Combine(Root, "ligase-install-manifest.json"),
+                    validManifest.Value
+                        ? """
+                          {"schemaVersion":1,"installMode":"packaged","installLayout":"structured-v1"}
+                          """
+                        : """{"schemaVersion":1,"installMode":"packaged"}""");
+            }
         }
 
         public string Root { get; }

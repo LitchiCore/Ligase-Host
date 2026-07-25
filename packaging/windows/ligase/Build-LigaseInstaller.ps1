@@ -120,6 +120,8 @@ Copy-Item -LiteralPath (Join-Path $sourceRoot "src_assets/windows/misc/firewall"
   -Destination (Join-Path $temporaryStage "Deployment/Firewall") -Recurse
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "Manage-LigaseInstallation.ps1") `
   -Destination (Join-Path $temporaryStage "Deployment")
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot "Resolve-LigaseInstallDirectory.ps1") `
+  -Destination (Join-Path $temporaryStage "Deployment")
 
 $artifactDefinitions = @(
   @{ role = "desktop"; relativePath = "Desktop/Ligase.Host.Desktop.exe" },
@@ -157,6 +159,7 @@ $artifacts = $artifactDefinitions | ForEach-Object {
 }
 $helperDefinitions = @(
   "Deployment/Manage-LigaseInstallation.ps1",
+  "Deployment/Resolve-LigaseInstallDirectory.ps1",
   "Deployment/Firewall/Manage-LigaseFirewall.ps1"
 )
 $privilegedHelpers = $helperDefinitions | ForEach-Object {

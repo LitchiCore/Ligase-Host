@@ -179,6 +179,98 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(
             nsis,
             "$INSTDIR\\Desktop\\Ligase.Host.Desktop.exe");
+        StringAssert.Contains(nsis, "InstallDirRegKey HKLM");
+        StringAssert.Contains(nsis, "/InstallDirectory=");
+        StringAssert.Contains(nsis, "\"InstallLocation\" \"$INSTDIR\"");
+        StringAssert.Contains(build, "Resolve-LigaseInstallDirectory.ps1");
+    }
+
+    [TestMethod]
+    public async Task InstallDirectoryResolverSupportsExplicitDAndRegisteredUpgrade()
+    {
+        const string explicitD = @"D:\Program Files\Ligase Host";
+        const string registeredD = @"D:\Applications\Ligase Host";
+
+        var explicitResult = await RunInstallDirectoryResolverAsync(
+            $"\"/InstallDirectory={explicitD}\"",
+            registeredD,
+            @"C:\Program Files\Ligase Host");
+        var upgradeResult = await RunInstallDirectoryResolverAsync(
+            string.Empty,
+            registeredD,
+            @"C:\Program Files\Ligase Host");
+
+        Assert.AreEqual(0, explicitResult.ExitCode, explicitResult.Error);
+        Assert.AreEqual(explicitD, explicitResult.Output);
+        Assert.AreEqual(0, upgradeResult.ExitCode, upgradeResult.Error);
+        Assert.AreEqual(registeredD, upgradeResult.Output);
+    }
+
+    [TestMethod]
+    public async Task InstallDirectoryResolverRejectsDuplicateRelativeRootAndNonCanonical()
+    {
+        var duplicate = await RunInstallDirectoryResolverAsync(
+            "\"/InstallDirectory=D:\\Ligase Host\" \"/InstallDirectory=E:\\Ligase Host\"",
+            string.Empty,
+            @"C:\Program Files\Ligase Host");
+        var relative = await RunInstallDirectoryResolverAsync(
+            "/InstallDirectory=relative",
+            string.Empty,
+            @"C:\Program Files\Ligase Host");
+        var root = await RunInstallDirectoryResolverAsync(
+            "/InstallDirectory=D:\\",
+            string.Empty,
+            @"C:\Program Files\Ligase Host");
+        var nonCanonical = await RunInstallDirectoryResolverAsync(
+            "\"/InstallDirectory=D:\\Programs\\..\\Ligase Host\"",
+            string.Empty,
+            @"C:\Program Files\Ligase Host");
+
+        Assert.AreNotEqual(0, duplicate.ExitCode);
+        Assert.AreNotEqual(0, relative.ExitCode);
+        Assert.AreNotEqual(0, root.ExitCode);
+        Assert.AreNotEqual(0, nonCanonical.ExitCode);
+        Assert.AreEqual("installDirectoryInvalid", duplicate.Error);
+        Assert.AreEqual("installDirectoryInvalid", relative.Error);
+        Assert.AreEqual("installDirectoryInvalid", root.Error);
+        Assert.AreEqual("installDirectoryInvalid", nonCanonical.Error);
+    }
+
+    private static async Task<(int ExitCode, string Output, string Error)>
+        RunInstallDirectoryResolverAsync(
+            string rawParameters,
+            string registered,
+            string defaultLocation)
+    {
+        var repo = FindRepositoryRoot();
+        var start = new ProcessStartInfo
+        {
+            FileName = "powershell.exe",
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+        start.Environment["LIGASE_INSTALL_RAW_PARAMETERS"] = rawParameters;
+        start.Environment["LIGASE_INSTALL_REGISTERED_LOCATION"] = registered;
+        start.Environment["LIGASE_INSTALL_DEFAULT_LOCATION"] = defaultLocation;
+        start.ArgumentList.Add("-NoProfile");
+        start.ArgumentList.Add("-NonInteractive");
+        start.ArgumentList.Add("-ExecutionPolicy");
+        start.ArgumentList.Add("Bypass");
+        start.ArgumentList.Add("-File");
+        start.ArgumentList.Add(Path.Combine(
+            repo,
+            "packaging",
+            "windows",
+            "ligase",
+            "Resolve-LigaseInstallDirectory.ps1"));
+        using var process = Process.Start(start)
+            ?? throw new InvalidOperationException("testProcessStartFailed");
+        var output = process.StandardOutput.ReadToEndAsync();
+        var error = process.StandardError.ReadToEndAsync();
+        await process.WaitForExitAsync();
+        return (process.ExitCode, await output, await error);
     }
 
     private static string FindRepositoryRoot()

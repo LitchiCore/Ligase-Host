@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Ligase.Host.Core.Domain.Installation;
 using Ligase.Host.Core.Services;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 
@@ -29,6 +30,38 @@ public sealed class ApolloInstanceManagerTests
         Assert.AreEqual(
             1,
             lines.Count(line => line.StartsWith("system_tray =", StringComparison.Ordinal)));
+    }
+
+    [TestMethod]
+    public void StructuredCoreMissingDoesNotUseLegacyFlatFallback()
+    {
+        var installRoot = Path.Combine(
+            Path.GetTempPath(),
+            "Ligase.Host.StructuredCore.Tests",
+            Guid.NewGuid().ToString("N"));
+        var desktop = Path.Combine(installRoot, "Desktop");
+        Directory.CreateDirectory(Path.Combine(desktop, "Apollo"));
+        File.WriteAllText(
+            Path.Combine(installRoot, "ligase-install-manifest.json"),
+            """{"schemaVersion":1,"installMode":"packaged","installLayout":"structured-v1"}""");
+        File.WriteAllText(
+            Path.Combine(desktop, "Apollo", "sunshine.exe"),
+            "must-not-be-used");
+        try
+        {
+            var layout = InstallationLayoutResolver.ResolveFromDesktopBase(desktop);
+            var manager = new ApolloInstanceManager(
+                new LigasePaths(Path.Combine(installRoot, "data")),
+                new ApolloPortAllocator(),
+                layout);
+
+            Assert.IsNull(manager.ExecutablePath);
+            Assert.IsFalse(manager.ManagedExecutable.IsAvailable);
+        }
+        finally
+        {
+            Directory.Delete(installRoot, recursive: true);
+        }
     }
 
     [TestMethod]

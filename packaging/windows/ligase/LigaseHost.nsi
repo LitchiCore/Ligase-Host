@@ -2,6 +2,7 @@ Unicode true
 RequestExecutionLevel admin
 Name "Ligase Host"
 InstallDir "$PROGRAMFILES64\Ligase Host"
+InstallDirRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Ligase Host" "InstallLocation"
 OutFile "${OutputFile}"
 SetCompressor /SOLID lzma
 ShowInstDetails show
@@ -25,8 +26,28 @@ ShowUninstDetails show
 
 Var SetupMutex
 Var DataRoot
+Var InstallParameters
+
+Function ResolveInstallDirectory
+  System::Call 'kernel32::SetEnvironmentVariableW(w "LIGASE_INSTALL_RAW_PARAMETERS", w "$InstallParameters")'
+  ReadRegStr $2 HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Ligase Host" "InstallLocation"
+  System::Call 'kernel32::SetEnvironmentVariableW(w "LIGASE_INSTALL_REGISTERED_LOCATION", w "$2")'
+  System::Call 'kernel32::SetEnvironmentVariableW(w "LIGASE_INSTALL_DEFAULT_LOCATION", w "$PROGRAMFILES64\Ligase Host")'
+  nsExec::ExecToStack 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\Resolve-LigaseInstallDirectory.ps1"'
+  Pop $0
+  Pop $1
+  System::Call 'kernel32::SetEnvironmentVariableW(w "LIGASE_INSTALL_RAW_PARAMETERS", p 0)'
+  System::Call 'kernel32::SetEnvironmentVariableW(w "LIGASE_INSTALL_REGISTERED_LOCATION", p 0)'
+  System::Call 'kernel32::SetEnvironmentVariableW(w "LIGASE_INSTALL_DEFAULT_LOCATION", p 0)'
+  ${If} $0 != 0
+    MessageBox MB_OK|MB_ICONSTOP "The installation directory is invalid. Choose an absolute local folder below a drive root."
+    Abort
+  ${EndIf}
+  StrCpy $INSTDIR $1
+FunctionEnd
 
 Function .onInit
+  SetRegView 64
   System::Call 'kernel32::CreateMutexW(p 0, i 0, w "Global\Ligase.Host.Setup.v1") p .r0 ?e'
   Pop $SetupMutex
   Pop $1
@@ -34,11 +55,16 @@ Function .onInit
     MessageBox MB_OK|MB_ICONSTOP "Another Ligase install, repair, or uninstall is already running."
     Abort
   ${EndIf}
-  ${GetParameters} $0
-  ${GetOptions} $0 "/DataRoot=" $DataRoot
+  ${GetParameters} $InstallParameters
+  ${GetOptions} $InstallParameters "/DataRoot=" $DataRoot
+  InitPluginsDir
+  SetOutPath "$PLUGINSDIR"
+  File /oname=Resolve-LigaseInstallDirectory.ps1 "${StageDir}\Deployment\Resolve-LigaseInstallDirectory.ps1"
+  Call ResolveInstallDirectory
 FunctionEnd
 
 Function un.onInit
+  SetRegView 64
   System::Call 'kernel32::CreateMutexW(p 0, i 0, w "Global\Ligase.Host.Setup.v1") p .r0 ?e'
   Pop $SetupMutex
   Pop $1
@@ -46,6 +72,11 @@ Function un.onInit
     MessageBox MB_OK|MB_ICONSTOP "Another Ligase install, repair, or uninstall is already running."
     Abort
   ${EndIf}
+FunctionEnd
+
+Function .onVerifyInstDir
+  StrCpy $InstallParameters '$\"/InstallDirectory=$INSTDIR$\"'
+  Call ResolveInstallDirectory
 FunctionEnd
 
 Section "Ligase Host (required)" SEC_MAIN
@@ -63,6 +94,14 @@ Section "Ligase Host (required)" SEC_MAIN
   ${EndIf}
   CreateDirectory "$SMPROGRAMS\Ligase Host"
   CreateShortcut "$SMPROGRAMS\Ligase Host\Ligase Host.lnk" "$INSTDIR\Desktop\Ligase.Host.Desktop.exe"
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Ligase Host" "DisplayName" "Ligase Host"
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Ligase Host" "InstallLocation" "$INSTDIR"
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Ligase Host" "UninstallString" '"$INSTDIR\Uninstall.exe"'
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Ligase Host" "QuietUninstallString" '"$INSTDIR\Uninstall.exe" /S'
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Ligase Host" "DisplayIcon" "$INSTDIR\Desktop\Ligase.Host.Desktop.exe"
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Ligase Host" "Publisher" "Ligase"
+  WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Ligase Host" "NoModify" 1
+  WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Ligase Host" "NoRepair" 1
 SectionEnd
 
 Section /o "Ligase Virtual Display (optional)" SEC_VDISPLAY
@@ -94,5 +133,6 @@ Section "Uninstall"
   noDriver:
   Delete "$SMPROGRAMS\Ligase Host\Ligase Host.lnk"
   RMDir "$SMPROGRAMS\Ligase Host"
+  DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Ligase Host"
   RMDir /r "$INSTDIR"
 SectionEnd
