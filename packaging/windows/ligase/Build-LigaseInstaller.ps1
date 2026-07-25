@@ -1,0 +1,250 @@
+[CmdletBinding()]
+param(
+  [ValidateSet("Debug", "Release")]
+  [string]$Configuration = "Release",
+  [ValidateSet("x64")]
+  [string]$Platform = "x64",
+  [Parameter(Mandatory)]
+  [string]$CppBuildRoot,
+  [Parameter(Mandatory)]
+  [string]$OutputRoot,
+  [string]$DotNet = "dotnet.exe",
+  [string]$CMake = "cmake.exe",
+  [string]$MakeNsis = "makensis.exe",
+  [ValidateSet("UnsignedDev", "PublicRelease")]
+  [string]$ReleaseKind = "UnsignedDev",
+  [string]$SigningTool,
+  [string[]]$AllowedPublisher = @(),
+  [switch]$SkipBuild
+)
+
+$ErrorActionPreference = "Stop"
+$sourceRoot = (Resolve-Path (Join-Path $PSScriptRoot "../../..")).Path
+$cppRoot = [IO.Path]::GetFullPath($CppBuildRoot)
+$output = [IO.Path]::GetFullPath($OutputRoot)
+$head = (& git -C $sourceRoot rev-parse HEAD).Trim()
+if ($LASTEXITCODE -ne 0 -or $head -notmatch '^[0-9a-f]{40}$') {
+  throw "sourceHeadUnavailable"
+}
+
+$work = Join-Path $output "work-$head-$Configuration-$Platform"
+$desktop = Join-Path $work "desktop"
+$watcher = Join-Path $work "watcher"
+$stage = Join-Path $work "stage"
+$label = if ($ReleaseKind -eq "UnsignedDev") { "UNSIGNED-DEV" } else { "release" }
+$package = Join-Path $output "Ligase-Host-$head-$Configuration-$Platform-$label-installer.exe"
+New-Item -ItemType Directory -Path $output -Force | Out-Null
+if ($ReleaseKind -eq "PublicRelease" -and (
+    [string]::IsNullOrWhiteSpace($SigningTool) -or
+    -not (Test-Path -LiteralPath $SigningTool -PathType Leaf) -or
+    $AllowedPublisher.Count -eq 0)) {
+  throw "publicSigningSeamUnavailable"
+}
+
+if (-not $SkipBuild) {
+  & $CMake --build $cppRoot --config $Configuration --target sunshine --parallel
+  if ($LASTEXITCODE -ne 0) { throw "coreBuildFailed" }
+  & $DotNet publish (Join-Path $sourceRoot "src/Ligase.Desktop/Ligase.Host.Desktop.csproj") `
+    -c $Configuration -p:Platform=$Platform -r win-x64 --self-contained true -o $desktop
+  if ($LASTEXITCODE -ne 0) { throw "desktopPublishFailed" }
+  & $DotNet publish (Join-Path $sourceRoot "tools/Ligase.GameWatcher/Ligase.GameWatcher.csproj") `
+    -c $Configuration -p:Platform=$Platform -r win-x64 --self-contained true -o $watcher
+  if ($LASTEXITCODE -ne 0) { throw "gameWatcherPublishFailed" }
+}
+
+$coreBinary = Join-Path $cppRoot "sunshine.exe"
+$desktopBinary = Join-Path $desktop "Ligase.Host.Desktop.exe"
+$watcherBinary = Join-Path $watcher "Ligase.GameWatcher.exe"
+foreach ($entry in @(
+  @{ code = "desktopArtifactMissing"; path = $desktopBinary },
+  @{ code = "managedCoreArtifactMissing"; path = $coreBinary },
+  @{ code = "gameWatcherArtifactMissing"; path = $watcherBinary }
+)) {
+  if (-not (Test-Path -LiteralPath $entry.path -PathType Leaf)) {
+    throw $entry.code
+  }
+}
+
+$temporaryStage = "$stage.pending"
+if (Test-Path -LiteralPath $temporaryStage) {
+  Remove-Item -LiteralPath $temporaryStage -Recurse -Force
+}
+New-Item -ItemType Directory -Path $temporaryStage | Out-Null
+Get-ChildItem -LiteralPath $desktop | ForEach-Object {
+  Copy-Item -LiteralPath $_.FullName -Destination $temporaryStage -Recurse -Force
+}
+Get-ChildItem -LiteralPath $watcher | ForEach-Object {
+  Copy-Item -LiteralPath $_.FullName -Destination $temporaryStage -Recurse -Force
+}
+New-Item -ItemType Directory -Path (Join-Path $temporaryStage "Apollo") | Out-Null
+Copy-Item -LiteralPath $coreBinary -Destination (Join-Path $temporaryStage "Apollo/sunshine.exe")
+New-Item -ItemType Directory -Path (Join-Path $temporaryStage "Drivers") | Out-Null
+Copy-Item -LiteralPath (Join-Path $sourceRoot "src_assets/windows/drivers/sudovda") `
+  -Destination (Join-Path $temporaryStage "Drivers/sudovda") -Recurse
+Copy-Item -LiteralPath (Join-Path $sourceRoot "src_assets/windows/misc/firewall") `
+  -Destination (Join-Path $temporaryStage "Firewall") -Recurse
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot "Manage-LigaseInstallation.ps1") `
+  -Destination $temporaryStage
+
+$artifactDefinitions = @(
+  @{ role = "desktop"; relativePath = "Ligase.Host.Desktop.exe" },
+  @{ role = "managedCore"; relativePath = "Apollo/sunshine.exe" },
+  @{ role = "gameWatcher"; relativePath = "Ligase.GameWatcher.exe" }
+)
+$artifacts = $artifactDefinitions | ForEach-Object {
+  $artifactPath = Join-Path $temporaryStage $_.relativePath
+  $unsignedHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $artifactPath).Hash.ToLowerInvariant()
+  if ($ReleaseKind -eq "PublicRelease") {
+    & $SigningTool $artifactPath
+    if ($LASTEXITCODE -ne 0) { throw "artifactSigningFailed" }
+  }
+  $signature = Get-AuthenticodeSignature -LiteralPath $artifactPath
+  if ($ReleaseKind -eq "PublicRelease" -and (
+      $signature.Status -ne "Valid" -or
+      $null -eq $signature.TimeStamperCertificate -or
+      $AllowedPublisher -notcontains $signature.SignerCertificate.Subject)) {
+    throw "artifactSignatureInvalid"
+  }
+  [ordered]@{
+    role = $_.role
+    relativePath = $_.relativePath
+    unsignedContentSha256 = $unsignedHash
+    signedArtifactSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $artifactPath).Hash.ToLowerInvariant()
+    size = (Get-Item -LiteralPath $artifactPath).Length
+    version = [Diagnostics.FileVersionInfo]::GetVersionInfo($artifactPath).FileVersion
+    signature = [ordered]@{
+      status = if ($ReleaseKind -eq "PublicRelease") { "valid" } else { "nonRelease" }
+      signerSubject = if ($signature.SignerCertificate) { $signature.SignerCertificate.Subject } else { $null }
+      signerThumbprint = if ($signature.SignerCertificate) { $signature.SignerCertificate.Thumbprint } else { $null }
+      timestamped = $null -ne $signature.TimeStamperCertificate
+    }
+  }
+}
+$helperDefinitions = @(
+  "Manage-LigaseInstallation.ps1",
+  "Firewall/Manage-LigaseFirewall.ps1"
+)
+$privilegedHelpers = $helperDefinitions | ForEach-Object {
+  $helperPath = Join-Path $temporaryStage $_
+  $unsignedHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $helperPath).Hash.ToLowerInvariant()
+  if ($ReleaseKind -eq "PublicRelease") {
+    & $SigningTool $helperPath
+    if ($LASTEXITCODE -ne 0) { throw "helperSigningFailed" }
+  }
+  $signature = Get-AuthenticodeSignature -LiteralPath $helperPath
+  if ($ReleaseKind -eq "PublicRelease" -and (
+      $signature.Status -ne "Valid" -or
+      $null -eq $signature.TimeStamperCertificate -or
+      $AllowedPublisher -notcontains $signature.SignerCertificate.Subject)) {
+    throw "helperSignatureInvalid"
+  }
+  [ordered]@{
+    relativePath = $_
+    unsignedContentSha256 = $unsignedHash
+    signedArtifactSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $helperPath).Hash.ToLowerInvariant()
+    signerSubject = if ($signature.SignerCertificate) { $signature.SignerCertificate.Subject } else { $null }
+    signerThumbprint = if ($signature.SignerCertificate) { $signature.SignerCertificate.Thumbprint } else { $null }
+    timestamped = $null -ne $signature.TimeStamperCertificate
+  }
+}
+$driverSignature = Get-AuthenticodeSignature -LiteralPath (
+  Join-Path $temporaryStage "Drivers/sudovda/sudovda.cat")
+$driverCertificate = [Security.Cryptography.X509Certificates.X509Certificate2]::new(
+  (Join-Path $temporaryStage "Drivers/sudovda/sudovda.cer"))
+$driverSelfSigned = $driverCertificate.Subject -ceq $driverCertificate.Issuer
+$driverExpired = [DateTime]::UtcNow -lt $driverCertificate.NotBefore.ToUniversalTime() -or
+  [DateTime]::UtcNow -gt $driverCertificate.NotAfter.ToUniversalTime()
+$driverTrust = if ($driverExpired) { "expired" }
+  elseif ($driverSelfSigned -and $driverSignature.Status -eq "Valid") {
+    "locallyTrustedSelfSigned"
+  }
+  elseif ($driverSelfSigned) { "untrusted" }
+  elseif ($driverSignature.Status -eq "Valid") { "caTrusted" }
+  else { "untrusted" }
+if ($ReleaseKind -eq "PublicRelease" -and (
+    $driverTrust -ne "caTrusted" -or
+    $null -eq $driverSignature.TimeStamperCertificate)) {
+  throw "virtualDisplaySignatureInvalid"
+}
+$manifest = [ordered]@{
+  schemaVersion = 1
+  sourceHead = $head
+  configuration = $Configuration
+  platform = $Platform
+  installMode = "packaged"
+  releaseKind = $ReleaseKind
+  artifacts = $artifacts
+  privilegedHelpers = $privilegedHelpers
+  virtualDisplay = [ordered]@{
+    required = $false
+    installer = "Drivers/sudovda/install.bat"
+    uninstaller = "Drivers/sudovda/uninstall.bat"
+    catalogSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath (
+      Join-Path $temporaryStage "Drivers/sudovda/sudovda.cat")).Hash.ToLowerInvariant()
+    signerSubject = if ($driverSignature.SignerCertificate) {
+      $driverSignature.SignerCertificate.Subject
+    } else { $null }
+    signerThumbprint = if ($driverSignature.SignerCertificate) {
+      $driverSignature.SignerCertificate.Thumbprint
+    } else { $null }
+    certificateThumbprint = $driverCertificate.Thumbprint
+    subject = $driverCertificate.Subject
+    issuer = $driverCertificate.Issuer
+    selfSigned = $driverSelfSigned
+    timestamped = $null -ne $driverSignature.TimeStamperCertificate
+    trust = $driverTrust
+  }
+  firewall = [ordered]@{
+    required = $false
+    manifest = "Firewall/ligase-firewall-v1.json"
+    script = "Firewall/Manage-LigaseFirewall.ps1"
+    basePort = 48989
+  }
+  encoder = [ordered]@{
+    requiredForInstall = $false
+    requiredForStreaming = $true
+    probe = "managedCoreRuntime"
+  }
+}
+[IO.File]::WriteAllText(
+  (Join-Path $temporaryStage "ligase-install-manifest.json"),
+  ($manifest | ConvertTo-Json -Depth 8 -Compress),
+  [Text.UTF8Encoding]::new($false))
+
+& (Join-Path $temporaryStage "Manage-LigaseInstallation.ps1") `
+  -Action Readback -InstallDirectory $temporaryStage | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "stagingReadbackFailed" }
+
+if (Test-Path -LiteralPath $stage) {
+  Remove-Item -LiteralPath $stage -Recurse -Force
+}
+Move-Item -LiteralPath $temporaryStage -Destination $stage
+$nsisArguments = @(
+  "/DStageDir=$stage",
+  "/DOutputFile=$package"
+)
+if ($ReleaseKind -eq "PublicRelease") {
+  $nsisArguments += "/DSignerTool=$SigningTool"
+}
+$nsisArguments += (Join-Path $PSScriptRoot "LigaseHost.nsi")
+& $MakeNsis @nsisArguments
+if ($LASTEXITCODE -ne 0) { throw "nsisBuildFailed" }
+$installerSignature = Get-AuthenticodeSignature -LiteralPath $package
+if ($ReleaseKind -eq "PublicRelease" -and (
+    $installerSignature.Status -ne "Valid" -or
+    $null -eq $installerSignature.TimeStamperCertificate -or
+    $AllowedPublisher -notcontains $installerSignature.SignerCertificate.Subject)) {
+  throw "installerSignatureInvalid"
+}
+
+[ordered]@{
+  code = "installerBuilt"
+  sourceHead = $head
+  configuration = $Configuration
+  platform = $Platform
+  releaseKind = $ReleaseKind
+  manifestSha256 = (Get-FileHash -Algorithm SHA256 `
+    -LiteralPath (Join-Path $stage "ligase-install-manifest.json")).Hash.ToLowerInvariant()
+  installerSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $package).Hash.ToLowerInvariant()
+  installerSignature = if ($ReleaseKind -eq "PublicRelease") { "valid" } else { "nonRelease" }
+} | ConvertTo-Json -Compress
