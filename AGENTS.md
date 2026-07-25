@@ -28,6 +28,39 @@
   lifecycle, protocol, firewall, and cross-client contracts. Do not duplicate
   scripts, wire schemas, route matrices, secrets, or security rules in a
   secondary document.
+- When present, the coordination-root `AUTHORITY.md` is the owner and
+  field-location index for Android, Host, and Layouts Web. Read it before
+  cross-repository work and report stale paths or ownership conflicts to the
+  coordinator. The coordinator maintains that index; repository agents do not
+  edit it concurrently. It never replaces canonical Host documents, machine
+  JSON, route implementations, tests, or typed models.
+- The domain owner prepares a review snapshot with an exact allowlist, stable
+  byte sizes and SHA-256 values, machine validation, and explicit exclusions.
+  Review assets remain uncommitted and must be labelled `REVIEW`; issuing a
+  revision invalidates all older hashes.
+- Every affected consumer performs an independent, read-only review and returns
+  `ACCEPT` or `NEEDS_REVISION` against the exact snapshot. Silence, an earlier
+  acceptance, build success, or a coordinator summary is not acceptance.
+- `NEEDS_REVISION` returns the snapshot to its owner. The owner changes only
+  review assets, publishes new hashes, and repeats every required review.
+  Production implementation, staging, candidate packaging, and compatibility
+  fallbacks are prohibited while any required reviewer has not accepted.
+- After all required reviews accept, wait for explicit coordinator
+  authorization before staging the machine authority. Commit and push that
+  authority as an exact change and report the remote SHA. Begin production work
+  only under a separately stated implementation scope, in compile-safe
+  dependency order.
+- Frontend and backend owners communicate typed seams and blockers directly,
+  but both report review verdicts, authorization needs, commit SHAs, runtime
+  mutations, and final evidence to the coordinator. A peer notification does
+  not itself authorize a broader action.
+- In a shared checkout, never stage, revert, format, or repair peer WIP. Reserve
+  build, product, installer, and runtime windows explicitly and release them
+  promptly. Cross-repository changes remain separate commits in their owning
+  repositories.
+- Reports must distinguish `REVIEW`, `FROZEN`, `TRANSITIONAL`, implemented,
+  packaged, installed, runtime-tested, and blocked states. Provider authority
+  and typed API commits precede dependent consumer implementation.
 - Every task final report and commit message must declare
   `DOC_IMPACT=UPDATED|NONE` with a reason. Changes to user behavior, UI flow,
   typed owners or dependencies, installation layout/launcher/bootstrap,
