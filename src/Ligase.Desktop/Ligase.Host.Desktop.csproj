@@ -34,11 +34,34 @@
              Link="Firewall\ligase-firewall-v1.json"
              CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
+  <PropertyGroup>
+    <GameWatcherProject>$(MSBuildProjectDirectory)\..\..\tools\Ligase.GameWatcher\Ligase.GameWatcher.csproj</GameWatcherProject>
+  </PropertyGroup>
   <Target Name="CopyGameWatcher" AfterTargets="Build">
+    <MSBuild
+      Projects="$(GameWatcherProject)"
+      Targets="GetTargetPath"
+      Properties="Configuration=$(Configuration);Platform=$(Platform)">
+      <Output TaskParameter="TargetOutputs" ItemName="_GameWatcherTarget" />
+    </MSBuild>
+    <PropertyGroup>
+      <_GameWatcherSourceDirectory>@(_GameWatcherTarget->'%(RootDir)%(Directory)')</_GameWatcherSourceDirectory>
+    </PropertyGroup>
     <ItemGroup>
-      <_GameWatcherFiles Include="$(MSBuildProjectDirectory)\..\..\tools\Ligase.GameWatcher\bin\$(Configuration)\net8.0-windows10.0.19041.0\Ligase.GameWatcher.*" />
+      <_GameWatcherFiles Include="$(_GameWatcherSourceDirectory)Ligase.GameWatcher.*" />
+      <_DeployedGameWatcherFiles Include="$(TargetDir)Ligase.GameWatcher.*" />
     </ItemGroup>
-    <Copy SourceFiles="@(_GameWatcherFiles)" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" />
+    <Delete
+      Condition="'$(_GameWatcherSourceDirectory)' != '$(TargetDir)'"
+      Files="@(_DeployedGameWatcherFiles)" />
+    <Error
+      Condition="'@(_GameWatcherFiles)' == ''"
+      Text="The $(Platform) $(Configuration) Ligase.GameWatcher output is missing from '@(_GameWatcherTarget)'." />
+    <Copy
+      Condition="'$(_GameWatcherSourceDirectory)' != '$(TargetDir)'"
+      SourceFiles="@(_GameWatcherFiles)"
+      DestinationFolder="$(TargetDir)"
+      SkipUnchangedFiles="true" />
   </Target>
   <Target Name="CopyLigaseSystemCovers" AfterTargets="Build">
     <ItemGroup>
