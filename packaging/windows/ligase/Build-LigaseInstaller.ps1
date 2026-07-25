@@ -68,7 +68,7 @@ if (-not $SkipBuild) {
   & $CMake --build $cppRoot --config $Configuration --target sunshine --parallel
   if ($LASTEXITCODE -ne 0) { throw "coreBuildFailed" }
   & $DotNet clean (Join-Path $sourceRoot "src/Ligase.Desktop/Ligase.Host.Desktop.csproj") `
-    -c $Configuration -p:Platform=$Platform
+    -c $Configuration -p:Platform=$Platform -r win-x64
   if ($LASTEXITCODE -ne 0) { throw "desktopCleanFailed" }
   & $DotNet publish (Join-Path $sourceRoot "src/Ligase.Desktop/Ligase.Host.Desktop.csproj") `
     -c $Configuration -p:Platform=$Platform -p:LigaseStructuredPackage=true `

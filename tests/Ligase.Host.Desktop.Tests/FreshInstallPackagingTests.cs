@@ -188,6 +188,9 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(build, "-p:Platform=$Platform");
         StringAssert.Contains(build, "-p:LigaseStructuredPackage=true");
         StringAssert.Contains(build, "desktopCleanFailed");
+        StringAssert.Contains(
+            build,
+            "-c $Configuration -p:Platform=$Platform -r win-x64");
         StringAssert.Contains(build, "Test-LigaseDesktopPayload.ps1");
         StringAssert.Contains(build, "Test-LigaseDesktopStartup.ps1");
         StringAssert.Contains(build, "-Filter \"Ligase.GameWatcher.*\"");
