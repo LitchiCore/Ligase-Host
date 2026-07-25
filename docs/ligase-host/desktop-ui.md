@@ -1,11 +1,79 @@
 # Ligase Host desktop UI
 
+Ligase Host is the native Windows control surface for its managed streaming
+Core. It is not a WebView wrapper around Apollo's configuration site.
+
+## Composition and ownership
+
+`Ligase.Host.Desktop` is the composition root and Presentation host:
+
+- `App.xaml.cs` resolves the structured installation and selected data root,
+  registers Core Application/Infrastructure services, platform adapters, and
+  page-scoped view models;
+- `MainWindow` owns shell navigation, title-bar and window lifetime behavior,
+  but not page business state;
+- pages and view models consume typed services. They do not parse installation
+  manifests or scripts, infer readiness from paths, or write product JSON;
+- `Presentation/Onboarding/HostSetupViewModel` consumes
+  `IInstallationReadinessService` and
+  `IInstallationRecoveryLauncher`. The closed readiness DTO is the only owner
+  of setup, artifact, display, firewall, identity/runtime, signing, and driver
+  trust projections shown by the four setup cards;
+- Apollo remains the runtime owner for sessions, encoders, input, audio, and
+  GameStream compatibility. Desktop reaches it through narrow typed services
+  and versioned routes.
+
+Installation paths and launcher behavior are owned by
+[`fresh-install.md`](fresh-install.md). Firewall scope and privileged actions
+are owned by [`windows-firewall.md`](windows-firewall.md). Protocol and error
+shapes remain with their route-specific canonical contracts; this UI document
+does not define a universal error envelope.
+
+## Navigation and first route
+
+The WinUI 3 shell uses `NavigationView`, a custom title bar, semantic theme
+resources, dependency injection, and page-scoped view models.
+
+| Area | Responsibility |
+| --- | --- |
+| Complete Host setup | Initial typed-readiness route; four setup cards and safe recovery links |
+| Overview | Host summary and guided entry points |
+| Game library | Search, local view sorting, shared manual order, and launch-entry management |
+| Add game | Steam discovery and confirmed non-Steam additions |
+| Layout hall | Read-only installed layout catalog projection |
+| Stream monitor | Core status, local preview, and explicit active-session cancellation |
+| Devices | Pairing approvals, permissions, display policy, and device connection projection |
+| Settings | Background lifetime, language, startup, and explicit LAN firewall action |
+
+Every process launch initially navigates to **Complete Host setup**. The
+`Setup` projection alone decides whether first-run work is required; the UI
+does not infer first run from an empty directory. A completed setup can
+continue to the ordinary shell without claiming that an encoder or media
+session is active.
+
+The four cards are:
+
+1. **Core files**: Desktop, managed Core, and GameWatcher artifact readiness;
+2. **Display capability**: physical-desktop streaming and optional virtual
+   display are stated separately;
+3. **LAN access**: exact Ligase-owned firewall readback and an explicit path to
+   Settings;
+4. **Host ready**: identity availability, managed Core runtime, and separately
+   reported streaming capability.
+
+Ordinary startup never invokes UAC, installs a display driver, removes a
+certificate, or cleans historical firewall rules. A visible recovery action
+only opens the verified installer seam or navigates to the explicit Settings
+action represented by the typed snapshot.
+
 ## Shared manual order and local view sorting
 
 The game-library toolbar separates local view sorting from shared Host order:
 
-- Manual order is shared, adjusted with per-game up/down controls, and persisted
-  through the managed authority transaction.
+- Manual order is shared. After the user chooses **Start sorting**, whole cards
+  can be dragged; displaced cards show the prospective order and dropping
+  persists the complete published UUID sequence through the managed authority
+  transaction.
 - Name A-Z/Z-A, added newest/oldest, and last played are deterministic local
   view choices. They do not change the library revision or Sync.
 
@@ -18,20 +86,9 @@ without leaking Host-only metadata. All identities remain unchanged. Operate
 clients may submit the same complete manual UUID sequence with optimistic
 `baseRevision`; `409` requires a fresh pull and is never automatically replayed.
 
-Ligase Host is a native Windows control surface for Apollo's C++ streaming core.
-It is not a WebView wrapper around Apollo's existing configuration site.
-
-## First-use product path
-
-The default experience exposes only four user goals: start the Host, add a
-game, see a device, and start streaming. Port allocation, certificates,
-application manifests, Sync revisions, encoder probing, and resolution
-inheritance are automatic and absent from first use. Diagnostics use
-progressive disclosure under advanced settings.
-
-Each page emphasizes one primary action. Error text must explain both what
-happened and what the user can do now, and should offer retry, re-pair, or
-automatic repair instead of exposing HTTP status codes or exception text.
+Each page emphasizes one primary action. Error text explains what happened and
+what the user can do next without exposing HTTP status codes, paths, secrets,
+arguments, or exception text.
 
 ## Local Windows shortcut preview boundary
 
@@ -65,48 +122,43 @@ preview and require explicit confirmation, then use
 `LibraryMutationCoordinator` under managed authority. Duplicate detection is
 based on canonical target plus arguments, never display name.
 
-## Product boundary
-
-- `Ligase.Host.Desktop` owns setup, discovery, day-to-day host status, devices,
-  games, and guided configuration.
-- Apollo remains the streaming engine and the source of truth for active
-  sessions, encoders, input, audio, and GameStream compatibility.
-- The desktop process communicates with Apollo through narrow, versioned
-  Ligase routes. It must not edit `apps.json` concurrently with Apollo.
-- Artemis/TouchKit remains a separate Android client. Host/client capabilities
-  are synchronized through the paired GameStream HTTPS channel; this repository
-  does not modify the Android project.
-- Ligase Host does not locate or launch an existing system Apollo service. A
-  Ligase-owned core must be bundled beside the desktop executable or built in
-  this repository.
-
-## Navigation
-
-The first shell uses WinUI 3 `NavigationView`, a custom title bar, theme resource
-dictionaries, dependency injection, and page-scoped view models.
-
-| Area | Responsibility |
-| --- | --- |
-| Overview | Service health, streaming readiness, guided fixes |
-| Game library | Discover, search, import, and maintain launch entries |
-| Devices | Paired devices, attended pairing approvals, permissions, display policy, and connection state |
-| Settings | Background lifetime, Windows startup, and display language |
-
-The current vertical slice includes Steam discovery, non-Steam applications,
-persistent library sorting, physical/virtual desktop entries, per-application
-resolution settings, an isolated Apollo process, device access management, and
-a low-frame-rate desktop monitor.
-
 The Stream Monitor page provides an explicit **End stream** action. It requires
 confirmation, disconnects the active session without deleting pairing or
 library data, and reports that no session is active when repeated. The desktop
 calls a loopback-only Ligase core route; remote callers cannot use this control.
 
+## Independent runtime axes
+
+These five axes must be read and displayed independently:
+
+| Axis | Owner and meaning | What it does not prove |
+| --- | --- | --- |
+| Desktop lifecycle | Windows Desktop process/window/tray and single-instance activation | Core started, device connected, or stream active |
+| Managed Core lifecycle | `ApolloInstanceManager` generation-bound process state | Encoder readiness, a connected device, or media traffic |
+| Device state | Paired-device projection and its `connected` field | A currently active stream for that device |
+| Launch/session state | Core launch/session authority, including app identity and `currentgame` projections where applicable | Active RTSP/media transport in every system-entry flow |
+| Media transport | Active RTSP/session and client connection evidence | Target game process health after disconnect or quit |
+
+`ApolloInstanceManager.IsRunning` means only that the owned Core process has
+not exited. It must never be labelled “streaming.” Likewise, `connected`,
+`currentgame`, or a UI preview sample cannot substitute for active
+RTSP/session evidence. Real stream acceptance records the state while the
+client is connected, not only the `FREE` samples before and after.
+
+See [`managed-core-lifecycle.md`](managed-core-lifecycle.md) for Core process
+ownership and bounded stop outcomes, and
+[`device-access.md`](device-access.md) for device permission/session actions.
+
 ## Runtime data
 
-All Ligase-owned files live below `%LOCALAPPDATA%\Ligase Host`:
+Runtime data lives below the data root selected by the root bootstrap. The UI
+must obtain that root from typed installation/path services; it must not assume
+`%LOCALAPPDATA%`, reuse a previous instance, or derive it from the current
+working directory.
 
-| File | Authority and contents |
+Common files relative to the selected data root include:
+
+| Relative file | Authority and contents |
 | --- | --- |
 | `library.json` | Host-owned application collection, sort mode, timestamps, and revision |
 | `streaming.json` | Global resolution and UUID-keyed application overrides |
@@ -219,8 +271,8 @@ the frozen cross-client semantics, pairing protocol, and shared color tokens.
   the tray icon and stops only the Ligase-owned Apollo process.
 - Optional Windows startup uses the current-user Run key with `--minimized`, so
   login startup does not display the main window.
-- Runtime preferences are stored under `%LOCALAPPDATA%\Ligase Host` and never
-  share state or ports with an existing Apollo installation.
+- Runtime preferences are stored under the selected data root and never import
+  state from an existing system Apollo installation.
 - The display language supports system default, Simplified Chinese, and
   English. Language changes are persisted and applied on the next launch.
 - Settings includes **Send Windows test notification**. It verifies the same
@@ -241,6 +293,22 @@ dotnet run --project tools/Ligase.SteamProbe/Ligase.SteamProbe.csproj
 The probe is read-only and prints the discovered library as JSON. It is useful
 for diagnosing Steam discovery without starting the desktop UI.
 
+## Verification matrix
+
+Evidence is reported at the layer where it was collected:
+
+| Layer | Required evidence | Does not establish |
+| --- | --- | --- |
+| Source and automated | focused/full tests, Debug/Release x64 build, diff and secret/path scans | packaged resources or installed UI |
+| Packaged payload | structured tree, manifest/hash validation, XBF/PRI/runtime presence, negative fail-closed cases | installed activation or user-visible rendering |
+| Installed product | root launcher from a non-install CWD, single-instance behavior, first-route cards, light/dark and narrow/wide UI, Core/FREE and exit/restart | real pairing or active media |
+| Real integration | attended pairing, permission readback, active RTSP/session sampling, disconnect/quit target-process semantics | another device, network, or driver configuration not tested |
+
+The frozen color-token production mapping has automated coverage but remains
+`REAL_UI_PENDING` until a containing installer passes installed light/dark,
+focus, disabled, and status-state inspection. An older installed build must not
+be cited as that evidence.
+
 ## Documentation discipline
 
 Every product change must update its affected documentation in the same commit:
@@ -248,9 +316,22 @@ Every product change must update its affected documentation in the same commit:
 - user-visible desktop behavior belongs in this document;
 - Host/Android fields, routes, revisions, and fallback rules belong in
   `android-sync-contract.md`;
-- build or verification changes belong in the build section above;
+- installation layout/launcher/bootstrap changes belong in
+  `fresh-install.md`;
+- Core process lifetime changes belong in `managed-core-lifecycle.md`;
+- firewall/UAC scope belongs in `windows-firewall.md`;
+- route-specific protocol, security, error, permission, and session semantics
+  belong in their canonical contract and are linked rather than copied here;
+- real acceptance-step changes belong in the verification matrix above;
 - a code change is not considered complete if the documented behavior or
   protocol no longer matches the implementation.
+
+Every task final report and commit message declares
+`DOC_IMPACT=UPDATED|NONE` with a reason. Mechanical or test-only work may use
+`NONE`; changes to user behavior, UI flow, typed owners/dependencies,
+installation, protocol/security/session behavior, privileged actions, or real
+acceptance steps require `UPDATED` in the same commit. Planned and
+`REAL_UI_PENDING` behavior is never described as implemented or passed.
 
 ## Steam discovery contract
 

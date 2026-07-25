@@ -45,6 +45,15 @@ its manifest `relativePath` and verified by hash. Upgrading a legacy flat
 installation removes only exact paths listed by the new manifest's
 `legacyFlatOwnedEntries`; unknown files and all user data are retained.
 
+The legacy flat list is upgrade-cleanup input only; it is not a supported
+runtime layout or fallback search path. A missing structured payload fails
+closed. Product launch must not be rescued with repository/Debug binaries,
+hand-copied dependencies, or a child working-directory change.
+
+Desktop composition, first-route behavior, and installed-product acceptance are
+documented in [`desktop-ui.md`](desktop-ui.md). That document links here rather
+than duplicating manifest, script, cleanup, or privileged-action rules.
+
 The managed Core and GameWatcher are required. SudoVDA is optional: without it,
 physical-desktop streaming remains available while virtual-display-only
 features must be disabled with `virtualDisplayNotInstalled`. The readiness

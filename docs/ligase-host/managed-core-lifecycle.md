@@ -3,6 +3,13 @@
 `ApolloInstanceManager` is the sole owner of the managed Sunshine process.
 Start and stop operations are serialized, generation-bound, and bounded.
 
+`IsRunning` is a process-lifecycle projection only: it means the currently
+owned process has not exited. It does not mean a device is connected, an
+application is launched, an RTSP/session is active, media is flowing, or an
+encoder probe has succeeded. Those states have separate owners and evidence;
+see the independent runtime axes in
+[`desktop-ui.md`](desktop-ui.md#independent-runtime-axes).
+
 ## Stop bounds
 
 The production stop budget is split into independently reported stages:
@@ -53,3 +60,7 @@ No caller waits forever. A platform operation that completes after its stage
 timeout remains fault-observed, while the process stays tracked for retry or a
 later generation-bound exit callback. A timed-out process is never reported as
 stopped.
+
+An unexpected Core exit updates Core lifecycle state and offers recovery; it
+does not implicitly terminate the Desktop window. Explicit product Exit remains
+the path that requests bounded Core cleanup and then closes Desktop.
