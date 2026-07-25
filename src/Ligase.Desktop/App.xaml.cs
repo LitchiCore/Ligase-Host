@@ -1,4 +1,5 @@
 using Ligase.Host.Core.Application.LayoutCatalog;
+using Ligase.Host.Core.Application.Installation;
 using Ligase.Host.Core.Application.WindowsFirewall;
 using Ligase.Host.Core.Infrastructure.Storage;
 using Ligase.Host.Core.Infrastructure.Windows;
@@ -39,6 +40,18 @@ public partial class App : Application
                     new JsonLayoutCatalogRepository(
                         Path.Combine(paths.RootDirectory, "layout-catalog.json")));
                 services.AddSingleton<LayoutCatalogService>();
+                services.AddSingleton<
+                    IInstallationReadbackSource,
+                    WindowsInstallationReadbackSource>();
+                services.AddSingleton<
+                    IInstallationReadinessService,
+                    InstallationReadinessService>();
+                services.AddSingleton<
+                    IInstallationSetupProbe,
+                    HostInstallationSetupProbe>();
+                services.AddSingleton<
+                    IInstallationRecoveryLauncher,
+                    UnavailableInstallationRecoveryLauncher>();
                 services.AddSingleton<ISteamInstallationLocator, WindowsSteamInstallationLocator>();
                 services.AddSingleton<ISteamLibraryService, SteamLibraryService>();
                 services.AddSingleton(_ =>
