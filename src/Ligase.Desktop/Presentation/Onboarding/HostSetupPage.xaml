@@ -1,0 +1,210 @@
+<Page
+    x:Class="Ligase.Host.Desktop.Presentation.Onboarding.HostSetupPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <ScrollViewer>
+        <Grid Margin="32,28,32,40" RowSpacing="18">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+
+            <StackPanel Spacing="6">
+                <TextBlock Style="{StaticResource LigaseEyebrowTextStyle}" Text="FIRST RUN" />
+                <TextBlock Style="{StaticResource LigasePageTitleStyle}" Text="完成 Host 设置" />
+                <TextBlock
+                    MaxWidth="720"
+                    HorizontalAlignment="Left"
+                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                    Text="确认安装文件、显示能力和局域网访问，然后创建这台电脑的新 Host 身份。"
+                    TextWrapping="Wrap" />
+            </StackPanel>
+
+            <InfoBar
+                Grid.Row="1"
+                IsClosable="False"
+                IsOpen="{x:Bind ViewModel.HasNotice, Mode=OneWay}"
+                Message="{x:Bind ViewModel.Notice, Mode=OneWay}"
+                Severity="Warning"
+                Title="安装提示" />
+
+            <InfoBar
+                Grid.Row="2"
+                IsClosable="False"
+                IsOpen="{x:Bind ViewModel.HasError, Mode=OneWay}"
+                Message="{x:Bind ViewModel.ErrorMessage, Mode=OneWay}"
+                Severity="Error"
+                Title="暂时无法读取设置状态" />
+
+            <Grid
+                x:Name="StepsGrid"
+                Grid.Row="3"
+                ColumnSpacing="16"
+                RowSpacing="16">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+                <VisualStateManager.VisualStateGroups>
+                    <VisualStateGroup>
+                        <VisualState>
+                            <VisualState.StateTriggers>
+                                <AdaptiveTrigger MinWindowWidth="820" />
+                            </VisualState.StateTriggers>
+                        </VisualState>
+                        <VisualState>
+                            <VisualState.StateTriggers>
+                                <AdaptiveTrigger MinWindowWidth="0" />
+                            </VisualState.StateTriggers>
+                            <VisualState.Setters>
+                                <Setter Target="DisplayCard.(Grid.Row)" Value="1" />
+                                <Setter Target="DisplayCard.(Grid.Column)" Value="0" />
+                                <Setter Target="FirewallCard.(Grid.Row)" Value="2" />
+                                <Setter Target="FirewallCard.(Grid.Column)" Value="0" />
+                                <Setter Target="HostCard.(Grid.Row)" Value="3" />
+                                <Setter Target="HostCard.(Grid.Column)" Value="0" />
+                            </VisualState.Setters>
+                        </VisualState>
+                    </VisualStateGroup>
+                </VisualStateManager.VisualStateGroups>
+
+                <Border Style="{StaticResource LigaseCardStyle}">
+                    <StackPanel Spacing="8">
+                        <FontIcon
+                            HorizontalAlignment="Left"
+                            FontSize="24"
+                            Glyph="{x:Bind ViewModel.CoreFiles.Glyph, Mode=OneWay}" />
+                        <TextBlock FontSize="17" FontWeight="SemiBold" Text="{x:Bind ViewModel.CoreFiles.Title, Mode=OneWay}" />
+                        <TextBlock Foreground="{ThemeResource LigaseAccentBrush}" Text="{x:Bind ViewModel.CoreFiles.Status, Mode=OneWay}" />
+                        <TextBlock Text="{x:Bind ViewModel.CoreFiles.Description, Mode=OneWay}" TextWrapping="Wrap" />
+                        <TextBlock Foreground="{ThemeResource TextFillColorSecondaryBrush}" Text="{x:Bind ViewModel.CoreFiles.Detail, Mode=OneWay}" TextWrapping="Wrap" />
+                    </StackPanel>
+                </Border>
+
+                <Border
+                    x:Name="DisplayCard"
+                    Grid.Column="1"
+                    Style="{StaticResource LigaseCardStyle}">
+                    <StackPanel Spacing="8">
+                        <FontIcon HorizontalAlignment="Left" FontSize="24" Glyph="{x:Bind ViewModel.DisplayCapability.Glyph, Mode=OneWay}" />
+                        <TextBlock FontSize="17" FontWeight="SemiBold" Text="{x:Bind ViewModel.DisplayCapability.Title, Mode=OneWay}" />
+                        <TextBlock Foreground="{ThemeResource LigaseAccentBrush}" Text="{x:Bind ViewModel.DisplayCapability.Status, Mode=OneWay}" />
+                        <TextBlock Text="{x:Bind ViewModel.DisplayCapability.Description, Mode=OneWay}" TextWrapping="Wrap" />
+                        <TextBlock Foreground="{ThemeResource TextFillColorSecondaryBrush}" Text="{x:Bind ViewModel.DisplayCapability.Detail, Mode=OneWay}" TextWrapping="Wrap" />
+                    </StackPanel>
+                </Border>
+
+                <Border
+                    x:Name="FirewallCard"
+                    Grid.Row="1"
+                    Style="{StaticResource LigaseCardStyle}">
+                    <StackPanel Spacing="8">
+                        <FontIcon HorizontalAlignment="Left" FontSize="24" Glyph="{x:Bind ViewModel.LanAccess.Glyph, Mode=OneWay}" />
+                        <TextBlock FontSize="17" FontWeight="SemiBold" Text="{x:Bind ViewModel.LanAccess.Title, Mode=OneWay}" />
+                        <TextBlock Foreground="{ThemeResource LigaseAccentBrush}" Text="{x:Bind ViewModel.LanAccess.Status, Mode=OneWay}" />
+                        <TextBlock Text="{x:Bind ViewModel.LanAccess.Description, Mode=OneWay}" TextWrapping="Wrap" />
+                        <TextBlock Foreground="{ThemeResource TextFillColorSecondaryBrush}" Text="{x:Bind ViewModel.LanAccess.Detail, Mode=OneWay}" TextWrapping="Wrap" />
+                        <Button
+                            HorizontalAlignment="Left"
+                            AutomationProperties.Name="前往设置配置局域网访问"
+                            Click="OnOpenFirewallSettings"
+                            Content="前往设置" />
+                    </StackPanel>
+                </Border>
+
+                <Border
+                    x:Name="HostCard"
+                    Grid.Row="1"
+                    Grid.Column="1"
+                    Style="{StaticResource LigaseCardStyle}">
+                    <StackPanel Spacing="8">
+                        <FontIcon HorizontalAlignment="Left" FontSize="24" Glyph="{x:Bind ViewModel.HostReadiness.Glyph, Mode=OneWay}" />
+                        <TextBlock FontSize="17" FontWeight="SemiBold" Text="{x:Bind ViewModel.HostReadiness.Title, Mode=OneWay}" />
+                        <TextBlock Foreground="{ThemeResource LigaseAccentBrush}" Text="{x:Bind ViewModel.HostReadiness.Status, Mode=OneWay}" />
+                        <TextBlock Text="{x:Bind ViewModel.HostReadiness.Description, Mode=OneWay}" TextWrapping="Wrap" />
+                        <TextBlock Foreground="{ThemeResource TextFillColorSecondaryBrush}" Text="{x:Bind ViewModel.HostReadiness.Detail, Mode=OneWay}" TextWrapping="Wrap" />
+                    </StackPanel>
+                </Border>
+            </Grid>
+
+            <Grid
+                x:Name="ActionsGrid"
+                Grid.Row="4"
+                ColumnSpacing="12"
+                RowSpacing="10">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+                <VisualStateManager.VisualStateGroups>
+                    <VisualStateGroup>
+                        <VisualState>
+                            <VisualState.StateTriggers>
+                                <AdaptiveTrigger MinWindowWidth="720" />
+                            </VisualState.StateTriggers>
+                        </VisualState>
+                        <VisualState>
+                            <VisualState.StateTriggers>
+                                <AdaptiveTrigger MinWindowWidth="0" />
+                            </VisualState.StateTriggers>
+                            <VisualState.Setters>
+                                <Setter Target="RefreshButton.(Grid.Row)" Value="1" />
+                                <Setter Target="RefreshButton.(Grid.Column)" Value="0" />
+                                <Setter Target="RefreshButton.HorizontalAlignment" Value="Stretch" />
+                                <Setter Target="RepairButton.(Grid.Row)" Value="2" />
+                                <Setter Target="RepairButton.(Grid.Column)" Value="0" />
+                                <Setter Target="RepairButton.HorizontalAlignment" Value="Stretch" />
+                                <Setter Target="FinishButton.(Grid.Row)" Value="3" />
+                                <Setter Target="FinishButton.(Grid.Column)" Value="0" />
+                                <Setter Target="FinishButton.HorizontalAlignment" Value="Stretch" />
+                            </VisualState.Setters>
+                        </VisualState>
+                    </VisualStateGroup>
+                </VisualStateManager.VisualStateGroups>
+                <TextBlock
+                    VerticalAlignment="Center"
+                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                    Text="{x:Bind ViewModel.ActionStatus, Mode=OneWay}"
+                    TextWrapping="Wrap" />
+                <Button
+                    x:Name="RefreshButton"
+                    Grid.Column="1"
+                    AutomationProperties.Name="重新读取 Host 设置状态"
+                    Click="OnRefresh"
+                    Content="重新检查" />
+                <Button
+                    x:Name="RepairButton"
+                    Grid.Column="2"
+                    AutomationProperties.Name="打开经过验证的安装程序"
+                    Click="OnOpenInstaller"
+                    Content="修复安装"
+                    IsEnabled="{x:Bind ViewModel.CanOpenInstaller, Mode=OneWay}" />
+                <Button
+                    x:Name="FinishButton"
+                    Grid.Column="3"
+                    AutomationProperties.Name="完成设置并进入 Host"
+                    Click="OnFinish"
+                    Content="进入 Host"
+                    IsEnabled="{x:Bind ViewModel.CanFinish, Mode=OneWay}"
+                    Style="{StaticResource LigasePrimaryButtonStyle}" />
+            </Grid>
+        </Grid>
+    </ScrollViewer>
+</Page>

@@ -1,5 +1,6 @@
 using Ligase.Host.Desktop.Pages;
 using Ligase.Host.Desktop.Presentation.LayoutCatalog;
+using Ligase.Host.Desktop.Presentation.Onboarding;
 using Ligase.Host.Desktop.Services;
 using Ligase.Host.Core.Services;
 using Microsoft.Extensions.DependencyInjection;
@@ -57,7 +58,7 @@ public sealed partial class MainWindow : Window
             RefreshPairingPageAsync);
         _trayIcon.Initialize(this);
         RefreshCoreStatus();
-        ContentFrame.Navigate(typeof(GameLibraryPage));
+        ContentFrame.Navigate(typeof(HostSetupPage));
     }
 
     public void HideToTray() => _appWindow.Hide();
@@ -104,8 +105,18 @@ public sealed partial class MainWindow : Window
         RootNavigation.SelectedItem = LibraryNavigationItem;
     }
 
-    public void NavigateToLibrary() =>
+    public void NavigateToLibrary()
+    {
+        if (ReferenceEquals(
+                RootNavigation.SelectedItem,
+                LibraryNavigationItem))
+        {
+            ContentFrame.Navigate(typeof(GameLibraryPage));
+            return;
+        }
+
         RootNavigation.SelectedItem = LibraryNavigationItem;
+    }
 
     public void NavigateToMonitor() =>
         RootNavigation.SelectedItem = RootNavigation.MenuItems
@@ -114,6 +125,12 @@ public sealed partial class MainWindow : Window
 
     public void NavigateToDevices() =>
         RootNavigation.SelectedItem = DevicesNavigationItem;
+
+    public void NavigateToSettings()
+    {
+        RootNavigation.SelectedItem = RootNavigation.SettingsItem;
+        ContentFrame.Navigate(typeof(SettingsPage));
+    }
 
     private void OnThemeToggle(object sender, RoutedEventArgs args)
     {
@@ -239,6 +256,8 @@ public sealed partial class MainWindow : Window
         await RefreshLibraryAuthorityAsync();
         if (ContentFrame.Content is GameLibraryPage libraryPage)
             await libraryPage.ViewModel.RefreshAsync();
+        else if (ContentFrame.Content is HostSetupPage setupPage)
+            await setupPage.RefreshAsync();
     }
 
     private void OnManagedCoreStatusChanged()

@@ -5,6 +5,7 @@ using Ligase.Host.Core.Infrastructure.Storage;
 using Ligase.Host.Core.Infrastructure.Windows;
 using Ligase.Host.Desktop.Platform.Windows.Firewall;
 using Ligase.Host.Desktop.Presentation.LayoutCatalog;
+using Ligase.Host.Desktop.Presentation.Onboarding;
 using Ligase.Host.Desktop.Presentation.Settings.Firewall;
 using Ligase.Host.Desktop.ViewModels;
 using Ligase.Host.Desktop.Services;
@@ -100,6 +101,7 @@ public partial class App : Application
                 services.AddTransient<GameLibraryViewModel>();
                 services.AddTransient<OverviewViewModel>();
                 services.AddTransient<LayoutCatalogViewModel>();
+                services.AddTransient<HostSetupViewModel>();
                 services.AddTransient<AddApplicationViewModel>();
                 services.AddTransient<StreamMonitorViewModel>();
                 services.AddTransient<DevicesViewModel>();
