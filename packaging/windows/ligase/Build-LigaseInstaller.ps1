@@ -70,11 +70,10 @@ if (-not $SkipBuild) {
   if ($LASTEXITCODE -ne 0) { throw "coreBuildFailed" }
   & $DotNet build-server shutdown
   if ($LASTEXITCODE -ne 0) { throw "desktopBuildServerShutdownFailed" }
-  & $DotNet clean (Join-Path $sourceRoot "src/Ligase.Desktop/Ligase.Host.Desktop.csproj") `
-    -c $Configuration -p:Platform=$Platform -p:UseSharedCompilation=false `
-    -p:UseArtifactsOutput=true -p:ArtifactsPath=$dotnetArtifacts `
-    -nodeReuse:false -r win-x64
-  if ($LASTEXITCODE -ne 0) { throw "desktopCleanFailed" }
+  if ((Test-Path -LiteralPath $dotnetArtifacts) -or
+      (Test-Path -LiteralPath $desktop)) {
+    throw "desktopBuildWorkspaceNotClean"
+  }
   & $DotNet publish (Join-Path $sourceRoot "src/Ligase.Desktop/Ligase.Host.Desktop.csproj") `
     -c $Configuration -p:Platform=$Platform -p:LigaseStructuredPackage=true `
     -p:UseSharedCompilation=false -nodeReuse:false `

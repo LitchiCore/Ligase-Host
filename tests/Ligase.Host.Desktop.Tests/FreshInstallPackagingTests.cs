@@ -193,7 +193,8 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(build, "-p:UseArtifactsOutput=true");
         StringAssert.Contains(build, "-p:ArtifactsPath=$dotnetArtifacts");
         StringAssert.Contains(build, "-nodeReuse:false");
-        StringAssert.Contains(build, "desktopCleanFailed");
+        StringAssert.Contains(build, "desktopBuildWorkspaceNotClean");
+        Assert.IsFalse(build.Contains("desktopCleanFailed", StringComparison.Ordinal));
         StringAssert.Contains(build, "Test-LigaseDesktopPayload.ps1");
         StringAssert.Contains(build, "Test-LigaseDesktopStartup.ps1");
         StringAssert.Contains(build, "-Filter \"Ligase.GameWatcher.*\"");
