@@ -28,6 +28,7 @@
 
 // local includes
 #include "config.h"
+#include "ligase/library/http/library_applist_http.h"
 #include "ligase/library/http/library_sync_http.h"
 #include "ligase/library/http/library_sort_http.h"
 #include "ligase/pairing/http/attended_pairing_http.h"
@@ -2188,83 +2189,49 @@ namespace nvhttp {
   void applist(resp_https_t response, req_https_t request) {
     print_req<SunshineHTTPS>(request);
 
-    pt::ptree tree;
-
-    auto g = util::fail_guard([&]() {
-      std::ostringstream data;
-
-      pt::write_xml(data, tree);
-      response->write(data.str());
-      response->close_connection_after_response = true;
-    });
-
-    auto &apps = tree.add_child("root", pt::ptree {});
-
-    apps.put("<xmlattr>.status_code", 200);
-
     auto named_cert_p = get_verified_cert(request);
-    if (!!(named_cert_p->perm & PERM::list)) {
-      auto current_appid = proc::proc.running();
-      auto should_hide_inactive_apps = config::input.enable_input_only_mode && current_appid > 0 && current_appid != proc::input_only_app_id;
-
-      auto app_list = proc::proc.get_apps();
-
-      bool enable_legacy_ordering = config::sunshine.legacy_ordering && named_cert_p->enable_legacy_ordering;
-      size_t bits;
-      if (enable_legacy_ordering) {
-        bits = zwpad::pad_width_for_count(app_list.size());
-      }
-
-      for (size_t i = 0; i < app_list.size(); i++) {
-        auto& app = app_list[i];
-        auto appid = util::from_view(app.id);
-        if (should_hide_inactive_apps) {
-          if (
-            appid != current_appid
-            && appid != proc::input_only_app_id
-            && appid != proc::terminate_app_id
-          ) {
-            continue;
-          }
-        } else {
-          if (appid == proc::terminate_app_id) {
-            continue;
-          }
-        }
-
-        std::string app_name;
-        if (enable_legacy_ordering) {
-          app_name = zwpad::pad_for_ordering(app.name, bits, i);
-        } else {
-          app_name = app.name;
-        }
-
-        pt::ptree app_node;
-
-        app_node.put("IsHdrSupported"s, video::active_hevc_mode == 3 ? 1 : 0);
-        app_node.put("AppTitle"s, app_name);
-        app_node.put("UUID", app.uuid);
-        app_node.put("IDX", app.idx);
-        app_node.put("ID", app.id);
-
-        apps.push_back(std::make_pair("App", std::move(app_node)));
-      }
-    } else {
+    const auto authorized = !!(named_cert_p->perm & PERM::list);
+    if (!authorized) {
       BOOST_LOG(debug) << "Permission ListApp denied for [" << named_cert_p->name << "] (" << (uint32_t)named_cert_p->perm << ")";
-
-      pt::ptree app_node;
-
-      app_node.put("IsHdrSupported"s, 0);
-      app_node.put("AppTitle"s, "Permission Denied");
-      app_node.put("UUID", "");
-      app_node.put("IDX", "0");
-      app_node.put("ID", "114514");
-
-      apps.push_back(std::make_pair("App", std::move(app_node)));
-
-      return;
     }
 
+    const auto output = ligase::library::http::handle_applist(
+      {
+        .authorized = authorized,
+        .hdr_supported = video::active_hevc_mode == 3,
+        .input_only_mode = config::input.enable_input_only_mode,
+        .current_app_id = proc::proc.running(),
+        .input_only_app_id = proc::input_only_app_id,
+        .terminate_app_id = proc::terminate_app_id,
+        .legacy_ordering = config::sunshine.legacy_ordering && named_cert_p->enable_legacy_ordering
+      },
+      {
+        .load_apps = []() {
+          std::vector<ligase::library::http::applist_app> result;
+          const auto &apps = proc::proc.get_apps();
+          result.reserve(apps.size());
+          for (const auto &app : apps) {
+            result.push_back({
+              .name = app.name,
+              .uuid = app.uuid,
+              .idx = app.idx,
+              .id = app.id
+            });
+          }
+          return result;
+        },
+        .parse_id = [](const std::string_view id) {
+          return util::from_view(id);
+        },
+        .ordering_width = zwpad::pad_width_for_count,
+        .order_title = zwpad::pad_for_ordering
+      }
+    );
+    response->write(output.body);
+    response->close_connection_after_response = true;
+    if (output.failure) {
+      std::rethrow_exception(output.failure);
+    }
   }
 
   void launch(bool &host_audio, resp_https_t response, req_https_t request) {
