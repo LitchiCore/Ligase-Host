@@ -15,14 +15,14 @@ function Write-Outcome([string]$Code, [bool]$Success) {
 }
 
 $desktop = [IO.Path]::GetFullPath($DesktopDirectory)
-$executable = Join-Path $desktop "Ligase.Host.Desktop.exe"
-if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) {
+$sourceExecutable = Join-Path $desktop "Ligase.Host.Desktop.exe"
+if (-not (Test-Path -LiteralPath $sourceExecutable -PathType Leaf)) {
   Write-Outcome "desktopExecutableMissing" $false
   exit 10
 }
 if (@(Get-CimInstance Win32_Process | Where-Object {
       $_.Name -eq "Ligase.Host.Desktop.exe" -and
-      $_.ExecutablePath -eq $executable
+      $_.ExecutablePath -eq $sourceExecutable
     }).Count -ne 0) {
   Write-Outcome "desktopAlreadyRunning" $false
   exit 13
@@ -39,6 +39,10 @@ $workingDirectory = Join-Path $gateRoot "non-install-cwd"
 $dataRoot = Join-Path $gateRoot "data"
 New-Item -ItemType Directory -Force -Path $workingDirectory, $dataRoot |
   Out-Null
+$launchDirectory = Join-Path $gateRoot "payload"
+New-Item -ItemType Junction -Path $launchDirectory -Target $desktop |
+  Out-Null
+$executable = Join-Path $launchDirectory "Ligase.Host.Desktop.exe"
 
 $previousDataRoot = $env:LIGASE_DATA_ROOT
 $process = $null
@@ -86,7 +90,8 @@ try {
   }
   foreach ($remaining in @(Get-CimInstance Win32_Process | Where-Object {
       $_.Name -eq "Ligase.Host.Desktop.exe" -and
-      $_.ExecutablePath -eq $executable
+      ($_.ExecutablePath -eq $executable -or
+       $_.ExecutablePath -eq $sourceExecutable)
     })) {
     try {
       Stop-Process -Id $remaining.ProcessId -Force -ErrorAction Stop
