@@ -24,7 +24,8 @@ function Invoke-Harness(
   [Parameter(Mandatory)][string] $Name,
   [Parameter(Mandatory)][string[]] $Arguments,
   [Parameter(Mandatory)][bool] $ShouldSucceed,
-  [string] $Expected = ""
+  [string] $ExpectedInstallDirectory = "",
+  [string] $ExpectedDataRoot = ""
 ) {
   $result = Join-Path $root "$Name.result"
   if (Test-Path -LiteralPath $result) {
@@ -76,8 +77,14 @@ function Invoke-Harness(
       }
       throw "harnessPositiveFailed:${Name}:$detail"
     }
-    $actual = [IO.File]::ReadAllText($result)
-    if (-not $actual.Equals($Expected, [StringComparison]::OrdinalIgnoreCase)) {
+    $actual = @([IO.File]::ReadAllLines($result))
+    if ($actual.Count -ne 2 -or
+        -not $actual[0].Equals(
+          $ExpectedInstallDirectory,
+          [StringComparison]::OrdinalIgnoreCase) -or
+        -not $actual[1].Equals(
+          $ExpectedDataRoot,
+          [StringComparison]::OrdinalIgnoreCase)) {
       throw "harnessResultMismatch:$Name"
     }
   } elseif ($resolverCodes.Count -lt 1 -or
@@ -94,31 +101,95 @@ function Invoke-Harness(
 
 $results = @(
   Invoke-Harness `
-    -Name "d-path-with-spaces" `
-    -Arguments @('/InstallDirectory=D:\Program Files\Ligase Host') `
+    -Name "d-paths-with-spaces" `
+    -Arguments @(
+      '/InstallDirectory=D:\Program Files\Ligase Host',
+      '/DataRoot=D:\Development\Ligase Data\Host') `
     -ShouldSucceed $true `
-    -Expected 'D:\Program Files\Ligase Host'
+    -ExpectedInstallDirectory 'D:\Program Files\Ligase Host' `
+    -ExpectedDataRoot 'D:\Development\Ligase Data\Host'
   Invoke-Harness `
-    -Name "duplicate" `
+    -Name "duplicate-install" `
     -Arguments @(
       '/InstallDirectory=D:\Ligase Host',
       '/InstallDirectory=E:\Ligase Host') `
     -ShouldSucceed $false
   Invoke-Harness `
-    -Name "relative" `
+    -Name "duplicate-data" `
+    -Arguments @(
+      '/InstallDirectory=D:\Ligase Host',
+      '/DataRoot=D:\Ligase Data',
+      '/DataRoot=E:\Ligase Data') `
+    -ShouldSucceed $false
+  Invoke-Harness `
+    -Name "cross-duplicate" `
+    -Arguments @(
+      '/InstallDirectory=D:\Ligase Host',
+      '/InstallDirectory=E:\Ligase Host',
+      '/DataRoot=D:\Ligase Data',
+      '/DataRoot=E:\Ligase Data') `
+    -ShouldSucceed $false
+  Invoke-Harness `
+    -Name "malformed-install" `
+    -Arguments @('/InstallDirectory') `
+    -ShouldSucceed $false
+  Invoke-Harness `
+    -Name "malformed-data" `
+    -Arguments @(
+      '/InstallDirectory=D:\Ligase Host',
+      '/DataRoot') `
+    -ShouldSucceed $false
+  Invoke-Harness `
+    -Name "empty-data" `
+    -Arguments @(
+      '/InstallDirectory=D:\Ligase Host',
+      '/DataRoot=') `
+    -ShouldSucceed $false
+  Invoke-Harness `
+    -Name "relative-install" `
     -Arguments @('/InstallDirectory=relative\Ligase Host') `
     -ShouldSucceed $false
   Invoke-Harness `
-    -Name "drive-root" `
+    -Name "relative-data" `
+    -Arguments @(
+      '/InstallDirectory=D:\Ligase Host',
+      '/DataRoot=relative\Ligase Data') `
+    -ShouldSucceed $false
+  Invoke-Harness `
+    -Name "drive-root-install" `
     -Arguments @('/InstallDirectory=D:\') `
     -ShouldSucceed $false
   Invoke-Harness `
-    -Name "unc" `
+    -Name "drive-root-data" `
+    -Arguments @(
+      '/InstallDirectory=D:\Ligase Host',
+      '/DataRoot=D:\') `
+    -ShouldSucceed $false
+  Invoke-Harness `
+    -Name "unc-install" `
     -Arguments @('/InstallDirectory=\\server\share\Ligase Host') `
     -ShouldSucceed $false
   Invoke-Harness `
-    -Name "device" `
+    -Name "unc-data" `
+    -Arguments @(
+      '/InstallDirectory=D:\Ligase Host',
+      '/DataRoot=\\server\share\Ligase Data') `
+    -ShouldSucceed $false
+  Invoke-Harness `
+    -Name "device-install" `
     -Arguments @('/InstallDirectory=\\?\D:\Ligase Host') `
+    -ShouldSucceed $false
+  Invoke-Harness `
+    -Name "device-data" `
+    -Arguments @(
+      '/InstallDirectory=D:\Ligase Host',
+      '/DataRoot=\\?\D:\Ligase Data') `
+    -ShouldSucceed $false
+  Invoke-Harness `
+    -Name "noncanonical-data" `
+    -Arguments @(
+      '/InstallDirectory=D:\Ligase Host',
+      '/DataRoot=D:\Development\..\Ligase Data') `
     -ShouldSucceed $false
 )
 

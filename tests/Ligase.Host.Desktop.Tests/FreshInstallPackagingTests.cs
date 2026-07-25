@@ -195,8 +195,12 @@ public sealed class FreshInstallPackagingTests
             "$INSTDIR\\Desktop\\Ligase.Host.Desktop.exe");
         StringAssert.Contains(nsis, "InstallDirRegKey HKLM");
         StringAssert.Contains(nsis, "GetCommandLineW() w .r0");
-        StringAssert.Contains(nsis, "${StrStr} $InstallDirectoryOptionPresent");
         StringAssert.Contains(nsis, "/InstallDirectory=");
+        StringAssert.Contains(nsis, "/DataRoot=");
+        Assert.IsFalse(
+            nsis.Contains(
+                "${GetOptions} $0 \"/DataRoot=\"",
+                StringComparison.Ordinal));
         StringAssert.Contains(nsis, "\"InstallLocation\" \"$INSTDIR\"");
         StringAssert.Contains(build, "Resolve-LigaseInstallDirectory.ps1");
         Assert.IsFalse(
@@ -205,11 +209,11 @@ public sealed class FreshInstallPackagingTests
             "Section \"Ligase Host (required)\"",
             StringComparison.Ordinal);
         var originalValidation = nsis.IndexOf(
-            "Call ResolveInstallDirectory",
+            "Call ResolveInstallerArguments",
             requiredSection,
             StringComparison.Ordinal);
         var finalValidation = nsis.IndexOf(
-            "Call ResolveInstallDirectory",
+            "Call ResolveInstallerArguments",
             originalValidation + 1,
             StringComparison.Ordinal);
         var firstWrite = nsis.IndexOf(
@@ -235,10 +239,11 @@ public sealed class FreshInstallPackagingTests
     public async Task InstallDirectoryResolverSupportsExplicitDAndRegisteredUpgrade()
     {
         const string explicitD = @"D:\Program Files\Ligase Host";
+        const string explicitDataD = @"D:\Development\Ligase Data\Host";
         const string registeredD = @"D:\Applications\Ligase Host";
 
         var explicitResult = await RunInstallDirectoryResolverAsync(
-            $"\"/InstallDirectory={explicitD}\"",
+            $"\"/InstallDirectory={explicitD}\" \"/DataRoot={explicitDataD}\"",
             registeredD,
             @"C:\Program Files\Ligase Host");
         var upgradeResult = await RunInstallDirectoryResolverAsync(
@@ -247,9 +252,9 @@ public sealed class FreshInstallPackagingTests
             @"C:\Program Files\Ligase Host");
 
         Assert.AreEqual(0, explicitResult.ExitCode, explicitResult.Error);
-        Assert.AreEqual(explicitD, explicitResult.Output);
+        Assert.AreEqual($"{explicitD}|{explicitDataD}", explicitResult.Output);
         Assert.AreEqual(0, upgradeResult.ExitCode, upgradeResult.Error);
-        Assert.AreEqual(registeredD, upgradeResult.Output);
+        Assert.AreEqual($"{registeredD}|", upgradeResult.Output);
     }
 
     [TestMethod]
@@ -276,10 +281,10 @@ public sealed class FreshInstallPackagingTests
         Assert.AreNotEqual(0, relative.ExitCode);
         Assert.AreNotEqual(0, root.ExitCode);
         Assert.AreNotEqual(0, nonCanonical.ExitCode);
-        Assert.AreEqual("installDirectoryInvalid", duplicate.Error);
-        Assert.AreEqual("installDirectoryInvalid", relative.Error);
-        Assert.AreEqual("installDirectoryInvalid", root.Error);
-        Assert.AreEqual("installDirectoryInvalid", nonCanonical.Error);
+        Assert.AreEqual("installerArgumentsInvalid", duplicate.Error);
+        Assert.AreEqual("installerArgumentsInvalid", relative.Error);
+        Assert.AreEqual("installerArgumentsInvalid", root.Error);
+        Assert.AreEqual("installerArgumentsInvalid", nonCanonical.Error);
     }
 
     private static async Task<(int ExitCode, string Output, string Error)>
@@ -289,6 +294,9 @@ public sealed class FreshInstallPackagingTests
             string defaultLocation)
     {
         var repo = FindRepositoryRoot();
+        var resultPath = Path.Combine(
+            Path.GetTempPath(),
+            $"ligase-installer-arguments-{Guid.NewGuid():N}.txt");
         var start = new ProcessStartInfo
         {
             FileName = "powershell.exe",
@@ -300,6 +308,7 @@ public sealed class FreshInstallPackagingTests
         start.Environment["LIGASE_INSTALL_RAW_PARAMETERS"] = rawParameters;
         start.Environment["LIGASE_INSTALL_REGISTERED_LOCATION"] = registered;
         start.Environment["LIGASE_INSTALL_DEFAULT_LOCATION"] = defaultLocation;
+        start.Environment["LIGASE_INSTALL_ARGUMENT_RESULT"] = resultPath;
         start.ArgumentList.Add("-NoProfile");
         start.ArgumentList.Add("-NonInteractive");
         start.ArgumentList.Add("-ExecutionPolicy");
@@ -316,7 +325,15 @@ public sealed class FreshInstallPackagingTests
         var output = process.StandardOutput.ReadToEndAsync();
         var error = process.StandardError.ReadToEndAsync();
         await process.WaitForExitAsync();
-        return (process.ExitCode, await output, await error);
+        _ = await output;
+        var resolved = File.Exists(resultPath)
+            ? string.Join("|", File.ReadAllLines(resultPath).Take(2))
+            : string.Empty;
+        if (File.Exists(resultPath))
+        {
+            File.Delete(resultPath);
+        }
+        return (process.ExitCode, resolved, await error);
     }
 
     private static string FindRepositoryRoot()

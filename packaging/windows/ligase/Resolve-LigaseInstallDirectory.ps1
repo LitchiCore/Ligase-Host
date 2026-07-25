@@ -42,8 +42,51 @@ public static class LigaseCommandLine
 "@
 
 function Fail([int] $ExitCode) {
-  [Console]::Error.Write("installDirectoryInvalid")
+  [Console]::Error.Write("installerArgumentsInvalid")
   exit $ExitCode
+}
+
+function Resolve-LocalPath([string] $Candidate) {
+  if ([string]::IsNullOrWhiteSpace($Candidate)) { Fail 14 }
+  if ($Candidate -notmatch '^[A-Za-z]:\\') { Fail 15 }
+  if ($Candidate.StartsWith("\\", [StringComparison]::Ordinal) -or
+      $Candidate.StartsWith("\\?\", [StringComparison]::Ordinal) -or
+      $Candidate.StartsWith("\\.\", [StringComparison]::Ordinal)) {
+    Fail 15
+  }
+
+  $full = [IO.Path]::GetFullPath($Candidate)
+  $root = [IO.Path]::GetPathRoot($full)
+  if ([string]::IsNullOrWhiteSpace($root) -or
+      $full.TrimEnd('\') -eq $root.TrimEnd('\')) {
+    Fail 16
+  }
+  if (-not $Candidate.Equals($full, [StringComparison]::OrdinalIgnoreCase)) {
+    Fail 17
+  }
+  return $full
+}
+
+function Read-Option(
+  [string[]] $Arguments,
+  [string] $Name
+) {
+  $prefix = "/$Name="
+  $matches = @()
+  foreach ($argument in $Arguments) {
+    if ($argument.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
+      $matches += $argument.Substring($prefix.Length)
+    } elseif ($argument.Equals(
+        "/$Name",
+        [StringComparison]::OrdinalIgnoreCase) -or
+      $argument.StartsWith(
+        "/$Name",
+        [StringComparison]::OrdinalIgnoreCase)) {
+      Fail 12
+    }
+  }
+  if ($matches.Count -gt 1) { Fail 13 }
+  return $matches
 }
 
 try {
@@ -56,50 +99,44 @@ try {
   $default = [Environment]::GetEnvironmentVariable(
     "LIGASE_INSTALL_DEFAULT_LOCATION",
     [EnvironmentVariableTarget]::Process)
+  $resultPath = [Environment]::GetEnvironmentVariable(
+    "LIGASE_INSTALL_ARGUMENT_RESULT",
+    [EnvironmentVariableTarget]::Process)
+  if ([string]::IsNullOrWhiteSpace($raw)) { $raw = "" }
+  if ([string]::IsNullOrWhiteSpace($resultPath)) { Fail 18 }
 
-  $explicit = @()
-  if ($null -eq $raw) { $raw = "" }
-  foreach ($argument in [LigaseCommandLine]::Parse($raw)) {
-    if ($argument.StartsWith(
-        "/InstallDirectory=",
-        [StringComparison]::OrdinalIgnoreCase)) {
-      $explicit += $argument.Substring($argument.IndexOf("=") + 1)
-    } elseif ($argument.Equals(
-        "/InstallDirectory",
-        [StringComparison]::OrdinalIgnoreCase) -or
-      $argument.StartsWith(
-        "/InstallDirectory",
-        [StringComparison]::OrdinalIgnoreCase)) {
-      Fail 12
-    }
-  }
-  if ($explicit.Count -gt 1) { Fail 13 }
+  $arguments = [LigaseCommandLine]::Parse($raw)
+  $installOptions = @(Read-Option $arguments "InstallDirectory")
+  $dataOptions = @(Read-Option $arguments "DataRoot")
 
-  $candidate = if ($explicit.Count -eq 1) {
-    $explicit[0]
+  $installCandidate = if ($installOptions.Count -eq 1) {
+    $installOptions[0]
   } elseif (-not [string]::IsNullOrWhiteSpace($registered)) {
     $registered
   } else {
     $default
   }
-  if ([string]::IsNullOrWhiteSpace($candidate)) { Fail 14 }
-  if ($candidate -notmatch '^[A-Za-z]:\\') { Fail 15 }
-  if ($candidate.StartsWith("\\", [StringComparison]::Ordinal) -or
-      $candidate.StartsWith("\\?\", [StringComparison]::Ordinal)) {
-    Fail 15
+  $installDirectory = Resolve-LocalPath $installCandidate
+  $dataRoot = if ($dataOptions.Count -eq 1) {
+    Resolve-LocalPath $dataOptions[0]
+  } else {
+    ""
   }
 
-  $full = [IO.Path]::GetFullPath($candidate)
-  $root = [IO.Path]::GetPathRoot($full)
-  if ([string]::IsNullOrWhiteSpace($root) -or
-      $full.TrimEnd('\') -eq $root.TrimEnd('\')) {
-    Fail 16
-  }
-  if (-not $candidate.Equals($full, [StringComparison]::OrdinalIgnoreCase)) {
-    Fail 17
-  }
-
-  [Console]::Out.Write($full)
+  $parent = Split-Path -Parent $resultPath
+  if (-not (Test-Path -LiteralPath $parent -PathType Container)) { Fail 18 }
+  $pending = "$resultPath.pending"
+  [IO.File]::WriteAllLines(
+    $pending,
+    @(
+      $installDirectory,
+      $dataRoot,
+      ($installOptions.Count -eq 1).ToString().ToLowerInvariant(),
+      ($dataOptions.Count -eq 1).ToString().ToLowerInvariant()
+    ),
+    [Text.Encoding]::Unicode)
+  Move-Item -LiteralPath $pending -Destination $resultPath -Force
+  [Console]::Out.Write("installerArgumentsResolved")
   exit 0
 } catch {
   Fail 18

@@ -16,7 +16,7 @@ ShowUninstDetails show
 !include "LogicLib.nsh"
 !include "FileFunc.nsh"
 !include "StrFunc.nsh"
-${StrStr}
+${StrTrimNewLines}
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_COMPONENTS
@@ -29,7 +29,6 @@ ${StrStr}
 Var SetupMutex
 Var DataRoot
 Var InstallParameters
-Var InstallDirectoryOptionPresent
 
 !include "InstallDirectoryValidation.nsh"
 
@@ -45,10 +44,7 @@ Function .onInit
   ; Preserve the exact native command line for duplicate/malformed validation.
   System::Call 'kernel32::GetCommandLineW() w .r0'
   StrCpy $InstallParameters $0
-  ${StrStr} $InstallDirectoryOptionPresent $InstallParameters "/InstallDirectory"
   ${GetParameters} $6
-  StrCpy $0 $6
-  ${GetOptions} $0 "/DataRoot=" $DataRoot
   InitPluginsDir
   SetOutPath "$PLUGINSDIR"
   File /oname=Resolve-LigaseInstallDirectory.ps1 "${StageDir}\Deployment\Resolve-LigaseInstallDirectory.ps1"
@@ -79,14 +75,18 @@ Section "Ligase Host (required)" SEC_MAIN
   ; Validate the original argv first so duplicates and malformed explicit
   ; options cannot be corrected or hidden by the directory page.
   StrCpy $4 $INSTDIR
-  Call ResolveInstallDirectory
-  ${If} $InstallDirectoryOptionPresent == ""
+  Call ResolveInstallerArguments
+  ${If} $5 != "true"
     StrCpy $INSTDIR $4
   ${EndIf}
   ; Then validate the final directory-page value. Both validations happen
   ; before SetOutPath or File can write to the selected installation root.
-  StrCpy $InstallParameters '$\"/InstallDirectory=$INSTDIR$\"'
-  Call ResolveInstallDirectory
+  ${If} $DataRoot == ""
+    StrCpy $InstallParameters '$\"/InstallDirectory=$INSTDIR$\"'
+  ${Else}
+    StrCpy $InstallParameters '$\"/InstallDirectory=$INSTDIR$\" $\"/DataRoot=$DataRoot$\"'
+  ${EndIf}
+  Call ResolveInstallerArguments
   SetOutPath "$INSTDIR"
   File /r "${StageDir}\*"
   WriteUninstaller "$INSTDIR\Uninstall.exe"

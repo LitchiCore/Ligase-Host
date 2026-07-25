@@ -1,4 +1,6 @@
-Function ResolveInstallDirectory
+Function ResolveInstallerArguments
+  Delete "$PLUGINSDIR\installer-arguments.result"
+  Delete "$PLUGINSDIR\installer-arguments.result.pending"
   StrCpy $9 $InstallParameters
   System::Call 'kernel32::SetEnvironmentVariableW(w "LIGASE_INSTALL_RAW_PARAMETERS", w r9)'
   ReadRegStr $2 HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Ligase Host" "InstallLocation"
@@ -6,6 +8,8 @@ Function ResolveInstallDirectory
   System::Call 'kernel32::SetEnvironmentVariableW(w "LIGASE_INSTALL_REGISTERED_LOCATION", w r8)'
   StrCpy $7 "$PROGRAMFILES64\Ligase Host"
   System::Call 'kernel32::SetEnvironmentVariableW(w "LIGASE_INSTALL_DEFAULT_LOCATION", w r7)'
+  StrCpy $6 "$PLUGINSDIR\installer-arguments.result"
+  System::Call 'kernel32::SetEnvironmentVariableW(w "LIGASE_INSTALL_ARGUMENT_RESULT", w r6)'
   ; NSIS extracts a native plugin named System.dll into $PLUGINSDIR. Running
   ; Add-Type from that directory shadows the .NET reference assembly.
   SetOutPath "$TEMP"
@@ -21,14 +25,26 @@ Function ResolveInstallDirectory
   System::Call 'kernel32::SetEnvironmentVariableW(w "LIGASE_INSTALL_RAW_PARAMETERS", p 0)'
   System::Call 'kernel32::SetEnvironmentVariableW(w "LIGASE_INSTALL_REGISTERED_LOCATION", p 0)'
   System::Call 'kernel32::SetEnvironmentVariableW(w "LIGASE_INSTALL_DEFAULT_LOCATION", p 0)'
-  ${If} $0 != 0
+  System::Call 'kernel32::SetEnvironmentVariableW(w "LIGASE_INSTALL_ARGUMENT_RESULT", p 0)'
+  ${If} $0 == 0
+  ${AndIf} ${FileExists} "$PLUGINSDIR\installer-arguments.result"
+    FileOpen $3 "$PLUGINSDIR\installer-arguments.result" r
+    FileReadUTF16LE $3 $INSTDIR
+    FileReadUTF16LE $3 $DataRoot
+    FileReadUTF16LE $3 $5
+    FileReadUTF16LE $3 $6
+    FileClose $3
+    ${StrTrimNewLines} $INSTDIR $INSTDIR
+    ${StrTrimNewLines} $DataRoot $DataRoot
+    ${StrTrimNewLines} $5 $5
+    ${StrTrimNewLines} $6 $6
+  ${Else}
     !ifdef LIGASE_VALIDATION_HARNESS
       SetErrorLevel $0
       Quit
     !else
-      MessageBox MB_OK|MB_ICONSTOP "The installation directory is invalid. Choose an absolute local folder below a drive root."
+      MessageBox MB_OK|MB_ICONSTOP "The installer path arguments are invalid. Choose absolute local folders below a drive root."
       Abort
     !endif
   ${EndIf}
-  StrCpy $INSTDIR $1
 FunctionEnd
