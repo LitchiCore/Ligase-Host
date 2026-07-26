@@ -730,15 +730,42 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(transactionHelper, "HasAlternateDataStream(handle)");
         StringAssert.Contains(transactionHelper, "recoverEmptyAdminRoot");
         StringAssert.Contains(transactionHelper, "\"accessDenied\"");
+        StringAssert.Contains(transactionHelper, "\"fileNotFound\"");
+        StringAssert.Contains(transactionHelper, "\"pathNotFound\"");
+        StringAssert.Contains(transactionHelper, "\"invalidHandle\"");
         StringAssert.Contains(transactionHelper, "\"busy\"");
+        StringAssert.Contains(transactionHelper, "\"invalidParameter\"");
         StringAssert.Contains(transactionHelper, "\"privilegeNotHeld\"");
         StringAssert.Contains(transactionHelper, "\"invalidOwner\"");
         StringAssert.Contains(transactionHelper, "\"invalidAcl\"");
         StringAssert.Contains(transactionHelper, "\"identityChanged\"");
+        StringAssert.Contains(
+            transactionHelper,
+            "nativeCode is > 0 and <= ushort.MaxValue");
         StringAssert.Contains(transactionHelper, "aclMutationOccurred");
         StringAssert.Contains(transactionHelper, "aclRollback");
+        StringAssert.Contains(
+            transactionHelper,
+            "FileListDirectory | FileReadAttributes | ReadControl |");
+        StringAssert.Contains(
+            transactionHelper,
+            ": GenericRead | ReadControl) |");
+        StringAssert.Contains(
+            transactionHelper,
+            "\"failOpenHandleAccessDenied\"");
+        StringAssert.Contains(
+            transactionHelper,
+            "\"failVerifyIdentityInvalidHandle\"");
+        StringAssert.Contains(
+            transactionHelper,
+            "\"failResolveFinalPathInvalidParameter\"");
+        Assert.IsFalse(transactionHelper.Contains(
+            "SetStage(\"openSegment\")", StringComparison.Ordinal));
         StringAssert.Contains(management, "transactionAclMutationOccurred");
         StringAssert.Contains(management, "transactionAclRollback");
+        StringAssert.Contains(
+            management,
+            "$nativeCode -ge 1 -and $nativeCode -le 65535");
         StringAssert.Contains(transactionHelper, "GetSecurityInfo");
         StringAssert.Contains(transactionHelper, "MoveFileExW");
         StringAssert.Contains(transactionHelper, "Ligase Host Admin");
@@ -761,7 +788,8 @@ public sealed class FreshInstallPackagingTests
         foreach (var stage in new[]
                  {
                      "resolveProgramData", "rejectReparse", "createSegment",
-                     "openSegment", "applyAcl", "assertAcl", "createTemp",
+                     "openHandle", "verifyIdentity", "resolveFinalPath",
+                     "applyAcl", "assertAcl", "createTemp",
                      "atomicReplace", "finalReadback", "read", "delete"
                  })
         {
@@ -774,6 +802,12 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(
             runtimeHarness,
             "installTransactionEmptyAdminRootRecoveryFailed");
+        StringAssert.Contains(
+            runtimeHarness,
+            "installTransactionEmptyAdminRootRecoveryReadbackFailed");
+        StringAssert.Contains(
+            runtimeHarness,
+            "installTransactionNativeSubstageDiagnosticInvalid");
         StringAssert.Contains(
             runtimeHarness,
             "installTransactionNonemptyAdminRootAccepted");

@@ -67,7 +67,9 @@ param(
     "resolveProgramData",
     "rejectReparse",
     "createSegment",
-    "openSegment",
+    "openHandle",
+    "verifyIdentity",
+    "resolveFinalPath",
     "applyAcl",
     "assertAcl",
     "createTemp",
@@ -80,8 +82,12 @@ param(
   [string]$EvidenceTransactionHelperStage = "none",
   [ValidateSet(
     "none",
+    "fileNotFound",
+    "pathNotFound",
     "accessDenied",
+    "invalidHandle",
     "busy",
+    "invalidParameter",
     "privilegeNotHeld",
     "invalidOwner",
     "invalidAcl",
@@ -570,7 +576,8 @@ function Invoke-InstallTransactionHelper(
               "installTransactionInvalid") -or
             [string]$failure.stage -notin @(
               "resolveProgramData", "rejectReparse", "createSegment",
-              "openSegment", "applyAcl", "assertAcl", "createTemp",
+              "openHandle", "verifyIdentity", "resolveFinalPath",
+              "applyAcl", "assertAcl", "createTemp",
               "atomicReplace", "finalReadback", "read", "delete",
               "inputValidation", "processTimeout")) {
           throw "installTransactionInvalid"
@@ -579,8 +586,12 @@ function Invoke-InstallTransactionHelper(
         $nativeCode = [int]$failure.nativeCode
         $allowedNativeCodes = @{
           none = @(0)
+          fileNotFound = @(2)
+          pathNotFound = @(3)
           accessDenied = @(5)
+          invalidHandle = @(6)
           busy = @(32)
+          invalidParameter = @(87)
           privilegeNotHeld = @(1314)
           invalidOwner = @(1307)
           invalidAcl = @(1336)
@@ -588,8 +599,13 @@ function Invoke-InstallTransactionHelper(
           identityChanged = @(0)
           unknown = @(0)
         }
-        if (-not $allowedNativeCodes.ContainsKey($nativeCategory) -or
-            $nativeCode -notin $allowedNativeCodes[$nativeCategory]) {
+        $nativeCodeValid = if ($nativeCategory -ceq "unknown") {
+          $nativeCode -ge 1 -and $nativeCode -le 65535
+        } else {
+          $allowedNativeCodes.ContainsKey($nativeCategory) -and
+            $nativeCode -in $allowedNativeCodes[$nativeCategory]
+        }
+        if (-not $nativeCodeValid) {
           throw "installTransactionInvalid"
         }
         if ($failure.aclMutationOccurred -isnot [bool] -or

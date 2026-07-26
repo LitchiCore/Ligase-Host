@@ -264,13 +264,16 @@ not claim zero mutation.
 
 Transaction-helper failures expose only a closed machine code, one closed
 stage, and a safe native category:
-`accessDenied`, `busy`, `privilegeNotHeld`, `invalidOwner`, `invalidAcl`,
-`notSupported`, `identityChanged`, or `unknown`. Only the corresponding
-allowlisted Win32 values (`5`, `32`, `1314`, `1307`, `1336`, `50`) may be
-persisted;
-all other native values collapse to numeric `0` and category `unknown`.
-Stages are `resolveProgramData`, `rejectReparse`, `createSegment`, `openSegment`,
-`applyAcl`, `assertAcl`, `createTemp`, `atomicReplace`, `finalReadback`,
+`fileNotFound`, `pathNotFound`, `accessDenied`, `invalidHandle`, `busy`,
+`invalidParameter`, `privilegeNotHeld`, `invalidOwner`, `invalidAcl`,
+`notSupported`, `identityChanged`, or `unknown`. Named native categories use
+the corresponding allowlisted Win32 values (`2`, `3`, `5`, `6`, `32`, `87`,
+`1314`, `1307`, `1336`, `50`);
+other positive 16-bit Win32 values retain their numeric code with category
+`unknown`. Zero or out-of-range values are not accepted as a native failure.
+Stages are `resolveProgramData`, `rejectReparse`, `createSegment`, `openHandle`,
+`verifyIdentity`, `resolveFinalPath`, `applyAcl`, `assertAcl`, `createTemp`,
+`atomicReplace`, `finalReadback`,
 `read`, `delete`, `inputValidation`, or `processTimeout`. A write payload is
 rejected before process creation when its strict UTF-8 byte length exceeds the
 helper protocol limit. Helper stdout and stderr are drained
@@ -285,6 +288,15 @@ records the native helper exit, stage, safe category/code, and the closed
 recovery action without recording a raw path, exception, journal bytes,
 nonce, or secret. The `installTransaction` component and `failedField`
 distinguish this boundary from firewall and shortcut failures.
+
+Directory discovery uses only list-directory, read-attributes, read-control,
+and synchronize rights on its shared identification handle. It does not ask
+for ACL or owner mutation rights before proving that the object is the
+canonical directory and deciding whether recovery is required. Only the
+exclusive recovery handle requests `WRITE_DAC` and `WRITE_OWNER`. Native
+handle open, handle metadata verification, and final-path resolution are
+separate closed stages so a failure cannot collapse back to an ambiguous
+`openSegment` with `none`/`0`.
 
 Rollback evidence keeps separate `shortcut`, `firewall`, and
 `transactionCleanup` outcomes. If the journal was never created and the

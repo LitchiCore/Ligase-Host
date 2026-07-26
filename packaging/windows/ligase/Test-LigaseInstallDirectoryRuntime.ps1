@@ -1566,6 +1566,7 @@ $transactionElevatedAvailable = $transactionProbeExit -eq 0 -and
   -not (Test-Path -LiteralPath (
     Join-Path $transactionRoot "pending-install-transaction.json"))
 $emptyRecoveryRoot = Join-Path $combinationRoot "empty-admin-residue"
+$emptyRecoveryTransactionRoot = Join-Path $emptyRecoveryRoot "Transactions"
 New-Item -ItemType Directory -Path $emptyRecoveryRoot | Out-Null
 $emptyRecoveryAcl = Get-Acl -LiteralPath $emptyRecoveryRoot
 $emptyRecoveryAcl.SetOwner(
@@ -1578,10 +1579,21 @@ try {
   $emptyRecoveryAvailable = $false
 }
 if ($emptyRecoveryAvailable) {
+  $emptyRecoveryBeforeAcl = Get-Acl -LiteralPath $emptyRecoveryRoot
+  if ($emptyRecoveryBeforeAcl.Owner -notmatch "Administrators$" -or
+      $emptyRecoveryBeforeAcl.AreAccessRulesProtected -or
+      (Get-Item -LiteralPath $emptyRecoveryRoot).Attributes.ToString().
+        Contains("ReparsePoint") -or
+      @(Get-ChildItem -LiteralPath $emptyRecoveryRoot -Force).Count -ne 0 -or
+      @(Get-Item -LiteralPath $emptyRecoveryRoot -Stream * `
+        -ErrorAction SilentlyContinue).Count -ne 0) {
+    throw "installTransactionEmptyAdminRootFixtureInvalid"
+  }
   $env:LIGASE_INSTALL_VALIDATION_HARNESS = "1"
   $ErrorActionPreference = "Continue"
   $emptyRecoveryOutput = @(
-    & $transactionHelper preflight --test-root $emptyRecoveryRoot 2>&1)
+    & $transactionHelper preflight `
+      --test-root $emptyRecoveryTransactionRoot 2>&1)
   $ErrorActionPreference = $savedErrorAction
   $emptyRecoveryExit = $LASTEXITCODE
   Remove-Item Env:\LIGASE_INSTALL_VALIDATION_HARNESS `
@@ -1591,6 +1603,21 @@ if ($emptyRecoveryAvailable) {
         '{"code":"installTransactionPreflightReady","stage":"finalReadback",' +
         '"recoveryAction":"recoverEmptyAdminRoot"}')) {
     throw "installTransactionEmptyAdminRootRecoveryFailed"
+  }
+  $emptyRecoveryAfterAcl = Get-Acl -LiteralPath $emptyRecoveryRoot
+  $emptyRecoveryAfterRules = @($emptyRecoveryAfterAcl.Access)
+  if (-not $emptyRecoveryAfterAcl.AreAccessRulesProtected -or
+      $emptyRecoveryAfterAcl.Owner -notmatch "Administrators$" -or
+      @($emptyRecoveryAfterRules | Where-Object {
+        $_.IsInherited -or $_.AccessControlType -ne "Allow" -or
+        $_.IdentityReference.Value -notmatch
+          "(^|\\\\)(SYSTEM|Administrators)$"
+      }).Count -ne 0 -or
+      $emptyRecoveryAfterRules.Count -ne 2 -or
+      -not (Test-Path -LiteralPath $emptyRecoveryTransactionRoot) -or
+      (Test-Path -LiteralPath (Join-Path $emptyRecoveryTransactionRoot `
+        "pending-install-transaction.json"))) {
+    throw "installTransactionEmptyAdminRootRecoveryReadbackFailed"
   }
 }
 $concurrentRecoveryResults = @()
@@ -1622,7 +1649,7 @@ if ($emptyRecoveryAvailable) {
       [Security.AccessControl.AccessControlSections]::All)
   if ($busyExit -ne 18 -or
       [string]$busyFailure.code -cne "installTransactionUnavailable" -or
-      [string]$busyFailure.stage -cne "openSegment" -or
+      [string]$busyFailure.stage -cne "openHandle" -or
       [string]$busyFailure.nativeCategory -cne "busy" -or
       [int]$busyFailure.nativeCode -ne 32 -or
       [bool]$busyFailure.aclMutationOccurred -or
@@ -1742,8 +1769,9 @@ if ($emptyRecoveryAvailable) {
 }
 $stageDiagnostics = @()
 foreach ($stage in @(
-    "resolveProgramData", "rejectReparse", "createSegment", "openSegment",
-    "applyAcl", "assertAcl", "createTemp", "atomicReplace",
+    "resolveProgramData", "rejectReparse", "createSegment", "openHandle",
+    "verifyIdentity", "resolveFinalPath", "applyAcl", "assertAcl",
+    "createTemp", "atomicReplace",
     "finalReadback", "read", "delete")) {
   $stageRoot = Join-Path $combinationRoot ("stage-" + $stage)
   $env:LIGASE_INSTALL_VALIDATION_HARNESS = "1"
@@ -1762,15 +1790,20 @@ foreach ($stage in @(
     '"aclMutationOccurred":false,"aclRollback":"notRequired"}')
   $exactStage = $stageExit -eq 18 -and $stageRaw -ceq $expectedStage
   $nonElevatedOpen = (
-    '{"code":"installTransactionUnavailable","stage":"openSegment",' +
+    '{"code":"installTransactionUnavailable","stage":"openHandle",' +
     '"nativeCategory":"none","nativeCode":0,' +
+    '"aclMutationOccurred":false,"aclRollback":"notRequired"}')
+  $nonElevatedOpenAccessDenied = (
+    '{"code":"installTransactionUnavailable","stage":"openHandle",' +
+    '"nativeCategory":"accessDenied","nativeCode":5,' +
     '"aclMutationOccurred":false,"aclRollback":"notRequired"}')
   $nonElevatedOwner = (
     '{"code":"installTransactionAclInvalid","stage":"createSegment",' +
     '"nativeCategory":"invalidOwner","nativeCode":1307,' +
     '"aclMutationOccurred":false,"aclRollback":"notRequired"}')
   $blockedByNonElevatedAcl = $stageExit -eq 18 -and
-    $stageRaw -in @($nonElevatedOpen, $nonElevatedOwner)
+    $stageRaw -in @(
+      $nonElevatedOpen, $nonElevatedOpenAccessDenied, $nonElevatedOwner)
   if (-not $exactStage -and -not $blockedByNonElevatedAcl) {
     throw "installTransactionStageDiagnosticFixtureFailed"
   }
@@ -1782,6 +1815,63 @@ foreach ($stage in @(
     name = "transaction-stage-$stage"
     passed = $exactStage
     inconclusive = -not $exactStage
+  }
+}
+$nativeSubstageResults = @()
+foreach ($nativeCase in @(
+    [ordered]@{
+      behavior = "failOpenHandleAccessDenied"
+      stage = "openHandle"
+      category = "accessDenied"
+      code = 5
+    },
+    [ordered]@{
+      behavior = "failVerifyIdentityInvalidHandle"
+      stage = "verifyIdentity"
+      category = "invalidHandle"
+      code = 6
+    },
+    [ordered]@{
+      behavior = "failResolveFinalPathInvalidParameter"
+      stage = "resolveFinalPath"
+      category = "invalidParameter"
+      code = 87
+    })) {
+  $nativeRoot = Join-Path $combinationRoot (
+    "native-" + [string]$nativeCase.stage)
+  New-Item -ItemType Directory -Path $nativeRoot | Out-Null
+  $nativeAclBefore = (Get-Acl -LiteralPath $nativeRoot).
+    GetSecurityDescriptorSddlForm(
+      [Security.AccessControl.AccessControlSections]::All)
+  $env:LIGASE_INSTALL_VALIDATION_HARNESS = "1"
+  $env:LIGASE_TRANSACTION_TEST_BEHAVIOR = [string]$nativeCase.behavior
+  $ErrorActionPreference = "Continue"
+  $nativeOutput = @(
+    & $transactionHelper preflight --test-root $nativeRoot 2>&1)
+  $ErrorActionPreference = $savedErrorAction
+  $nativeExit = $LASTEXITCODE
+  Remove-Item Env:\LIGASE_TRANSACTION_TEST_BEHAVIOR `
+    -ErrorAction SilentlyContinue
+  Remove-Item Env:\LIGASE_INSTALL_VALIDATION_HARNESS `
+    -ErrorAction SilentlyContinue
+  $nativeRaw = $nativeOutput -join ""
+  $expectedNative = (
+    '{"code":"installTransactionUnavailable","stage":"' +
+    [string]$nativeCase.stage + '","nativeCategory":"' +
+    [string]$nativeCase.category + '","nativeCode":' +
+    [string]$nativeCase.code + ',"aclMutationOccurred":false,' +
+    '"aclRollback":"notRequired"}')
+  $nativeAclAfter = (Get-Acl -LiteralPath $nativeRoot).
+    GetSecurityDescriptorSddlForm(
+      [Security.AccessControl.AccessControlSections]::All)
+  if ($nativeExit -ne 18 -or $nativeRaw -cne $expectedNative -or
+      $nativeAclAfter -cne $nativeAclBefore -or
+      @(Get-ChildItem -LiteralPath $nativeRoot -Force).Count -ne 0) {
+    throw "installTransactionNativeSubstageDiagnosticInvalid"
+  }
+  $nativeSubstageResults += [ordered]@{
+    name = "transaction-native-" + [string]$nativeCase.stage
+    passed = $true
   }
 }
 $junctionRoot = Join-Path $combinationRoot "transaction-junction"
@@ -1813,6 +1903,7 @@ if ($junctionCreated -and -not $junctionRejected) {
 $shortcutResults = @(
   $boundedResults
   $stageDiagnostics
+  $nativeSubstageResults
   [ordered]@{ name = "current-to-all-owned-selected"; passed = $true },
   [ordered]@{ name = "all-users-desktop-unselected"; passed = $true },
   [ordered]@{ name = "nonowned-current-preserved"; passed = $true },

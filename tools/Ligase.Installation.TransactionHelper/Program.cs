@@ -31,9 +31,13 @@ internal static class Program
     private const uint OwnerSecurityInformation = 1;
     private const uint DaclSecurityInformation = 4;
     private const uint ProtectedDaclSecurityInformation = 0x80000000;
+    private const int ErrorFileNotFound = 2;
+    private const int ErrorPathNotFound = 3;
     private const int ErrorAccessDenied = 5;
+    private const int ErrorInvalidHandle = 6;
     private const int ErrorSharingViolation = 32;
     private const int ErrorNotSupported = 50;
+    private const int ErrorInvalidParameter = 87;
     private const int ErrorAlreadyExists = 183;
     private const int ErrorInvalidOwner = 1307;
     private const int ErrorPrivilegeNotHeld = 1314;
@@ -165,18 +169,21 @@ internal static class Program
     private static InvalidOperationException NativeFailure(
         string code, int nativeCode)
     {
-        _nativeCode = nativeCode is ErrorAccessDenied or ErrorSharingViolation or ErrorNotSupported or
-            ErrorInvalidOwner or ErrorPrivilegeNotHeld or ErrorInvalidAcl
+        _nativeCode = nativeCode is > 0 and <= ushort.MaxValue
             ? nativeCode
             : 0;
         _nativeCategory = nativeCode switch
         {
+            ErrorFileNotFound => "fileNotFound",
+            ErrorPathNotFound => "pathNotFound",
             ErrorAccessDenied => "accessDenied",
+            ErrorInvalidHandle => "invalidHandle",
             ErrorSharingViolation => "busy",
             ErrorPrivilegeNotHeld => "privilegeNotHeld",
             ErrorInvalidOwner => "invalidOwner",
             ErrorInvalidAcl => "invalidAcl",
             ErrorNotSupported => "notSupported",
+            ErrorInvalidParameter => "invalidParameter",
             _ => "unknown"
         };
         return new InvalidOperationException(code);
@@ -187,6 +194,16 @@ internal static class Program
         _nativeCategory = "identityChanged";
         _nativeCode = 0;
         return new InvalidOperationException("installTransactionInvalid");
+    }
+
+    private static void InjectValidationNativeFailure(
+        string behavior, int nativeCode)
+    {
+        if (Environment.GetEnvironmentVariable(
+                "LIGASE_INSTALL_VALIDATION_HARNESS") == "1" &&
+            Environment.GetEnvironmentVariable(
+                "LIGASE_TRANSACTION_TEST_BEHAVIOR") == behavior)
+            throw NativeFailure("installTransactionUnavailable", nativeCode);
     }
 
     private static string ResolveRoot(string[] args)
@@ -315,7 +332,6 @@ internal static class Program
         private static SecureStore OpenVerified(
             string root, bool recoveredEmptyAdminRoot)
         {
-            SetStage("openSegment");
             var handle = OpenPath(root, directory: true, writeSecurity: false);
             try
             {
@@ -540,8 +556,7 @@ internal static class Program
             var existed = Directory.Exists(current);
             if (!existed)
                 CreateDirectoryWithExactAcl(current);
-            SetStage("openSegment");
-            using var handle = OpenPath(current, true, writeSecurity: true);
+            using var handle = OpenPath(current, true, writeSecurity: false);
             var identity = VerifyHandle(handle, current, true);
             if (existed && segmentIndex == 1 &&
                 IsCanonicalAdminRoot(current, trustedBase) &&
@@ -778,7 +793,6 @@ internal static class Program
         FileIdentity? createdIdentity = null;
         try
         {
-            SetStage("openSegment");
             using var handle = OpenPath(
                 path, directory: true, writeSecurity: false);
             createdIdentity = VerifyHandle(handle, path, directory: true);
@@ -819,6 +833,9 @@ internal static class Program
     {
         var access = FileListDirectory | FileReadAttributes | ReadControl |
             WriteDac | WriteOwner | Synchronize;
+        SetStage("openHandle");
+        InjectValidationNativeFailure(
+            "failOpenHandleAccessDenied", ErrorAccessDenied);
         var handle = CreateFileW(path, access, 0, IntPtr.Zero, OpenExisting,
             FileFlagOpenReparsePoint | FileFlagBackupSemantics, IntPtr.Zero);
         if (handle.IsInvalid)
@@ -923,29 +940,49 @@ internal static class Program
         string path, bool directory, bool writeSecurity,
         uint? shareMode = null)
     {
-        var access = GenericRead | ReadControl |
+        var access = (directory
+                ? FileListDirectory | FileReadAttributes | ReadControl |
+                    Synchronize
+                : GenericRead | ReadControl) |
             (writeSecurity ? WriteDac | WriteOwner : 0);
         var flags = FileFlagOpenReparsePoint |
             (directory ? FileFlagBackupSemantics : FileAttributeNormal);
+        SetStage("openHandle");
+        InjectValidationNativeFailure(
+            "failOpenHandleAccessDenied", ErrorAccessDenied);
         var handle = CreateFileW(path, access,
             shareMode ?? (FileShareRead | FileShareWrite | FileShareDelete),
             IntPtr.Zero,
             OpenExisting, flags, IntPtr.Zero);
         if (handle.IsInvalid)
-            throw new InvalidOperationException("installTransactionUnavailable");
+        {
+            var error = Marshal.GetLastWin32Error();
+            handle.Dispose();
+            throw NativeFailure("installTransactionUnavailable", error);
+        }
         return handle;
     }
 
     private static FileIdentity VerifyHandle(
         SafeFileHandle handle, string expected, bool directory)
     {
-        if (!GetFileInformationByHandle(handle, out var info) ||
-            (info.FileAttributes & (uint)FileAttributes.ReparsePoint) != 0 ||
-            directory != ((info.FileAttributes & (uint)FileAttributes.Directory) != 0))
-            throw new InvalidOperationException("installTransactionInvalid");
+        SetStage("verifyIdentity");
+        InjectValidationNativeFailure(
+            "failVerifyIdentityInvalidHandle", ErrorInvalidHandle);
+        if (!GetFileInformationByHandle(handle, out var info))
+            throw NativeFailure("installTransactionUnavailable",
+                Marshal.GetLastWin32Error());
+        if ((info.FileAttributes & (uint)FileAttributes.ReparsePoint) != 0 ||
+            directory !=
+                ((info.FileAttributes & (uint)FileAttributes.Directory) != 0))
+            throw IdentityChanged();
+        SetStage("resolveFinalPath");
+        InjectValidationNativeFailure(
+            "failResolveFinalPathInvalidParameter", ErrorInvalidParameter);
         var builder = new StringBuilder(32768);
         if (GetFinalPathNameByHandleW(handle, builder, builder.Capacity, 0) == 0)
-            throw new InvalidOperationException("installTransactionInvalid");
+            throw NativeFailure("installTransactionUnavailable",
+                Marshal.GetLastWin32Error());
         var final = builder.ToString();
         if (final.StartsWith(@"\\?\", StringComparison.Ordinal)) final = final[4..];
         if (!string.Equals(Path.GetFullPath(final).TrimEnd('\\'),
