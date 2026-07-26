@@ -72,24 +72,30 @@ Section
     ${EndIf}
     StrCpy $1 "integrationFailed"
     StrCpy $2 "completed"
+    StrCpy $3 "artifacts"
     ${If} $FailureMode == "helperFailure"
       StrCpy $1 "installationIntegrationFailed"
+      StrCpy $3 "artifacts"
     ${ElseIf} $FailureMode == "migrationFailure"
       StrCpy $1 "dataRootMigrationReadbackFailed"
+      StrCpy $3 "dataRoot"
     ${ElseIf} $FailureMode == "integrationFailure"
       StrCpy $1 "installationFinalReadbackFailed"
+      StrCpy $3 "startMenu"
     ${ElseIf} $FailureMode == "rollbackFailure"
       StrCpy $1 "installationActionFailed"
       StrCpy $2 "failed"
+      StrCpy $3 "dataRoot"
     ${ElseIf} $FailureMode == "silentProvisional"
       StrCpy $1 "installationFinalReadbackRequired"
       StrCpy $2 "notRequired"
+      StrCpy $3 "none"
     ${Else}
       SetErrorLevel 19
       Quit
     ${EndIf}
     FileOpen $5 "$EvidenceFile" w
-    FileWriteUTF16LE $5 '{$\"schemaVersion$\":1,$\"phase$\":$\"failed$\",$\"success$\":false,$\"resultCode$\":$\"$1$\",$\"helper$\":{$\"exitCode$\":10},$\"rollback$\":{$\"state$\":$\"$2$\"},$\"firewall$\":{$\"state$\":$\"failed$\"},$\"displayedSuccess$\":false,$\"displayedFailure$\":true}'
+    FileWriteUTF16LE $5 '{$\"schemaVersion$\":1,$\"phase$\":$\"failed$\",$\"success$\":false,$\"resultCode$\":$\"$1$\",$\"failedField$\":$\"$3$\",$\"components$\":{$\"artifacts$\":$\"pending$\",$\"bootstrap$\":$\"pending$\",$\"dataRoot$\":$\"pending$\",$\"arp$\":$\"pending$\",$\"startMenu$\":$\"pending$\",$\"desktop$\":$\"pending$\",$\"firewall$\":$\"pending$\",$\"virtualDisplay$\":$\"pending$\"},$\"helper$\":{$\"exitCode$\":10},$\"rollback$\":{$\"state$\":$\"$2$\"},$\"firewall$\":{$\"state$\":$\"notChecked$\"},$\"displayedSuccess$\":false,$\"displayedFailure$\":true}'
     FileClose $5
     FileOpen $5 "$HarnessResultFile" w
     FileWriteUTF16LE $5 "failed$\r$\n$1$\r$\n$2"

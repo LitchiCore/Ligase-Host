@@ -189,6 +189,53 @@ command lines, raw bootstrap or authority documents, certificates, tokens, or
 other secrets. Initialization, confirmation, cancellation, integration
 failure, final readback, and success each update this same evidence.
 
+Installed shortcuts are machine-scoped. Start Menu and the optional Desktop
+shortcut use the Windows all-users shell folders and the stable root launcher;
+target, empty arguments, and the installation-root working directory are all
+part of the ownership check. Upgrade and repair remove a legacy current-user
+shortcut only when all three values match the Ligase-owned shape. A file at
+the same path with any other target, arguments, or working directory is
+preserved and treated as a typed conflict rather than overwritten or deleted.
+Selecting the Desktop component creates the exact all-users shortcut; clearing
+it removes only that exact owned shortcut. Uninstall applies the same ownership
+test and never deletes an unknown `.lnk`.
+
+Before changing any shortcut, the installer resolves and inspects all four
+all-users/current-user Start Menu and Desktop locations. A conflict therefore
+fails with zero shortcut mutation. The helper keeps a bounded, secured
+transaction journal containing the exact pre-install shortcut byte set.
+Shortcut writes are read back immediately; a later integration or final
+readback failure restores that exact set. A restore conflict is reported as a
+failed rollback with residue instead of overwriting an unknown file. Shortcut
+preflight runs before the Ligase-owned firewall apply. If any later step fails,
+rules created by this install transaction are removed and the shortcut journal
+is restored; pre-existing exact rules and all legacy or broad rules remain
+untouched.
+
+The cross-process transaction journal is not public evidence and is never a
+path authority. It lives under the physically separate machine root
+`%ProgramData%\Ligase Host Admin\Transactions`; it never shares a writable
+parent with `last-outcome.json`. Every created segment and the journal are
+owned by Administrators, have protected DACLs, and grant FullControl only to
+SYSTEM and Administrators; the interactive operator has no ACE. A manifest-
+pinned, self-contained x64 transaction helper owns all journal I/O. It opens
+every segment with `OPEN_REPARSE_POINT`, keeps directory/file handles while
+checking final canonical path and volume/file identity, rejects reparse
+points, and performs bounded same-directory atomic replacement. Load verifies
+identity and ACL before and after reading, before any shortcut restore or
+firewall compensation. The PowerShell integration helper never falls back to
+direct journal path I/O.
+
+The finalizer strictly rejects
+missing, duplicate, unknown, stale, oversized, or malformed fields, binds the
+journal to the current manifest hash/source identity and a CSPRNG correlation
+identifier, and recomputes the launcher and all four shortcut
+paths from the verified installation root and WTS interactive-user shell
+folders. Serialized paths are consistency assertions only. Transaction IDs,
+shortcut bytes, and raw paths are never copied into `last-outcome.json` or
+logs. The identifier is correlation plus a two-hour stale gate; it is not
+claimed as an independently bound anti-replay secret.
+
 The install UI treats helper success as provisional. After all selected
 sections run, the installed helper must independently read back manifest-owned
 program assets, the bootstrap and secure DataRoot, ARP registration, the exact
@@ -206,6 +253,14 @@ reported as `notRequired`, `completed`, or `failed`; rollback failure is never
 discarded. Any install-root or DataRoot residue that cannot be safely removed
 is classified in the evidence rather than being presented as a successful
 empty installation.
+
+Final-readback evidence also records a closed `failedField` and component
+states for `artifacts`, `bootstrap`, `dataRoot`, `arp`, `startMenu`, `desktop`,
+`firewall`, and `virtualDisplay`. Components already verified remain marked
+`verified`; unselected optional display support is `notSelected`; the first
+failed component is `failed`; later components remain `pending`. The catch
+path must not label an earlier shortcut or ARP failure as a firewall failure,
+and it never serializes the underlying exception.
 
 Desktop composition, first-route behavior, and installed-product acceptance are
 documented in [`desktop-ui.md`](desktop-ui.md). That document links here rather

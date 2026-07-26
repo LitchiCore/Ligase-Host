@@ -432,7 +432,7 @@ Function FinalizeInstallTerminal
     ${Else}
       StrCpy $4 ""
     ${EndIf}
-    nsExec::ExecToStack 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\Deployment\Manage-LigaseInstallation.ps1" -Action FinalizeInstall -InstallDirectory "$INSTDIR" -DataRoot "$DataRoot" -EvidenceDataRootSource "$DataRootSource" -EvidenceDataRootAction $5 -EvidenceHelperExit $InstallHelperExit -EvidenceRollback $InstallRollback -EvidenceFirewall configured -EvidenceInstallResidue nonEmpty -EvidenceDataRootResidue nonEmpty $3 $4 -VirtualDisplayOutcome $VirtualDisplayOutcome'
+    nsExec::ExecToStack 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\Deployment\Manage-LigaseInstallation.ps1" -Action FinalizeInstall -InstallDirectory "$INSTDIR" -DataRoot "$DataRoot" -EvidenceDataRootSource "$DataRootSource" -EvidenceDataRootAction $5 -EvidenceHelperExit $InstallHelperExit -EvidenceRollback $InstallRollback -EvidenceFirewall configured -EvidenceInstallResidue nonEmpty -EvidenceDataRootResidue nonEmpty -ConfigureFirewall $3 $4 -VirtualDisplayOutcome $VirtualDisplayOutcome'
     Pop $0
     Pop $1
     ${StrTrimNewLines} $1 $1
@@ -478,6 +478,9 @@ FunctionEnd
 
 Function un.onInit
   SetRegView 64
+  ; All installed shortcuts are machine-scoped. The helper removes only
+  ; shortcuts whose target, arguments, and working directory match Ligase.
+  SetShellVarContext all
   System::Call 'kernel32::CreateMutexW(p 0, i 0, w "Global\Ligase.Host.Setup.v1") p .r0 ?e'
   Pop $SetupMutex
   Pop $1
@@ -551,12 +554,23 @@ Section "Ligase Host（必需）" SEC_MAIN
   SetOutPath "$INSTDIR"
   File /r "${StageDir}\*"
   WriteUninstaller "$INSTDIR\Uninstall.exe"
-  ${If} $DataRootMode == "migration"
-    nsExec::ExecToStack 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\Deployment\Manage-LigaseInstallation.ps1" -Action Install -InstallDirectory "$INSTDIR" -DataRoot "$DataRoot" -MigrateDataRoot -ConfigureFirewall'
-  ${ElseIf} $DataRootMode == "orphanLegacyRecovery"
-    nsExec::ExecToStack 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\Deployment\Manage-LigaseInstallation.ps1" -Action Install -InstallDirectory "$INSTDIR" -DataRoot "$DataRoot" -RecoverOrphanDataRoot -RecoveryDataRootSource "$DataRootSource" -ConfigureFirewall'
+  ; Shortcut selection is known before sections execute. Pass it to the
+  ; single ownership-aware integration helper instead of creating links in
+  ; the current elevated user's shell folders.
+  SetShellVarContext all
+  SectionGetFlags ${LIGASE_SECTION_DESKTOP_SHORTCUT} $3
+  IntOp $3 $3 & ${SF_SELECTED}
+  ${If} $3 != 0
+    StrCpy $3 "-DesktopShortcutSelected"
   ${Else}
-    nsExec::ExecToStack 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\Deployment\Manage-LigaseInstallation.ps1" -Action Install -InstallDirectory "$INSTDIR" -DataRoot "$DataRoot" -ConfigureFirewall'
+    StrCpy $3 ""
+  ${EndIf}
+  ${If} $DataRootMode == "migration"
+    nsExec::ExecToStack 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\Deployment\Manage-LigaseInstallation.ps1" -Action Install -InstallDirectory "$INSTDIR" -DataRoot "$DataRoot" -MigrateDataRoot -ConfigureFirewall $3'
+  ${ElseIf} $DataRootMode == "orphanLegacyRecovery"
+    nsExec::ExecToStack 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\Deployment\Manage-LigaseInstallation.ps1" -Action Install -InstallDirectory "$INSTDIR" -DataRoot "$DataRoot" -RecoverOrphanDataRoot -RecoveryDataRootSource "$DataRootSource" -ConfigureFirewall $3'
+  ${Else}
+    nsExec::ExecToStack 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\Deployment\Manage-LigaseInstallation.ps1" -Action Install -InstallDirectory "$INSTDIR" -DataRoot "$DataRoot" -ConfigureFirewall $3'
   ${EndIf}
   Pop $0
   Pop $1
@@ -598,11 +612,6 @@ Section "Ligase Host（必需）" SEC_MAIN
     Goto mainSectionDone
   ${EndIf}
   StrCpy $IntegrationResult "程序文件、数据绑定和防火墙规则均已验证。"
-  ; The exact owned desktop shortcut is selection-controlled on every install
-  ; and upgrade. Removing it here makes an unchecked upgrade deterministic.
-  Delete "$DESKTOP\Ligase Host.lnk"
-  CreateDirectory "$SMPROGRAMS\Ligase Host"
-  CreateShortcut "$SMPROGRAMS\Ligase Host\Ligase Host.lnk" "$INSTDIR\Ligase Host.exe"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Ligase Host" "DisplayName" "Ligase Host"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Ligase Host" "InstallLocation" "$INSTDIR"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Ligase Host" "UninstallString" '"$INSTDIR\Uninstall.exe"'
@@ -626,11 +635,9 @@ Section "Ligase Host（必需）" SEC_MAIN
 SectionEnd
 
 Section "创建桌面快捷方式（可选）" SEC_DESKTOP_SHORTCUT
-  ${If} $InstallOutcome == "failed"
-    Goto desktopShortcutDone
-  ${EndIf}
-  CreateShortcut "$DESKTOP\Ligase Host.lnk" "$INSTDIR\Ligase Host.exe"
-  desktopShortcutDone:
+  ; The selected flag is consumed by the ownership-aware integration helper
+  ; in the required section. No shortcut is created from the current-user
+  ; shell context here.
 SectionEnd
 
 Section /o "Ligase 虚拟显示（可选）" SEC_VDISPLAY
@@ -687,9 +694,6 @@ Section "卸载"
   IfFileExists "$INSTDIR\Deployment\Drivers\sudovda\.ligase-driver-ownership.json" 0 noDriver
   nsExec::ExecToLog 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\Deployment\Manage-LigaseInstallation.ps1" -Action UninstallVirtualDisplay -InstallDirectory "$INSTDIR"'
   noDriver:
-  Delete "$SMPROGRAMS\Ligase Host\Ligase Host.lnk"
-  RMDir "$SMPROGRAMS\Ligase Host"
-  Delete "$DESKTOP\Ligase Host.lnk"
   DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Ligase Host"
   RMDir /r "$INSTDIR"
 SectionEnd

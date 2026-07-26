@@ -56,6 +56,86 @@ return process.ExitCode;
   -c Release -o $argumentListRunnerOutput --nologo | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "argumentListRunnerBuildFailed" }
 $argumentListRunner = Join-Path $argumentListRunnerOutput "ArgumentListRunner.dll"
+$managementScript = Join-Path $PSScriptRoot "Manage-LigaseInstallation.ps1"
+
+function New-TestShortcut(
+  [string]$Path,
+  [string]$Target,
+  [string]$WorkingDirectory,
+  [string]$Arguments = ""
+) {
+  New-Item -ItemType Directory -Path (Split-Path -Parent $Path) -Force |
+    Out-Null
+  $shell = New-Object -ComObject WScript.Shell
+  try {
+    $shortcut = $shell.CreateShortcut($Path)
+    $shortcut.TargetPath = $Target
+    $shortcut.WorkingDirectory = $WorkingDirectory
+    $shortcut.Arguments = $Arguments
+    $shortcut.Save()
+  } finally {
+    [Runtime.InteropServices.Marshal]::FinalReleaseComObject($shell) | Out-Null
+  }
+}
+
+function Invoke-ShortcutFixture(
+  [string]$InstallRoot,
+  [string]$CommonPrograms,
+  [string]$CommonDesktop,
+  [string]$LegacyPrograms,
+  [string]$LegacyDesktop,
+  [ValidateSet("", "write", "readback")]
+  [string]$FailureStage = "",
+  [string]$TransactionRoot = "",
+  [switch]$ConfigureFirewall,
+  [switch]$ValidateTransaction,
+  [switch]$DesktopSelected
+) {
+  $arguments = @(
+    "-NoProfile",
+    "-NonInteractive",
+    "-ExecutionPolicy", "Bypass",
+    "-File", $managementScript,
+    "-Action", $(if ($ValidateTransaction) {
+      "ValidateInstallTransaction"
+    } else {
+      "ReconcileShortcuts"
+    }),
+    "-InstallDirectory", $InstallRoot,
+    "-ShortcutCommonProgramsRoot", $CommonPrograms,
+    "-ShortcutCommonDesktopRoot", $CommonDesktop,
+    "-ShortcutLegacyProgramsRoot", $LegacyPrograms,
+    "-ShortcutLegacyDesktopRoot", $LegacyDesktop)
+  if (-not [string]::IsNullOrWhiteSpace($TransactionRoot)) {
+    $arguments += @("-InstallTransactionRoot", $TransactionRoot)
+  }
+  if ($ConfigureFirewall) { $arguments += "-ConfigureFirewall" }
+  if ($DesktopSelected) { $arguments += "-DesktopShortcutSelected" }
+  $previous = $env:LIGASE_INSTALL_VALIDATION_HARNESS
+  $previousFailure = $env:LIGASE_SHORTCUT_FAILURE_STAGE
+  try {
+    $env:LIGASE_INSTALL_VALIDATION_HARNESS = "1"
+    $env:LIGASE_SHORTCUT_FAILURE_STAGE = $FailureStage
+    $output = @(& powershell.exe @arguments 2>&1)
+    return [ordered]@{
+      exitCode = $LASTEXITCODE
+      output = if ($output.Count -gt 0) { [string]$output[-1] } else { "" }
+    }
+  } finally {
+    $env:LIGASE_INSTALL_VALIDATION_HARNESS = $previous
+    $env:LIGASE_SHORTCUT_FAILURE_STAGE = $previousFailure
+  }
+}
+
+function Get-ShortcutFixtureSnapshot([string[]]$Paths) {
+  $result = [ordered]@{}
+  foreach ($path in $Paths) {
+    $result[$path] = if (Test-Path -LiteralPath $path -PathType Leaf) {
+      [Convert]::ToBase64String([IO.File]::ReadAllBytes($path))
+    } else { $null }
+  }
+  return ($result | ConvertTo-Json -Compress)
+}
 
 Add-Type -TypeDefinition @"
 using System;
@@ -343,7 +423,8 @@ function Invoke-FailureFlowHarness(
     "silentProvisional")]
   [string] $FailureMode,
   [Parameter(Mandatory)][string] $ExpectedCode,
-  [Parameter(Mandatory)][string] $ExpectedRollback
+  [Parameter(Mandatory)][string] $ExpectedRollback,
+  [Parameter(Mandatory)][string] $ExpectedFailedField
 ) {
   $caseRoot = Join-Path $root "failure-flow-$FailureMode"
   New-Item -ItemType Directory -Path $caseRoot -Force | Out-Null
@@ -389,9 +470,10 @@ function Invoke-FailureFlowHarness(
     $document.phase -cne "failed" -or
     $document.success -ne $false -or
     $document.resultCode -cne $ExpectedCode -or
+    $document.failedField -cne $ExpectedFailedField -or
     $document.helper.exitCode -ne 10 -or
     $document.rollback.state -cne $ExpectedRollback -or
-    $document.firewall.state -cne "failed" -or
+    $document.firewall.state -cne "notChecked" -or
     $document.displayedSuccess -ne $false -or
     $document.displayedFailure -ne $true
   ) {
@@ -409,6 +491,7 @@ function Invoke-FailureFlowHarness(
     displayedFailure = $true
     evidenceReadable = $true
     rollback = $ExpectedRollback
+    failedField = $ExpectedFailedField
   }
 }
 
@@ -805,31 +888,262 @@ $results += Invoke-Harness `
   -Arguments @("/InstallDirectory=$reparseInstall") `
   -ShouldSucceed $false
 
+$shortcutRoot = Join-Path $root "shortcut-fixture"
+$shortcutInstall = Join-Path $shortcutRoot "install"
+$shortcutCommonPrograms = Join-Path $shortcutRoot "common-programs"
+$shortcutCommonDesktop = Join-Path $shortcutRoot "common-desktop"
+$shortcutLegacyPrograms = Join-Path $shortcutRoot "legacy-programs"
+$shortcutLegacyDesktop = Join-Path $shortcutRoot "legacy-desktop"
+New-Item -ItemType Directory -Path $shortcutInstall -Force | Out-Null
+$shortcutLauncher = Join-Path $shortcutInstall "Ligase Host.exe"
+[IO.File]::WriteAllBytes($shortcutLauncher, [byte[]](0))
+$legacyStart = Join-Path $shortcutLegacyPrograms (
+  "Ligase Host\Ligase Host.lnk")
+$legacyDesktop = Join-Path $shortcutLegacyDesktop "Ligase Host.lnk"
+New-TestShortcut $legacyStart $shortcutLauncher $shortcutInstall
+New-TestShortcut $legacyDesktop $shortcutLauncher $shortcutInstall
+$selectedResult = Invoke-ShortcutFixture `
+  -InstallRoot $shortcutInstall `
+  -CommonPrograms $shortcutCommonPrograms `
+  -CommonDesktop $shortcutCommonDesktop `
+  -LegacyPrograms $shortcutLegacyPrograms `
+  -LegacyDesktop $shortcutLegacyDesktop `
+  -DesktopSelected
+if ($selectedResult.exitCode -ne 0 -or
+    $selectedResult.output -cne (
+      '{"code":"shortcutsReconciled","success":true,"desktopSelected":true}') -or
+    (Test-Path -LiteralPath $legacyStart) -or
+    (Test-Path -LiteralPath $legacyDesktop) -or
+    -not (Test-Path -LiteralPath (
+      Join-Path $shortcutCommonPrograms "Ligase Host\Ligase Host.lnk")) -or
+    -not (Test-Path -LiteralPath (
+      Join-Path $shortcutCommonDesktop "Ligase Host.lnk"))) {
+  throw "shortcutSelectedFixtureFailed"
+}
+$unselectedResult = Invoke-ShortcutFixture `
+  -InstallRoot $shortcutInstall `
+  -CommonPrograms $shortcutCommonPrograms `
+  -CommonDesktop $shortcutCommonDesktop `
+  -LegacyPrograms $shortcutLegacyPrograms `
+  -LegacyDesktop $shortcutLegacyDesktop
+if ($unselectedResult.exitCode -ne 0 -or
+    $unselectedResult.output -cne (
+      '{"code":"shortcutsReconciled","success":true,"desktopSelected":false}') -or
+    (Test-Path -LiteralPath (
+      Join-Path $shortcutCommonDesktop "Ligase Host.lnk"))) {
+  throw "shortcutUnselectedFixtureFailed"
+}
+$unownedTarget = Join-Path $shortcutRoot "not-ligase.exe"
+[IO.File]::WriteAllBytes($unownedTarget, [byte[]](0))
+New-TestShortcut $legacyDesktop $unownedTarget $shortcutRoot "--not-owned"
+$preserveResult = Invoke-ShortcutFixture `
+  -InstallRoot $shortcutInstall `
+  -CommonPrograms $shortcutCommonPrograms `
+  -CommonDesktop $shortcutCommonDesktop `
+  -LegacyPrograms $shortcutLegacyPrograms `
+  -LegacyDesktop $shortcutLegacyDesktop
+if ($preserveResult.exitCode -ne 0 -or
+    -not (Test-Path -LiteralPath $legacyDesktop)) {
+  throw "shortcutNonOwnedPreservationFailed"
+}
+$commonDesktopShortcut = Join-Path $shortcutCommonDesktop "Ligase Host.lnk"
+New-TestShortcut $commonDesktopShortcut $unownedTarget $shortcutRoot "--not-owned"
+$conflictResult = Invoke-ShortcutFixture `
+  -InstallRoot $shortcutInstall `
+  -CommonPrograms $shortcutCommonPrograms `
+  -CommonDesktop $shortcutCommonDesktop `
+  -LegacyPrograms $shortcutLegacyPrograms `
+  -LegacyDesktop $shortcutLegacyDesktop `
+  -DesktopSelected
+if ($conflictResult.exitCode -eq 0 -or
+    -not (Test-Path -LiteralPath $commonDesktopShortcut)) {
+  throw "shortcutConflictFailClosedFixtureFailed"
+}
+
+$combinationRoot = Join-Path $root "shortcut-combination-fixture"
+$combinationInstall = Join-Path $combinationRoot "install"
+$combinationCommonPrograms = Join-Path $combinationRoot "common-programs"
+$combinationCommonDesktop = Join-Path $combinationRoot "common-desktop"
+$combinationLegacyPrograms = Join-Path $combinationRoot "legacy-programs"
+$combinationLegacyDesktop = Join-Path $combinationRoot "legacy-desktop"
+New-Item -ItemType Directory -Path $combinationInstall -Force | Out-Null
+$combinationLauncher = Join-Path $combinationInstall "Ligase Host.exe"
+[IO.File]::WriteAllBytes($combinationLauncher, [byte[]](0))
+$combinationStart = Join-Path $combinationCommonPrograms (
+  "Ligase Host\Ligase Host.lnk")
+$combinationDesktop = Join-Path $combinationCommonDesktop "Ligase Host.lnk"
+$combinationLegacyStart = Join-Path $combinationLegacyPrograms (
+  "Ligase Host\Ligase Host.lnk")
+$combinationLegacyDesk = Join-Path $combinationLegacyDesktop "Ligase Host.lnk"
+$combinationPaths = @(
+  $combinationStart,
+  $combinationDesktop,
+  $combinationLegacyStart,
+  $combinationLegacyDesk)
+$firewallSentinel = Join-Path $combinationRoot "owned-firewall-state.txt"
+[IO.File]::WriteAllText($firewallSentinel, "unchanged")
+New-TestShortcut $combinationLegacyStart $combinationLauncher `
+  $combinationInstall
+New-TestShortcut $combinationStart $unownedTarget $shortcutRoot "--not-owned"
+$beforeStartConflict = Get-ShortcutFixtureSnapshot $combinationPaths
+$beforeFirewall = [IO.File]::ReadAllText($firewallSentinel)
+$startConflict = Invoke-ShortcutFixture `
+  -InstallRoot $combinationInstall `
+  -CommonPrograms $combinationCommonPrograms `
+  -CommonDesktop $combinationCommonDesktop `
+  -LegacyPrograms $combinationLegacyPrograms `
+  -LegacyDesktop $combinationLegacyDesktop
+if ($startConflict.exitCode -eq 0 -or
+    $startConflict.output -notmatch '"code":"startMenuShortcutConflict"' -or
+    (Get-ShortcutFixtureSnapshot $combinationPaths) -cne $beforeStartConflict -or
+    [IO.File]::ReadAllText($firewallSentinel) -cne $beforeFirewall) {
+  throw "shortcutStartConflictTransactionFixtureFailed"
+}
+
+Remove-Item -LiteralPath $combinationStart -Force
+Remove-Item -LiteralPath $combinationLegacyStart -Force
+New-TestShortcut $combinationDesktop $unownedTarget $shortcutRoot "--not-owned"
+$beforeDesktopConflict = Get-ShortcutFixtureSnapshot $combinationPaths
+$desktopConflict = Invoke-ShortcutFixture `
+  -InstallRoot $combinationInstall `
+  -CommonPrograms $combinationCommonPrograms `
+  -CommonDesktop $combinationCommonDesktop `
+  -LegacyPrograms $combinationLegacyPrograms `
+  -LegacyDesktop $combinationLegacyDesktop `
+  -DesktopSelected
+if ($desktopConflict.exitCode -eq 0 -or
+    $desktopConflict.output -notmatch '"code":"desktopShortcutConflict"' -or
+    (Get-ShortcutFixtureSnapshot $combinationPaths) -cne $beforeDesktopConflict -or
+    [IO.File]::ReadAllText($firewallSentinel) -cne $beforeFirewall) {
+  throw "shortcutDesktopConflictTransactionFixtureFailed"
+}
+
+Remove-Item -LiteralPath $combinationDesktop -Force
+$beforeWriteFailure = Get-ShortcutFixtureSnapshot $combinationPaths
+$writeFailure = Invoke-ShortcutFixture `
+  -InstallRoot $combinationInstall `
+  -CommonPrograms $combinationCommonPrograms `
+  -CommonDesktop $combinationCommonDesktop `
+  -LegacyPrograms $combinationLegacyPrograms `
+  -LegacyDesktop $combinationLegacyDesktop `
+  -DesktopSelected `
+  -FailureStage "write"
+if ($writeFailure.exitCode -eq 0 -or
+    (Get-ShortcutFixtureSnapshot $combinationPaths) -cne $beforeWriteFailure) {
+  throw "shortcutWriteFailureRollbackFixtureFailed"
+}
+$readbackFailure = Invoke-ShortcutFixture `
+  -InstallRoot $combinationInstall `
+  -CommonPrograms $combinationCommonPrograms `
+  -CommonDesktop $combinationCommonDesktop `
+  -LegacyPrograms $combinationLegacyPrograms `
+  -LegacyDesktop $combinationLegacyDesktop `
+  -DesktopSelected `
+  -FailureStage "readback"
+if ($readbackFailure.exitCode -eq 0 -or
+    (Get-ShortcutFixtureSnapshot $combinationPaths) -cne $beforeWriteFailure) {
+  throw "shortcutReadbackFailureRollbackFixtureFailed"
+}
+
+$sourceRoot = (Resolve-Path (Join-Path $PSScriptRoot "../../..")).Path
+$transactionPublish = Join-Path $OutputRoot "transaction-helper"
+& $DotNet publish (Join-Path $sourceRoot (
+    "tools/Ligase.Installation.TransactionHelper/" +
+    "Ligase.Installation.TransactionHelper.csproj")) `
+  -c Release -p:Platform=x64 -r win-x64 --self-contained true `
+  -p:PublishSingleFile=true -p:UseSharedCompilation=false `
+  -o $transactionPublish | Out-Null
+if ($LASTEXITCODE -ne 0) {
+  throw "installTransactionHelperPublishFailed"
+}
+$transactionHelper = Join-Path $transactionPublish (
+  "Ligase.Installation.TransactionHelper.exe")
+if (-not (Test-Path -LiteralPath $transactionHelper -PathType Leaf)) {
+  throw "installTransactionHelperMissing"
+}
+$transactionRoot = Join-Path $combinationRoot "admin-transaction"
+$env:LIGASE_INSTALL_VALIDATION_HARNESS = "1"
+& $transactionHelper validate --test-root $transactionRoot | Out-Null
+$transactionProbeExit = $LASTEXITCODE
+Remove-Item Env:\LIGASE_INSTALL_VALIDATION_HARNESS -ErrorAction SilentlyContinue
+$transactionElevatedAvailable = $transactionProbeExit -eq 0
+$junctionRoot = Join-Path $combinationRoot "transaction-junction"
+$junctionTarget = Join-Path $combinationRoot "outside-target"
+New-Item -ItemType Directory -Path $junctionTarget -Force | Out-Null
+$sentinel = Join-Path $junctionTarget "sentinel.txt"
+[IO.File]::WriteAllText(
+  $sentinel, "unchanged", [Text.UTF8Encoding]::new($false))
+$junctionCreated = $false
+try {
+  New-Item -ItemType Junction -Path $junctionRoot -Target $junctionTarget `
+    -ErrorAction Stop | Out-Null
+  $junctionCreated = $true
+} catch {}
+$junctionRejected = $false
+if ($junctionCreated) {
+  $env:LIGASE_INSTALL_VALIDATION_HARNESS = "1"
+  "{}" | & $transactionHelper write --test-root $junctionRoot | Out-Null
+  $junctionRejected = $LASTEXITCODE -ne 0 -and
+    [IO.File]::ReadAllText($sentinel) -ceq "unchanged" -and
+    -not (Test-Path -LiteralPath (
+      Join-Path $junctionTarget "pending-install-transaction.json"))
+  Remove-Item Env:\LIGASE_INSTALL_VALIDATION_HARNESS `
+    -ErrorAction SilentlyContinue
+}
+if ($junctionCreated -and -not $junctionRejected) {
+  throw "installTransactionJunctionFollowed"
+}
+$shortcutResults = @(
+  [ordered]@{ name = "current-to-all-owned-selected"; passed = $true },
+  [ordered]@{ name = "all-users-desktop-unselected"; passed = $true },
+  [ordered]@{ name = "nonowned-current-preserved"; passed = $true },
+  [ordered]@{ name = "nonowned-common-conflict-fail-closed"; passed = $true },
+  [ordered]@{ name = "legacy-owned-start-conflict-zero-mutation"; passed = $true },
+  [ordered]@{ name = "desktop-conflict-zero-mutation"; passed = $true },
+  [ordered]@{ name = "shortcut-write-failure-exact-rollback"; passed = $true },
+  [ordered]@{ name = "shortcut-readback-failure-exact-rollback"; passed = $true },
+  [ordered]@{
+    name = "admin-only-handle-transaction-boundary"
+    passed = $transactionElevatedAvailable
+    inconclusive = -not $transactionElevatedAvailable
+  },
+  [ordered]@{
+    name = "transaction-junction-rejected-zero-external-mutation"
+    passed = $junctionRejected
+    inconclusive = -not $junctionCreated
+  })
+
 $failureFlowResults = @(
   Invoke-FailureFlowHarness `
     -FailureMode "helperFailure" `
     -ExpectedCode "installationIntegrationFailed" `
-    -ExpectedRollback "completed"
+    -ExpectedRollback "completed" `
+    -ExpectedFailedField "artifacts"
   Invoke-FailureFlowHarness `
     -FailureMode "migrationFailure" `
     -ExpectedCode "dataRootMigrationReadbackFailed" `
-    -ExpectedRollback "completed"
+    -ExpectedRollback "completed" `
+    -ExpectedFailedField "dataRoot"
   Invoke-FailureFlowHarness `
     -FailureMode "integrationFailure" `
     -ExpectedCode "installationFinalReadbackFailed" `
-    -ExpectedRollback "completed"
+    -ExpectedRollback "completed" `
+    -ExpectedFailedField "startMenu"
   Invoke-FailureFlowHarness `
     -FailureMode "rollbackFailure" `
     -ExpectedCode "installationActionFailed" `
-    -ExpectedRollback "failed"
+    -ExpectedRollback "failed" `
+    -ExpectedFailedField "dataRoot"
   Invoke-FailureFlowHarness `
     -FailureMode "silentProvisional" `
     -ExpectedCode "installationFinalReadbackRequired" `
-    -ExpectedRollback "notRequired"
+    -ExpectedRollback "notRequired" `
+    -ExpectedFailedField "none"
 )
 
 [ordered]@{
   code = "installDirectoryRuntimeHarnessPassed"
   cases = $results
+  shortcutCases = $shortcutResults
   failureFlows = $failureFlowResults
 } | ConvertTo-Json -Depth 4 -Compress

@@ -4,6 +4,8 @@ param(
     "DryRun",
     "Install",
     "FinalizeInstall",
+    "ReconcileShortcuts",
+    "ValidateInstallTransaction",
     "RecordEvidence",
     "Readback",
     "Uninstall",
@@ -46,12 +48,28 @@ param(
   [string]$EvidenceRollback = "notRequired",
   [ValidateSet("notChecked", "configured", "failed", "residual", "unknown")]
   [string]$EvidenceFirewall = "notChecked",
+  [ValidateSet(
+    "none",
+    "artifacts",
+    "bootstrap",
+    "dataRoot",
+    "arp",
+    "startMenu",
+    "desktop",
+    "firewall",
+    "virtualDisplay")]
+  [string]$EvidenceFailedField = "none",
   [ValidateSet("unknown", "absent", "empty", "nonEmpty")]
   [string]$EvidenceInstallResidue = "unknown",
   [ValidateSet("unknown", "absent", "empty", "nonEmpty")]
   [string]$EvidenceDataRootResidue = "unknown",
   [string]$EvidenceManifestPath,
   [switch]$DesktopShortcutSelected,
+  [string]$ShortcutCommonProgramsRoot,
+  [string]$ShortcutCommonDesktopRoot,
+  [string]$ShortcutLegacyProgramsRoot,
+  [string]$ShortcutLegacyDesktopRoot,
+  [string]$InstallTransactionRoot,
   [switch]$VirtualDisplaySelected,
   [ValidateSet("notSelected", "installed", "failed", "declined", "unknown")]
   [string]$VirtualDisplayOutcome = "unknown"
@@ -63,7 +81,23 @@ $manifestPath = Join-Path $installRoot "ligase-install-manifest.json"
 $bootstrapPath = Join-Path $installRoot "ligase-bootstrap.json"
 $script:freshDataRootCreated = $null
 $script:migrationRollback = $null
+$script:shortcutRollback = $null
+$script:firewallAppliedByTransaction = $false
+$script:firewallWasConfigured = $false
+$script:installTransactionId = $null
+$script:installTransactionCreatedUtc = $null
 $script:rollbackResult = "notRequired"
+$script:finalFailedField = "none"
+$script:finalComponents = [ordered]@{
+  artifacts = "pending"
+  bootstrap = "pending"
+  dataRoot = "pending"
+  arp = "pending"
+  startMenu = "pending"
+  desktop = "pending"
+  firewall = "pending"
+  virtualDisplay = "pending"
+}
 
 Add-Type -TypeDefinition @"
 using System;
@@ -275,6 +309,254 @@ function Get-InstallerEvidencePath {
   return Join-Path $common "Ligase Host\Installer\last-outcome.json"
 }
 
+function Get-InstallTransactionHelperPath {
+  $path = Join-Path $installRoot (
+    "Deployment\Ligase.Installation.TransactionHelper.exe")
+  if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+    throw "installTransactionUnavailable"
+  }
+  $manifest = [IO.File]::ReadAllText($manifestPath) | ConvertFrom-Json
+  $matches = @($manifest.privilegedHelpers | Where-Object {
+    [string]$_.relativePath -ceq (
+      "Deployment/Ligase.Installation.TransactionHelper.exe")
+  })
+  if ($matches.Count -ne 1 -or
+      [string]$matches[0].signedArtifactSha256 -notmatch '^[0-9a-f]{64}$' -or
+      (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash -cne
+        ([string]$matches[0].signedArtifactSha256).ToUpperInvariant()) {
+    throw "installTransactionUnavailable"
+  }
+  return $path
+}
+
+function Invoke-InstallTransactionHelper(
+  [ValidateSet("write", "read", "delete", "validate")]
+  [string]$HelperAction,
+  [string]$InputValue = ""
+) {
+  if (-not [string]::IsNullOrWhiteSpace($InstallTransactionRoot)) {
+    throw "installTransactionTestOverrideRejected"
+  }
+  $start = [Diagnostics.ProcessStartInfo]::new()
+  $start.FileName = Get-InstallTransactionHelperPath
+  $start.Arguments = $HelperAction
+  $start.UseShellExecute = $false
+  $start.CreateNoWindow = $true
+  $start.RedirectStandardInput = $true
+  $start.RedirectStandardOutput = $true
+  $start.RedirectStandardError = $true
+  $process = [Diagnostics.Process]::new()
+  $process.StartInfo = $start
+  if (-not $process.Start()) { throw "installTransactionUnavailable" }
+  try {
+    if ($HelperAction -eq "write") {
+      $process.StandardInput.Write($InputValue)
+    }
+    $process.StandardInput.Close()
+    $stdout = $process.StandardOutput.ReadToEnd()
+    $stderr = $process.StandardError.ReadToEnd()
+    if (-not $process.WaitForExit(15000)) {
+      try { $process.Kill() } catch {}
+      throw "installTransactionUnavailable"
+    }
+    if ($process.ExitCode -ne 0) {
+      if ($stderr -ceq "installTransactionAclInvalid") {
+        throw "installTransactionAclInvalid"
+      }
+      throw "installTransactionInvalid"
+    }
+    return $stdout
+  } finally {
+    $process.Dispose()
+  }
+}
+
+function Get-ExpectedShortcutEntries {
+  $roots = Get-ShortcutRoots
+  return @(
+    [ordered]@{
+      field = "startMenu"
+      path = Join-Path ([string]$roots.commonPrograms) (
+        "Ligase Host\Ligase Host.lnk")
+    },
+    [ordered]@{
+      field = "desktop"
+      path = Join-Path ([string]$roots.commonDesktop) "Ligase Host.lnk"
+    },
+    [ordered]@{
+      field = "startMenu"
+      path = Join-Path ([string]$roots.legacyPrograms) (
+        "Ligase Host\Ligase Host.lnk")
+    },
+    [ordered]@{
+      field = "desktop"
+      path = Join-Path ([string]$roots.legacyDesktop) "Ligase Host.lnk"
+    })
+}
+
+function Assert-ClosedProperties($Object, [string[]]$Expected) {
+  $actual = @($Object.PSObject.Properties.Name)
+  if ($actual.Count -ne $Expected.Count) {
+    throw "installTransactionInvalid"
+  }
+  foreach ($name in $Expected) {
+    if ($actual -cnotcontains $name) { throw "installTransactionInvalid" }
+  }
+}
+
+function Assert-TransactionRawShape([string]$Raw) {
+  $top = @(
+    "schemaVersion", "transactionId", "createdUtc", "manifestSourceHead",
+    "manifestSha256", "installLayout", "installDirectory", "launcher",
+    "desktopSelected", "virtualDisplaySelected", "configureFirewall",
+    "shortcuts", "firewallApplied", "firewallWasConfigured")
+  foreach ($name in $top) {
+    if ([regex]::Matches($Raw, '"' + [regex]::Escape($name) + '"\s*:').Count -ne
+        1) {
+      throw "installTransactionInvalid"
+    }
+  }
+  foreach ($name in @("field", "path", "existed", "bytes")) {
+    if ([regex]::Matches($Raw, '"' + $name + '"\s*:').Count -ne 4) {
+      throw "installTransactionInvalid"
+    }
+  }
+}
+
+function Save-InstallTransaction {
+  if ($null -eq $script:shortcutRollback) { return }
+  if ([string]::IsNullOrWhiteSpace($script:installTransactionId)) {
+    $random = [byte[]]::new(32)
+    $generator = [Security.Cryptography.RandomNumberGenerator]::Create()
+    try { $generator.GetBytes($random) } finally { $generator.Dispose() }
+    $script:installTransactionId = [Convert]::ToBase64String($random)
+    $script:installTransactionCreatedUtc = [DateTime]::UtcNow
+  }
+  $document = [ordered]@{
+    schemaVersion = 1
+    transactionId = $script:installTransactionId
+    createdUtc = $script:installTransactionCreatedUtc.ToString(
+      "O", [Globalization.CultureInfo]::InvariantCulture)
+    manifestSourceHead = Get-EvidenceSourceHead
+    manifestSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $manifestPath).Hash
+    installLayout = "structured-v1"
+    installDirectory = $installRoot
+    launcher = [string]$script:shortcutRollback.launcher
+    desktopSelected = [bool]$DesktopShortcutSelected
+    virtualDisplaySelected = [bool]$VirtualDisplaySelected
+    configureFirewall = [bool]$ConfigureFirewall
+    shortcuts = @($script:shortcutRollback.snapshot)
+    firewallApplied = [bool]$script:firewallAppliedByTransaction
+    firewallWasConfigured = [bool]$script:firewallWasConfigured
+  }
+  $raw = $document | ConvertTo-Json -Depth 6 -Compress
+  $result = Invoke-InstallTransactionHelper "write" $raw
+  if ($result -cne
+      '{"code":"installTransactionWritten","success":true}') {
+    throw "installTransactionInvalid"
+  }
+}
+
+function Load-InstallTransaction {
+  $raw = Invoke-InstallTransactionHelper "read"
+  Assert-TransactionRawShape $raw
+  $document = $raw | ConvertFrom-Json
+  Assert-ClosedProperties $document @(
+    "schemaVersion", "transactionId", "createdUtc", "manifestSourceHead",
+    "manifestSha256", "installLayout", "installDirectory", "launcher",
+    "desktopSelected", "virtualDisplaySelected", "configureFirewall",
+    "shortcuts", "firewallApplied", "firewallWasConfigured")
+  $created = [DateTime]::MinValue
+  if (-not [DateTime]::TryParseExact(
+      [string]$document.createdUtc,
+      "O",
+      [Globalization.CultureInfo]::InvariantCulture,
+      [Globalization.DateTimeStyles]::RoundtripKind,
+      [ref]$created) -or
+      $created.Kind -ne [DateTimeKind]::Utc -or
+      $created -gt [DateTime]::UtcNow.AddMinutes(5) -or
+      $created -lt [DateTime]::UtcNow.AddHours(-2)) {
+    throw "installTransactionStale"
+  }
+  $transactionBytes = [byte[]]$null
+  try { $transactionBytes = [Convert]::FromBase64String(
+      [string]$document.transactionId) } catch {
+    throw "installTransactionInvalid"
+  }
+  $expectedLauncher = [IO.Path]::GetFullPath(
+    (Join-Path $installRoot "Ligase Host.exe"))
+  $expectedEntries = @(Get-ExpectedShortcutEntries)
+  $actualEntries = @($document.shortcuts)
+  if ($document.schemaVersion -ne 1 -or
+      $transactionBytes.Count -ne 32 -or
+      [string]$document.manifestSourceHead -cne (Get-EvidenceSourceHead) -or
+      [string]$document.manifestSha256 -cne
+        (Get-FileHash -Algorithm SHA256 -LiteralPath $manifestPath).Hash -or
+      [string]$document.installLayout -cne "structured-v1" -or
+      [string]$document.installDirectory -cne $installRoot -or
+      [string]$document.launcher -cne $expectedLauncher -or
+      $document.desktopSelected -isnot [bool] -or
+      [bool]$document.desktopSelected -ne [bool]$DesktopShortcutSelected -or
+      $document.virtualDisplaySelected -isnot [bool] -or
+      [bool]$document.virtualDisplaySelected -ne [bool]$VirtualDisplaySelected -or
+      $document.configureFirewall -isnot [bool] -or
+      [bool]$document.configureFirewall -ne [bool]$ConfigureFirewall -or
+      $document.firewallApplied -isnot [bool] -or
+      $document.firewallWasConfigured -isnot [bool] -or
+      $actualEntries.Count -ne 4) {
+    throw "installTransactionInvalid"
+  }
+  $validated = @()
+  $totalBytes = 0
+  for ($index = 0; $index -lt 4; $index++) {
+    $entry = $actualEntries[$index]
+    $expected = $expectedEntries[$index]
+    Assert-ClosedProperties $entry @("field", "path", "existed", "bytes")
+    if ([string]$entry.field -cne [string]$expected.field -or
+        [string]$entry.path -cne [IO.Path]::GetFullPath([string]$expected.path) -or
+        $entry.existed -isnot [bool]) {
+      throw "installTransactionInvalid"
+    }
+    $bytes = $null
+    if ([bool]$entry.existed) {
+      if ($entry.bytes -isnot [string]) { throw "installTransactionInvalid" }
+      try { $bytes = [Convert]::FromBase64String([string]$entry.bytes) } catch {
+        throw "installTransactionInvalid"
+      }
+      if ($bytes.Count -gt 1048576) { throw "installTransactionInvalid" }
+      $totalBytes += $bytes.Count
+    } elseif ($null -ne $entry.bytes) {
+      throw "installTransactionInvalid"
+    }
+    $validated += [ordered]@{
+      field = [string]$expected.field
+      path = [IO.Path]::GetFullPath([string]$expected.path)
+      existed = [bool]$entry.existed
+      bytes = if ($null -eq $bytes) {
+        $null
+      } else {
+        [Convert]::ToBase64String($bytes)
+      }
+    }
+  }
+  if ($totalBytes -gt 4194304) { throw "installTransactionInvalid" }
+  $script:shortcutRollback = [ordered]@{
+    launcher = $expectedLauncher
+    snapshot = $validated
+  }
+  $script:firewallAppliedByTransaction = [bool]$document.firewallApplied
+  $script:firewallWasConfigured = [bool]$document.firewallWasConfigured
+  return $true
+}
+
+function Remove-InstallTransaction {
+  $result = Invoke-InstallTransactionHelper "delete"
+  if ($result -cne
+      '{"code":"installTransactionDeleted","success":true}') {
+    throw "installTransactionInvalid"
+  }
+}
+
 function Write-InstallerEvidence {
   $evidencePath = Get-InstallerEvidencePath
   $evidenceDirectory = Split-Path -Parent $evidencePath
@@ -302,6 +584,12 @@ function Write-InstallerEvidence {
       exitCode = $EvidenceHelperExit
       resultCode = $EvidenceResultCode
     }
+    failedField = if ($EvidenceFailedField -eq "none") {
+      $null
+    } else {
+      $EvidenceFailedField
+    }
+    components = $script:finalComponents
     rollback = [ordered]@{ state = $EvidenceRollback }
     firewall = [ordered]@{ state = $EvidenceFirewall }
     residuals = [ordered]@{
@@ -594,10 +882,31 @@ function Get-InteractiveOperatorProfile {
       "Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$sid") `
       -Name ProfileImagePath
     $profilePath = [Environment]::ExpandEnvironmentVariables([string]$profile)
+    $profilePath = [IO.Path]::GetFullPath($profilePath)
+    $roaming = Join-Path $profilePath "AppData\Roaming"
+    $shellKey = "Registry::HKEY_USERS\$sid\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders"
+    $programsValue = Get-ItemPropertyValue -LiteralPath $shellKey -Name Programs
+    $desktopValue = Get-ItemPropertyValue -LiteralPath $shellKey -Name Desktop
+    $expandShellPath = {
+      param([string]$Value)
+      $expanded = $Value
+      $expanded = $expanded.Replace("%USERPROFILE%", $profilePath)
+      $expanded = $expanded.Replace("%AppData%", $roaming)
+      $expanded = $expanded.Replace("%APPDATA%", $roaming)
+      $expanded = $expanded.Replace(
+        "%LOCALAPPDATA%", (Join-Path $profilePath "AppData\Local"))
+      if ($expanded -match '%[^%]+%') {
+        throw "shortcutLocationUnavailable"
+      }
+      return [IO.Path]::GetFullPath($expanded)
+    }
     return [ordered]@{
       sid = $sid
+      profilePath = $profilePath
+      programsPath = & $expandShellPath ([string]$programsValue)
+      desktopPath = & $expandShellPath ([string]$desktopValue)
       localAppData = Assert-CanonicalLocalDataRoot (
-        Join-Path ([IO.Path]::GetFullPath($profilePath)) "AppData\Local")
+        Join-Path $profilePath "AppData\Local")
     }
   } finally {
     $identity.Dispose()
@@ -1274,6 +1583,309 @@ function Get-DriverCertificateLocations([string]$Thumbprint) {
   return @($locations)
 }
 
+function Get-ShortcutDetails([string]$ShortcutPath) {
+  if (-not (Test-Path -LiteralPath $ShortcutPath -PathType Leaf)) {
+    return $null
+  }
+  $shell = New-Object -ComObject WScript.Shell
+  try {
+    $shortcut = $shell.CreateShortcut($ShortcutPath)
+    return [ordered]@{
+      target = [string]$shortcut.TargetPath
+      arguments = [string]$shortcut.Arguments
+      workingDirectory = [string]$shortcut.WorkingDirectory
+    }
+  } finally {
+    [Runtime.InteropServices.Marshal]::FinalReleaseComObject($shell) | Out-Null
+  }
+}
+
+function Test-OwnedShortcut(
+  [string]$ShortcutPath,
+  [string]$ExpectedTarget
+) {
+  $details = Get-ShortcutDetails $ShortcutPath
+  if ($null -eq $details) { return $false }
+  try {
+    $target = [IO.Path]::GetFullPath([string]$details.target)
+    $workingDirectory = [IO.Path]::GetFullPath(
+      [string]$details.workingDirectory)
+  } catch {
+    return $false
+  }
+  return (
+    $target.Equals(
+      [IO.Path]::GetFullPath($ExpectedTarget),
+      [StringComparison]::OrdinalIgnoreCase) -and
+    [string]::IsNullOrEmpty([string]$details.arguments) -and
+    $workingDirectory.Equals(
+      $installRoot,
+      [StringComparison]::OrdinalIgnoreCase))
+}
+
+function New-OwnedShortcut(
+  [string]$ShortcutPath,
+  [string]$ExpectedTarget
+) {
+  $parent = Split-Path -Parent $ShortcutPath
+  if (-not (Test-Path -LiteralPath $parent -PathType Container)) {
+    New-Item -ItemType Directory -Path $parent -Force | Out-Null
+  }
+  $shell = New-Object -ComObject WScript.Shell
+  try {
+    $shortcut = $shell.CreateShortcut($ShortcutPath)
+    $shortcut.TargetPath = $ExpectedTarget
+    $shortcut.Arguments = ""
+    $shortcut.WorkingDirectory = $installRoot
+    $shortcut.IconLocation = "$ExpectedTarget,0"
+    $shortcut.Save()
+  } finally {
+    [Runtime.InteropServices.Marshal]::FinalReleaseComObject($shell) | Out-Null
+  }
+  if (-not (Test-OwnedShortcut $ShortcutPath $ExpectedTarget)) {
+    throw "shortcutWriteFailed"
+  }
+}
+
+function Remove-ShortcutIfOwned(
+  [string]$ShortcutPath,
+  [string]$ExpectedTarget
+) {
+  if (Test-OwnedShortcut $ShortcutPath $ExpectedTarget) {
+    Remove-Item -LiteralPath $ShortcutPath -Force
+    return $true
+  }
+  return $false
+}
+
+function Fail-ShortcutIntegration([string]$Field, [string]$Code) {
+  $script:finalFailedField = $Field
+  $script:finalComponents[$Field] = "failed"
+  throw $Code
+}
+
+function Get-ShortcutSnapshot([array]$Entries) {
+  $snapshot = @()
+  foreach ($entry in $Entries) {
+    $path = [string]$entry.path
+    $exists = Test-Path -LiteralPath $path -PathType Leaf
+    $bytes = if ($exists) {
+      $item = Get-Item -LiteralPath $path -Force
+      if ($item.Length -gt 1048576) { throw "shortcutSnapshotTooLarge" }
+      [Convert]::ToBase64String([IO.File]::ReadAllBytes($path))
+    } else { $null }
+    $snapshot += [ordered]@{
+      field = [string]$entry.field
+      path = $path
+      existed = $exists
+      bytes = $bytes
+    }
+  }
+  return @($snapshot)
+}
+
+function Assert-ShortcutSnapshot([array]$Snapshot) {
+  foreach ($entry in $Snapshot) {
+    $exists = Test-Path -LiteralPath ([string]$entry.path) -PathType Leaf
+    if ($exists -ne [bool]$entry.existed) { throw "shortcutRollbackFailed" }
+    if ($exists -and
+        [Convert]::ToBase64String(
+          [IO.File]::ReadAllBytes([string]$entry.path)) -cne
+          [string]$entry.bytes) {
+      throw "shortcutRollbackFailed"
+    }
+  }
+}
+
+function Restore-ShortcutTransaction {
+  if ($null -eq $script:shortcutRollback) { return }
+  try {
+    foreach ($entry in $script:shortcutRollback.snapshot) {
+      $path = [string]$entry.path
+      if ([bool]$entry.existed) {
+        if (Test-Path -LiteralPath $path -PathType Leaf) {
+          $current = [Convert]::ToBase64String([IO.File]::ReadAllBytes($path))
+          if ($current -ceq [string]$entry.bytes) { continue }
+          if (-not (Test-OwnedShortcut $path $script:shortcutRollback.launcher)) {
+            throw "shortcutRollbackConflict"
+          }
+        }
+        $parent = Split-Path -Parent $path
+        if (-not (Test-Path -LiteralPath $parent -PathType Container)) {
+          New-Item -ItemType Directory -Path $parent -Force | Out-Null
+        }
+        $temporary = "$path.ligase-rollback"
+        [IO.File]::WriteAllBytes(
+          $temporary, [Convert]::FromBase64String([string]$entry.bytes))
+        Move-Item -LiteralPath $temporary -Destination $path -Force
+      } elseif (Test-Path -LiteralPath $path -PathType Leaf) {
+        if (-not (Test-OwnedShortcut $path $script:shortcutRollback.launcher)) {
+          throw "shortcutRollbackConflict"
+        }
+        Remove-Item -LiteralPath $path -Force
+      }
+    }
+    Assert-ShortcutSnapshot $script:shortcutRollback.snapshot
+    $script:shortcutRollback = $null
+    Remove-InstallTransaction
+    if ($script:rollbackResult -ne "failed") {
+      $script:rollbackResult = "completed"
+    }
+  } catch {
+    $script:rollbackResult = "failed"
+    throw "shortcutRollbackFailed"
+  }
+}
+
+function Test-ShortcutParentWritable([string]$ShortcutPath) {
+  $candidate = Split-Path -Parent $ShortcutPath
+  while (-not [string]::IsNullOrWhiteSpace($candidate) -and
+         -not (Test-Path -LiteralPath $candidate -PathType Container)) {
+    $next = Split-Path -Parent $candidate
+    if ($next -eq $candidate) { break }
+    $candidate = $next
+  }
+  if ([string]::IsNullOrWhiteSpace($candidate) -or
+      -not (Test-Path -LiteralPath $candidate -PathType Container)) {
+    return $false
+  }
+  try {
+    $acl = Get-Acl -LiteralPath $candidate
+    return $null -ne $acl
+  } catch {
+    return $false
+  }
+}
+
+function Get-ShortcutRoots {
+  $overrides = @(
+    $ShortcutCommonProgramsRoot,
+    $ShortcutCommonDesktopRoot,
+    $ShortcutLegacyProgramsRoot,
+    $ShortcutLegacyDesktopRoot)
+  $overrideCount = @($overrides | Where-Object {
+    -not [string]::IsNullOrWhiteSpace($_)
+  }).Count
+  if ($overrideCount -ne 0) {
+    if ($overrideCount -ne 4 -or
+        $env:LIGASE_INSTALL_VALIDATION_HARNESS -cne "1") {
+      throw "shortcutTestOverrideRejected"
+    }
+    return [ordered]@{
+      commonPrograms = [IO.Path]::GetFullPath($ShortcutCommonProgramsRoot)
+      commonDesktop = [IO.Path]::GetFullPath($ShortcutCommonDesktopRoot)
+      legacyPrograms = [IO.Path]::GetFullPath($ShortcutLegacyProgramsRoot)
+      legacyDesktop = [IO.Path]::GetFullPath($ShortcutLegacyDesktopRoot)
+    }
+  }
+  $operator = Get-InteractiveOperatorProfile
+  return [ordered]@{
+    commonPrograms = [Environment]::GetFolderPath(
+      [Environment+SpecialFolder]::CommonPrograms)
+    commonDesktop = [Environment]::GetFolderPath(
+      [Environment+SpecialFolder]::CommonDesktopDirectory)
+    legacyPrograms = [string]$operator.programsPath
+    legacyDesktop = [string]$operator.desktopPath
+  }
+}
+
+function Sync-OwnedShortcuts([bool]$DesktopSelected) {
+  $launcher = Join-Path $installRoot "Ligase Host.exe"
+  if (-not (Test-Path -LiteralPath $launcher -PathType Leaf)) {
+    Fail-ShortcutIntegration "artifacts" "shortcutTargetUnavailable"
+  }
+  $roots = Get-ShortcutRoots
+  $commonPrograms = [string]$roots.commonPrograms
+  $commonDesktop = [string]$roots.commonDesktop
+  if ([string]::IsNullOrWhiteSpace($commonPrograms) -or
+      [string]::IsNullOrWhiteSpace($commonDesktop)) {
+    Fail-ShortcutIntegration "startMenu" "shortcutLocationUnavailable"
+  }
+  $startMenu = Join-Path $commonPrograms "Ligase Host\Ligase Host.lnk"
+  $desktop = Join-Path $commonDesktop "Ligase Host.lnk"
+
+  $legacyStartMenu = Join-Path ([string]$roots.legacyPrograms) (
+    "Ligase Host\Ligase Host.lnk")
+  $legacyDesktop = Join-Path ([string]$roots.legacyDesktop) "Ligase Host.lnk"
+  $entries = @(
+    [ordered]@{ field = "startMenu"; path = $startMenu },
+    [ordered]@{ field = "desktop"; path = $desktop },
+    [ordered]@{ field = "startMenu"; path = $legacyStartMenu },
+    [ordered]@{ field = "desktop"; path = $legacyDesktop })
+
+  # Preflight all four locations before the first filesystem mutation.
+  foreach ($entry in $entries) {
+    if (-not (Test-ShortcutParentWritable ([string]$entry.path))) {
+      Fail-ShortcutIntegration ([string]$entry.field) "shortcutLocationUnavailable"
+    }
+    $null = Get-ShortcutDetails ([string]$entry.path)
+  }
+  if ((Test-Path -LiteralPath $startMenu -PathType Leaf) -and
+      -not (Test-OwnedShortcut $startMenu $launcher)) {
+    Fail-ShortcutIntegration "startMenu" "startMenuShortcutConflict"
+  }
+  if ($DesktopSelected -and
+      (Test-Path -LiteralPath $desktop -PathType Leaf) -and
+      -not (Test-OwnedShortcut $desktop $launcher)) {
+    Fail-ShortcutIntegration "desktop" "desktopShortcutConflict"
+  }
+
+    $script:shortcutRollback = [ordered]@{
+    launcher = $launcher
+    snapshot = Get-ShortcutSnapshot $entries
+  }
+  try {
+    $null = Remove-ShortcutIfOwned $legacyStartMenu $launcher
+    $null = Remove-ShortcutIfOwned $legacyDesktop $launcher
+    if (-not (Test-Path -LiteralPath $startMenu -PathType Leaf)) {
+      New-OwnedShortcut $startMenu $launcher
+    }
+    if ($DesktopSelected) {
+      if (-not (Test-Path -LiteralPath $desktop -PathType Leaf)) {
+        New-OwnedShortcut $desktop $launcher
+      }
+    } else {
+      $null = Remove-ShortcutIfOwned $desktop $launcher
+    }
+    if ($env:LIGASE_INSTALL_VALIDATION_HARNESS -ceq "1" -and
+        $env:LIGASE_SHORTCUT_FAILURE_STAGE -ceq "write") {
+      Fail-ShortcutIntegration "desktop" "shortcutWriteFailed"
+    }
+    if (-not (Test-OwnedShortcut $startMenu $launcher)) {
+      Fail-ShortcutIntegration "startMenu" "shortcutWriteFailed"
+    }
+    if ($env:LIGASE_INSTALL_VALIDATION_HARNESS -ceq "1" -and
+        $env:LIGASE_SHORTCUT_FAILURE_STAGE -ceq "readback") {
+      Fail-ShortcutIntegration "desktop" "shortcutWriteFailed"
+    }
+    if ($DesktopSelected -and -not (Test-OwnedShortcut $desktop $launcher)) {
+      Fail-ShortcutIntegration "desktop" "shortcutWriteFailed"
+    }
+    if (-not $DesktopSelected -and
+        (Test-OwnedShortcut $desktop $launcher)) {
+      Fail-ShortcutIntegration "desktop" "shortcutWriteFailed"
+    }
+  } catch {
+    $original = [string]$_.Exception.Message
+    try { Restore-ShortcutTransaction } catch { throw }
+    throw $original
+  }
+}
+
+function Remove-OwnedShortcuts {
+  $launcher = Join-Path $installRoot "Ligase Host.exe"
+  $roots = Get-ShortcutRoots
+  $paths = @(
+    (Join-Path ([string]$roots.commonPrograms) "Ligase Host\Ligase Host.lnk"),
+    (Join-Path ([string]$roots.commonDesktop) "Ligase Host.lnk"),
+    (Join-Path ([string]$roots.legacyPrograms) "Ligase Host\Ligase Host.lnk"),
+    (Join-Path ([string]$roots.legacyDesktop) "Ligase Host.lnk")
+  )
+  foreach ($path in $paths) {
+    $null = Remove-ShortcutIfOwned $path $launcher
+  }
+}
+
 function Test-DependentVirtualDisplay {
   try {
     return @(
@@ -1287,38 +1899,44 @@ function Test-DependentVirtualDisplay {
   }
 }
 
-function Assert-ShortcutTarget([string]$ShortcutPath, [string]$ExpectedTarget) {
-  if (-not (Test-Path -LiteralPath $ShortcutPath -PathType Leaf)) {
-    throw "installationFinalReadbackFailed"
+function Fail-FinalInstallReadback([string]$Field) {
+  if (-not $script:finalComponents.Contains($Field)) {
+    $Field = "artifacts"
   }
-  $shell = New-Object -ComObject WScript.Shell
-  try {
-    $target = [IO.Path]::GetFullPath(
-      [string]$shell.CreateShortcut($ShortcutPath).TargetPath)
-  } finally {
-    [Runtime.InteropServices.Marshal]::FinalReleaseComObject($shell) | Out-Null
-  }
-  if (-not $target.Equals(
-      [IO.Path]::GetFullPath($ExpectedTarget),
-      [StringComparison]::OrdinalIgnoreCase)) {
-    throw "installationFinalReadbackFailed"
-  }
+  $script:finalFailedField = $Field
+  $script:finalComponents[$Field] = "failed"
+  throw "installationFinalReadbackFailed"
 }
 
 function Assert-FinalInstallReadback($Manifest) {
-  $null = Test-Artifacts $Manifest
-  $bootstrap = Read-ValidBootstrap
+  try {
+    $null = Test-Artifacts $Manifest
+    $script:finalComponents.artifacts = "verified"
+  } catch {
+    Fail-FinalInstallReadback "artifacts"
+  }
+  try {
+    $bootstrap = Read-ValidBootstrap
+    $script:finalComponents.bootstrap = "verified"
+  } catch {
+    Fail-FinalInstallReadback "bootstrap"
+  }
   if ($null -eq $bootstrap -or
       (-not [string]::IsNullOrWhiteSpace($DataRoot) -and
        -not ([string]$bootstrap.dataRoot).Equals(
          [IO.Path]::GetFullPath($DataRoot),
          [StringComparison]::OrdinalIgnoreCase)) -or
       (Get-DataRootAccessState ([string]$bootstrap.dataRoot)) -cne "existing") {
-    throw "installationFinalReadbackFailed"
+    Fail-FinalInstallReadback "dataRoot"
   }
+  $script:finalComponents.dataRoot = "verified"
   $uninstallKey =
     "Registry::HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\CurrentVersion\Uninstall\Ligase Host"
-  $registration = Get-ItemProperty -LiteralPath $uninstallKey
+  try {
+    $registration = Get-ItemProperty -LiteralPath $uninstallKey
+  } catch {
+    Fail-FinalInstallReadback "arp"
+  }
   $launcher = Join-Path $installRoot "Ligase Host.exe"
   if (
     -not ([string]$registration.InstallLocation).Equals(
@@ -1329,33 +1947,45 @@ function Assert-FinalInstallReadback($Manifest) {
       ('"' + (Join-Path $installRoot "Uninstall.exe") + '"'),
       [StringComparison]::Ordinal)
   ) {
-    throw "installationFinalReadbackFailed"
+    Fail-FinalInstallReadback "arp"
   }
+  $script:finalComponents.arp = "verified"
   $commonPrograms = [Environment]::GetFolderPath(
     [Environment+SpecialFolder]::CommonPrograms)
-  Assert-ShortcutTarget (
-    Join-Path $commonPrograms "Ligase Host\Ligase Host.lnk") $launcher
+  if (-not (Test-OwnedShortcut (
+      Join-Path $commonPrograms "Ligase Host\Ligase Host.lnk") $launcher)) {
+    Fail-FinalInstallReadback "startMenu"
+  }
+  $script:finalComponents.startMenu = "verified"
   $desktop = [Environment]::GetFolderPath(
     [Environment+SpecialFolder]::CommonDesktopDirectory)
   $desktopShortcut = Join-Path $desktop "Ligase Host.lnk"
   if ($DesktopShortcutSelected) {
-    Assert-ShortcutTarget $desktopShortcut $launcher
-  } elseif (Test-Path -LiteralPath $desktopShortcut) {
-    throw "installationFinalReadbackFailed"
+    if (-not (Test-OwnedShortcut $desktopShortcut $launcher)) {
+      Fail-FinalInstallReadback "desktop"
+    }
+  } elseif ((Test-Path -LiteralPath $desktopShortcut) -and
+      (Test-OwnedShortcut $desktopShortcut $launcher)) {
+    Fail-FinalInstallReadback "desktop"
   }
+  $script:finalComponents.desktop = "verified"
   $firewall = Get-FirewallReadback $Manifest
   if ($firewall.state -cne "configured" -or
       $firewall.machineCode -cne "configured") {
-    throw "installationFinalReadbackFailed"
+    Fail-FinalInstallReadback "firewall"
   }
+  $script:finalComponents.firewall = "verified"
   if ($VirtualDisplaySelected -and $VirtualDisplayOutcome -cne "installed") {
-    throw "installationFinalReadbackFailed"
+    Fail-FinalInstallReadback "virtualDisplay"
   }
   if ($VirtualDisplaySelected) {
     $display = Get-VirtualDisplay
     if ($display.state -notin @("available", "rebootRequired")) {
-      throw "installationFinalReadbackFailed"
+      Fail-FinalInstallReadback "virtualDisplay"
     }
+    $script:finalComponents.virtualDisplay = "verified"
+  } else {
+    $script:finalComponents.virtualDisplay = "notSelected"
   }
   return [ordered]@{
     dataRoot = [string]$bootstrap.dataRoot
@@ -1380,8 +2010,34 @@ try {
     }
     exit 0
   }
+  if ($Action -eq "ReconcileShortcuts") {
+    if (-not (Test-Path -LiteralPath (
+        Join-Path $installRoot "Ligase Host.exe") -PathType Leaf)) {
+      throw "artifactReadbackFailed"
+    }
+    Sync-OwnedShortcuts ([bool]$DesktopShortcutSelected)
+    if (-not [string]::IsNullOrWhiteSpace($InstallTransactionRoot)) {
+      Save-InstallTransaction
+    } else {
+      $script:shortcutRollback = $null
+    }
+    Write-Outcome "shortcutsReconciled" $true @{
+      desktopSelected = [bool]$DesktopShortcutSelected
+    }
+    exit 0
+  }
+  if ($Action -eq "ValidateInstallTransaction") {
+    if (-not (Load-InstallTransaction)) {
+      throw "installTransactionInvalid"
+    }
+    Write-Outcome "installTransactionValidated" $true @{
+      shortcutCount = @($script:shortcutRollback.snapshot).Count
+    }
+    exit 0
+  }
   $manifest = Read-Manifest
   $artifacts = Test-Artifacts $manifest
+  $script:finalComponents.artifacts = "verified"
   $virtualDisplay = Get-VirtualDisplay
   $driverTrust = Get-DriverTrust $manifest
   $firewallReadback = Get-FirewallReadback $manifest
@@ -1398,6 +2054,9 @@ try {
     $EvidenceHelperExit = 0
     $EvidenceRollback = "notRequired"
     try {
+      if (-not (Load-InstallTransaction)) {
+        throw "installTransactionInvalid"
+      }
       $final = Assert-FinalInstallReadback $manifest
       $EvidencePhase = "succeeded"
       $EvidenceSuccess = "true"
@@ -1405,6 +2064,8 @@ try {
       $EvidenceFirewall = "configured"
       $EvidenceInstallResidue = "nonEmpty"
       $EvidenceDataRootResidue = "nonEmpty"
+      $script:shortcutRollback = $null
+      Remove-InstallTransaction
       $null = Write-InstallerEvidence
       Write-Outcome "installationFinalized" $true @{
         dataRootState = "existing"
@@ -1412,9 +2073,32 @@ try {
       }
       exit 0
     } catch {
+      if ($script:firewallAppliedByTransaction -and
+          -not $script:firewallWasConfigured) {
+        try {
+          $null = Invoke-FirewallAction -FirewallAction Remove -Manifest $manifest
+          $script:firewallAppliedByTransaction = $false
+        } catch {
+          $script:rollbackResult = "failed"
+        }
+      }
+      if ($null -ne $script:shortcutRollback) {
+        try { Restore-ShortcutTransaction } catch {
+          $script:rollbackResult = "failed"
+        }
+      }
+      $EvidenceRollback = $script:rollbackResult
       $EvidencePhase = "failed"
       $EvidenceSuccess = "false"
-      $EvidenceFirewall = "failed"
+      $EvidenceFailedField = $script:finalFailedField
+      $EvidenceFirewall = if (
+        $script:finalComponents.firewall -eq "verified") {
+        "configured"
+      } elseif ($script:finalComponents.firewall -eq "failed") {
+        "failed"
+      } else {
+        $EvidenceFirewall
+      }
       $EvidenceInstallResidue = if (
         Test-Path -LiteralPath $installRoot -PathType Container) {
         if (@(Get-ChildItem -LiteralPath $installRoot -Force).Count -eq 0) {
@@ -1573,23 +2257,38 @@ try {
     } else {
       Write-NewBootstrap $DataRoot
     }
+    $script:finalComponents.bootstrap = "verified"
+    $script:finalComponents.dataRoot = "verified"
     $legacyEntriesRemoved = Remove-LegacyFlatOwnedEntries $manifest
+    Sync-OwnedShortcuts ([bool]$DesktopShortcutSelected)
+    $script:finalComponents.startMenu = "verified"
+    $script:finalComponents.desktop = "verified"
+    Save-InstallTransaction
     if ($ConfigureFirewall) {
       $firewallApplyCompleted = $false
       try {
+        $firewallBefore = Get-FirewallReadback $manifest
+        $script:firewallWasConfigured = (
+          $firewallBefore.state -ceq "configured" -and
+          $firewallBefore.machineCode -ceq "configured")
         $null = Invoke-FirewallAction -FirewallAction Apply -Manifest $manifest
         $firewallApplyCompleted = $true
+        $script:firewallAppliedByTransaction = $true
         $firewallReadback = Get-FirewallReadback $manifest
         if ($firewallReadback.state -cne "configured" -or
             $firewallReadback.machineCode -cne "configured") {
           throw "firewallReadbackMismatch"
         }
+        $script:finalComponents.firewall = "verified"
+        Save-InstallTransaction
       } catch {
-        if ($firewallApplyCompleted) {
+        if ($firewallApplyCompleted -and
+            -not $script:firewallWasConfigured) {
           try {
             $null = Invoke-FirewallAction `
               -FirewallAction Remove `
               -Manifest $manifest
+            $script:firewallAppliedByTransaction = $false
           } catch {
             # The install still fails closed. The original machine outcome is
             # preserved while readback will expose any owned-rule residue.
@@ -1662,6 +2361,7 @@ try {
   }
 
   if ($Action -eq "Uninstall") {
+    Remove-OwnedShortcuts
     if ($ConfigureFirewall) {
       $null = Invoke-FirewallAction -FirewallAction Remove -Manifest $manifest
     }
@@ -1712,6 +2412,35 @@ try {
   exit 0
 } catch {
   $originalMessage = [string]$_.Exception.Message
+  if ($Action -eq "Install") {
+    if ($script:firewallAppliedByTransaction -and
+        -not $script:firewallWasConfigured) {
+      try {
+        $null = Invoke-FirewallAction -FirewallAction Remove -Manifest $manifest
+        $script:firewallAppliedByTransaction = $false
+      } catch {
+        $script:rollbackResult = "failed"
+      }
+    }
+    if ($null -ne $script:shortcutRollback) {
+      try { Restore-ShortcutTransaction } catch {
+        $script:rollbackResult = "failed"
+      }
+    }
+    if ($null -eq $script:migrationRollback -and
+        $null -eq $bootstrapBytes -and
+        $null -ne $script:freshDataRootCreated) {
+      Remove-Item -LiteralPath $bootstrapPath -Force -ErrorAction SilentlyContinue
+      Remove-Item -LiteralPath $script:freshDataRootCreated -Recurse -Force `
+        -ErrorAction SilentlyContinue
+      if ((Test-Path -LiteralPath $bootstrapPath) -or
+          (Test-Path -LiteralPath $script:freshDataRootCreated)) {
+        $script:rollbackResult = "failed"
+      } elseif ($script:rollbackResult -ne "failed") {
+        $script:rollbackResult = "completed"
+      }
+    }
+  }
   if ($null -ne $script:migrationRollback) {
     try { $null = Restore-Migration } catch { $script:rollbackResult = "failed" }
   }
@@ -1752,6 +2481,19 @@ try {
     "firewallRemoveFailed",
     "virtualDisplayInstallFailed",
     "virtualDisplayUninstallFailed",
+    "shortcutLocationUnavailable",
+    "shortcutWriteFailed",
+    "shortcutSnapshotTooLarge",
+    "shortcutRollbackFailed",
+    "shortcutTargetUnavailable",
+    "installTransactionInvalid",
+    "installTransactionAclInvalid",
+    "installTransactionStale",
+    "installTransactionUnavailable",
+    "installTransactionTestOverrideRejected",
+    "startMenuShortcutConflict",
+    "desktopShortcutConflict",
+    "shortcutTestOverrideRejected",
     "installationFinalReadbackFailed",
     "installerEvidenceInvalid",
     "installerEvidenceUnavailable")
@@ -1764,6 +2506,25 @@ try {
     $EvidencePhase = "failed"
     $EvidenceSuccess = "false"
     $EvidenceResultCode = $code
+    $EvidenceFailedField = if ($script:finalFailedField -ne "none") {
+      $script:finalFailedField
+    } elseif ($code -eq "startMenuShortcutConflict") {
+      "startMenu"
+    } elseif ($code -eq "desktopShortcutConflict") {
+      "desktop"
+    } elseif ($code -in @("firewallApplyFailed", "firewallReadbackMismatch")) {
+      "firewall"
+    } elseif ($code -like "dataRoot*" -or $code -like "bootstrap*") {
+      "dataRoot"
+    } elseif ($code -like "artifact*" -or $code -like "helperSignature*") {
+      "artifacts"
+    } else {
+      "none"
+    }
+    if ($EvidenceFailedField -ne "none") {
+      $script:finalFailedField = $EvidenceFailedField
+      $script:finalComponents[$EvidenceFailedField] = "failed"
+    }
     $EvidenceHelperExit = 10
     $EvidenceRollback = $script:rollbackResult
     $EvidenceFirewall = try {

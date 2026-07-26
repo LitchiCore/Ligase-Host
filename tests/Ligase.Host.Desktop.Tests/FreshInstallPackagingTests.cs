@@ -524,16 +524,25 @@ public sealed class FreshInstallPackagingTests
                 "windows",
                 "ligase",
                 "Manage-LigaseInstallation.ps1"));
+        var transactionHelper = File.ReadAllText(
+            Path.Combine(
+                repo,
+                "tools",
+                "Ligase.Installation.TransactionHelper",
+                "Program.cs"));
 
         StringAssert.Contains(nsis, "SectionIn RO");
         StringAssert.Contains(nsis, "Section /o \"Ligase 虚拟显示（可选）\"");
         StringAssert.Contains(
             nsis,
             "Section \"创建桌面快捷方式（可选）\" SEC_DESKTOP_SHORTCUT");
-        StringAssert.Contains(
-            nsis,
-            "CreateShortcut \"$DESKTOP\\Ligase Host.lnk\" \"$INSTDIR\\Ligase Host.exe\"");
-        StringAssert.Contains(nsis, "Delete \"$DESKTOP\\Ligase Host.lnk\"");
+        StringAssert.Contains(nsis, "SetShellVarContext all");
+        Assert.IsFalse(
+            nsis.Contains("CreateShortcut \"$DESKTOP", StringComparison.Ordinal));
+        Assert.IsFalse(
+            nsis.Contains("Delete \"$DESKTOP", StringComparison.Ordinal));
+        Assert.IsFalse(
+            nsis.Contains("Delete \"$SMPROGRAMS", StringComparison.Ordinal));
         StringAssert.Contains(nsis, "Page custom DataRootPageCreate DataRootPageLeave");
         StringAssert.Contains(nsis, "Page custom InstallSummaryPageCreate");
         StringAssert.Contains(nsis, "Page custom InstallResultPageCreate");
@@ -634,6 +643,73 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(management, "timestampUtc");
         StringAssert.Contains(management, "function Get-SafePathProjection");
         StringAssert.Contains(management, "function Assert-FinalInstallReadback");
+        StringAssert.Contains(management, "function Sync-OwnedShortcuts");
+        StringAssert.Contains(management, "function Remove-ShortcutIfOwned");
+        StringAssert.Contains(management, "Test-OwnedShortcut");
+        StringAssert.Contains(management, "startMenuShortcutConflict");
+        StringAssert.Contains(management, "desktopShortcutConflict");
+        StringAssert.Contains(management, "function Get-ShortcutSnapshot");
+        StringAssert.Contains(management, "function Restore-ShortcutTransaction");
+        StringAssert.Contains(management, "function Save-InstallTransaction");
+        StringAssert.Contains(management, "function Load-InstallTransaction");
+        StringAssert.Contains(
+            management,
+            "Deployment\\Ligase.Installation.TransactionHelper.exe");
+        StringAssert.Contains(management, "Invoke-InstallTransactionHelper");
+        Assert.IsFalse(
+            management.Contains(
+                "pending-install-transaction.json",
+                StringComparison.Ordinal),
+            "PowerShell must not own the transaction journal path.");
+        StringAssert.Contains(management, "function Assert-TransactionRawShape");
+        StringAssert.Contains(management, "function Get-ExpectedShortcutEntries");
+        StringAssert.Contains(management, "manifestSha256");
+        StringAssert.Contains(management, "installTransactionStale");
+        StringAssert.Contains(management, "RandomNumberGenerator");
+        StringAssert.Contains(build, "Ligase.Installation.TransactionHelper.csproj");
+        StringAssert.Contains(
+            build,
+            "Deployment/Ligase.Installation.TransactionHelper.exe");
+        StringAssert.Contains(transactionHelper, "FileFlagOpenReparsePoint");
+        StringAssert.Contains(transactionHelper, "FileFlagBackupSemantics");
+        StringAssert.Contains(transactionHelper, "GetFinalPathNameByHandleW");
+        StringAssert.Contains(transactionHelper, "GetFileInformationByHandle");
+        StringAssert.Contains(transactionHelper, "SetSecurityInfo");
+        StringAssert.Contains(transactionHelper, "GetSecurityInfo");
+        StringAssert.Contains(transactionHelper, "MoveFileExW");
+        StringAssert.Contains(transactionHelper, "Ligase Host Admin");
+        StringAssert.Contains(transactionHelper, "Transactions");
+        StringAssert.Contains(transactionHelper, "RejectReparseChain");
+        StringAssert.Contains(transactionHelper, "ValidateRoot");
+        StringAssert.Contains(management, "transactionBytes.Count -ne 32");
+        StringAssert.Contains(management, "$actualEntries.Count -ne 4");
+        StringAssert.Contains(nsis, "-Action FinalizeInstall");
+        StringAssert.Contains(nsis, "-ConfigureFirewall $3 $4");
+        StringAssert.Contains(management, "shortcutRollbackFailed");
+        StringAssert.Contains(management, "firewallAppliedByTransaction");
+        StringAssert.Contains(management, "failedField");
+        StringAssert.Contains(management, "components = $script:finalComponents");
+        StringAssert.Contains(
+            management,
+            "Fail-FinalInstallReadback \"startMenu\"");
+        Assert.IsTrue(
+            management.IndexOf(
+                "Sync-OwnedShortcuts ([bool]$DesktopShortcutSelected)",
+                StringComparison.Ordinal) <
+            management.IndexOf(
+                "Invoke-FirewallAction -FirewallAction Apply",
+                StringComparison.Ordinal));
+        StringAssert.Contains(
+            management,
+            "Fail-FinalInstallReadback \"desktop\"");
+        StringAssert.Contains(
+            management,
+            "Fail-FinalInstallReadback \"firewall\"");
+        Assert.IsFalse(
+            management.Contains(
+                "$EvidenceFirewall = \"failed\"",
+                StringComparison.Ordinal),
+            "A failure before firewall readback must not be relabeled as firewall failure.");
         StringAssert.Contains(management, "$script:rollbackResult = \"failed\"");
         StringAssert.Contains(management, "installationFinalReadbackFailed");
         StringAssert.Contains(
