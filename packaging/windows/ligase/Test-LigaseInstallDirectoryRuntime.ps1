@@ -1561,9 +1561,185 @@ $transactionProbeExit = $LASTEXITCODE
 Remove-Item Env:\LIGASE_INSTALL_VALIDATION_HARNESS -ErrorAction SilentlyContinue
 $transactionElevatedAvailable = $transactionProbeExit -eq 0 -and
   ($preflightOutput -join "") -ceq (
-    '{"code":"installTransactionPreflightReady","stage":"finalReadback"}') -and
+    '{"code":"installTransactionPreflightReady","stage":"finalReadback",' +
+    '"recoveryAction":"none"}') -and
   -not (Test-Path -LiteralPath (
     Join-Path $transactionRoot "pending-install-transaction.json"))
+$emptyRecoveryRoot = Join-Path $combinationRoot "empty-admin-residue"
+New-Item -ItemType Directory -Path $emptyRecoveryRoot | Out-Null
+$emptyRecoveryAcl = Get-Acl -LiteralPath $emptyRecoveryRoot
+$emptyRecoveryAcl.SetOwner(
+  [Security.Principal.SecurityIdentifier]::new(
+    [Security.Principal.WellKnownSidType]::BuiltinAdministratorsSid, $null))
+$emptyRecoveryAvailable = $true
+try {
+  Set-Acl -LiteralPath $emptyRecoveryRoot -AclObject $emptyRecoveryAcl
+} catch {
+  $emptyRecoveryAvailable = $false
+}
+if ($emptyRecoveryAvailable) {
+  $env:LIGASE_INSTALL_VALIDATION_HARNESS = "1"
+  $ErrorActionPreference = "Continue"
+  $emptyRecoveryOutput = @(
+    & $transactionHelper preflight --test-root $emptyRecoveryRoot 2>&1)
+  $ErrorActionPreference = $savedErrorAction
+  $emptyRecoveryExit = $LASTEXITCODE
+  Remove-Item Env:\LIGASE_INSTALL_VALIDATION_HARNESS `
+    -ErrorAction SilentlyContinue
+  if ($emptyRecoveryExit -ne 0 -or
+      ($emptyRecoveryOutput -join "") -cne (
+        '{"code":"installTransactionPreflightReady","stage":"finalReadback",' +
+        '"recoveryAction":"recoverEmptyAdminRoot"}')) {
+    throw "installTransactionEmptyAdminRootRecoveryFailed"
+  }
+}
+$concurrentRecoveryResults = @()
+if ($emptyRecoveryAvailable) {
+  $busyRoot = Join-Path $combinationRoot "race-open-handle"
+  New-Item -ItemType Directory -Path $busyRoot | Out-Null
+  $busyAcl = Get-Acl -LiteralPath $busyRoot
+  $busyAcl.SetOwner(
+    [Security.Principal.SecurityIdentifier]::new(
+      [Security.Principal.WellKnownSidType]::BuiltinAdministratorsSid, $null))
+  Set-Acl -LiteralPath $busyRoot -AclObject $busyAcl
+  $busySddlBefore = (Get-Acl -LiteralPath $busyRoot).
+    GetSecurityDescriptorSddlForm(
+      [Security.AccessControl.AccessControlSections]::All)
+  $env:LIGASE_INSTALL_VALIDATION_HARNESS = "1"
+  $env:LIGASE_TRANSACTION_TEST_BEHAVIOR = "holdRecoveryHandle"
+  $ErrorActionPreference = "Continue"
+  $busyOutput = @(
+    & $transactionHelper preflight --test-root $busyRoot 2>&1)
+  $ErrorActionPreference = $savedErrorAction
+  $busyExit = $LASTEXITCODE
+  Remove-Item Env:\LIGASE_TRANSACTION_TEST_BEHAVIOR `
+    -ErrorAction SilentlyContinue
+  Remove-Item Env:\LIGASE_INSTALL_VALIDATION_HARNESS `
+    -ErrorAction SilentlyContinue
+  $busyFailure = (($busyOutput -join "") | ConvertFrom-Json)
+  $busySddlAfter = (Get-Acl -LiteralPath $busyRoot).
+    GetSecurityDescriptorSddlForm(
+      [Security.AccessControl.AccessControlSections]::All)
+  if ($busyExit -ne 18 -or
+      [string]$busyFailure.code -cne "installTransactionUnavailable" -or
+      [string]$busyFailure.stage -cne "openSegment" -or
+      [string]$busyFailure.nativeCategory -cne "busy" -or
+      [int]$busyFailure.nativeCode -ne 32 -or
+      [bool]$busyFailure.aclMutationOccurred -or
+      [string]$busyFailure.aclRollback -cne "notRequired" -or
+      $busySddlAfter -cne $busySddlBefore -or
+      @(Get-ChildItem -LiteralPath $busyRoot -Force).Count -ne 0) {
+    throw "installTransactionExclusiveOpenBusyGateInvalid"
+  }
+  $concurrentRecoveryResults += [ordered]@{
+    name = "transaction-existing-open-handle-busy-zero-acl-mutation"
+    passed = $true
+  }
+  foreach ($behavior in @("injectResidueChild", "injectResidueAds")) {
+    $raceRoot = Join-Path $combinationRoot ("race-" + $behavior)
+    New-Item -ItemType Directory -Path $raceRoot | Out-Null
+    $raceAcl = Get-Acl -LiteralPath $raceRoot
+    $raceAcl.SetOwner(
+      [Security.Principal.SecurityIdentifier]::new(
+        [Security.Principal.WellKnownSidType]::BuiltinAdministratorsSid,
+        $null))
+    Set-Acl -LiteralPath $raceRoot -AclObject $raceAcl
+    $env:LIGASE_INSTALL_VALIDATION_HARNESS = "1"
+    $env:LIGASE_TRANSACTION_TEST_BEHAVIOR = $behavior
+    $ErrorActionPreference = "Continue"
+    $raceOutput = @(
+      & $transactionHelper preflight --test-root $raceRoot 2>&1)
+    $ErrorActionPreference = $savedErrorAction
+    $raceExit = $LASTEXITCODE
+    Remove-Item Env:\LIGASE_TRANSACTION_TEST_BEHAVIOR `
+      -ErrorAction SilentlyContinue
+    Remove-Item Env:\LIGASE_INSTALL_VALIDATION_HARNESS `
+      -ErrorAction SilentlyContinue
+    $inserted = if ($behavior -eq "injectResidueChild") {
+      Test-Path -LiteralPath (Join-Path $raceRoot "injected.bin")
+    } else {
+      $streams = @(Get-Item -LiteralPath $raceRoot -Stream * `
+        -ErrorAction SilentlyContinue)
+      @($streams | Where-Object { $_.Stream -ne ':$DATA' }).Count -ne 0
+    }
+    if ($raceExit -eq 0) {
+      if ($inserted -or ($raceOutput -join "") -cne (
+          '{"code":"installTransactionPreflightReady",' +
+          '"stage":"finalReadback",' +
+          '"recoveryAction":"recoverEmptyAdminRoot"}')) {
+        throw "installTransactionConcurrentResidueAccepted"
+      }
+    } elseif ($raceExit -ne 18 -or -not $inserted) {
+      throw "installTransactionConcurrentResidueGateInvalid"
+    }
+    $concurrentRecoveryResults += [ordered]@{
+      name = "transaction-$behavior-exclusive-gate"
+      passed = $true
+    }
+  }
+}
+$nonEmptyRecoveryRoot = Join-Path $combinationRoot "nonempty-admin-residue"
+New-Item -ItemType Directory -Path $nonEmptyRecoveryRoot | Out-Null
+$nonEmptyAcl = Get-Acl -LiteralPath $nonEmptyRecoveryRoot
+$nonEmptyAcl.SetOwner(
+  [Security.Principal.SecurityIdentifier]::new(
+    [Security.Principal.WellKnownSidType]::BuiltinAdministratorsSid, $null))
+Set-Content -LiteralPath (Join-Path $nonEmptyRecoveryRoot "unknown.bin") `
+  -Value "unchanged" -NoNewline
+$nonEmptyBefore = (Get-FileHash -LiteralPath (
+  Join-Path $nonEmptyRecoveryRoot "unknown.bin") -Algorithm SHA256).Hash
+if ($emptyRecoveryAvailable) {
+  Set-Acl -LiteralPath $nonEmptyRecoveryRoot -AclObject $nonEmptyAcl
+  $env:LIGASE_INSTALL_VALIDATION_HARNESS = "1"
+  $ErrorActionPreference = "Continue"
+  $null = @(
+    & $transactionHelper preflight --test-root $nonEmptyRecoveryRoot 2>&1)
+  $ErrorActionPreference = $savedErrorAction
+  $nonEmptyExit = $LASTEXITCODE
+  Remove-Item Env:\LIGASE_INSTALL_VALIDATION_HARNESS `
+    -ErrorAction SilentlyContinue
+  if ($nonEmptyExit -ne 18 -or
+      (Get-FileHash -LiteralPath (
+        Join-Path $nonEmptyRecoveryRoot "unknown.bin") -Algorithm SHA256).Hash `
+        -cne $nonEmptyBefore) {
+    throw "installTransactionNonemptyAdminRootAccepted"
+  }
+}
+$wrongOwnerRoot = Join-Path $combinationRoot "wrong-owner-admin-residue"
+New-Item -ItemType Directory -Path $wrongOwnerRoot | Out-Null
+$env:LIGASE_INSTALL_VALIDATION_HARNESS = "1"
+$ErrorActionPreference = "Continue"
+$null = @(& $transactionHelper preflight --test-root $wrongOwnerRoot 2>&1)
+$ErrorActionPreference = $savedErrorAction
+$wrongOwnerExit = $LASTEXITCODE
+Remove-Item Env:\LIGASE_INSTALL_VALIDATION_HARNESS -ErrorAction SilentlyContinue
+if ($wrongOwnerExit -ne 18 -or
+    @(Get-ChildItem -LiteralPath $wrongOwnerRoot -Force).Count -ne 0) {
+  throw "installTransactionWrongOwnerAdminRootAccepted"
+}
+$adsRecoveryRoot = Join-Path $combinationRoot "ads-admin-residue"
+New-Item -ItemType Directory -Path $adsRecoveryRoot | Out-Null
+$adsAcl = Get-Acl -LiteralPath $adsRecoveryRoot
+$adsAcl.SetOwner(
+  [Security.Principal.SecurityIdentifier]::new(
+    [Security.Principal.WellKnownSidType]::BuiltinAdministratorsSid, $null))
+Set-Content -LiteralPath "${adsRecoveryRoot}:unknown" `
+  -Value "unchanged" -NoNewline
+if ($emptyRecoveryAvailable) {
+  Set-Acl -LiteralPath $adsRecoveryRoot -AclObject $adsAcl
+  $env:LIGASE_INSTALL_VALIDATION_HARNESS = "1"
+  $ErrorActionPreference = "Continue"
+  $null = @(& $transactionHelper preflight --test-root $adsRecoveryRoot 2>&1)
+  $ErrorActionPreference = $savedErrorAction
+  $adsExit = $LASTEXITCODE
+  Remove-Item Env:\LIGASE_INSTALL_VALIDATION_HARNESS `
+    -ErrorAction SilentlyContinue
+  if ($adsExit -ne 18 -or
+      (Get-Content -LiteralPath "${adsRecoveryRoot}:unknown" -Raw) -cne
+        "unchanged") {
+    throw "installTransactionAdsAdminRootAccepted"
+  }
+}
 $stageDiagnostics = @()
 foreach ($stage in @(
     "resolveProgramData", "rejectReparse", "createSegment", "openSegment",
@@ -1581,11 +1757,20 @@ foreach ($stage in @(
   Remove-Item Env:\LIGASE_INSTALL_VALIDATION_HARNESS -ErrorAction SilentlyContinue
   $stageRaw = $stageOutput -join ""
   $expectedStage = (
-    '{"code":"installTransactionUnavailable","stage":"' + $stage + '"}')
+    '{"code":"installTransactionUnavailable","stage":"' + $stage +
+    '","nativeCategory":"none","nativeCode":0,' +
+    '"aclMutationOccurred":false,"aclRollback":"notRequired"}')
   $exactStage = $stageExit -eq 18 -and $stageRaw -ceq $expectedStage
+  $nonElevatedOpen = (
+    '{"code":"installTransactionUnavailable","stage":"openSegment",' +
+    '"nativeCategory":"none","nativeCode":0,' +
+    '"aclMutationOccurred":false,"aclRollback":"notRequired"}')
+  $nonElevatedOwner = (
+    '{"code":"installTransactionAclInvalid","stage":"createSegment",' +
+    '"nativeCategory":"invalidOwner","nativeCode":1307,' +
+    '"aclMutationOccurred":false,"aclRollback":"notRequired"}')
   $blockedByNonElevatedAcl = $stageExit -eq 18 -and
-    $stageRaw -ceq (
-      '{"code":"installTransactionUnavailable","stage":"openSegment"}')
+    $stageRaw -in @($nonElevatedOpen, $nonElevatedOwner)
   if (-not $exactStage -and -not $blockedByNonElevatedAcl) {
     throw "installTransactionStageDiagnosticFixtureFailed"
   }
@@ -1645,7 +1830,27 @@ $shortcutResults = @(
     name = "transaction-junction-rejected-zero-external-mutation"
     passed = $junctionRejected
     inconclusive = -not $junctionCreated
-  })
+  },
+  [ordered]@{
+    name = "transaction-empty-admin-root-recovered-by-file-identity"
+    passed = $emptyRecoveryAvailable
+    inconclusive = -not $emptyRecoveryAvailable
+  },
+  [ordered]@{
+    name = "transaction-nonempty-admin-root-rejected-without-mutation"
+    passed = $emptyRecoveryAvailable
+    inconclusive = -not $emptyRecoveryAvailable
+  },
+  [ordered]@{
+    name = "transaction-wrong-owner-admin-root-rejected"
+    passed = $true
+  },
+  [ordered]@{
+    name = "transaction-ads-admin-root-rejected"
+    passed = $emptyRecoveryAvailable
+    inconclusive = -not $emptyRecoveryAvailable
+  }
+  $concurrentRecoveryResults)
 
 $failureFlowResults = @(
   Invoke-FailureFlowHarness `

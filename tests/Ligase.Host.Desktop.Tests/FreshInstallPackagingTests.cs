@@ -660,6 +660,9 @@ public sealed class FreshInstallPackagingTests
             "$expectedHelperHash.ToUpperInvariant()");
         StringAssert.Contains(management, "transactionHelperNativeExit");
         StringAssert.Contains(management, "transactionHelperStage");
+        StringAssert.Contains(management, "transactionHelperNativeCategory");
+        StringAssert.Contains(management, "transactionHelperNativeCode");
+        StringAssert.Contains(management, "transactionRecoveryAction");
         StringAssert.Contains(management, "ReadAsync(");
         StringAssert.Contains(management, "StandardInput.WriteAsync($InputValue)");
         StringAssert.Contains(management, "StandardInput.FlushAsync()");
@@ -711,6 +714,31 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(transactionHelper, "GetFinalPathNameByHandleW");
         StringAssert.Contains(transactionHelper, "GetFileInformationByHandle");
         StringAssert.Contains(transactionHelper, "SetSecurityInfo");
+        StringAssert.Contains(transactionHelper, "CreateDirectoryW");
+        StringAssert.Contains(transactionHelper, "SecurityAttributes");
+        StringAssert.Contains(
+            transactionHelper,
+            "new DiscretionaryAcl(directory, false, 2)");
+        StringAssert.Contains(
+            transactionHelper,
+            "new(directory, false, ControlFlags.DiscretionaryAclProtected");
+        StringAssert.Contains(transactionHelper, "OpenRecoveryDirectory");
+        StringAssert.Contains(transactionHelper, "NtQueryDirectoryFile");
+        StringAssert.Contains(transactionHelper, "NtQueryInformationFile");
+        StringAssert.Contains(transactionHelper, "CreateFileW(path, access, 0");
+        StringAssert.Contains(transactionHelper, "HasDirectoryEntries(handle)");
+        StringAssert.Contains(transactionHelper, "HasAlternateDataStream(handle)");
+        StringAssert.Contains(transactionHelper, "recoverEmptyAdminRoot");
+        StringAssert.Contains(transactionHelper, "\"accessDenied\"");
+        StringAssert.Contains(transactionHelper, "\"busy\"");
+        StringAssert.Contains(transactionHelper, "\"privilegeNotHeld\"");
+        StringAssert.Contains(transactionHelper, "\"invalidOwner\"");
+        StringAssert.Contains(transactionHelper, "\"invalidAcl\"");
+        StringAssert.Contains(transactionHelper, "\"identityChanged\"");
+        StringAssert.Contains(transactionHelper, "aclMutationOccurred");
+        StringAssert.Contains(transactionHelper, "aclRollback");
+        StringAssert.Contains(management, "transactionAclMutationOccurred");
+        StringAssert.Contains(management, "transactionAclRollback");
         StringAssert.Contains(transactionHelper, "GetSecurityInfo");
         StringAssert.Contains(transactionHelper, "MoveFileExW");
         StringAssert.Contains(transactionHelper, "Ligase Host Admin");
@@ -743,6 +771,15 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(
             transactionHelper,
             "installTransactionPreflightReady");
+        StringAssert.Contains(
+            runtimeHarness,
+            "installTransactionEmptyAdminRootRecoveryFailed");
+        StringAssert.Contains(
+            runtimeHarness,
+            "installTransactionNonemptyAdminRootAccepted");
+        StringAssert.Contains(
+            nsis,
+            "如检测到先前安装留下的精确空目录");
         StringAssert.Contains(runtimeHarness, "\"hang\", \"delayedPipe\"");
         StringAssert.Contains(runtimeHarness, "\"oversizeStdout\"");
         StringAssert.Contains(runtimeHarness, "\"oversizeStderr\"");

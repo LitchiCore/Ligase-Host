@@ -78,6 +78,23 @@ param(
     "inputValidation",
     "processTimeout")]
   [string]$EvidenceTransactionHelperStage = "none",
+  [ValidateSet(
+    "none",
+    "accessDenied",
+    "busy",
+    "privilegeNotHeld",
+    "invalidOwner",
+    "invalidAcl",
+    "notSupported",
+    "identityChanged",
+    "unknown")]
+  [string]$EvidenceTransactionHelperNativeCategory = "none",
+  [int]$EvidenceTransactionHelperNativeCode = 0,
+  [switch]$EvidenceTransactionAclMutationOccurred,
+  [ValidateSet("notRequired", "completed", "failed")]
+  [string]$EvidenceTransactionAclRollback = "notRequired",
+  [ValidateSet("none", "recoverEmptyAdminRoot")]
+  [string]$EvidenceTransactionRecoveryAction = "none",
   [ValidateSet("unknown", "absent", "empty", "nonEmpty")]
   [string]$EvidenceInstallResidue = "unknown",
   [ValidateSet("unknown", "absent", "empty", "nonEmpty")]
@@ -111,6 +128,11 @@ $script:firewallRollbackResult = "notRequired"
 $script:transactionCleanupResult = "notCreated"
 $script:transactionHelperNativeExit = -1
 $script:transactionHelperStage = "none"
+$script:transactionHelperNativeCategory = "none"
+$script:transactionHelperNativeCode = 0
+$script:transactionAclMutationOccurred = $false
+$script:transactionAclRollback = "notRequired"
+$script:transactionRecoveryAction = "none"
 $script:transactionCreated = $false
 $script:finalFailedField = "none"
 $script:finalComponents = [ordered]@{
@@ -535,9 +557,13 @@ function Invoke-InstallTransactionHelper(
         }
         $failure = $stderr | ConvertFrom-Json
         $properties = @($failure.PSObject.Properties.Name)
-        if ($properties.Count -ne 2 -or
+        if ($properties.Count -ne 6 -or
             $properties -notcontains "code" -or
             $properties -notcontains "stage" -or
+            $properties -notcontains "nativeCategory" -or
+            $properties -notcontains "nativeCode" -or
+            $properties -notcontains "aclMutationOccurred" -or
+            $properties -notcontains "aclRollback" -or
             [string]$failure.code -notin @(
               "installTransactionAclInvalid",
               "installTransactionUnavailable",
@@ -549,7 +575,36 @@ function Invoke-InstallTransactionHelper(
               "inputValidation", "processTimeout")) {
           throw "installTransactionInvalid"
         }
+        $nativeCategory = [string]$failure.nativeCategory
+        $nativeCode = [int]$failure.nativeCode
+        $allowedNativeCodes = @{
+          none = @(0)
+          accessDenied = @(5)
+          busy = @(32)
+          privilegeNotHeld = @(1314)
+          invalidOwner = @(1307)
+          invalidAcl = @(1336)
+          notSupported = @(50)
+          identityChanged = @(0)
+          unknown = @(0)
+        }
+        if (-not $allowedNativeCodes.ContainsKey($nativeCategory) -or
+            $nativeCode -notin $allowedNativeCodes[$nativeCategory]) {
+          throw "installTransactionInvalid"
+        }
+        if ($failure.aclMutationOccurred -isnot [bool] -or
+            [string]$failure.aclRollback -notin @(
+              "notRequired", "completed", "failed") -or
+            (-not [bool]$failure.aclMutationOccurred -and
+              [string]$failure.aclRollback -ne "notRequired")) {
+          throw "installTransactionInvalid"
+        }
         $script:transactionHelperStage = [string]$failure.stage
+        $script:transactionHelperNativeCategory = $nativeCategory
+        $script:transactionHelperNativeCode = $nativeCode
+        $script:transactionAclMutationOccurred =
+          [bool]$failure.aclMutationOccurred
+        $script:transactionAclRollback = [string]$failure.aclRollback
         throw [string]$failure.code
       } catch {
         if ($_.Exception.Message -in @(
@@ -574,10 +629,23 @@ function Invoke-InstallTransactionHelper(
 
 function Invoke-InstallTransactionPreflight {
   $result = Invoke-InstallTransactionHelper "preflight"
-  if ($result -cne
-      '{"code":"installTransactionPreflightReady","stage":"finalReadback"}') {
+  try {
+    $document = $result | ConvertFrom-Json
+    $properties = @($document.PSObject.Properties.Name)
+  } catch {
     throw "installTransactionInvalid"
   }
+  if ($properties.Count -ne 3 -or
+      $properties -notcontains "code" -or
+      $properties -notcontains "stage" -or
+      $properties -notcontains "recoveryAction" -or
+      [string]$document.code -cne "installTransactionPreflightReady" -or
+      [string]$document.stage -cne "finalReadback" -or
+      [string]$document.recoveryAction -notin @(
+        "none", "recoverEmptyAdminRoot")) {
+    throw "installTransactionInvalid"
+  }
+  $script:transactionRecoveryAction = [string]$document.recoveryAction
   $script:finalComponents.installTransaction = "verified"
   $script:transactionCleanupResult = "notCreated"
 }
@@ -814,6 +882,22 @@ function Write-InstallerEvidence {
       stage = if ($script:transactionHelperStage -ne "none") {
         $script:transactionHelperStage
       } else { $EvidenceTransactionHelperStage }
+      nativeCategory = if (
+        $script:transactionHelperNativeCategory -ne "none") {
+        $script:transactionHelperNativeCategory
+      } else { $EvidenceTransactionHelperNativeCategory }
+      nativeCode = if ($script:transactionHelperNativeCode -ne 0) {
+        $script:transactionHelperNativeCode
+      } else { $EvidenceTransactionHelperNativeCode }
+      aclMutationOccurred = if ($script:transactionAclMutationOccurred) {
+        $true
+      } else { [bool]$EvidenceTransactionAclMutationOccurred }
+      aclRollback = if ($script:transactionAclRollback -ne "notRequired") {
+        $script:transactionAclRollback
+      } else { $EvidenceTransactionAclRollback }
+      recoveryAction = if ($script:transactionRecoveryAction -ne "none") {
+        $script:transactionRecoveryAction
+      } else { $EvidenceTransactionRecoveryAction }
     }
     failedField = if ($EvidenceFailedField -eq "none") {
       $null

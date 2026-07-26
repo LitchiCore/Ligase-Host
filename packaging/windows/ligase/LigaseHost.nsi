@@ -386,9 +386,9 @@ Function InstallSummaryPageCreate
   Pop $1
   ${If} $DataRootMode == "migration"
   ${OrIf} $DataRootMode == "orphanLegacyRecovery"
-    ${NSD_CreateLabel} 0 24u 100% 100u "程序目录：$INSTDIR$\r$\n旧数据目录：$DataRootSource$\r$\n标准数据目录：$DataRoot$\r$\n数据动作：$DataRootActionSummary$\r$\n创建桌面快捷方式：$DesktopShortcutSummary$\r$\n安装虚拟显示：$VirtualDisplaySummary$\r$\n防火墙：将申请本次安装的一次管理员授权，并在完成前精确读回 Ligase 专属规则"
+    ${NSD_CreateLabel} 0 24u 100% 100u "程序目录：$INSTDIR$\r$\n旧数据目录：$DataRootSource$\r$\n标准数据目录：$DataRoot$\r$\n数据动作：$DataRootActionSummary$\r$\n创建桌面快捷方式：$DesktopShortcutSummary$\r$\n安装虚拟显示：$VirtualDisplaySummary$\r$\n安全目录：如检测到先前安装留下的精确空目录，将在同一身份下修复其访问控制$\r$\n防火墙：将申请本次安装的一次管理员授权，并在完成前精确读回 Ligase 专属规则"
   ${Else}
-    ${NSD_CreateLabel} 0 24u 100% 84u "程序目录：$INSTDIR$\r$\n数据目录：$DataRoot$\r$\n数据动作：$DataRootActionSummary$\r$\n创建桌面快捷方式：$DesktopShortcutSummary$\r$\n安装虚拟显示：$VirtualDisplaySummary$\r$\n防火墙：将申请本次安装的一次管理员授权，并在完成前精确读回 Ligase 专属规则"
+    ${NSD_CreateLabel} 0 24u 100% 84u "程序目录：$INSTDIR$\r$\n数据目录：$DataRoot$\r$\n数据动作：$DataRootActionSummary$\r$\n创建桌面快捷方式：$DesktopShortcutSummary$\r$\n安装虚拟显示：$VirtualDisplaySummary$\r$\n安全目录：如检测到先前安装留下的精确空目录，将在同一身份下修复其访问控制$\r$\n防火墙：将申请本次安装的一次管理员授权，并在完成前精确读回 Ligase 专属规则"
   ${EndIf}
   Pop $1
   ${NSD_CreateLabel} 0 116u 100% 24u "如需修改请返回。只有数据绑定与防火墙精确读回成功后才会显示完成。"

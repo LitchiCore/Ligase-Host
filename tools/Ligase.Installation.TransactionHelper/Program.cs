@@ -12,8 +12,11 @@ internal static class Program
     private const uint GenericRead = 0x80000000;
     private const uint GenericWrite = 0x40000000;
     private const uint ReadControl = 0x00020000;
+    private const uint Synchronize = 0x00100000;
     private const uint WriteDac = 0x00040000;
     private const uint WriteOwner = 0x00080000;
+    private const uint FileListDirectory = 0x00000001;
+    private const uint FileReadAttributes = 0x00000080;
     private const uint FileShareRead = 1;
     private const uint FileShareWrite = 2;
     private const uint FileShareDelete = 4;
@@ -28,6 +31,22 @@ internal static class Program
     private const uint OwnerSecurityInformation = 1;
     private const uint DaclSecurityInformation = 4;
     private const uint ProtectedDaclSecurityInformation = 0x80000000;
+    private const int ErrorAccessDenied = 5;
+    private const int ErrorSharingViolation = 32;
+    private const int ErrorNotSupported = 50;
+    private const int ErrorAlreadyExists = 183;
+    private const int ErrorInvalidOwner = 1307;
+    private const int ErrorPrivilegeNotHeld = 1314;
+    private const int ErrorInvalidAcl = 1336;
+    private const int FileDirectoryInformation = 1;
+    private const int FileStreamInformation = 22;
+    private const int StatusSuccess = 0;
+    private const int StatusNoMoreFiles = unchecked((int)0x80000006);
+    private const int NtQueryBufferBytes = 64 * 1024;
+    private static string _nativeCategory = "none";
+    private static int _nativeCode;
+    private static bool _aclMutationOccurred;
+    private static string _aclRollback = "notRequired";
 
     private static readonly SecurityIdentifier AdminSid =
         new(WellKnownSidType.BuiltinAdministratorsSid, null);
@@ -66,7 +85,12 @@ internal static class Program
                 _ => "installTransactionInvalid"
             };
             Console.Error.Write(
-                $"{{\"code\":\"{code}\",\"stage\":\"{_stage}\"}}");
+                $"{{\"code\":\"{code}\",\"stage\":\"{_stage}\"," +
+                $"\"nativeCategory\":\"{_nativeCategory}\"," +
+                $"\"nativeCode\":{_nativeCode}," +
+                $"\"aclMutationOccurred\":" +
+                $"{_aclMutationOccurred.ToString().ToLowerInvariant()}," +
+                $"\"aclRollback\":\"{_aclRollback}\"}}");
             return 18;
         }
     }
@@ -138,6 +162,33 @@ internal static class Program
             throw new InvalidOperationException("installTransactionUnavailable");
     }
 
+    private static InvalidOperationException NativeFailure(
+        string code, int nativeCode)
+    {
+        _nativeCode = nativeCode is ErrorAccessDenied or ErrorSharingViolation or ErrorNotSupported or
+            ErrorInvalidOwner or ErrorPrivilegeNotHeld or ErrorInvalidAcl
+            ? nativeCode
+            : 0;
+        _nativeCategory = nativeCode switch
+        {
+            ErrorAccessDenied => "accessDenied",
+            ErrorSharingViolation => "busy",
+            ErrorPrivilegeNotHeld => "privilegeNotHeld",
+            ErrorInvalidOwner => "invalidOwner",
+            ErrorInvalidAcl => "invalidAcl",
+            ErrorNotSupported => "notSupported",
+            _ => "unknown"
+        };
+        return new InvalidOperationException(code);
+    }
+
+    private static InvalidOperationException IdentityChanged()
+    {
+        _nativeCategory = "identityChanged";
+        _nativeCode = 0;
+        return new InvalidOperationException("installTransactionInvalid");
+    }
+
     private static string ResolveRoot(string[] args)
     {
         if (args.Length == 1)
@@ -193,7 +244,9 @@ internal static class Program
     {
         store.Preflight();
         Console.Write(
-            "{\"code\":\"installTransactionPreflightReady\",\"stage\":\"finalReadback\"}");
+            "{\"code\":\"installTransactionPreflightReady\"," +
+            "\"stage\":\"finalReadback\",\"recoveryAction\":\"" +
+            store.RecoveryAction + "\"}");
         return 0;
     }
 
@@ -219,14 +272,17 @@ internal static class Program
         private readonly string _root;
         private readonly SafeFileHandle _rootHandle;
         private readonly FileIdentity _rootIdentity;
+        private readonly bool _recoveredEmptyAdminRoot;
         private string TransactionPath => Path.Combine(
             _root, "pending-install-transaction.json");
 
-        private SecureStore(string root, SafeFileHandle handle)
+        private SecureStore(
+            string root, SafeFileHandle handle, bool recoveredEmptyAdminRoot)
         {
             _root = root;
             _rootHandle = handle;
             _rootIdentity = VerifyHandle(handle, root, directory: true);
+            _recoveredEmptyAdminRoot = recoveredEmptyAdminRoot;
         }
 
         public static SecureStore Open(string root, bool create)
@@ -246,13 +302,19 @@ internal static class Program
             if (create)
             {
                 SetStage("createSegment");
-                HardenDirectoryChain(
+                var recoveredEmptyAdminRoot = HardenDirectoryChain(
                     root,
                     test ? Path.GetDirectoryName(root)! : programData);
+                return OpenVerified(root, recoveredEmptyAdminRoot);
             }
             if (!Directory.Exists(root))
                 throw new InvalidOperationException("installTransactionUnavailable");
+            return OpenVerified(root, false);
+        }
 
+        private static SecureStore OpenVerified(
+            string root, bool recoveredEmptyAdminRoot)
+        {
             SetStage("openSegment");
             var handle = OpenPath(root, directory: true, writeSecurity: false);
             try
@@ -262,7 +324,7 @@ internal static class Program
                 SetStage("rejectReparse");
                 RejectReparseChain(root, create: false);
                 SetStage("finalReadback");
-                return new SecureStore(root, handle);
+                return new SecureStore(root, handle, recoveredEmptyAdminRoot);
             }
             catch
             {
@@ -427,6 +489,10 @@ internal static class Program
             }
         }
 
+        public string RecoveryAction => _recoveredEmptyAdminRoot
+            ? "recoverEmptyAdminRoot"
+            : "none";
+
         private void ValidateRoot()
         {
             SetStage("assertAcl");
@@ -461,38 +527,409 @@ internal static class Program
         }
     }
 
-    private static void HardenDirectoryChain(string root, string trustedBase)
+    private static bool HardenDirectoryChain(string root, string trustedBase)
     {
         var current = Path.GetFullPath(trustedBase).TrimEnd('\\');
         var relative = Path.GetRelativePath(current, root);
+        var recoveredEmptyAdminRoot = false;
+        var segmentIndex = 0;
         foreach (var part in relative.Split('\\', StringSplitOptions.RemoveEmptyEntries))
         {
+            segmentIndex++;
             current = Path.Combine(current, part);
             var existed = Directory.Exists(current);
             if (!existed)
-                Directory.CreateDirectory(current);
+                CreateDirectoryWithExactAcl(current);
             SetStage("openSegment");
             using var handle = OpenPath(current, true, writeSecurity: true);
-            VerifyHandle(handle, current, true);
-            if (!existed)
+            var identity = VerifyHandle(handle, current, true);
+            if (existed && segmentIndex == 1 &&
+                IsCanonicalAdminRoot(current, trustedBase) &&
+                !HasExactAcl(handle, directory: true))
             {
-                SetStage("applyAcl");
-                ApplyExactAcl(handle, true);
+                handle.Dispose();
+                byte[] originalSecurity;
+                if (Environment.GetEnvironmentVariable(
+                        "LIGASE_INSTALL_VALIDATION_HARNESS") == "1" &&
+                    Environment.GetEnvironmentVariable(
+                        "LIGASE_TRANSACTION_TEST_BEHAVIOR") ==
+                    "holdRecoveryHandle")
+                {
+                    using var blocker = OpenPath(
+                        current, directory: true, writeSecurity: false);
+                    using var rejected = OpenRecoveryDirectory(current);
+                    throw new InvalidOperationException(
+                        "installTransactionInvalid");
+                }
+                using (var exclusive = OpenRecoveryDirectory(current))
+                {
+                    if (VerifyHandle(exclusive, current, true) != identity)
+                        throw IdentityChanged();
+                    VerifyEmptyAdminRoot(exclusive);
+                    AttemptValidationResidueInjection(current);
+                    VerifyEmptyAdminRoot(exclusive);
+                    originalSecurity = ReadSecurityDescriptor(exclusive);
+                    SetStage("applyAcl");
+                    ApplyExactAcl(exclusive, true);
+                    _aclMutationOccurred = true;
+                    SetStage("finalReadback");
+                    try
+                    {
+                        if (VerifyHandle(exclusive, current, true) != identity)
+                            throw IdentityChanged();
+                        VerifyEmptyAdminRoot(exclusive);
+                    }
+                    catch
+                    {
+                        _aclRollback = TryRestoreSecurityDescriptor(
+                            exclusive, originalSecurity)
+                            ? "completed"
+                            : "failed";
+                        throw;
+                    }
+                }
+                try
+                {
+                    using var reopened = OpenPath(
+                        current, directory: true, writeSecurity: false);
+                    AssertAcl(reopened, directory: true);
+                    if (VerifyHandle(reopened, current, true) != identity)
+                        throw IdentityChanged();
+                    VerifyEmptyAdminRoot(reopened);
+                }
+                catch
+                {
+                    _aclRollback = TryRestoreSecurityDescriptor(
+                        current, identity, originalSecurity)
+                        ? "completed"
+                        : "failed";
+                    throw;
+                }
+                recoveredEmptyAdminRoot = true;
+                continue;
             }
             SetStage("assertAcl");
             AssertAcl(handle, true);
         }
+        return recoveredEmptyAdminRoot;
+    }
+
+    private static bool IsCanonicalAdminRoot(string path, string trustedBase)
+    {
+        if (Environment.GetEnvironmentVariable(
+                "LIGASE_INSTALL_VALIDATION_HARNESS") == "1")
+            return true;
+        return string.Equals(
+            Path.GetFullPath(path).TrimEnd('\\'),
+            Path.Combine(Path.GetFullPath(trustedBase).TrimEnd('\\'),
+                "Ligase Host Admin"),
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static void VerifyEmptyAdminRoot(SafeFileHandle handle)
+    {
+        if (!HasExpectedOwner(handle) ||
+            HasDirectoryEntries(handle) ||
+            HasAlternateDataStream(handle))
+            throw new InvalidOperationException("installTransactionInvalid");
+    }
+
+    private static void AttemptValidationResidueInjection(string path)
+    {
+        if (Environment.GetEnvironmentVariable(
+                "LIGASE_INSTALL_VALIDATION_HARNESS") != "1")
+            return;
+        var behavior = Environment.GetEnvironmentVariable(
+            "LIGASE_TRANSACTION_TEST_BEHAVIOR");
+        try
+        {
+            if (behavior == "injectResidueChild")
+                File.WriteAllText(Path.Combine(path, "injected.bin"), "x");
+            else if (behavior == "injectResidueAds")
+                File.WriteAllText(path + ":injected", "x");
+        }
+        catch (IOException)
+        {
+            // The exclusive directory handle is expected to reject the
+            // concurrent write before the ACL transition.
+        }
+        catch (UnauthorizedAccessException)
+        {
+            // Equivalent fail-closed rejection by the current directory ACL.
+        }
+    }
+
+    private static bool HasExpectedOwner(SafeFileHandle handle)
+    {
+        var result = GetSecurityInfo(handle, SeFileObject,
+            OwnerSecurityInformation, out _, out _, out _, out _,
+            out var descriptor);
+        if (result != 0 || descriptor == IntPtr.Zero)
+            throw NativeFailure(
+                "installTransactionAclInvalid", checked((int)result));
+        try
+        {
+            var length = GetSecurityDescriptorLength(descriptor);
+            var binary = new byte[length];
+            Marshal.Copy(descriptor, binary, 0, (int)length);
+            var actual = new RawSecurityDescriptor(binary, 0);
+            return actual.Owner == AdminSid;
+        }
+        finally
+        {
+            LocalFree(descriptor);
+        }
+    }
+
+    private static byte[] ReadSecurityDescriptor(SafeFileHandle handle)
+    {
+        var result = GetSecurityInfo(handle, SeFileObject,
+            OwnerSecurityInformation | DaclSecurityInformation,
+            out _, out _, out _, out _, out var descriptor);
+        if (result != 0 || descriptor == IntPtr.Zero)
+            throw NativeFailure(
+                "installTransactionAclInvalid", checked((int)result));
+        try
+        {
+            var length = checked((int)GetSecurityDescriptorLength(descriptor));
+            var binary = new byte[length];
+            Marshal.Copy(descriptor, binary, 0, length);
+            return binary;
+        }
+        finally
+        {
+            LocalFree(descriptor);
+        }
+    }
+
+    private static bool TryRestoreSecurityDescriptor(
+        SafeFileHandle handle, byte[] binary)
+    {
+        var pin = GCHandle.Alloc(binary, GCHandleType.Pinned);
+        try
+        {
+            var descriptor = pin.AddrOfPinnedObject();
+            if (!GetSecurityDescriptorOwner(
+                    descriptor, out var owner, out _) ||
+                !GetSecurityDescriptorDacl(
+                    descriptor, out _, out var dacl, out _))
+                return false;
+            var result = SetSecurityInfo(handle, SeFileObject,
+                OwnerSecurityInformation | DaclSecurityInformation,
+                owner, IntPtr.Zero, dacl, IntPtr.Zero);
+            if (result != 0)
+                return false;
+            var restored = ReadSecurityDescriptor(handle);
+            return restored.SequenceEqual(binary);
+        }
+        catch
+        {
+            return false;
+        }
+        finally
+        {
+            pin.Free();
+        }
+    }
+
+    private static bool TryRestoreSecurityDescriptor(
+        string path, FileIdentity expectedIdentity, byte[] binary)
+    {
+        try
+        {
+            using var handle = OpenRecoveryDirectory(path);
+            if (VerifyHandle(handle, path, directory: true) !=
+                expectedIdentity)
+                return false;
+            return TryRestoreSecurityDescriptor(handle, binary);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static void CreateDirectoryWithExactAcl(string path)
+    {
+        var security = BuildSecurity(directory: true);
+        var binary = new byte[security.BinaryLength];
+        security.GetBinaryForm(binary, 0);
+        var descriptorPin = GCHandle.Alloc(binary, GCHandleType.Pinned);
+        try
+        {
+            var attributes = new SecurityAttributes
+            {
+                Length = Marshal.SizeOf<SecurityAttributes>(),
+                SecurityDescriptor = descriptorPin.AddrOfPinnedObject(),
+                InheritHandle = false
+            };
+            if (!CreateDirectoryW(path, ref attributes))
+            {
+                var error = Marshal.GetLastWin32Error();
+                if (error == ErrorAlreadyExists)
+                    throw IdentityChanged();
+                throw NativeFailure("installTransactionAclInvalid", error);
+            }
+        }
+        finally
+        {
+            descriptorPin.Free();
+        }
+        FileIdentity? createdIdentity = null;
+        try
+        {
+            SetStage("openSegment");
+            using var handle = OpenPath(
+                path, directory: true, writeSecurity: false);
+            createdIdentity = VerifyHandle(handle, path, directory: true);
+            SetStage("assertAcl");
+            AssertAcl(handle, directory: true);
+        }
+        catch
+        {
+            if (createdIdentity is not null)
+                TryCleanupCreatedDirectory(path, createdIdentity.Value);
+            throw;
+        }
+    }
+
+    private static void TryCleanupCreatedDirectory(
+        string path, FileIdentity expectedIdentity)
+    {
+        try
+        {
+            using var handle = OpenPath(
+                path, directory: true, writeSecurity: false);
+            if (VerifyHandle(handle, path, directory: true) !=
+                    expectedIdentity ||
+                HasDirectoryEntries(handle) ||
+                HasAlternateDataStream(handle))
+                return;
+            handle.Dispose();
+            Directory.Delete(path, recursive: false);
+        }
+        catch
+        {
+            // A residue is safer than deleting an object whose identity or
+            // contents can no longer be proven to be this transaction's.
+        }
+    }
+
+    private static SafeFileHandle OpenRecoveryDirectory(string path)
+    {
+        var access = FileListDirectory | FileReadAttributes | ReadControl |
+            WriteDac | WriteOwner | Synchronize;
+        var handle = CreateFileW(path, access, 0, IntPtr.Zero, OpenExisting,
+            FileFlagOpenReparsePoint | FileFlagBackupSemantics, IntPtr.Zero);
+        if (handle.IsInvalid)
+        {
+            var error = Marshal.GetLastWin32Error();
+            handle.Dispose();
+            throw NativeFailure("installTransactionUnavailable", error);
+        }
+        return handle;
+    }
+
+    private static bool HasDirectoryEntries(SafeFileHandle handle)
+    {
+        var buffer = Marshal.AllocHGlobal(NtQueryBufferBytes);
+        try
+        {
+            var restartScan = true;
+            for (var query = 0; query < 4; query++)
+            {
+                var status = NtQueryDirectoryFile(
+                    handle, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero,
+                    out _, buffer, NtQueryBufferBytes,
+                    FileDirectoryInformation, true, IntPtr.Zero, restartScan);
+                restartScan = false;
+                if (status == StatusNoMoreFiles)
+                    return false;
+                if (status != StatusSuccess)
+                    throw NativeFailure(
+                        "installTransactionUnavailable",
+                        NtStatusToSafeWin32(status));
+                var nameLength = Marshal.ReadInt32(buffer, 60);
+                if (nameLength < 0 || nameLength > NtQueryBufferBytes - 64 ||
+                    (nameLength & 1) != 0)
+                    throw new InvalidOperationException(
+                        "installTransactionInvalid");
+                var name = Marshal.PtrToStringUni(
+                    IntPtr.Add(buffer, 64), nameLength / 2);
+                if (name is not "." and not "..")
+                    return true;
+            }
+            throw new InvalidOperationException("installTransactionInvalid");
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(buffer);
+        }
+    }
+
+    private static bool HasAlternateDataStream(SafeFileHandle handle)
+    {
+        var buffer = Marshal.AllocHGlobal(NtQueryBufferBytes);
+        try
+        {
+            var status = NtQueryInformationFile(
+                handle, out _, buffer, NtQueryBufferBytes,
+                FileStreamInformation);
+            if (status != StatusSuccess)
+                throw NativeFailure(
+                    "installTransactionUnavailable",
+                    NtStatusToSafeWin32(status));
+            var offset = 0;
+            for (var entry = 0; entry < 64; entry++)
+            {
+                if (offset < 0 || offset > NtQueryBufferBytes - 24)
+                    throw new InvalidOperationException(
+                        "installTransactionInvalid");
+                var current = IntPtr.Add(buffer, offset);
+                var next = Marshal.ReadInt32(current, 0);
+                var nameLength = Marshal.ReadInt32(current, 4);
+                if (nameLength < 0 ||
+                    nameLength > NtQueryBufferBytes - offset - 24 ||
+                    (nameLength & 1) != 0)
+                    throw new InvalidOperationException(
+                        "installTransactionInvalid");
+                var name = Marshal.PtrToStringUni(
+                    IntPtr.Add(current, 24), nameLength / 2);
+                if (!string.Equals(name, "::$DATA",
+                        StringComparison.OrdinalIgnoreCase))
+                    return true;
+                if (next == 0)
+                    return false;
+                if (next < 24 || (next & 7) != 0)
+                    throw new InvalidOperationException(
+                        "installTransactionInvalid");
+                offset = checked(offset + next);
+            }
+            throw new InvalidOperationException("installTransactionInvalid");
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(buffer);
+        }
+    }
+
+    private static int NtStatusToSafeWin32(int status)
+    {
+        var result = RtlNtStatusToDosError(status);
+        return result > int.MaxValue ? 0 : checked((int)result);
     }
 
     private static SafeFileHandle OpenPath(
-        string path, bool directory, bool writeSecurity)
+        string path, bool directory, bool writeSecurity,
+        uint? shareMode = null)
     {
         var access = GenericRead | ReadControl |
             (writeSecurity ? WriteDac | WriteOwner : 0);
         var flags = FileFlagOpenReparsePoint |
             (directory ? FileFlagBackupSemantics : FileAttributeNormal);
         var handle = CreateFileW(path, access,
-            FileShareRead | FileShareWrite | FileShareDelete, IntPtr.Zero,
+            shareMode ?? (FileShareRead | FileShareWrite | FileShareDelete),
+            IntPtr.Zero,
             OpenExisting, flags, IntPtr.Zero);
         if (handle.IsInvalid)
             throw new InvalidOperationException("installTransactionUnavailable");
@@ -536,7 +973,8 @@ internal static class Program
                 ProtectedDaclSecurityInformation,
                 owner, IntPtr.Zero, dacl, IntPtr.Zero);
             if (result != 0)
-                throw new InvalidOperationException("installTransactionAclInvalid");
+                throw NativeFailure(
+                    "installTransactionAclInvalid", checked((int)result));
         }
         finally { pin.Free(); }
     }
@@ -546,22 +984,29 @@ internal static class Program
         var inheritance = directory
             ? InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit
             : InheritanceFlags.None;
-        var dacl = new DiscretionaryAcl(false, false, 2);
+        var dacl = new DiscretionaryAcl(directory, false, 2);
         foreach (var sid in new[] { SystemSid, AdminSid })
             dacl.AddAccess(AccessControlType.Allow, sid,
                 (int)FileSystemRights.FullControl, inheritance,
                 PropagationFlags.None);
-        return new(false, false, ControlFlags.DiscretionaryAclProtected,
+        return new(directory, false, ControlFlags.DiscretionaryAclProtected,
             AdminSid, AdminSid, null, dacl);
     }
 
     private static void AssertAcl(SafeFileHandle handle, bool directory)
     {
+        if (!HasExactAcl(handle, directory))
+            throw new InvalidOperationException("installTransactionAclInvalid");
+    }
+
+    private static bool HasExactAcl(SafeFileHandle handle, bool directory)
+    {
         var result = GetSecurityInfo(handle, SeFileObject,
             OwnerSecurityInformation | DaclSecurityInformation,
             out _, out _, out _, out _, out var descriptor);
         if (result != 0 || descriptor == IntPtr.Zero)
-            throw new InvalidOperationException("installTransactionAclInvalid");
+            throw NativeFailure(
+                "installTransactionAclInvalid", checked((int)result));
         try
         {
             var length = GetSecurityDescriptorLength(descriptor);
@@ -573,8 +1018,7 @@ internal static class Program
             expected.GetBinaryForm(expectedBytes, 0);
             var actualBytes = new byte[actual.BinaryLength];
             actual.GetBinaryForm(actualBytes, 0);
-            if (!actualBytes.SequenceEqual(expectedBytes))
-                throw new InvalidOperationException("installTransactionAclInvalid");
+            return actualBytes.SequenceEqual(expectedBytes);
         }
         finally { LocalFree(descriptor); }
     }
@@ -596,6 +1040,38 @@ internal static class Program
         public uint FileIndexLow;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    private struct SecurityAttributes
+    {
+        public int Length;
+        public IntPtr SecurityDescriptor;
+        [MarshalAs(UnmanagedType.Bool)]
+        public bool InheritHandle;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct IoStatusBlock
+    {
+        public IntPtr Status;
+        public IntPtr Information;
+    }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool CreateDirectoryW(
+        string path, ref SecurityAttributes securityAttributes);
+    [DllImport("ntdll.dll")]
+    private static extern int NtQueryDirectoryFile(
+        SafeFileHandle fileHandle, IntPtr eventHandle, IntPtr apcRoutine,
+        IntPtr apcContext, out IoStatusBlock ioStatusBlock,
+        IntPtr fileInformation, int length, int fileInformationClass,
+        [MarshalAs(UnmanagedType.U1)] bool returnSingleEntry,
+        IntPtr fileName, [MarshalAs(UnmanagedType.U1)] bool restartScan);
+    [DllImport("ntdll.dll")]
+    private static extern int NtQueryInformationFile(
+        SafeFileHandle fileHandle, out IoStatusBlock ioStatusBlock,
+        IntPtr fileInformation, int length, int fileInformationClass);
+    [DllImport("ntdll.dll")]
+    private static extern uint RtlNtStatusToDosError(int status);
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern SafeFileHandle CreateFileW(string fileName,
         uint desiredAccess, uint shareMode, IntPtr securityAttributes,

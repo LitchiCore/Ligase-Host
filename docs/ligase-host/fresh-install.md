@@ -234,8 +234,42 @@ reparse, ACL, identity, and atomic-replace rules used by the journal, and
 leaves no pending transaction. A preflight failure therefore leaves all four
 shortcut locations and the firewall unchanged.
 
-Transaction-helper failures expose only a closed machine code and one closed
-stage: `resolveProgramData`, `rejectReparse`, `createSegment`, `openSegment`,
+New admin-only directory segments are created with `CreateDirectoryW` and a
+final `SECURITY_ATTRIBUTES` descriptor. Owner `Administrators`, protected
+DACL, and the exact `SYSTEM`/`Administrators` Full Control entries therefore
+exist at creation time; the helper never creates a broadly inherited
+directory and hardens it later. It immediately reopens the segment without
+following reparse points and verifies owner, DACL, final path, and file
+identity.
+
+The one recovery exception is an exact
+`%ProgramData%\Ligase Host Admin` directory left by an earlier failed Ligase
+installation. The install confirmation discloses this recovery. The helper
+accepts it only when the same trusted handle proves that it is the direct
+canonical directory, non-reparse, owned by `Administrators`, completely empty
+(including no alternate data streams), and has no `Transactions` child,
+marker, or journal. Recovery obtains that directory with zero share mode and
+the minimum list/attribute/security rights. Child entries and streams are
+enumerated through that same handle before and after the ACL transition; path
+enumeration is not an authority. An existing or concurrent handle that
+prevents exclusivity fails with `busy`/Win32 `32` before ACL mutation. It
+applies the final descriptor to that same file identity, repeats the
+handle-based empty/stream/owner/DACL checks, reopens and verifies it, and reports
+`recoverEmptyAdminRoot`. It never deletes, renames, or loosens the residue.
+Nonempty, unknown-owner, replaced, or otherwise ambiguous directories remain
+unchanged and fail closed. If a post-ACL identity or empty-state check fails,
+the helper attempts to restore the captured descriptor on the same identity
+and records `aclMutationOccurred` plus the closed `aclRollback` result; it does
+not claim zero mutation.
+
+Transaction-helper failures expose only a closed machine code, one closed
+stage, and a safe native category:
+`accessDenied`, `busy`, `privilegeNotHeld`, `invalidOwner`, `invalidAcl`,
+`notSupported`, `identityChanged`, or `unknown`. Only the corresponding
+allowlisted Win32 values (`5`, `32`, `1314`, `1307`, `1336`, `50`) may be
+persisted;
+all other native values collapse to numeric `0` and category `unknown`.
+Stages are `resolveProgramData`, `rejectReparse`, `createSegment`, `openSegment`,
 `applyAcl`, `assertAcl`, `createTemp`, `atomicReplace`, `finalReadback`,
 `read`, `delete`, `inputValidation`, or `processTimeout`. A write payload is
 rejected before process creation when its strict UTF-8 byte length exceeds the
@@ -247,10 +281,10 @@ the Windows process-tree termination boundary and waits
 only for a bounded shutdown interval, with a direct parent termination as the
 last local fallback. Partial, unclosed, or oversized pipe content is
 untrusted and is never parsed as the helper protocol. Persistent evidence
-records the native helper exit and
-stage without recording a raw path, exception, journal bytes, nonce, or
-secret. The `installTransaction` component and `failedField` distinguish this
-boundary from firewall and shortcut failures.
+records the native helper exit, stage, safe category/code, and the closed
+recovery action without recording a raw path, exception, journal bytes,
+nonce, or secret. The `installTransaction` component and `failedField`
+distinguish this boundary from firewall and shortcut failures.
 
 Rollback evidence keeps separate `shortcut`, `firewall`, and
 `transactionCleanup` outcomes. If the journal was never created and the
