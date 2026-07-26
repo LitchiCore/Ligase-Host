@@ -10,7 +10,13 @@ param(
 $ErrorActionPreference = "Stop"
 
 $root = [IO.Path]::GetFullPath($OutputRoot)
-New-Item -ItemType Directory -Path $root -Force | Out-Null
+if (Test-Path -LiteralPath $root) {
+  if (@(Get-ChildItem -LiteralPath $root -Force).Count -ne 0) {
+    throw "harnessOutputRootNotClean"
+  }
+} else {
+  New-Item -ItemType Directory -Path $root | Out-Null
+}
 $harness = Join-Path $root "LigaseInstallDirectoryHarness.exe"
 $harnessDiagnostic = Join-Path $root "harness-runtime.diagnostic"
 $resolver = Join-Path $PSScriptRoot "Resolve-LigaseInstallDirectory.ps1"
@@ -232,6 +238,27 @@ public static class LigaseRawProcess
         }
     }
 }
+
+public static class LigaseReadinessProbe
+{
+    public static System.Threading.Thread ScheduleAppend(
+        string path,
+        int delayMilliseconds,
+        string value)
+    {
+        var thread = new System.Threading.Thread(() =>
+        {
+            System.Threading.Thread.Sleep(delayMilliseconds);
+            System.IO.File.AppendAllText(
+                path,
+                value,
+                new System.Text.UTF8Encoding(false));
+        });
+        thread.IsBackground = true;
+        thread.Start();
+        return thread;
+    }
+}
 "@
 
 function ConvertTo-WindowsCommandLineArgument(
@@ -263,6 +290,211 @@ function ConvertTo-WindowsCommandLineArgument(
   return $builder.ToString()
 }
 
+function Read-ClosedTextLines([string]$Path) {
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+    return [ordered]@{ closed = $false; lines = @(); identity = "" }
+  }
+  try {
+    $stream = [IO.File]::Open(
+      $Path,
+      [IO.FileMode]::Open,
+      [IO.FileAccess]::Read,
+      [IO.FileShare]::None)
+    try {
+      $raw = [byte[]]::new($stream.Length)
+      $offset = 0
+      while ($offset -lt $raw.Length) {
+        $read = $stream.Read($raw, $offset, $raw.Length - $offset)
+        if ($read -eq 0) { throw [IO.EndOfStreamException]::new() }
+        $offset += $read
+      }
+      $hasher = [Security.Cryptography.SHA256]::Create()
+      try {
+        $contentHash = [BitConverter]::ToString(
+          $hasher.ComputeHash($raw)).Replace("-", "")
+      } finally {
+        $hasher.Dispose()
+      }
+      [void]$stream.Seek(0, [IO.SeekOrigin]::Begin)
+      $reader = [IO.StreamReader]::new(
+        $stream,
+        [Text.Encoding]::Default,
+        $true)
+      try {
+        $lines = @()
+        while (-not $reader.EndOfStream) {
+          $lines += $reader.ReadLine()
+        }
+        return [ordered]@{
+          closed = $true
+          lines = @($lines)
+          identity = "$($raw.Length):$contentHash"
+        }
+      } finally {
+        $reader.Dispose()
+      }
+    } finally {
+      $stream.Dispose()
+    }
+  } catch [IO.IOException] {
+    return [ordered]@{ closed = $false; lines = @(); identity = "" }
+  }
+}
+
+function Read-SharedTextLines([string]$Path) {
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+    return @()
+  }
+  try {
+    $stream = [IO.File]::Open(
+      $Path,
+      [IO.FileMode]::Open,
+      [IO.FileAccess]::Read,
+      [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)
+    try {
+      $reader = [IO.StreamReader]::new($stream, [Text.Encoding]::Default, $true)
+      try {
+        $lines = @()
+        while (-not $reader.EndOfStream) {
+          $lines += $reader.ReadLine()
+        }
+        return @($lines)
+      } finally {
+        $reader.Dispose()
+      }
+    } finally {
+      $stream.Dispose()
+    }
+  } catch [IO.IOException] {
+    return @()
+  }
+}
+
+function Read-ClosedResultState([string]$Path) {
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+    return [ordered]@{
+      state = "absent"
+      closed = $true
+      lines = @()
+      identity = "absent"
+    }
+  }
+  $snapshot = Read-ClosedTextLines $Path
+  if (-not $snapshot.closed) {
+    return [ordered]@{
+      state = "busy"
+      closed = $false
+      lines = @()
+      identity = "busy"
+    }
+  }
+  return [ordered]@{
+    state = "present"
+    closed = $true
+    lines = @($snapshot.lines)
+    identity = "present:$($snapshot.identity)"
+  }
+}
+
+function Wait-HarnessReadiness(
+  [string]$DiagnosticPath,
+  [string]$ResultPath,
+  [bool]$ShouldSucceed,
+  [int]$NativeExitCode,
+  [int]$TimeoutMilliseconds = 20000,
+  [int]$QuietMilliseconds = 250
+) {
+  $timer = [Diagnostics.Stopwatch]::StartNew()
+  $diagnosticLines = @()
+  $resultLines = @()
+  $resultClosed = $false
+  $progressCount = 0
+  $diagnosticClosed = $false
+  $readySnapshot = $null
+  $resultState = "absent"
+  do {
+    $progressLines = @(Read-SharedTextLines $DiagnosticPath)
+    $progressCount = @($progressLines).Count
+    $expectedCountReached = if ($ShouldSucceed) {
+      @($progressLines).Count -ge 4
+    } else {
+      @($progressLines).Count -ge 1
+    }
+    if ($expectedCountReached) {
+      $closedDiagnostic = Read-ClosedTextLines $DiagnosticPath
+      $closedResult = Read-ClosedResultState $ResultPath
+      $resultState = $closedResult.state
+      $closedCountReached = if ($ShouldSucceed) {
+        @($closedDiagnostic.lines).Count -ge 4
+      } else {
+        @($closedDiagnostic.lines).Count -ge 1
+      }
+      $diagnosticClosed = $closedDiagnostic.closed
+      $resultClosed = $closedResult.closed
+      $resultStateAllowed = if ($ShouldSucceed) {
+        $closedResult.state -ceq "present"
+      } else {
+        $closedResult.state -ceq "absent"
+      }
+      if ($closedDiagnostic.closed -and
+          $closedResult.closed -and
+          $resultStateAllowed -and
+          $closedCountReached) {
+        $firstFingerprint =
+          "$($closedDiagnostic.identity)|$($closedResult.identity)"
+        Start-Sleep -Milliseconds $QuietMilliseconds
+        $secondDiagnostic = Read-ClosedTextLines $DiagnosticPath
+        $secondResult = Read-ClosedResultState $ResultPath
+        $secondResultStateAllowed = if ($ShouldSucceed) {
+          $secondResult.state -ceq "present"
+        } else {
+          $secondResult.state -ceq "absent"
+        }
+        if ($secondDiagnostic.closed -and
+            $secondResult.closed -and
+            $secondResultStateAllowed) {
+          $diagnosticLines = @($secondDiagnostic.lines)
+          $resultLines = @($secondResult.lines)
+          $secondFingerprint =
+            "$($secondDiagnostic.identity)|$($secondResult.identity)"
+          if ([string]::Equals(
+              [string]$secondFingerprint,
+              [string]$firstFingerprint,
+              [StringComparison]::Ordinal)) {
+          $readySnapshot = [ordered]@{
+            timedOut = $false
+            diagnosticLines = @($diagnosticLines)
+            resultLines = @($resultLines)
+            resultClosed = $resultClosed
+            resultState = $secondResult.state
+            elapsedMilliseconds = $timer.ElapsedMilliseconds
+          }
+          break
+          }
+        }
+      }
+    }
+    if ($null -ne $readySnapshot) { break }
+    Start-Sleep -Milliseconds 50
+  } while ($timer.ElapsedMilliseconds -lt $TimeoutMilliseconds)
+  if ($null -ne $readySnapshot) { return $readySnapshot }
+  $resultExists = Test-Path -LiteralPath $ResultPath -PathType Leaf
+  return [ordered]@{
+    timedOut = $true
+    diagnosticLines = @($diagnosticLines)
+    resultLines = @($resultLines)
+    progressCount = $progressCount
+    resultClosed = $resultClosed
+    resultState = $resultState
+    elapsedMilliseconds = $timer.ElapsedMilliseconds
+    safeDiagnostic = "phase=readiness;count=$progressCount;" +
+      "nativeExit=$NativeExitCode;resultExists=" +
+      $resultExists.ToString().ToLowerInvariant() +
+      ";diagnosticClosed=$($diagnosticClosed.ToString().ToLowerInvariant())" +
+      ";resultClosed=$($resultClosed.ToString().ToLowerInvariant())"
+  }
+}
+
 function Invoke-Harness(
   [Parameter(Mandatory)][string] $Name,
   [Parameter(Mandatory)][string[]] $Arguments,
@@ -282,10 +514,13 @@ function Invoke-Harness(
   [int] $ExpectedNativeExitCode = -1,
   [string[]] $ForbiddenPaths = @()
 ) {
-  $result = Join-Path $root "$Name.result"
-  if (Test-Path -LiteralPath $result) {
-    Remove-Item -LiteralPath $result -Force
+  $caseRoot = Join-Path $root (
+    "cases\$Name-$([Guid]::NewGuid().ToString('N'))")
+  if (Test-Path -LiteralPath $caseRoot) {
+    throw "harnessCaseRootAlreadyExists:$Name"
   }
+  New-Item -ItemType Directory -Path $caseRoot | Out-Null
+  $result = Join-Path $caseRoot "result.txt"
   if (Test-Path -LiteralPath $harnessDiagnostic) {
     Remove-Item -LiteralPath $harnessDiagnostic -Force
   }
@@ -294,8 +529,8 @@ function Invoke-Harness(
   }).Count -gt 0
   $nativeArguments = @($Arguments)
   if (-not $hasTestOperator) {
-    $defaultOperatorLocal = Join-Path $root "default-empty-operator-local"
-    New-Item -ItemType Directory -Path $defaultOperatorLocal -Force | Out-Null
+    $defaultOperatorLocal = Join-Path $caseRoot "operator-local"
+    New-Item -ItemType Directory -Path $defaultOperatorLocal | Out-Null
     $nativeArguments += "/TestOperatorLocalAppData=$defaultOperatorLocal"
   }
   $nativeArguments += "/ResultFile=$result"
@@ -331,24 +566,15 @@ function Invoke-Harness(
       $nativeExitCode = [LigaseRawProcess]::Run($harness, $commandLine)
     }
   }
-  $deadline = [DateTime]::UtcNow.AddSeconds(5)
-  do {
-    Start-Sleep -Milliseconds 50
-    $diagnosticLines = if (Test-Path -LiteralPath $harnessDiagnostic) {
-      @(Get-Content -LiteralPath $harnessDiagnostic)
-    } else {
-      @()
-    }
-    $enoughDiagnostics = if ($ShouldSucceed) {
-      @($diagnosticLines).Count -ge 4
-    } else {
-      @($diagnosticLines).Count -ge 1
-    }
-  } until (
-    ([DateTime]::UtcNow -ge $deadline) -or
-    ($enoughDiagnostics -and (
-      -not $ShouldSucceed -or
-      (Test-Path -LiteralPath $result -PathType Leaf))))
+  $readiness = Wait-HarnessReadiness `
+    -DiagnosticPath $harnessDiagnostic `
+    -ResultPath $result `
+    -ShouldSucceed $ShouldSucceed `
+    -NativeExitCode $nativeExitCode
+  $diagnosticLines = @($readiness.diagnosticLines)
+  if ($readiness.timedOut) {
+    throw "harnessReadinessTimeout:${Name}:$($readiness.safeDiagnostic)"
+  }
   $resolverCodes = @($diagnosticLines | ForEach-Object {
     $parts = $_ -split '\|', 3
     if (@($parts).Count -ge 2 -and $parts[1] -match '^[0-9]+$') {
@@ -360,19 +586,20 @@ function Invoke-Harness(
   } else {
     255
   }
-  $exists = Test-Path -LiteralPath $result -PathType Leaf
+  $exists = $readiness.resultState -ceq "present"
   if ($ShouldSucceed) {
     if (@($resolverCodes).Count -ne 4 -or
         @($resolverCodes.Where({ $_ -ne 0 })).Count -ne 0 -or
         -not $exists) {
       $detail = if (Test-Path -LiteralPath $harnessDiagnostic) {
-        [IO.File]::ReadAllText($harnessDiagnostic)
+        "phase=validation;count=$(@($diagnosticLines).Count);" +
+          "nativeExit=$nativeExitCode;resultExists=$($exists.ToString().ToLowerInvariant())"
       } else {
-        "noDiagnostic"
+        "phase=validation;count=0;nativeExit=$nativeExitCode;resultExists=false"
       }
       throw "harnessPositiveFailed:${Name}:$detail"
     }
-    $actual = @([IO.File]::ReadAllLines($result))
+    $actual = @($readiness.resultLines)
     if (@($actual).Count -ne 4 -or
         -not $actual[0].Equals(
           $ExpectedInstallDirectory,
@@ -411,6 +638,123 @@ function Invoke-Harness(
     nativeExitCode = $nativeExitCode
     resultCreated = $exists
   }
+}
+
+$readinessNegativeRoot = Join-Path $root "readiness-negative-self-test"
+New-Item -ItemType Directory -Path $readinessNegativeRoot | Out-Null
+$readinessNegativeDiagnostic = Join-Path $readinessNegativeRoot "diagnostic.txt"
+$readinessNegativeResult = Join-Path $readinessNegativeRoot "result.txt"
+[IO.File]::WriteAllLines(
+  $readinessNegativeDiagnostic,
+  @("one", "two", "three"),
+  [Text.UTF8Encoding]::new($false))
+[IO.File]::WriteAllLines(
+  $readinessNegativeResult,
+  @("one", "two", "three", "four"),
+  [Text.UTF8Encoding]::new($false))
+$readinessNegative = Wait-HarnessReadiness `
+  -DiagnosticPath $readinessNegativeDiagnostic `
+  -ResultPath $readinessNegativeResult `
+  -ShouldSucceed $true `
+  -NativeExitCode 0 `
+  -TimeoutMilliseconds 250
+if (-not $readinessNegative.timedOut -or
+    $readinessNegative.progressCount -ne 3) {
+  throw "harnessReadinessNegativeAccepted"
+}
+
+$readinessLateWriterRoot = Join-Path $root "readiness-late-writer-self-test"
+New-Item -ItemType Directory -Path $readinessLateWriterRoot | Out-Null
+$readinessLateDiagnostic = Join-Path $readinessLateWriterRoot "diagnostic.txt"
+$readinessLateResult = Join-Path $readinessLateWriterRoot "result.txt"
+[IO.File]::WriteAllLines(
+  $readinessLateDiagnostic,
+  @("one", "two", "three", "four"),
+  [Text.UTF8Encoding]::new($false))
+[IO.File]::WriteAllLines(
+  $readinessLateResult,
+  @("one", "two", "three", "four"),
+  [Text.UTF8Encoding]::new($false))
+$lateWriter = [LigaseReadinessProbe]::ScheduleAppend(
+  $readinessLateDiagnostic,
+  100,
+  "five`n")
+$readinessLate = Wait-HarnessReadiness `
+  -DiagnosticPath $readinessLateDiagnostic `
+  -ResultPath $readinessLateResult `
+  -ShouldSucceed $true `
+  -NativeExitCode 0 `
+  -TimeoutMilliseconds 2000
+$lateWriter.Join()
+if ($readinessLate.timedOut -or
+    @($readinessLate.diagnosticLines).Count -ne 5) {
+  throw "harnessReadinessLateWriterAccepted"
+}
+
+$readinessLateResultRoot = Join-Path $root "readiness-late-result-self-test"
+New-Item -ItemType Directory -Path $readinessLateResultRoot | Out-Null
+$readinessLateResultDiagnostic = Join-Path $readinessLateResultRoot "diagnostic.txt"
+$readinessLateResultPath = Join-Path $readinessLateResultRoot "result.txt"
+[IO.File]::WriteAllLines(
+  $readinessLateResultDiagnostic,
+  @("negative"),
+  [Text.UTF8Encoding]::new($false))
+$lateResultWriter = [LigaseReadinessProbe]::ScheduleAppend(
+  $readinessLateResultPath,
+  100,
+  "unexpected`n")
+$readinessLateResult = Wait-HarnessReadiness `
+  -DiagnosticPath $readinessLateResultDiagnostic `
+  -ResultPath $readinessLateResultPath `
+  -ShouldSucceed $false `
+  -NativeExitCode 18 `
+  -TimeoutMilliseconds 500
+$lateResultWriter.Join()
+if (-not $readinessLateResult.timedOut -or
+    $readinessLateResult.resultState -cne "present") {
+  throw "harnessReadinessLateResultAccepted"
+}
+
+$readinessAbsentRoot = Join-Path $root "readiness-absent-result-self-test"
+New-Item -ItemType Directory -Path $readinessAbsentRoot | Out-Null
+$readinessAbsentDiagnostic = Join-Path $readinessAbsentRoot "diagnostic.txt"
+$readinessAbsentResult = Join-Path $readinessAbsentRoot "result.txt"
+[IO.File]::WriteAllLines(
+  $readinessAbsentDiagnostic,
+  @("negative"),
+  [Text.UTF8Encoding]::new($false))
+$readinessAbsent = Wait-HarnessReadiness `
+  -DiagnosticPath $readinessAbsentDiagnostic `
+  -ResultPath $readinessAbsentResult `
+  -ShouldSucceed $false `
+  -NativeExitCode 18 `
+  -TimeoutMilliseconds 1000
+if ($readinessAbsent.timedOut -or
+    $readinessAbsent.resultState -cne "absent") {
+  throw "harnessReadinessAbsentResultRejected"
+}
+
+$readinessPresentRoot = Join-Path $root "readiness-present-result-self-test"
+New-Item -ItemType Directory -Path $readinessPresentRoot | Out-Null
+$readinessPresentDiagnostic = Join-Path $readinessPresentRoot "diagnostic.txt"
+$readinessPresentResult = Join-Path $readinessPresentRoot "result.txt"
+[IO.File]::WriteAllLines(
+  $readinessPresentDiagnostic,
+  @("negative"),
+  [Text.UTF8Encoding]::new($false))
+[IO.File]::WriteAllLines(
+  $readinessPresentResult,
+  @("unexpected"),
+  [Text.UTF8Encoding]::new($false))
+$readinessPresent = Wait-HarnessReadiness `
+  -DiagnosticPath $readinessPresentDiagnostic `
+  -ResultPath $readinessPresentResult `
+  -ShouldSucceed $false `
+  -NativeExitCode 18 `
+  -TimeoutMilliseconds 500
+if (-not $readinessPresent.timedOut -or
+    $readinessPresent.resultState -cne "present") {
+  throw "harnessReadinessPresentResultAccepted"
 }
 
 function Invoke-FailureFlowHarness(
@@ -1147,3 +1491,4 @@ $failureFlowResults = @(
   shortcutCases = $shortcutResults
   failureFlows = $failureFlowResults
 } | ConvertTo-Json -Depth 4 -Compress
+$global:LASTEXITCODE = 0
