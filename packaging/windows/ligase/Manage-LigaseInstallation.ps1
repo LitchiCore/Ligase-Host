@@ -6,6 +6,7 @@ param(
     "FinalizeInstall",
     "ReconcileShortcuts",
     "ValidateInstallTransaction",
+    "PreflightInstallTransaction",
     "RecordEvidence",
     "Readback",
     "Uninstall",
@@ -53,12 +54,30 @@ param(
     "artifacts",
     "bootstrap",
     "dataRoot",
+    "installTransaction",
     "arp",
     "startMenu",
     "desktop",
     "firewall",
     "virtualDisplay")]
   [string]$EvidenceFailedField = "none",
+  [int]$EvidenceTransactionHelperNativeExit = -1,
+  [ValidateSet(
+    "none",
+    "resolveProgramData",
+    "rejectReparse",
+    "createSegment",
+    "openSegment",
+    "applyAcl",
+    "assertAcl",
+    "createTemp",
+    "atomicReplace",
+    "finalReadback",
+    "read",
+    "delete",
+    "inputValidation",
+    "processTimeout")]
+  [string]$EvidenceTransactionHelperStage = "none",
   [ValidateSet("unknown", "absent", "empty", "nonEmpty")]
   [string]$EvidenceInstallResidue = "unknown",
   [ValidateSet("unknown", "absent", "empty", "nonEmpty")]
@@ -87,11 +106,18 @@ $script:firewallWasConfigured = $false
 $script:installTransactionId = $null
 $script:installTransactionCreatedUtc = $null
 $script:rollbackResult = "notRequired"
+$script:shortcutRollbackResult = "notRequired"
+$script:firewallRollbackResult = "notRequired"
+$script:transactionCleanupResult = "notCreated"
+$script:transactionHelperNativeExit = -1
+$script:transactionHelperStage = "none"
+$script:transactionCreated = $false
 $script:finalFailedField = "none"
 $script:finalComponents = [ordered]@{
   artifacts = "pending"
   bootstrap = "pending"
   dataRoot = "pending"
+  installTransaction = "pending"
   arp = "pending"
   startMenu = "pending"
   desktop = "pending"
@@ -320,26 +346,44 @@ function Get-InstallTransactionHelperPath {
     [string]$_.relativePath -ceq (
       "Deployment/Ligase.Installation.TransactionHelper.exe")
   })
+  $expectedHelperHash = if ($matches.Count -eq 1) {
+    [string]$matches[0].signedArtifactSha256
+  } else { "" }
   if ($matches.Count -ne 1 -or
-      [string]$matches[0].signedArtifactSha256 -notmatch '^[0-9a-f]{64}$' -or
+      $expectedHelperHash -notmatch '^[0-9a-f]{64}$' -or
       (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash -cne
-        ([string]$matches[0].signedArtifactSha256).ToUpperInvariant()) {
+        $expectedHelperHash.ToUpperInvariant()) {
     throw "installTransactionUnavailable"
   }
   return $path
 }
 
 function Invoke-InstallTransactionHelper(
-  [ValidateSet("write", "read", "delete", "validate")]
+  [ValidateSet("write", "read", "delete", "validate", "preflight")]
   [string]$HelperAction,
   [string]$InputValue = ""
 ) {
-  if (-not [string]::IsNullOrWhiteSpace($InstallTransactionRoot)) {
+  if ($HelperAction -eq "write" -and
+      [Text.Encoding]::UTF8.GetByteCount($InputValue) -gt
+        (4 * 1024 * 1024 + 64 * 1024)) {
+    $script:transactionHelperNativeExit = 18
+    $script:transactionHelperStage = "inputValidation"
+    throw "installTransactionInvalid"
+  }
+  $isValidationOverride =
+    -not [string]::IsNullOrWhiteSpace($InstallTransactionRoot)
+  if ($isValidationOverride -and
+      $env:LIGASE_INSTALL_VALIDATION_HARNESS -cne "1") {
     throw "installTransactionTestOverrideRejected"
   }
   $start = [Diagnostics.ProcessStartInfo]::new()
   $start.FileName = Get-InstallTransactionHelperPath
   $start.Arguments = $HelperAction
+  if ($isValidationOverride) {
+    $start.EnvironmentVariables[
+      "LIGASE_TRANSACTION_TEST_ROOT"] = [IO.Path]::GetFullPath(
+        $InstallTransactionRoot)
+  }
   $start.UseShellExecute = $false
   $start.CreateNoWindow = $true
   $start.RedirectStandardInput = $true
@@ -349,26 +393,193 @@ function Invoke-InstallTransactionHelper(
   $process.StartInfo = $start
   if (-not $process.Start()) { throw "installTransactionUnavailable" }
   try {
-    if ($HelperAction -eq "write") {
-      $process.StandardInput.Write($InputValue)
+    $stdoutBuffer = [char[]]::new(256)
+    $stderrBuffer = [char[]]::new(256)
+    $stdoutBuilder = [Text.StringBuilder]::new()
+    $stderrBuilder = [Text.StringBuilder]::new()
+    $stdoutOverflow = $false
+    $stderrOverflow = $false
+    $stdoutClosed = $false
+    $stderrClosed = $false
+    $stdoutTask = $process.StandardOutput.ReadAsync(
+      $stdoutBuffer, 0, $stdoutBuffer.Length)
+    $stderrTask = $process.StandardError.ReadAsync(
+      $stderrBuffer, 0, $stderrBuffer.Length)
+    $clock = [Diagnostics.Stopwatch]::StartNew()
+    $stdinClosed = $HelperAction -ne "write"
+    $stdinFlushing = $false
+    $stdinTask = if ($HelperAction -eq "write") {
+      $process.StandardInput.WriteAsync($InputValue)
+    } else {
+      $process.StandardInput.Close()
+      $null
     }
-    $process.StandardInput.Close()
-    $stdout = $process.StandardOutput.ReadToEnd()
-    $stderr = $process.StandardError.ReadToEnd()
-    if (-not $process.WaitForExit(15000)) {
-      try { $process.Kill() } catch {}
+    $timedOut = $false
+    $pipeFault = $false
+    while (-not ($process.HasExited -and $stdinClosed -and
+        $stdoutClosed -and $stderrClosed)) {
+      if (-not $stdinClosed -and $stdinTask.IsCompleted) {
+        try {
+          $null = $stdinTask.GetAwaiter().GetResult()
+          if (-not $stdinFlushing) {
+            $stdinTask = $process.StandardInput.FlushAsync()
+            $stdinFlushing = $true
+          } else {
+            $process.StandardInput.Close()
+            $stdinClosed = $true
+          }
+        } catch {
+          $script:transactionHelperNativeExit = 18
+          $script:transactionHelperStage = "processTimeout"
+          $pipeFault = $true
+          $timedOut = $true
+          break
+        }
+      }
+      if ($stdoutTask.IsCompleted) {
+        try {
+          $count = $stdoutTask.GetAwaiter().GetResult()
+        } catch {
+          $pipeFault = $true
+          $timedOut = $true
+          break
+        }
+        if ($count -eq 0) {
+          $stdoutClosed = $true
+        } else {
+          if ($stdoutBuilder.Length + $count -le 4096) {
+            $null = $stdoutBuilder.Append($stdoutBuffer, 0, $count)
+          } else {
+            $stdoutOverflow = $true
+          }
+          $stdoutTask = $process.StandardOutput.ReadAsync(
+            $stdoutBuffer, 0, $stdoutBuffer.Length)
+        }
+      }
+      if ($stderrTask.IsCompleted) {
+        try {
+          $count = $stderrTask.GetAwaiter().GetResult()
+        } catch {
+          $pipeFault = $true
+          $timedOut = $true
+          break
+        }
+        if ($count -eq 0) {
+          $stderrClosed = $true
+        } else {
+          if ($stderrBuilder.Length + $count -le 4096) {
+            $null = $stderrBuilder.Append($stderrBuffer, 0, $count)
+          } else {
+            $stderrOverflow = $true
+          }
+          $stderrTask = $process.StandardError.ReadAsync(
+            $stderrBuffer, 0, $stderrBuffer.Length)
+        }
+      }
+      if ($clock.ElapsedMilliseconds -ge 15000) {
+        $timedOut = $true
+        break
+      }
+      if (-not ($process.HasExited -and $stdinClosed -and
+          $stdoutClosed -and $stderrClosed)) {
+        Start-Sleep -Milliseconds 20
+      }
+    }
+    if ($timedOut) {
+      $script:transactionHelperNativeExit = 18
+      $script:transactionHelperStage = "processTimeout"
+      try {
+        $taskKillStart = [Diagnostics.ProcessStartInfo]::new()
+        $taskKillStart.FileName = Join-Path $env:SystemRoot (
+          "System32\taskkill.exe")
+        $taskKillStart.Arguments = "/PID $($process.Id) /T /F"
+        $taskKillStart.UseShellExecute = $false
+        $taskKillStart.CreateNoWindow = $true
+        $taskKillStart.RedirectStandardOutput = $true
+        $taskKillStart.RedirectStandardError = $true
+        $taskKill = [Diagnostics.Process]::Start($taskKillStart)
+        if ($null -ne $taskKill) {
+          $null = $taskKill.StandardOutput.ReadToEndAsync()
+          $null = $taskKill.StandardError.ReadToEndAsync()
+          if (-not $taskKill.WaitForExit(2000)) {
+            try { $taskKill.Kill() } catch {}
+          }
+          $taskKill.Dispose()
+        }
+      } catch {}
+      if (-not $process.HasExited) {
+        try { $process.Kill() } catch {}
+      }
+      $killClock = [Diagnostics.Stopwatch]::StartNew()
+      while (-not $process.HasExited -and
+          $killClock.ElapsedMilliseconds -lt 2000) {
+        Start-Sleep -Milliseconds 20
+      }
+      if ($pipeFault) {
+        throw "installTransactionInvalid"
+      }
       throw "installTransactionUnavailable"
     }
-    if ($process.ExitCode -ne 0) {
-      if ($stderr -ceq "installTransactionAclInvalid") {
-        throw "installTransactionAclInvalid"
-      }
+    if ($stdoutOverflow -or $stderrOverflow) {
+      $script:transactionHelperNativeExit = 18
+      $script:transactionHelperStage = "processTimeout"
       throw "installTransactionInvalid"
     }
+    $stdout = $stdoutBuilder.ToString()
+    $stderr = $stderrBuilder.ToString()
+    $script:transactionHelperNativeExit = $process.ExitCode
+    if ($process.ExitCode -ne 0) {
+      try {
+        if ([Text.Encoding]::UTF8.GetByteCount($stderr) -gt 512) {
+          throw "installTransactionInvalid"
+        }
+        $failure = $stderr | ConvertFrom-Json
+        $properties = @($failure.PSObject.Properties.Name)
+        if ($properties.Count -ne 2 -or
+            $properties -notcontains "code" -or
+            $properties -notcontains "stage" -or
+            [string]$failure.code -notin @(
+              "installTransactionAclInvalid",
+              "installTransactionUnavailable",
+              "installTransactionInvalid") -or
+            [string]$failure.stage -notin @(
+              "resolveProgramData", "rejectReparse", "createSegment",
+              "openSegment", "applyAcl", "assertAcl", "createTemp",
+              "atomicReplace", "finalReadback", "read", "delete",
+              "inputValidation", "processTimeout")) {
+          throw "installTransactionInvalid"
+        }
+        $script:transactionHelperStage = [string]$failure.stage
+        throw [string]$failure.code
+      } catch {
+        if ($_.Exception.Message -in @(
+            "installTransactionAclInvalid",
+            "installTransactionUnavailable",
+            "installTransactionInvalid")) {
+          throw
+        }
+        throw "installTransactionInvalid"
+      }
+    }
+    $script:transactionHelperStage = if ($HelperAction -eq "preflight") {
+      "finalReadback"
+    } elseif ($HelperAction -in @("read", "delete")) {
+      $HelperAction
+    } else { "finalReadback" }
     return $stdout
   } finally {
     $process.Dispose()
   }
+}
+
+function Invoke-InstallTransactionPreflight {
+  $result = Invoke-InstallTransactionHelper "preflight"
+  if ($result -cne
+      '{"code":"installTransactionPreflightReady","stage":"finalReadback"}') {
+    throw "installTransactionInvalid"
+  }
+  $script:finalComponents.installTransaction = "verified"
+  $script:transactionCleanupResult = "notCreated"
 }
 
 function Get-ExpectedShortcutEntries {
@@ -455,6 +666,9 @@ function Save-InstallTransaction {
       '{"code":"installTransactionWritten","success":true}') {
     throw "installTransactionInvalid"
   }
+  $script:transactionCreated = $true
+  $script:transactionCleanupResult = "pending"
+  $script:finalComponents.installTransaction = "verified"
 }
 
 function Load-InstallTransaction {
@@ -546,15 +760,24 @@ function Load-InstallTransaction {
   }
   $script:firewallAppliedByTransaction = [bool]$document.firewallApplied
   $script:firewallWasConfigured = [bool]$document.firewallWasConfigured
+  $script:transactionCreated = $true
+  $script:transactionCleanupResult = "pending"
+  $script:finalComponents.installTransaction = "verified"
   return $true
 }
 
 function Remove-InstallTransaction {
+  if (-not $script:transactionCreated) {
+    $script:transactionCleanupResult = "notCreated"
+    return
+  }
   $result = Invoke-InstallTransactionHelper "delete"
   if ($result -cne
       '{"code":"installTransactionDeleted","success":true}') {
     throw "installTransactionInvalid"
   }
+  $script:transactionCreated = $false
+  $script:transactionCleanupResult = "completed"
 }
 
 function Write-InstallerEvidence {
@@ -584,13 +807,26 @@ function Write-InstallerEvidence {
       exitCode = $EvidenceHelperExit
       resultCode = $EvidenceResultCode
     }
+    transactionHelper = [ordered]@{
+      nativeExitCode = if ($script:transactionHelperNativeExit -ge 0) {
+        $script:transactionHelperNativeExit
+      } else { $EvidenceTransactionHelperNativeExit }
+      stage = if ($script:transactionHelperStage -ne "none") {
+        $script:transactionHelperStage
+      } else { $EvidenceTransactionHelperStage }
+    }
     failedField = if ($EvidenceFailedField -eq "none") {
       $null
     } else {
       $EvidenceFailedField
     }
     components = $script:finalComponents
-    rollback = [ordered]@{ state = $EvidenceRollback }
+    rollback = [ordered]@{
+      state = $EvidenceRollback
+      shortcut = $script:shortcutRollbackResult
+      firewall = $script:firewallRollbackResult
+      transactionCleanup = $script:transactionCleanupResult
+    }
     firewall = [ordered]@{ state = $EvidenceFirewall }
     residuals = [ordered]@{
       installDirectory = $EvidenceInstallResidue
@@ -1727,11 +1963,24 @@ function Restore-ShortcutTransaction {
     }
     Assert-ShortcutSnapshot $script:shortcutRollback.snapshot
     $script:shortcutRollback = $null
-    Remove-InstallTransaction
+    $script:shortcutRollbackResult = "completed"
+    if ($script:transactionCreated) {
+      try {
+        Remove-InstallTransaction
+      } catch {
+        $script:transactionCleanupResult = "failed"
+        throw
+      }
+    } else {
+      $script:transactionCleanupResult = "notCreated"
+    }
     if ($script:rollbackResult -ne "failed") {
       $script:rollbackResult = "completed"
     }
   } catch {
+    if ($script:shortcutRollbackResult -ne "completed") {
+      $script:shortcutRollbackResult = "failed"
+    }
     $script:rollbackResult = "failed"
     throw "shortcutRollbackFailed"
   }
@@ -2035,6 +2284,39 @@ try {
     }
     exit 0
   }
+  if ($Action -eq "PreflightInstallTransaction") {
+    $validationBehavior = if (
+        $env:LIGASE_INSTALL_VALIDATION_HARNESS -ceq "1") {
+      [string]$env:LIGASE_TRANSACTION_TEST_BEHAVIOR
+    } else { "" }
+    if ($validationBehavior -in @(
+        "hangBeforeStdinRead", "delayedStdinRead", "oversizeInput")) {
+      $payloadSize = if ($validationBehavior -eq "oversizeInput") {
+        4 * 1024 * 1024 + 64 * 1024 + 1
+      } else { 256 * 1024 }
+      $payload = '{"payload":"' + ('a' * ($payloadSize - 14)) + '"}'
+      $result = Invoke-InstallTransactionHelper "write" $payload
+      if ($result -cne
+          '{"code":"installTransactionWritten","success":true}') {
+        throw "installTransactionInvalid"
+      }
+      if ($validationBehavior -eq "delayedStdinRead") {
+        $script:transactionHelperStage = "finalReadback"
+      } else {
+        $result = Invoke-InstallTransactionHelper "delete"
+        if ($result -cne
+            '{"code":"installTransactionDeleted","success":true}') {
+          throw "installTransactionInvalid"
+        }
+      }
+    } else {
+      Invoke-InstallTransactionPreflight
+    }
+    Write-Outcome "installTransactionPreflightReady" $true @{
+      stage = [string]$script:transactionHelperStage
+    }
+    exit 0
+  }
   $manifest = Read-Manifest
   $artifacts = Test-Artifacts $manifest
   $script:finalComponents.artifacts = "verified"
@@ -2078,7 +2360,9 @@ try {
         try {
           $null = Invoke-FirewallAction -FirewallAction Remove -Manifest $manifest
           $script:firewallAppliedByTransaction = $false
+          $script:firewallRollbackResult = "completed"
         } catch {
+          $script:firewallRollbackResult = "failed"
           $script:rollbackResult = "failed"
         }
       }
@@ -2259,6 +2543,7 @@ try {
     }
     $script:finalComponents.bootstrap = "verified"
     $script:finalComponents.dataRoot = "verified"
+    Invoke-InstallTransactionPreflight
     $legacyEntriesRemoved = Remove-LegacyFlatOwnedEntries $manifest
     Sync-OwnedShortcuts ([bool]$DesktopShortcutSelected)
     $script:finalComponents.startMenu = "verified"
@@ -2289,7 +2574,9 @@ try {
               -FirewallAction Remove `
               -Manifest $manifest
             $script:firewallAppliedByTransaction = $false
+            $script:firewallRollbackResult = "completed"
           } catch {
+            $script:firewallRollbackResult = "failed"
             # The install still fails closed. The original machine outcome is
             # preserved while readback will expose any owned-rule residue.
           }
@@ -2418,7 +2705,9 @@ try {
       try {
         $null = Invoke-FirewallAction -FirewallAction Remove -Manifest $manifest
         $script:firewallAppliedByTransaction = $false
+        $script:firewallRollbackResult = "completed"
       } catch {
+        $script:firewallRollbackResult = "failed"
         $script:rollbackResult = "failed"
       }
     }
@@ -2514,6 +2803,8 @@ try {
       "desktop"
     } elseif ($code -in @("firewallApplyFailed", "firewallReadbackMismatch")) {
       "firewall"
+    } elseif ($code -like "installTransaction*") {
+      "installTransaction"
     } elseif ($code -like "dataRoot*" -or $code -like "bootstrap*") {
       "dataRoot"
     } elseif ($code -like "artifact*" -or $code -like "helperSignature*") {
@@ -2527,10 +2818,13 @@ try {
     }
     $EvidenceHelperExit = 10
     $EvidenceRollback = $script:rollbackResult
-    $EvidenceFirewall = try {
-      $state = Get-FirewallReadback $manifest
-      if ($state.state -eq "configured") { "residual" } else { "failed" }
-    } catch { "unknown" }
+    $EvidenceFirewall = if ($script:firewallAppliedByTransaction -or
+        $script:firewallRollbackResult -ne "notRequired") {
+      try {
+        $state = Get-FirewallReadback $manifest
+        if ($state.state -eq "configured") { "residual" } else { "failed" }
+      } catch { "unknown" }
+    } else { "notChecked" }
     $EvidenceDataRootAction = if ($MigrateDataRoot) {
       "migrateToStandard"
     } elseif ($RecoverOrphanDataRoot) {
@@ -2562,6 +2856,15 @@ try {
       # Wire output remains a stable machine code even if evidence persistence
       # itself fails. NSIS records the secondary failure before showing UI.
     }
+  }
+  if ($Action -eq "PreflightInstallTransaction") {
+    Write-Outcome $code $false @{
+      failedField = "installTransaction"
+      transactionHelperNativeExit =
+        [int]$script:transactionHelperNativeExit
+      transactionHelperStage = [string]$script:transactionHelperStage
+    }
+    exit 10
   }
   Write-Outcome $code $false
   exit 10

@@ -226,6 +226,39 @@ identity and ACL before and after reading, before any shortcut restore or
 firewall compensation. The PowerShell integration helper never falls back to
 direct journal path I/O.
 
+Before the installer changes any Start Menu or desktop shortcut, applies a
+firewall rule, or commits ARP integration, the pinned transaction helper runs
+an explicit `preflight`. It creates or verifies the admin-only parent chain,
+performs a bounded create/write/read/delete probe with the same handle,
+reparse, ACL, identity, and atomic-replace rules used by the journal, and
+leaves no pending transaction. A preflight failure therefore leaves all four
+shortcut locations and the firewall unchanged.
+
+Transaction-helper failures expose only a closed machine code and one closed
+stage: `resolveProgramData`, `rejectReparse`, `createSegment`, `openSegment`,
+`applyAcl`, `assertAcl`, `createTemp`, `atomicReplace`, `finalReadback`,
+`read`, `delete`, `inputValidation`, or `processTimeout`. A write payload is
+rejected before process creation when its strict UTF-8 byte length exceeds the
+helper protocol limit. Helper stdout and stderr are drained
+concurrently with bounded buffers while asynchronous stdin writes, both output
+drains, and process termination share one 15-second monotonic deadline. No
+synchronous stdin write occurs before that deadline is active. A timeout uses
+the Windows process-tree termination boundary and waits
+only for a bounded shutdown interval, with a direct parent termination as the
+last local fallback. Partial, unclosed, or oversized pipe content is
+untrusted and is never parsed as the helper protocol. Persistent evidence
+records the native helper exit and
+stage without recording a raw path, exception, journal bytes, nonce, or
+secret. The `installTransaction` component and `failedField` distinguish this
+boundary from firewall and shortcut failures.
+
+Rollback evidence keeps separate `shortcut`, `firewall`, and
+`transactionCleanup` outcomes. If the journal was never created and the
+in-memory shortcut snapshot is restored and read back exactly, shortcut
+rollback is `completed` while transaction cleanup is `notCreated`; a missing
+journal must not turn an exact shortcut restoration into an ambiguous
+shortcut failure. The overall install result remains fail closed.
+
 The finalizer strictly rejects
 missing, duplicate, unknown, stale, oversized, or malformed fields, binds the
 journal to the current manifest hash/source identity and a CSPRNG correlation

@@ -652,6 +652,42 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(management, "function Restore-ShortcutTransaction");
         StringAssert.Contains(management, "function Save-InstallTransaction");
         StringAssert.Contains(management, "function Load-InstallTransaction");
+        StringAssert.Contains(management, "function Invoke-InstallTransactionPreflight");
+        StringAssert.Contains(management, "\"preflight\"");
+        StringAssert.Contains(management, "\"PreflightInstallTransaction\"");
+        StringAssert.Contains(
+            management,
+            "$expectedHelperHash.ToUpperInvariant()");
+        StringAssert.Contains(management, "transactionHelperNativeExit");
+        StringAssert.Contains(management, "transactionHelperStage");
+        StringAssert.Contains(management, "ReadAsync(");
+        StringAssert.Contains(management, "StandardInput.WriteAsync($InputValue)");
+        StringAssert.Contains(management, "StandardInput.FlushAsync()");
+        StringAssert.Contains(management, "\"inputValidation\"");
+        StringAssert.Contains(management, "[Diagnostics.Stopwatch]::StartNew()");
+        StringAssert.Contains(management, "\"System32\\taskkill.exe\"");
+        StringAssert.Contains(management, "\"/PID $($process.Id) /T /F\"");
+        StringAssert.Contains(management, "\"processTimeout\"");
+        Assert.IsTrue(
+            management.IndexOf("ReadAsync(", StringComparison.Ordinal) <
+            management.IndexOf(
+                "$clock = [Diagnostics.Stopwatch]::StartNew()",
+                StringComparison.Ordinal));
+        Assert.IsTrue(
+            management.IndexOf(
+                "$clock = [Diagnostics.Stopwatch]::StartNew()",
+                StringComparison.Ordinal) <
+            management.IndexOf(
+                "StandardInput.WriteAsync($InputValue)",
+                StringComparison.Ordinal));
+        Assert.IsFalse(management.Contains(
+            "StandardOutput.ReadToEnd()",
+            StringComparison.Ordinal));
+        StringAssert.Contains(management, "installTransaction = \"pending\"");
+        StringAssert.Contains(management, "\"installTransaction\"");
+        StringAssert.Contains(management, "shortcutRollbackResult");
+        StringAssert.Contains(management, "firewallRollbackResult");
+        StringAssert.Contains(management, "transactionCleanupResult");
         StringAssert.Contains(
             management,
             "Deployment\\Ligase.Installation.TransactionHelper.exe");
@@ -681,6 +717,42 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(transactionHelper, "Transactions");
         StringAssert.Contains(transactionHelper, "RejectReparseChain");
         StringAssert.Contains(transactionHelper, "ValidateRoot");
+        StringAssert.Contains(transactionHelper, "\"preflight\" => Preflight(store)");
+        StringAssert.Contains(transactionHelper, "LIGASE_TRANSACTION_FAILURE_STAGE");
+        StringAssert.Contains(transactionHelper, "LIGASE_TRANSACTION_TEST_BEHAVIOR");
+        StringAssert.Contains(transactionHelper, "case \"hang\":");
+        StringAssert.Contains(transactionHelper, "case \"hangBeforeStdinRead\":");
+        StringAssert.Contains(transactionHelper, "case \"delayedStdinRead\":");
+        StringAssert.Contains(transactionHelper, "case \"delayedPipe\":");
+        StringAssert.Contains(transactionHelper, "case \"oversizeStdout\":");
+        StringAssert.Contains(transactionHelper, "case \"oversizeStderr\":");
+        StringAssert.Contains(transactionHelper, "case \"killTree\":");
+        StringAssert.Contains(transactionHelper, "\"resolveProgramData\"");
+        StringAssert.Contains(transactionHelper, "\"atomicReplace\"");
+        StringAssert.Contains(transactionHelper, "\"finalReadback\"");
+        foreach (var stage in new[]
+                 {
+                     "resolveProgramData", "rejectReparse", "createSegment",
+                     "openSegment", "applyAcl", "assertAcl", "createTemp",
+                     "atomicReplace", "finalReadback", "read", "delete"
+                 })
+        {
+            StringAssert.Contains(transactionHelper, $"SetStage(\"{stage}\")");
+            StringAssert.Contains(management, $"\"{stage}\"");
+        }
+        StringAssert.Contains(
+            transactionHelper,
+            "installTransactionPreflightReady");
+        StringAssert.Contains(runtimeHarness, "\"hang\", \"delayedPipe\"");
+        StringAssert.Contains(runtimeHarness, "\"oversizeStdout\"");
+        StringAssert.Contains(runtimeHarness, "\"oversizeStderr\"");
+        StringAssert.Contains(runtimeHarness, "\"killTree\"");
+        StringAssert.Contains(
+            runtimeHarness,
+            "installTransactionBoundedInvocationMutatedJournal");
+        StringAssert.Contains(
+            runtimeHarness,
+            "transactionHelperStage -cne \"processTimeout\"");
         StringAssert.Contains(management, "transactionBytes.Count -ne 32");
         StringAssert.Contains(management, "$actualEntries.Count -ne 4");
         StringAssert.Contains(nsis, "-Action FinalizeInstall");
@@ -692,6 +764,13 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(
             management,
             "Fail-FinalInstallReadback \"startMenu\"");
+        Assert.IsTrue(
+            management.IndexOf(
+                "    Invoke-InstallTransactionPreflight",
+                StringComparison.Ordinal) <
+            management.LastIndexOf(
+                "Sync-OwnedShortcuts ([bool]$DesktopShortcutSelected)",
+                StringComparison.Ordinal));
         Assert.IsTrue(
             management.IndexOf(
                 "Sync-OwnedShortcuts ([bool]$DesktopShortcutSelected)",

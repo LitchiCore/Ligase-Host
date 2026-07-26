@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Security.AccessControl;
 using System.Security.Principal;
@@ -6,6 +7,7 @@ using Microsoft.Win32.SafeHandles;
 
 internal static class Program
 {
+    private static string _stage = "resolveProgramData";
     private const int MaxBytes = 4 * 1024 * 1024 + 64 * 1024;
     private const uint GenericRead = 0x80000000;
     private const uint GenericWrite = 0x40000000;
@@ -36,36 +38,116 @@ internal static class Program
     {
         try
         {
+            ApplyValidationHarnessBehavior();
             if (args.Length is < 1 or > 3)
                 throw new InvalidOperationException("invalidArguments");
             var action = args[0];
+            SetStage("resolveProgramData");
             var root = ResolveRoot(args);
-            using var store = SecureStore.Open(root, create: action == "write");
+            SetStage("rejectReparse");
+            using var store = SecureStore.Open(
+                root, create: action is "write" or "preflight");
             return action switch
             {
                 "write" => Write(store),
                 "read" => Read(store),
                 "delete" => Delete(store),
                 "validate" => Validate(store),
+                "preflight" => Preflight(store),
                 _ => throw new InvalidOperationException("invalidArguments")
             };
         }
         catch (Exception exception)
         {
-            Console.Error.Write(exception.Message switch
+            var code = exception.Message switch
             {
                 "installTransactionAclInvalid" => exception.Message,
                 "installTransactionUnavailable" => exception.Message,
                 _ => "installTransactionInvalid"
-            });
+            };
+            Console.Error.Write(
+                $"{{\"code\":\"{code}\",\"stage\":\"{_stage}\"}}");
             return 18;
         }
+    }
+
+    private static void ApplyValidationHarnessBehavior()
+    {
+        if (Environment.GetEnvironmentVariable(
+                "LIGASE_INSTALL_VALIDATION_HARNESS") != "1")
+            return;
+
+        switch (Environment.GetEnvironmentVariable(
+                    "LIGASE_TRANSACTION_TEST_BEHAVIOR"))
+        {
+            case "hang":
+                Thread.Sleep(Timeout.Infinite);
+                break;
+            case "hangBeforeStdinRead":
+                Thread.Sleep(Timeout.Infinite);
+                break;
+            case "delayedStdinRead":
+                Thread.Sleep(250);
+                _ = ReadBounded(Console.OpenStandardInput());
+                Console.Out.Write(
+                    "{\"code\":\"installTransactionWritten\",\"success\":true}");
+                Console.Out.Flush();
+                Environment.Exit(0);
+                return;
+            case "delayedPipe":
+                Console.Out.Write("pending");
+                Console.Out.Flush();
+                Thread.Sleep(Timeout.Infinite);
+                break;
+            case "oversizeStdout":
+                Console.Out.Write(new string('x', 131072));
+                Console.Out.Flush();
+                throw new InvalidOperationException(
+                    "installTransactionUnavailable");
+            case "oversizeStderr":
+                Console.Error.Write(new string('x', 131072));
+                Console.Error.Flush();
+                throw new InvalidOperationException(
+                    "installTransactionUnavailable");
+            case "killTree":
+                using (var child = Process.Start(new ProcessStartInfo(
+                    Environment.ProcessPath!)
+                {
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    Environment =
+                    {
+                        ["LIGASE_INSTALL_VALIDATION_HARNESS"] = "1",
+                        ["LIGASE_TRANSACTION_TEST_BEHAVIOR"] = "hang"
+                    }
+                }))
+                {
+                    child?.WaitForExit();
+                }
+                break;
+        }
+    }
+
+    private static void SetStage(string stage)
+    {
+        _stage = stage;
+        if (Environment.GetEnvironmentVariable(
+                "LIGASE_TRANSACTION_FAILURE_STAGE") == stage &&
+            Environment.GetEnvironmentVariable(
+                "LIGASE_INSTALL_VALIDATION_HARNESS") == "1")
+            throw new InvalidOperationException("installTransactionUnavailable");
     }
 
     private static string ResolveRoot(string[] args)
     {
         if (args.Length == 1)
         {
+            var validationRoot = Environment.GetEnvironmentVariable(
+                "LIGASE_TRANSACTION_TEST_ROOT");
+            if (Environment.GetEnvironmentVariable(
+                    "LIGASE_INSTALL_VALIDATION_HARNESS") == "1" &&
+                !string.IsNullOrWhiteSpace(validationRoot))
+                return Path.GetFullPath(validationRoot);
             var common = Environment.GetFolderPath(
                 Environment.SpecialFolder.CommonApplicationData);
             if (string.IsNullOrWhiteSpace(common))
@@ -104,6 +186,14 @@ internal static class Program
     {
         store.Validate();
         Console.Write("{\"code\":\"installTransactionStoreValid\",\"success\":true}");
+        return 0;
+    }
+
+    private static int Preflight(SecureStore store)
+    {
+        store.Preflight();
+        Console.Write(
+            "{\"code\":\"installTransactionPreflightReady\",\"stage\":\"finalReadback\"}");
         return 0;
     }
 
@@ -151,9 +241,11 @@ internal static class Program
                     StringComparison.OrdinalIgnoreCase))
                 throw new InvalidOperationException("installTransactionInvalid");
 
+            SetStage("rejectReparse");
             RejectReparseChain(root, create);
             if (create)
             {
+                SetStage("createSegment");
                 HardenDirectoryChain(
                     root,
                     test ? Path.GetDirectoryName(root)! : programData);
@@ -161,11 +253,15 @@ internal static class Program
             if (!Directory.Exists(root))
                 throw new InvalidOperationException("installTransactionUnavailable");
 
+            SetStage("openSegment");
             var handle = OpenPath(root, directory: true, writeSecurity: false);
             try
             {
+                SetStage("assertAcl");
                 AssertAcl(handle, directory: true);
+                SetStage("rejectReparse");
                 RejectReparseChain(root, create: false);
+                SetStage("finalReadback");
                 return new SecureStore(root, handle);
             }
             catch
@@ -182,12 +278,15 @@ internal static class Program
             SafeFileHandle? tempHandle = null;
             try
             {
+                SetStage("createTemp");
                 tempHandle = CreateFileW(temp, GenericRead | GenericWrite | ReadControl |
                     WriteDac | WriteOwner, 0, IntPtr.Zero, CreateNew,
                     FileAttributeNormal | FileFlagOpenReparsePoint, IntPtr.Zero);
                 if (tempHandle.IsInvalid)
                     throw new InvalidOperationException("installTransactionInvalid");
+                SetStage("applyAcl");
                 ApplyExactAcl(tempHandle, directory: false);
+                SetStage("assertAcl");
                 AssertAcl(tempHandle, directory: false);
                 var identity = VerifyHandle(tempHandle, temp, directory: false);
                 using (var stream = new FileStream(tempHandle, FileAccess.Write, 8192, false))
@@ -203,9 +302,11 @@ internal static class Program
                         throw new InvalidOperationException("installTransactionInvalid");
                 }
                 ValidateRoot();
+                SetStage("atomicReplace");
                 if (!MoveFileExW(temp, TransactionPath,
                         MoveReplaceExisting | MoveWriteThrough))
                     throw new InvalidOperationException("installTransactionInvalid");
+                SetStage("finalReadback");
                 using var final = OpenPath(TransactionPath, false, false);
                 AssertAcl(final, false);
                 VerifyHandle(final, TransactionPath, false);
@@ -221,6 +322,7 @@ internal static class Program
 
         public byte[] Read()
         {
+            SetStage("read");
             ValidateRoot();
             using var handle = OpenPath(TransactionPath, false, false);
             AssertAcl(handle, false);
@@ -241,6 +343,7 @@ internal static class Program
 
         public void Delete()
         {
+            SetStage("delete");
             ValidateRoot();
             if (!File.Exists(TransactionPath)) return;
             using var handle = OpenPath(TransactionPath, false, false);
@@ -253,6 +356,7 @@ internal static class Program
 
         public void Validate()
         {
+            SetStage("finalReadback");
             ValidateRoot();
             if (File.Exists(TransactionPath))
             {
@@ -262,12 +366,77 @@ internal static class Program
             }
         }
 
+        public void Preflight()
+        {
+            ValidateRoot();
+            var suffix = Guid.NewGuid().ToString("N");
+            var temporary = Path.Combine(_root, ".preflight-temp-" + suffix);
+            var probe = Path.Combine(_root, ".preflight-final-" + suffix);
+            var expected = Encoding.UTF8.GetBytes(
+                "{\"schemaVersion\":1,\"probe\":\"transactionStore\"}");
+            SafeFileHandle? handle = null;
+            try
+            {
+                SetStage("createTemp");
+                handle = CreateFileW(temporary,
+                    GenericRead | GenericWrite | ReadControl | WriteDac | WriteOwner,
+                    0, IntPtr.Zero, CreateNew,
+                    FileAttributeNormal | FileFlagOpenReparsePoint, IntPtr.Zero);
+                if (handle.IsInvalid)
+                    throw new InvalidOperationException("installTransactionUnavailable");
+                SetStage("applyAcl");
+                ApplyExactAcl(handle, directory: false);
+                SetStage("assertAcl");
+                AssertAcl(handle, directory: false);
+                var before = VerifyHandle(handle, temporary, false);
+                using (var stream = new FileStream(handle, FileAccess.ReadWrite, 4096, false))
+                {
+                    handle = null;
+                    stream.Write(expected);
+                    stream.Flush(true);
+                }
+                SetStage("atomicReplace");
+                if (!MoveFileExW(
+                        temporary, probe, MoveReplaceExisting | MoveWriteThrough))
+                    throw new InvalidOperationException("installTransactionInvalid");
+                SetStage("read");
+                using (var readHandle = OpenPath(probe, false, false))
+                {
+                    AssertAcl(readHandle, false);
+                    if (VerifyHandle(readHandle, probe, false) != before)
+                        throw new InvalidOperationException("installTransactionInvalid");
+                    using var stream = new FileStream(
+                        readHandle, FileAccess.Read, 4096, false);
+                    if (!ReadBounded(stream).SequenceEqual(expected))
+                        throw new InvalidOperationException("installTransactionInvalid");
+                }
+                SetStage("delete");
+                File.Delete(probe);
+                SetStage("finalReadback");
+                if (File.Exists(probe))
+                    throw new InvalidOperationException("installTransactionInvalid");
+                ValidateRoot();
+            }
+            finally
+            {
+                handle?.Dispose();
+                if (File.Exists(temporary))
+                    File.Delete(temporary);
+                if (File.Exists(probe))
+                    File.Delete(probe);
+            }
+        }
+
         private void ValidateRoot()
         {
+            SetStage("assertAcl");
             AssertAcl(_rootHandle, true);
+            SetStage("finalReadback");
             if (VerifyHandle(_rootHandle, _root, true) != _rootIdentity)
                 throw new InvalidOperationException("installTransactionInvalid");
+            SetStage("rejectReparse");
             RejectReparseChain(_root, false);
+            SetStage("finalReadback");
         }
 
         public void Dispose() => _rootHandle.Dispose();
@@ -302,10 +471,15 @@ internal static class Program
             var existed = Directory.Exists(current);
             if (!existed)
                 Directory.CreateDirectory(current);
+            SetStage("openSegment");
             using var handle = OpenPath(current, true, writeSecurity: true);
             VerifyHandle(handle, current, true);
             if (!existed)
+            {
+                SetStage("applyAcl");
                 ApplyExactAcl(handle, true);
+            }
+            SetStage("assertAcl");
             AssertAcl(handle, true);
         }
     }

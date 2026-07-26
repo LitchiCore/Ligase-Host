@@ -1405,12 +1405,200 @@ $transactionHelper = Join-Path $transactionPublish (
 if (-not (Test-Path -LiteralPath $transactionHelper -PathType Leaf)) {
   throw "installTransactionHelperMissing"
 }
+$boundedInstallRoot = Join-Path $combinationRoot "bounded-helper-install"
+$boundedDeployment = Join-Path $boundedInstallRoot "Deployment"
+New-Item -ItemType Directory -Path $boundedDeployment -Force | Out-Null
+$boundedHelper = Join-Path $boundedDeployment (
+  "Ligase.Installation.TransactionHelper.exe")
+Copy-Item -LiteralPath $transactionHelper -Destination $boundedHelper
+$boundedHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $boundedHelper).Hash
+$boundedManifest = [ordered]@{
+  privilegedHelpers = @([ordered]@{
+    relativePath = "Deployment/Ligase.Installation.TransactionHelper.exe"
+    signedArtifactSha256 = $boundedHash.ToLowerInvariant()
+  })
+} | ConvertTo-Json -Depth 4 -Compress
+Set-Content -LiteralPath (
+  Join-Path $boundedInstallRoot "ligase-install-manifest.json") `
+  -Value $boundedManifest -Encoding UTF8 -NoNewline
+$boundedBefore = @(Get-ChildItem -LiteralPath $boundedInstallRoot -Recurse -File |
+  ForEach-Object {
+    [ordered]@{
+      relative = $_.FullName.Substring(
+        $boundedInstallRoot.TrimEnd('\').Length + 1)
+      hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash
+    }
+  } | ConvertTo-Json -Depth 3 -Compress) -join ""
+$boundedResults = @()
+$boundedSavedErrorAction = $ErrorActionPreference
+foreach ($behavior in @(
+    "hang", "delayedPipe", "oversizeStdout", "oversizeStderr", "killTree")) {
+  $behaviorRoot = Join-Path $combinationRoot ("bounded-" + $behavior)
+  $env:LIGASE_INSTALL_VALIDATION_HARNESS = "1"
+  $env:LIGASE_TRANSACTION_TEST_BEHAVIOR = $behavior
+  $clock = [Diagnostics.Stopwatch]::StartNew()
+  $ErrorActionPreference = "Continue"
+  $behaviorOutput = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass `
+    -File $managementScript `
+    -Action PreflightInstallTransaction `
+    -InstallDirectory $boundedInstallRoot `
+    -InstallTransactionRoot $behaviorRoot 2>&1)
+  $behaviorExit = $LASTEXITCODE
+  $ErrorActionPreference = $boundedSavedErrorAction
+  $clock.Stop()
+  Remove-Item Env:\LIGASE_TRANSACTION_TEST_BEHAVIOR -ErrorAction SilentlyContinue
+  Remove-Item Env:\LIGASE_INSTALL_VALIDATION_HARNESS -ErrorAction SilentlyContinue
+  if ($behaviorExit -ne 10 -or $clock.Elapsed.TotalSeconds -gt 20) {
+    throw "installTransactionBoundedInvocationFailed"
+  }
+  $behaviorResult = ($behaviorOutput[-1] | Out-String).Trim() |
+    ConvertFrom-Json
+  if ([string]$behaviorResult.code -notin @(
+      "installTransactionUnavailable", "installTransactionInvalid") -or
+      [bool]$behaviorResult.success -or
+      [string]$behaviorResult.failedField -cne "installTransaction" -or
+      [int]$behaviorResult.transactionHelperNativeExit -ne 18 -or
+      [string]$behaviorResult.transactionHelperStage -cne "processTimeout") {
+    throw "installTransactionBoundedEvidenceInvalid"
+  }
+  if (Test-Path -LiteralPath $behaviorRoot) {
+    throw "installTransactionBoundedInvocationMutatedJournal"
+  }
+  $boundedResults += [ordered]@{
+    name = "transaction-bounded-$behavior"
+    passed = $true
+  }
+}
+foreach ($writeCase in @(
+    [ordered]@{
+      behavior = "hangBeforeStdinRead"
+      expectedExit = 10
+      expectedStage = "processTimeout"
+      maxSeconds = 20
+      rootMayExist = $false
+    },
+    [ordered]@{
+      behavior = "delayedStdinRead"
+      expectedExit = 0
+      expectedStage = "delete"
+      maxSeconds = 5
+      rootMayExist = $true
+    },
+    [ordered]@{
+      behavior = "oversizeInput"
+      expectedExit = 10
+      expectedStage = "inputValidation"
+      maxSeconds = 2
+      rootMayExist = $false
+    })) {
+  $writeRoot = Join-Path $combinationRoot (
+    "bounded-" + [string]$writeCase.behavior)
+  $env:LIGASE_INSTALL_VALIDATION_HARNESS = "1"
+  $env:LIGASE_TRANSACTION_TEST_BEHAVIOR = [string]$writeCase.behavior
+  $clock = [Diagnostics.Stopwatch]::StartNew()
+  $ErrorActionPreference = "Continue"
+  $writeOutput = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass `
+    -File $managementScript `
+    -Action PreflightInstallTransaction `
+    -InstallDirectory $boundedInstallRoot `
+    -InstallTransactionRoot $writeRoot 2>&1)
+  $writeExit = $LASTEXITCODE
+  $ErrorActionPreference = $boundedSavedErrorAction
+  $clock.Stop()
+  Remove-Item Env:\LIGASE_TRANSACTION_TEST_BEHAVIOR -ErrorAction SilentlyContinue
+  Remove-Item Env:\LIGASE_INSTALL_VALIDATION_HARNESS -ErrorAction SilentlyContinue
+  if ($writeExit -ne [int]$writeCase.expectedExit -or
+      $clock.Elapsed.TotalSeconds -gt [int]$writeCase.maxSeconds) {
+    throw ("installTransactionBoundedWriteInvocationFailed:" +
+      [string]$writeCase.behavior + ":exit=" + $writeExit +
+      ":seconds=" + [Math]::Round($clock.Elapsed.TotalSeconds, 2))
+  }
+  $writeResult = ($writeOutput[-1] | Out-String).Trim() | ConvertFrom-Json
+  if ($writeExit -eq 0) {
+    if (-not [bool]$writeResult.success -or
+        [string]$writeResult.code -cne
+          "installTransactionPreflightReady") {
+      throw "installTransactionBoundedWriteSuccessInvalid"
+    }
+  } elseif ([bool]$writeResult.success -or
+      [string]$writeResult.failedField -cne "installTransaction" -or
+      [int]$writeResult.transactionHelperNativeExit -ne 18 -or
+      [string]$writeResult.transactionHelperStage -cne
+        [string]$writeCase.expectedStage) {
+    throw "installTransactionBoundedWriteEvidenceInvalid"
+  }
+  $pending = Join-Path $writeRoot "pending-install-transaction.json"
+  if (Test-Path -LiteralPath $pending) {
+    throw "installTransactionBoundedWriteLeftJournal"
+  }
+  if (-not [bool]$writeCase.rootMayExist -and
+      (Test-Path -LiteralPath $writeRoot)) {
+    throw "installTransactionBoundedWriteMutatedRoot"
+  }
+  $boundedResults += [ordered]@{
+    name = "transaction-bounded-" + [string]$writeCase.behavior
+    passed = $true
+  }
+}
+$boundedAfter = @(Get-ChildItem -LiteralPath $boundedInstallRoot -Recurse -File |
+  ForEach-Object {
+    [ordered]@{
+      relative = $_.FullName.Substring(
+        $boundedInstallRoot.TrimEnd('\').Length + 1)
+      hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash
+    }
+  } | ConvertTo-Json -Depth 3 -Compress) -join ""
+if ($boundedAfter -cne $boundedBefore) {
+  throw "installTransactionBoundedInvocationMutatedInstallRoot"
+}
 $transactionRoot = Join-Path $combinationRoot "admin-transaction"
 $env:LIGASE_INSTALL_VALIDATION_HARNESS = "1"
-& $transactionHelper validate --test-root $transactionRoot | Out-Null
+$savedErrorAction = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+$preflightOutput = @(& $transactionHelper preflight --test-root $transactionRoot 2>&1)
+$ErrorActionPreference = $savedErrorAction
 $transactionProbeExit = $LASTEXITCODE
 Remove-Item Env:\LIGASE_INSTALL_VALIDATION_HARNESS -ErrorAction SilentlyContinue
-$transactionElevatedAvailable = $transactionProbeExit -eq 0
+$transactionElevatedAvailable = $transactionProbeExit -eq 0 -and
+  ($preflightOutput -join "") -ceq (
+    '{"code":"installTransactionPreflightReady","stage":"finalReadback"}') -and
+  -not (Test-Path -LiteralPath (
+    Join-Path $transactionRoot "pending-install-transaction.json"))
+$stageDiagnostics = @()
+foreach ($stage in @(
+    "resolveProgramData", "rejectReparse", "createSegment", "openSegment",
+    "applyAcl", "assertAcl", "createTemp", "atomicReplace",
+    "finalReadback", "read", "delete")) {
+  $stageRoot = Join-Path $combinationRoot ("stage-" + $stage)
+  $env:LIGASE_INSTALL_VALIDATION_HARNESS = "1"
+  $env:LIGASE_TRANSACTION_FAILURE_STAGE = $stage
+  $ErrorActionPreference = "Continue"
+  $stageOutput = @(
+    & $transactionHelper preflight --test-root $stageRoot 2>&1)
+  $ErrorActionPreference = $savedErrorAction
+  $stageExit = $LASTEXITCODE
+  Remove-Item Env:\LIGASE_TRANSACTION_FAILURE_STAGE -ErrorAction SilentlyContinue
+  Remove-Item Env:\LIGASE_INSTALL_VALIDATION_HARNESS -ErrorAction SilentlyContinue
+  $stageRaw = $stageOutput -join ""
+  $expectedStage = (
+    '{"code":"installTransactionUnavailable","stage":"' + $stage + '"}')
+  $exactStage = $stageExit -eq 18 -and $stageRaw -ceq $expectedStage
+  $blockedByNonElevatedAcl = $stageExit -eq 18 -and
+    $stageRaw -ceq (
+      '{"code":"installTransactionUnavailable","stage":"openSegment"}')
+  if (-not $exactStage -and -not $blockedByNonElevatedAcl) {
+    throw "installTransactionStageDiagnosticFixtureFailed"
+  }
+  if ($stage -in @("resolveProgramData", "rejectReparse", "createSegment") -and
+      (Test-Path -LiteralPath $stageRoot)) {
+    throw "installTransactionStageDiagnosticMutatedEarly"
+  }
+  $stageDiagnostics += [ordered]@{
+    name = "transaction-stage-$stage"
+    passed = $exactStage
+    inconclusive = -not $exactStage
+  }
+}
 $junctionRoot = Join-Path $combinationRoot "transaction-junction"
 $junctionTarget = Join-Path $combinationRoot "outside-target"
 New-Item -ItemType Directory -Path $junctionTarget -Force | Out-Null
@@ -1438,6 +1626,8 @@ if ($junctionCreated -and -not $junctionRejected) {
   throw "installTransactionJunctionFollowed"
 }
 $shortcutResults = @(
+  $boundedResults
+  $stageDiagnostics
   [ordered]@{ name = "current-to-all-owned-selected"; passed = $true },
   [ordered]@{ name = "all-users-desktop-unselected"; passed = $true },
   [ordered]@{ name = "nonowned-current-preserved"; passed = $true },

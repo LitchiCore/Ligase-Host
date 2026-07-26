@@ -95,7 +95,7 @@ Section
       Quit
     ${EndIf}
     FileOpen $5 "$EvidenceFile" w
-    FileWriteUTF16LE $5 '{$\"schemaVersion$\":1,$\"phase$\":$\"failed$\",$\"success$\":false,$\"resultCode$\":$\"$1$\",$\"failedField$\":$\"$3$\",$\"components$\":{$\"artifacts$\":$\"pending$\",$\"bootstrap$\":$\"pending$\",$\"dataRoot$\":$\"pending$\",$\"arp$\":$\"pending$\",$\"startMenu$\":$\"pending$\",$\"desktop$\":$\"pending$\",$\"firewall$\":$\"pending$\",$\"virtualDisplay$\":$\"pending$\"},$\"helper$\":{$\"exitCode$\":10},$\"rollback$\":{$\"state$\":$\"$2$\"},$\"firewall$\":{$\"state$\":$\"notChecked$\"},$\"displayedSuccess$\":false,$\"displayedFailure$\":true}'
+    FileWriteUTF16LE $5 '{$\"schemaVersion$\":1,$\"phase$\":$\"failed$\",$\"success$\":false,$\"resultCode$\":$\"$1$\",$\"failedField$\":$\"$3$\",$\"components$\":{$\"artifacts$\":$\"pending$\",$\"bootstrap$\":$\"pending$\",$\"dataRoot$\":$\"pending$\",$\"installTransaction$\":$\"pending$\",$\"arp$\":$\"pending$\",$\"startMenu$\":$\"pending$\",$\"desktop$\":$\"pending$\",$\"firewall$\":$\"pending$\",$\"virtualDisplay$\":$\"pending$\"},$\"helper$\":{$\"exitCode$\":10},$\"transactionHelper$\":{$\"nativeExitCode$\":18,$\"stage$\":$\"finalReadback$\"},$\"rollback$\":{$\"state$\":$\"$2$\",$\"shortcut$\":$\"notRequired$\",$\"firewall$\":$\"notRequired$\",$\"transactionCleanup$\":$\"notCreated$\"},$\"firewall$\":{$\"state$\":$\"notChecked$\"},$\"displayedSuccess$\":false,$\"displayedFailure$\":true}'
     FileClose $5
     FileOpen $5 "$HarnessResultFile" w
     FileWriteUTF16LE $5 "failed$\r$\n$1$\r$\n$2"
