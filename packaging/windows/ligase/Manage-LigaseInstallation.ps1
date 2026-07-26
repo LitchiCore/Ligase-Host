@@ -18,6 +18,8 @@ param(
   [string]$DataDisposition = "Preserve",
   [switch]$ConfigureFirewall,
   [switch]$MigrateDataRoot,
+  [switch]$RecoverOrphanDataRoot,
+  [string]$RecoveryDataRootSource,
   [switch]$ConfirmLegacyTrustCleanup,
   [ValidateSet(
     "initialized",
@@ -35,7 +37,8 @@ param(
     "none",
     "createFresh",
     "preserveExisting",
-    "migrateToStandard")]
+    "migrateToStandard",
+    "recoverOrphanLegacyDataRoot")]
   [string]$EvidenceDataRootAction = "none",
   [string]$EvidenceDataRootSource,
   [int]$EvidenceHelperExit = -1,
@@ -643,7 +646,8 @@ function Set-SecureDataRootAcl([string]$Root) {
 
 function Get-DataRootSnapshot(
   [string]$Root,
-  [string]$ExcludedRelativePath = ""
+  [string]$ExcludedRelativePath = "",
+  [switch]$RequireAuthorityDocuments
 ) {
   $rootPath = (Assert-CanonicalLocalDataRoot $Root).TrimEnd('\')
   $rootItem = Get-Item -LiteralPath $rootPath -Force
@@ -686,6 +690,10 @@ function Get-DataRootSnapshot(
   }
   foreach ($relative in @("ligase-authority.json", "library.json", "ligase-sync.json")) {
     $path = Join-Path $rootPath $relative
+    if ($RequireAuthorityDocuments -and
+        -not (Test-Path -LiteralPath $path -PathType Leaf)) {
+      throw "orphanLegacyDataRootInvalid"
+    }
     if (Test-Path -LiteralPath $path -PathType Leaf) {
       try {
         $raw = [IO.File]::ReadAllText($path, [Text.UTF8Encoding]::new($false, $true))
@@ -705,17 +713,22 @@ function Get-DataRootSnapshot(
   }
 }
 
-function Get-OperatorDataRootSnapshot([string]$Root) {
+function Get-OperatorDataRootSnapshot(
+  [string]$Root,
+  [switch]$RequireAuthorityDocuments
+) {
   $operator = [LigaseInteractiveUser]::OpenIdentity()
   try {
     $context = $operator.Impersonate()
     try {
-      return Get-DataRootSnapshot $Root
+      return Get-DataRootSnapshot $Root `
+        -RequireAuthorityDocuments:$RequireAuthorityDocuments
     } finally {
       $context.Dispose()
     }
   } catch {
-    if ($_.Exception.Message -like "dataRootMigration*") { throw }
+    if ($_.Exception.Message -like "dataRootMigration*" -or
+        $_.Exception.Message -like "orphanLegacy*") { throw }
     throw "dataRootMigrationNotEligible"
   } finally {
     $operator.Dispose()
@@ -760,9 +773,19 @@ function Restore-Migration {
   }
   $temporary = "$bootstrapPath.rollback"
   try {
-    [IO.File]::WriteAllBytes(
-      $temporary, [byte[]]$script:migrationRollback.bootstrapBytes)
-    Move-Item -LiteralPath $temporary -Destination $bootstrapPath -Force
+    if ($script:migrationRollback.bootstrapWasAbsent) {
+      if (Test-Path -LiteralPath $bootstrapPath -PathType Leaf) {
+        $actual = Get-ByteSha256 ([IO.File]::ReadAllBytes($bootstrapPath))
+        if ($actual -cne $script:migrationRollback.createdBootstrapHash) {
+          throw "dataRootMigrationOwnershipMismatch"
+        }
+        Remove-Item -LiteralPath $bootstrapPath -Force
+      }
+    } else {
+      [IO.File]::WriteAllBytes(
+        $temporary, [byte[]]$script:migrationRollback.bootstrapBytes)
+      Move-Item -LiteralPath $temporary -Destination $bootstrapPath -Force
+    }
     if ($script:migrationRollback.targetCreated -and
         (Test-Path -LiteralPath $script:migrationRollback.target)) {
       Remove-OwnedMigrationDirectory `
@@ -788,9 +811,21 @@ function Restore-Migration {
   }
 }
 
-function Invoke-DataRootMigration($ExistingBootstrap, [string]$RequestedTarget) {
+function Invoke-DataRootMigration(
+  $ExistingBootstrap,
+  [string]$RequestedTarget,
+  [string]$RecoverySource = ""
+) {
   Assert-ProductsStopped
-  $source = Assert-CanonicalLocalDataRoot ([string]$ExistingBootstrap.dataRoot)
+  $isRecovery = -not [string]::IsNullOrWhiteSpace($RecoverySource)
+  if ($isRecovery -and $null -ne $ExistingBootstrap) {
+    throw "orphanLegacyBootstrapExists"
+  }
+  $source = Assert-CanonicalLocalDataRoot $(if ($isRecovery) {
+    $RecoverySource
+  } else {
+    [string]$ExistingBootstrap.dataRoot
+  })
   $target = Assert-CanonicalLocalDataRoot $RequestedTarget
   $profile = Get-InteractiveOperatorProfile
   $legacyBase = Join-Path ([string]$profile.localAppData) "Ligase Host\Instances"
@@ -826,13 +861,17 @@ function Invoke-DataRootMigration($ExistingBootstrap, [string]$RequestedTarget) 
       (Test-Path -LiteralPath $target)) {
     throw "dataRootMigrationTargetInvalid"
   }
-  $bootstrapHash = Get-ByteSha256 ([byte[]]$ExistingBootstrap.bytes)
-  $before = Get-OperatorDataRootSnapshot $source
+  $bootstrapHash = if ($isRecovery) { "" } else {
+    Get-ByteSha256 ([byte[]]$ExistingBootstrap.bytes)
+  }
+  $before = Get-OperatorDataRootSnapshot $source `
+    -RequireAuthorityDocuments:$isRecovery
   $transactionId = [guid]::NewGuid().ToString("N")
   $markerName = ".ligase-migration-$transactionId"
   $markerValue = [guid]::NewGuid().ToString("N")
   $pending = "$target.pending-$transactionId"
   $targetCreated = $false
+  $createdBootstrapHash = ""
   $createdParents = [Collections.Generic.List[string]]::new()
   try {
     $parent = Split-Path -Parent $target
@@ -880,10 +919,16 @@ function Invoke-DataRootMigration($ExistingBootstrap, [string]$RequestedTarget) 
         $sourceAclSddl) {
       throw "dataRootMigrationSourceChanged"
     }
-    $currentBootstrapHash = Get-ByteSha256 (
-      [IO.File]::ReadAllBytes($bootstrapPath))
-    if ($currentBootstrapHash -cne $bootstrapHash) {
-      throw "bootstrapChangedDuringMigration"
+    if ($isRecovery) {
+      if (Test-Path -LiteralPath $bootstrapPath) {
+        throw "orphanLegacyBootstrapExists"
+      }
+    } else {
+      $currentBootstrapHash = Get-ByteSha256 (
+        [IO.File]::ReadAllBytes($bootstrapPath))
+      if ($currentBootstrapHash -cne $bootstrapHash) {
+        throw "bootstrapChangedDuringMigration"
+      }
     }
     Assert-ProductsStopped
     Move-Item -LiteralPath $pending -Destination $target
@@ -893,7 +938,18 @@ function Invoke-DataRootMigration($ExistingBootstrap, [string]$RequestedTarget) 
       $temporary,
       (@{ schemaVersion = 1; dataRoot = $target } | ConvertTo-Json -Compress),
       [Text.UTF8Encoding]::new($false))
-    Move-Item -LiteralPath $temporary -Destination $bootstrapPath -Force
+    if ($isRecovery) {
+      if (Test-Path -LiteralPath $bootstrapPath) {
+        throw "orphanLegacyBootstrapExists"
+      }
+      [IO.File]::Move($temporary, $bootstrapPath)
+    } else {
+      Move-Item -LiteralPath $temporary -Destination $bootstrapPath -Force
+    }
+    if ($isRecovery) {
+      $createdBootstrapHash = Get-ByteSha256 (
+        [IO.File]::ReadAllBytes($bootstrapPath))
+    }
     $readback = Read-ValidBootstrap
     if ($readback.dataRoot -cne $target -or
         (Get-DataRootAccessState $target) -cne "existing") {
@@ -905,7 +961,13 @@ function Invoke-DataRootMigration($ExistingBootstrap, [string]$RequestedTarget) 
       throw "dataRootMigrationSourceChanged"
     }
     $script:migrationRollback = [ordered]@{
-      bootstrapBytes = [byte[]]$ExistingBootstrap.bytes
+      bootstrapWasAbsent = $isRecovery
+      bootstrapBytes = if ($isRecovery) { $null } else {
+        [byte[]]$ExistingBootstrap.bytes
+      }
+      createdBootstrapHash = if ($isRecovery) {
+        $createdBootstrapHash
+      } else { "" }
       target = $target
       targetCreated = $true
       createdParents = @($createdParents)
@@ -937,8 +999,19 @@ function Invoke-DataRootMigration($ExistingBootstrap, [string]$RequestedTarget) 
       }
     }
     $temporary = "$bootstrapPath.rollback"
-    [IO.File]::WriteAllBytes($temporary, [byte[]]$ExistingBootstrap.bytes)
-    Move-Item -LiteralPath $temporary -Destination $bootstrapPath -Force
+    if ($isRecovery) {
+      if (-not [string]::IsNullOrWhiteSpace($createdBootstrapHash) -and
+          (Test-Path -LiteralPath $bootstrapPath -PathType Leaf) -and
+          (Get-ByteSha256 ([IO.File]::ReadAllBytes($bootstrapPath))) -ceq
+            $createdBootstrapHash) {
+        Remove-Item -LiteralPath $bootstrapPath -Force
+      } elseif (Test-Path -LiteralPath $bootstrapPath) {
+        $cleanupFailed = $true
+      }
+    } else {
+      [IO.File]::WriteAllBytes($temporary, [byte[]]$ExistingBootstrap.bytes)
+      Move-Item -LiteralPath $temporary -Destination $bootstrapPath -Force
+    }
     if ($cleanupFailed) {
       throw "dataRootMigrationOwnershipMismatch"
     }
@@ -1445,6 +1518,8 @@ try {
       firewallAction = if ($ConfigureFirewall) { "applyOwnedExactRules" } else { "none" }
       dataRootAction = if ($MigrateDataRoot) {
         "migrateToStandardDataRoot"
+      } elseif ($RecoverOrphanDataRoot) {
+        "recoverOrphanLegacyDataRoot"
       } elseif ($null -ne $existingBootstrap) {
         "preserveExistingBootstrap"
       } elseif (-not [string]::IsNullOrWhiteSpace($DataRoot)) {
@@ -1458,6 +1533,9 @@ try {
   }
 
   if ($Action -eq "Install") {
+    if ($MigrateDataRoot -and $RecoverOrphanDataRoot) {
+      throw "dataRootActionConflict"
+    }
     if ($manifest.releaseKind -eq "PublicRelease") {
       $uninstaller = Join-Path $installRoot "Uninstall.exe"
       $signature = Get-AuthenticodeSignature -LiteralPath $uninstaller
@@ -1477,13 +1555,19 @@ try {
     if ($MigrateDataRoot -and $null -eq $existingBootstrap) {
       throw "dataRootMigrationNotEligible"
     }
-    if (-not $MigrateDataRoot -and $null -ne $existingBootstrap -and
+    if ($RecoverOrphanDataRoot -and $null -ne $existingBootstrap) {
+      throw "orphanLegacyBootstrapExists"
+    }
+    if (-not $MigrateDataRoot -and -not $RecoverOrphanDataRoot -and
+        $null -ne $existingBootstrap -and
         (Get-DataRootAccessState ([string]$existingBootstrap.dataRoot)) -cne
           "existing") {
       throw "dataRootExistingUnsafe"
     }
     $dataRoot = if ($MigrateDataRoot) {
       Invoke-DataRootMigration $existingBootstrap $DataRoot
+    } elseif ($RecoverOrphanDataRoot) {
+      Invoke-DataRootMigration $null $DataRoot $RecoveryDataRootSource
     } elseif ($null -ne $existingBootstrap) {
       [string]$existingBootstrap.dataRoot
     } else {
@@ -1532,7 +1616,7 @@ try {
         throw
       }
     }
-    if ($MigrateDataRoot) {
+    if ($MigrateDataRoot -or $RecoverOrphanDataRoot) {
       Assert-ProductsStopped
       $migrationReadback = Read-ValidBootstrap
       if ($migrationReadback.dataRoot -cne $dataRoot -or
@@ -1559,9 +1643,13 @@ try {
       installMode = "packaged"
       dataRootState = if ($MigrateDataRoot -or $null -ne $existingBootstrap) {
         "existing"
+      } elseif ($RecoverOrphanDataRoot) {
+        "existing"
       } else { "fresh" }
       dataRootAction = if ($MigrateDataRoot) {
         "migratedToStandardDataRoot"
+      } elseif ($RecoverOrphanDataRoot) {
+        "recoveredOrphanLegacyDataRoot"
       } elseif ($null -ne $existingBootstrap) {
         "preservedExistingBootstrap"
       } else {
@@ -1655,6 +1743,9 @@ try {
     "dataRootMigrationReadbackFailed",
     "dataRootMigrationOwnershipMismatch",
     "bootstrapChangedDuringMigration",
+    "dataRootActionConflict",
+    "orphanLegacyBootstrapExists",
+    "orphanLegacyDataRootInvalid",
     "uninstallerSignatureInvalid",
     "firewallApplyFailed",
     "firewallReadbackMismatch",
@@ -1681,12 +1772,16 @@ try {
     } catch { "unknown" }
     $EvidenceDataRootAction = if ($MigrateDataRoot) {
       "migrateToStandard"
+    } elseif ($RecoverOrphanDataRoot) {
+      "recoverOrphanLegacyDataRoot"
     } elseif ($null -ne $existingBootstrap) {
       "preserveExisting"
     } else {
       "createFresh"
     }
-    $EvidenceDataRootSource = if ($null -ne $existingBootstrap) {
+    $EvidenceDataRootSource = if ($RecoverOrphanDataRoot) {
+      $RecoveryDataRootSource
+    } elseif ($null -ne $existingBootstrap) {
       [string]$existingBootstrap.dataRoot
     } else { "" }
     $EvidenceInstallResidue = if (

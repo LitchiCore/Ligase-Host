@@ -2,6 +2,7 @@ $ErrorActionPreference = "Stop"
 
 Add-Type -TypeDefinition @"
 using System;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Security.Principal;
 
@@ -45,6 +46,9 @@ public static class LigaseCommandLine
 
 public static class LigaseInteractiveSession
 {
+    private const uint TOKEN_QUERY = 0x0008;
+    private const uint TOKEN_DUPLICATE = 0x0002;
+    private const uint TOKEN_IMPERSONATE = 0x0004;
     private enum WTS_INFO_CLASS { WTSUserName = 5, WTSDomainName = 7 }
 
     [DllImport("kernel32.dll", SetLastError = true)]
@@ -58,6 +62,13 @@ public static class LigaseInteractiveSession
 
     [DllImport("Wtsapi32.dll")]
     private static extern void WTSFreeMemory(IntPtr memory);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool OpenProcessToken(
+        IntPtr processHandle, uint desiredAccess, out IntPtr tokenHandle);
+
+    [DllImport("kernel32.dll")]
+    private static extern bool CloseHandle(IntPtr handle);
 
     private static string Read(int sessionId, WTS_INFO_CLASS infoClass)
     {
@@ -85,6 +96,41 @@ public static class LigaseInteractiveSession
         var account = String.IsNullOrWhiteSpace(domain) ? user : domain + "\\" + user;
         return ((SecurityIdentifier)new NTAccount(account).Translate(
             typeof(SecurityIdentifier))).Value;
+    }
+
+    public static WindowsIdentity OpenIdentity()
+    {
+        var expected = new SecurityIdentifier(GetSid());
+        uint sessionId;
+        if (!ProcessIdToSessionId(
+            unchecked((uint)Process.GetCurrentProcess().Id), out sessionId) ||
+            sessionId == 0)
+            throw new InvalidOperationException("interactiveOperatorUnavailable");
+        foreach (var process in Process.GetProcessesByName("explorer"))
+        {
+            using (process)
+            {
+                try
+                {
+                    if (process.SessionId != sessionId)
+                        continue;
+                    IntPtr token;
+                    if (!OpenProcessToken(
+                        process.Handle,
+                        TOKEN_QUERY | TOKEN_DUPLICATE | TOKEN_IMPERSONATE,
+                        out token))
+                        continue;
+                    WindowsIdentity identity;
+                    try { identity = new WindowsIdentity(token); }
+                    finally { CloseHandle(token); }
+                    if (identity.User != null && identity.User.Equals(expected))
+                        return identity;
+                    identity.Dispose();
+                }
+                catch { }
+            }
+        }
+        throw new InvalidOperationException("interactiveOperatorUnavailable");
     }
 }
 "@
@@ -155,6 +201,12 @@ function Assert-KnownArguments([string[]] $Arguments) {
       $argument.StartsWith(
         "/ResultFile=",
         [StringComparison]::OrdinalIgnoreCase) -or
+      $argument.StartsWith(
+        "/OrphanLegacyAction=",
+        [StringComparison]::OrdinalIgnoreCase) -or
+      $argument.StartsWith(
+        "/TestOperatorLocalAppData=",
+        [StringComparison]::OrdinalIgnoreCase) -or
       $argument.Equals("/S", [StringComparison]::OrdinalIgnoreCase) -or
       $argument.Equals("/NCRC", [StringComparison]::OrdinalIgnoreCase) -or
       $argument.StartsWith("/D=", [StringComparison]::OrdinalIgnoreCase) -or
@@ -197,6 +249,15 @@ function Read-ExistingDataRoot([string] $BootstrapPath) {
 
 function Get-InteractiveOperatorLocalAppData {
   try {
+    $isHarness = [Environment]::GetEnvironmentVariable(
+      "LIGASE_INSTALL_VALIDATION_HARNESS",
+      [EnvironmentVariableTarget]::Process) -ceq "1"
+    $testRoot = [Environment]::GetEnvironmentVariable(
+      "LIGASE_INSTALL_TEST_OPERATOR_LOCAL_APP_DATA",
+      [EnvironmentVariableTarget]::Process)
+    if ($isHarness -and -not [string]::IsNullOrWhiteSpace($testRoot)) {
+      return Resolve-LocalPath $testRoot
+    }
     $sid = [LigaseInteractiveSession]::GetSid()
     $profile = Get-ItemPropertyValue -LiteralPath (
       "Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$sid") `
@@ -205,6 +266,60 @@ function Get-InteractiveOperatorLocalAppData {
     return Resolve-LocalPath (Join-Path ([IO.Path]::GetFullPath($profilePath)) "AppData\Local")
   } catch {
     Fail 18
+  }
+}
+
+function Test-StrictRequiredJson([string] $Root, [string] $Name) {
+  $path = Join-Path $Root $Name
+  if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $false }
+  try {
+    $bytes = [IO.File]::ReadAllBytes($path)
+    $text = [Text.UTF8Encoding]::new($false, $true).GetString($bytes)
+    if ([string]::IsNullOrWhiteSpace($text)) { return $false }
+    $null = $text | ConvertFrom-Json
+    return $true
+  } catch {
+    return $false
+  }
+}
+
+function Find-OrphanLegacyDataRoot {
+  $isHarness = [Environment]::GetEnvironmentVariable(
+    "LIGASE_INSTALL_VALIDATION_HARNESS",
+    [EnvironmentVariableTarget]::Process) -ceq "1"
+  $identity = if ($isHarness) { $null } else {
+    try { [LigaseInteractiveSession]::OpenIdentity() } catch { Fail 18 }
+  }
+  $context = if ($null -ne $identity) { $identity.Impersonate() } else { $null }
+  try {
+    $legacyBase = Resolve-LocalPath (
+      Join-Path (Get-InteractiveOperatorLocalAppData) "Ligase Host\Instances")
+    if (-not (Test-Path -LiteralPath $legacyBase)) { return $null }
+    $baseItem = Get-Item -LiteralPath $legacyBase -Force
+    if (($baseItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+      Fail 18
+    }
+    $children = @(Get-ChildItem -LiteralPath $legacyBase -Force)
+    if ($children.Count -eq 0) { return $null }
+    $eligible = @()
+    foreach ($child in $children) {
+      $id = [guid]::Empty
+      if (-not $child.PSIsContainer -or
+          -not [guid]::TryParseExact($child.Name, "D", [ref]$id) -or
+          ($child.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+          -not (Test-LegacyMigrationEligible $child.FullName) -or
+          -not (Test-StrictRequiredJson $child.FullName "ligase-authority.json") -or
+          -not (Test-StrictRequiredJson $child.FullName "library.json") -or
+          -not (Test-StrictRequiredJson $child.FullName "ligase-sync.json")) {
+        Fail 18
+      }
+      $eligible += [IO.Path]::GetFullPath($child.FullName)
+    }
+    if ($eligible.Count -ne 1) { Fail 18 }
+    return $eligible[0]
+  } finally {
+    if ($null -ne $context) { $context.Dispose() }
+    if ($null -ne $identity) { $identity.Dispose() }
   }
 }
 
@@ -309,6 +424,26 @@ try {
   Assert-KnownArguments $arguments
   $installOptions = @(Read-Option $arguments "InstallDirectory")
   $dataOptions = @(Read-Option $arguments "DataRoot")
+  $orphanActionOptions = @(Read-Option $arguments "OrphanLegacyAction")
+  $testOperatorOptions = @(Read-Option $arguments "TestOperatorLocalAppData")
+  if ($testOperatorOptions.Count -eq 1) {
+    if ([Environment]::GetEnvironmentVariable(
+        "LIGASE_INSTALL_VALIDATION_HARNESS",
+        [EnvironmentVariableTarget]::Process) -cne "1") {
+      Fail 12
+    }
+    [Environment]::SetEnvironmentVariable(
+      "LIGASE_INSTALL_TEST_OPERATOR_LOCAL_APP_DATA",
+      (Resolve-LocalPath $testOperatorOptions[0]),
+      [EnvironmentVariableTarget]::Process)
+  }
+  $orphanAction = if ($orphanActionOptions.Count -eq 1) {
+    $orphanActionOptions[0]
+  } else { "" }
+  if ($orphanAction -notin @("", "Recover", "CreateFresh")) { Fail 12 }
+  $silent = @($arguments | Where-Object {
+    $_.Equals("/S", [StringComparison]::OrdinalIgnoreCase)
+  }).Count -eq 1
 
   $installCandidate = if ($installOptions.Count -eq 1) {
     $installOptions[0]
@@ -322,7 +457,9 @@ try {
   $existingDataRoot = Read-ExistingDataRoot $bootstrapPath
   $dataRootMode = "explicit"
   $dataRootSource = ""
+  $orphanDecision = "none"
   $dataRoot = if ($null -ne $existingDataRoot) {
+    if (-not [string]::IsNullOrWhiteSpace($orphanAction)) { Fail 18 }
     if (Test-LegacyMigrationEligible $existingDataRoot) {
       if ([string]::IsNullOrWhiteSpace($programData)) { Fail 18 }
       $dataRootSource = $existingDataRoot
@@ -361,15 +498,56 @@ try {
     } else {
       Fail 18
     }
-  } elseif ($dataOptions.Count -eq 1) {
-    Resolve-LocalPath $dataOptions[0]
   } else {
-    if ([string]::IsNullOrWhiteSpace($programData)) { Fail 18 }
-    $base = Resolve-LocalPath (
-      Join-Path ([IO.Path]::GetFullPath($programData)) "Ligase Host")
-    $dataRootMode = "freshDefault"
-    Resolve-LocalPath (
-      Join-Path $base ("Instances\" + [guid]::NewGuid().ToString("D")))
+    $orphanSource = Find-OrphanLegacyDataRoot
+    if ($null -ne $orphanSource) {
+      if ([string]::IsNullOrWhiteSpace($programData)) { Fail 18 }
+      if ($silent -and $orphanAction -eq "") { Fail 18 }
+      $base = Resolve-LocalPath (
+        Join-Path ([IO.Path]::GetFullPath($programData)) "Ligase Host")
+      $standardBase = Resolve-LocalPath (Join-Path $base "Instances")
+      $requested = if ($dataOptions.Count -eq 1) {
+        Resolve-LocalPath $dataOptions[0]
+      } else {
+        Resolve-LocalPath (
+          Join-Path $standardBase ([guid]::NewGuid().ToString("D")))
+      }
+      $prefix = $standardBase.TrimEnd('\') + '\'
+      $relative = if ($requested.StartsWith(
+          $prefix, [StringComparison]::OrdinalIgnoreCase)) {
+        $requested.Substring($prefix.Length)
+      } else { "" }
+      $targetId = [guid]::Empty
+      if ($relative.Contains([IO.Path]::DirectorySeparatorChar) -or
+          -not [guid]::TryParseExact($relative, "D", [ref]$targetId) -or
+          (Test-Path -LiteralPath $requested)) {
+        Fail 18
+      }
+      if ($orphanAction -eq "Recover") {
+        $dataRootMode = "orphanLegacyRecovery"
+        $dataRootSource = $orphanSource
+        $orphanDecision = "confirmedRecover"
+      } elseif ($orphanAction -eq "CreateFresh") {
+        $dataRootMode = "freshDefault"
+        $orphanDecision = "confirmedCreateFresh"
+      } else {
+        $dataRootMode = "orphanLegacyRecovery"
+        $dataRootSource = $orphanSource
+        $orphanDecision = "proposal"
+      }
+      $requested
+    } elseif (-not [string]::IsNullOrWhiteSpace($orphanAction)) {
+      Fail 18
+    } elseif ($dataOptions.Count -eq 1) {
+      Resolve-LocalPath $dataOptions[0]
+    } else {
+      if ([string]::IsNullOrWhiteSpace($programData)) { Fail 18 }
+      $base = Resolve-LocalPath (
+        Join-Path ([IO.Path]::GetFullPath($programData)) "Ligase Host")
+      $dataRootMode = "freshDefault"
+      Resolve-LocalPath (
+        Join-Path $base ("Instances\" + [guid]::NewGuid().ToString("D")))
+    }
   }
 
   $parent = Split-Path -Parent $resultPath
@@ -381,7 +559,7 @@ try {
       $installDirectory,
       $dataRoot,
       ($installOptions.Count -eq 1).ToString().ToLowerInvariant(),
-      ($dataOptions.Count -eq 1).ToString().ToLowerInvariant(),
+      $orphanDecision,
       $dataRootMode,
       $dataRootSource
     ),

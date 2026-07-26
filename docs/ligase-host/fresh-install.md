@@ -134,6 +134,47 @@ changing its ACL is a separate user-authorized cleanup action. The result page
 states that the migration completed and shows the retained rollback-evidence
 path without logging file contents or secrets.
 
+When no bootstrap exists, the installer also checks one closed orphan-recovery
+location: the current WTS operator's LocalAppData
+`Ligase Host/Instances` directory. It inspects direct canonical UUID children
+only and never scans other disks or guesses by name. Zero eligible children
+continues as an ordinary fresh install. Exactly one fixed-local, non-reparse,
+operator-readable legacy root with readable authority, library, and Sync JSON
+enables `orphanLegacyRecovery`. Multiple children, unknown entries, wrong-user
+or inaccessible state, reparse points, or malformed required JSON fail closed.
+
+The Data Root page then requires an explicit choice between
+`recoverOrphanLegacyDataRoot` and creating a new identity, with a warning that
+the latter ignores the old data. Recovery shows the source and one
+session-stable ProgramData target before confirmation. The privileged helper
+uses the same bounded exact-copy, hard-link/reparse rejection, secure ACL,
+operator probe, source-drift, and marker-owned rollback rules as migration, but
+does not fabricate an old bootstrap. It atomically creates the bootstrap only
+after the target verifies as an exact byte-preserving copy and immediately
+reads back `Existing`. Failure leaves the bootstrap absent and removes only
+this transaction's marked pending/target paths. Success reports
+`recoveredOrphanLegacyDataRoot` and retains the source path, bytes, ACL,
+identity, certificates, and library as rollback evidence.
+
+An orphan probe is not authorization to choose either outcome. Interactive
+setup keeps both choices initially clear. Silent `/S` setup requires exactly
+one explicit closed `/OrphanLegacyAction=Recover` or
+`/OrphanLegacyAction=CreateFresh` argument whenever an eligible orphan exists.
+An absent, duplicate, malformed, or unknown action exits with machine code 18
+before program files, Data Root, bootstrap, ARP, shortcuts, or firewall state
+can be written. The required section independently accepts only those two
+decisions and never infers `CreateFresh` from an empty value.
+
+The native argv resolver is the single owner of this choice. Its closed result
+distinguishes an interactive `proposal` from `confirmedRecover` and
+`confirmedCreateFresh`; NSIS consumes that projection and does not parse a
+parallel action value. Thus an explicit silent action reaches the same product
+branch as the corresponding interactive choice, while a proposal alone never
+authorizes either branch. A radio selection only constructs candidate argv:
+the page and the required section each replace their local candidate with the
+resolver's confirmed projection and require an exact match before any product
+write.
+
 Every installer invocation owns one persistent typed outcome at
 `%ProgramData%\Ligase Host\Installer\last-outcome.json`. The evidence directory
 uses the same protected Administrators-owned ACL shape as an instance root:

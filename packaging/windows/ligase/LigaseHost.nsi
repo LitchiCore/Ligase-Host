@@ -37,6 +37,11 @@ Var DataRoot
 Var DataRootDialog
 Var DataRootText
 Var DataRootAdvanced
+Var OrphanRecoveryChoice
+Var OrphanFreshChoice
+Var OrphanLegacyDecision
+Var OrphanLegacyIntent
+Var OrphanLegacySource
 Var DataRootMode
 Var DataRootSource
 Var DataRootSelectionMode
@@ -63,7 +68,19 @@ Var VirtualDisplayOutcome
 
 !include "InstallDirectoryValidation.nsh"
 
+Function ConsumeResolvedOrphanDecision
+  ${If} $6 == "confirmedRecover"
+    StrCpy $OrphanLegacyDecision "Recover"
+  ${ElseIf} $6 == "confirmedCreateFresh"
+    StrCpy $OrphanLegacyDecision "CreateFresh"
+  ${Else}
+    StrCpy $OrphanLegacyDecision ""
+  ${EndIf}
+FunctionEnd
+
 Function .onInit
+  System::Call 'kernel32::SetEnvironmentVariableW(w "LIGASE_INSTALL_VALIDATION_HARNESS", p 0)'
+  System::Call 'kernel32::SetEnvironmentVariableW(w "LIGASE_INSTALL_TEST_OPERATOR_LOCAL_APP_DATA", p 0)'
   SetRegView 64
   System::Call 'kernel32::CreateMutexW(p 0, i 0, w "Global\Ligase.Host.Setup.v1") p .r0 ?e'
   Pop $SetupMutex
@@ -102,6 +119,10 @@ Function .onInit
   ; original argv and final UI values again before any product write.
   Call ResolveInstallerArguments
   StrCpy $DataRootSelectionMode $DataRootMode
+  Call ConsumeResolvedOrphanDecision
+  ${If} $OrphanLegacyDecision != ""
+    StrCpy $DataRootSelectionMode "orphanLegacyRecovery"
+  ${EndIf}
   ClearErrors
   Call RecordInstallerEvidenceInitialized
   IfErrors 0 +2
@@ -123,6 +144,8 @@ FunctionEnd
 Function RecordInstallerEvidenceConfirmed
   ${If} $DataRootMode == "migration"
     StrCpy $2 "migrateToStandard"
+  ${ElseIf} $DataRootMode == "orphanLegacyRecovery"
+    StrCpy $2 "recoverOrphanLegacyDataRoot"
   ${ElseIf} $DataRootMode == "existing"
     StrCpy $2 "preserveExisting"
   ${Else}
@@ -148,6 +171,8 @@ FunctionEnd
 Function RecordInstallerEvidenceIntegrating
   ${If} $DataRootMode == "migration"
     StrCpy $2 "migrateToStandard"
+  ${ElseIf} $DataRootMode == "orphanLegacyRecovery"
+    StrCpy $2 "recoverOrphanLegacyDataRoot"
   ${ElseIf} $DataRootMode == "existing"
     StrCpy $2 "preserveExisting"
   ${Else}
@@ -194,10 +219,25 @@ Function DataRootPageCreate
     ${NSD_CreateLabel} 0 0 100% 38u "检测到旧版 Host 数据目录的权限不符合当前安全规范。安装程序将复制并逐项验证数据，再切换到 Windows 标准安全目录；旧目录会原样保留，供失败回滚与后续确认。"
   ${ElseIf} $DataRootSelectionMode == "existing"
     ${NSD_CreateLabel} 0 0 100% 28u "将保留现有 Host 数据目录、身份和配对，不更改其访问权限。"
+  ${ElseIf} $DataRootSelectionMode == "orphanLegacyRecovery"
+    ${NSD_CreateLabel} 0 0 100% 34u "检测到未绑定的旧 Host 数据。请选择恢复并迁移以保留原身份，或明确创建全新身份。旧目录不会被删除。"
   ${Else}
     ${NSD_CreateLabel} 0 0 100% 28u "主机数据包含 Host 身份、已配对设备、游戏库和设置。安装程序会在 Windows 公共应用数据区自动创建专属目录，仅当前 Host 运行账户可访问。"
   ${EndIf}
   Pop $0
+  ${If} $DataRootSelectionMode == "orphanLegacyRecovery"
+    ${NSD_CreateRadioButton} 0 32u 100% 12u "恢复并迁移（保留旧 Host 身份）"
+    Pop $OrphanRecoveryChoice
+    ${NSD_CreateRadioButton} 0 48u 100% 12u "创建全新 Host 身份（不会使用检测到的旧数据）"
+    Pop $OrphanFreshChoice
+    ${NSD_CreateLabel} 0 66u 100% 30u "旧数据：$DataRootSource$\r$\n标准目录：$DataRoot"
+    Pop $0
+    ${If} $OrphanLegacyDecision == "Recover"
+      ${NSD_Check} $OrphanRecoveryChoice
+    ${ElseIf} $OrphanLegacyDecision == "CreateFresh"
+      ${NSD_Check} $OrphanFreshChoice
+    ${EndIf}
+  ${EndIf}
   ${NSD_CreateCheckbox} 0 42u 100% 12u "高级：使用其他本机目录（将应用相同的受限权限）"
   Pop $DataRootAdvanced
   ${NSD_CreateText} 0 60u 100% 13u "$DataRoot"
@@ -208,6 +248,11 @@ Function DataRootPageCreate
   ${ElseIf} $DataRootSelectionMode == "migration"
     EnableWindow $DataRootAdvanced 0
     EnableWindow $DataRootText 0
+  ${ElseIf} $DataRootSelectionMode == "orphanLegacyRecovery"
+    EnableWindow $DataRootAdvanced 0
+    EnableWindow $DataRootText 0
+    ShowWindow $DataRootAdvanced ${SW_HIDE}
+    ShowWindow $DataRootText ${SW_HIDE}
   ${ElseIf} $DataRootSelectionMode == "explicit"
     ${NSD_Check} $DataRootAdvanced
     EnableWindow $DataRootText 1
@@ -249,6 +294,37 @@ Function DataRootPageLeave
     ${EndIf}
     StrCpy $InstallParameters $OriginalInstallParameters
     Return
+  ${ElseIf} $DataRootSelectionMode == "orphanLegacyRecovery"
+    StrCpy $OrphanLegacySource $DataRootSource
+    ${NSD_GetState} $OrphanRecoveryChoice $0
+    ${NSD_GetState} $OrphanFreshChoice $1
+    ${If} $0 == ${BST_CHECKED}
+      StrCpy $OrphanLegacyIntent "Recover"
+      StrCpy $InstallParameters '$\"ligase-installer.exe$\" $\"/InstallDirectory=$INSTDIR$\" $\"/DataRoot=$DataRoot$\" /OrphanLegacyAction=Recover'
+    ${ElseIf} $1 == ${BST_CHECKED}
+      StrCpy $OrphanLegacyIntent "CreateFresh"
+      StrCpy $InstallParameters '$\"ligase-installer.exe$\" $\"/InstallDirectory=$INSTDIR$\" $\"/DataRoot=$DataRoot$\" /OrphanLegacyAction=CreateFresh'
+    ${Else}
+      MessageBox MB_OK|MB_ICONSTOP "请选择恢复旧 Host 数据，或明确创建全新 Host 身份。"
+      Abort
+    ${EndIf}
+    Call ResolveInstallerArguments
+    Call ConsumeResolvedOrphanDecision
+    ${If} $OrphanLegacyDecision != $OrphanLegacyIntent
+      MessageBox MB_OK|MB_ICONSTOP "无法确认旧 Host 数据操作。未写入任何数据。"
+      Abort
+    ${ElseIf} $OrphanLegacyDecision == "Recover"
+    ${AndIf} $DataRootMode != "orphanLegacyRecovery"
+      MessageBox MB_OK|MB_ICONSTOP "无法确认旧 Host 数据恢复事务。未写入任何数据。"
+      Abort
+    ${ElseIf} $OrphanLegacyDecision == "CreateFresh"
+    ${AndIf} $DataRootMode != "freshDefault"
+      MessageBox MB_OK|MB_ICONSTOP "无法确认全新 Host 身份目标。未写入任何数据。"
+      Abort
+    ${EndIf}
+    StrCpy $DataRootSource $OrphanLegacySource
+    StrCpy $InstallParameters $OriginalInstallParameters
+    Return
   ${EndIf}
   ${NSD_GetState} $DataRootAdvanced $0
   ${If} $0 == ${BST_CHECKED}
@@ -265,7 +341,15 @@ Function DataRootPageLeave
   ${EndIf}
   StrCpy $InstallParameters '$\"ligase-installer.exe$\" $\"/InstallDirectory=$INSTDIR$\" $\"/DataRoot=$DataRoot$\"'
   Call ResolveInstallerArguments
-  StrCpy $DataRootMode $DataRootSelectionMode
+  ${If} $DataRootSelectionMode == "orphanLegacyRecovery"
+    ${If} $OrphanLegacyDecision == "Recover"
+      StrCpy $DataRootMode "orphanLegacyRecovery"
+    ${Else}
+      StrCpy $DataRootMode "freshDefault"
+    ${EndIf}
+  ${Else}
+    StrCpy $DataRootMode $DataRootSelectionMode
+  ${EndIf}
   StrCpy $InstallParameters $OriginalInstallParameters
 FunctionEnd
 
@@ -288,6 +372,8 @@ Function InstallSummaryPageCreate
     StrCpy $DataRootActionSummary "迁移到标准安全目录（旧目录原样保留）"
   ${ElseIf} $DataRootMode == "existing"
     StrCpy $DataRootActionSummary "保留现有目录和身份"
+  ${ElseIf} $DataRootMode == "orphanLegacyRecovery"
+    StrCpy $DataRootActionSummary "恢复未绑定的旧 Host 数据并迁移到标准安全目录"
   ${Else}
     StrCpy $DataRootActionSummary "新建并应用受限权限"
   ${EndIf}
@@ -299,6 +385,7 @@ Function InstallSummaryPageCreate
   ${NSD_CreateLabel} 0 0 100% 18u "确认安装"
   Pop $1
   ${If} $DataRootMode == "migration"
+  ${OrIf} $DataRootMode == "orphanLegacyRecovery"
     ${NSD_CreateLabel} 0 24u 100% 100u "程序目录：$INSTDIR$\r$\n旧数据目录：$DataRootSource$\r$\n标准数据目录：$DataRoot$\r$\n数据动作：$DataRootActionSummary$\r$\n创建桌面快捷方式：$DesktopShortcutSummary$\r$\n安装虚拟显示：$VirtualDisplaySummary$\r$\n防火墙：将申请本次安装的一次管理员授权，并在完成前精确读回 Ligase 专属规则"
   ${Else}
     ${NSD_CreateLabel} 0 24u 100% 84u "程序目录：$INSTDIR$\r$\n数据目录：$DataRoot$\r$\n数据动作：$DataRootActionSummary$\r$\n创建桌面快捷方式：$DesktopShortcutSummary$\r$\n安装虚拟显示：$VirtualDisplaySummary$\r$\n防火墙：将申请本次安装的一次管理员授权，并在完成前精确读回 Ligase 专属规则"
@@ -324,6 +411,8 @@ Function FinalizeInstallTerminal
   ${If} $InstallOutcome == "provisional"
     ${If} $DataRootMode == "migration"
       StrCpy $5 "migrateToStandard"
+    ${ElseIf} $DataRootMode == "orphanLegacyRecovery"
+      StrCpy $5 "recoverOrphanLegacyDataRoot"
     ${ElseIf} $DataRootMode == "existing"
       StrCpy $5 "preserveExisting"
     ${Else}
@@ -371,6 +460,7 @@ Function InstallResultPageCreate
   ${If} $InstallOutcome == "failed"
     ${NSD_CreateLabel} 0 24u 100% 108u "$IntegrationResult$\r$\n结果代码：$InstallOutcomeCode$\r$\n程序目录残留：$InstallResidue$\r$\n数据目录残留：$DataRootResidue$\r$\n旧 Host 数据和原 bootstrap 证据未被静默删除。关闭此页后安装程序将以失败状态退出。"
   ${ElseIf} $DataRootMode == "migration"
+  ${OrIf} $DataRootMode == "orphanLegacyRecovery"
     ${NSD_CreateLabel} 0 24u 100% 108u "$IntegrationResult$\r$\n程序目录：$INSTDIR$\r$\n标准数据目录：$DataRoot$\r$\n数据动作：$DataRootActionSummary$\r$\n回滚证据：旧数据仍原样保留在 $DataRootSource$\r$\n桌面快捷方式：$DesktopShortcutSummary$\r$\n虚拟显示：$VirtualDisplaySummary$\r$\n防火墙：Ligase 专属规则已精确验证"
   ${Else}
     ${NSD_CreateLabel} 0 24u 100% 96u "$IntegrationResult$\r$\n程序目录：$INSTDIR$\r$\n数据目录：$DataRoot$\r$\n数据动作：$DataRootActionSummary$\r$\n桌面快捷方式：$DesktopShortcutSummary$\r$\n虚拟显示：$VirtualDisplaySummary$\r$\n防火墙：Ligase 专属规则已精确验证"
@@ -424,8 +514,36 @@ Section "Ligase Host（必需）" SEC_MAIN
     StrCpy $IntegrationResult "数据目录验证失败，安装未写入成功状态。"
     Goto mainSectionDone
   ${EndIf}
-  StrCpy $InstallParameters '$\"ligase-installer.exe$\" $\"/InstallDirectory=$INSTDIR$\" $\"/DataRoot=$DataRoot$\"'
+  ${If} $DataRootSelectionMode == "orphanLegacyRecovery"
+    ${If} $OrphanLegacyDecision == "Recover"
+      StrCpy $OrphanLegacyIntent "Recover"
+      StrCpy $InstallParameters '$\"ligase-installer.exe$\" $\"/InstallDirectory=$INSTDIR$\" $\"/DataRoot=$DataRoot$\" /OrphanLegacyAction=Recover'
+    ${ElseIf} $OrphanLegacyDecision == "CreateFresh"
+      StrCpy $OrphanLegacyIntent "CreateFresh"
+      StrCpy $InstallParameters '$\"ligase-installer.exe$\" $\"/InstallDirectory=$INSTDIR$\" $\"/DataRoot=$DataRoot$\" /OrphanLegacyAction=CreateFresh'
+    ${Else}
+      DetailPrint "检测到未绑定的旧 Host 数据，但尚未明确选择恢复或创建全新身份。"
+      StrCpy $InstallOutcome "failed"
+      StrCpy $InstallOutcomeCode "orphanLegacyActionRequired"
+      StrCpy $IntegrationResult "必须明确选择恢复旧 Host 数据或创建全新身份；安装尚未写入任何数据。"
+      Goto mainSectionDone
+    ${EndIf}
+  ${Else}
+    StrCpy $OrphanLegacyIntent ""
+    StrCpy $InstallParameters '$\"ligase-installer.exe$\" $\"/InstallDirectory=$INSTDIR$\" $\"/DataRoot=$DataRoot$\"'
+  ${EndIf}
   Call ResolveInstallerArguments
+  ${If} $DataRootSelectionMode == "orphanLegacyRecovery"
+    Call ConsumeResolvedOrphanDecision
+    ${If} $OrphanLegacyDecision == ""
+    ${OrIf} $OrphanLegacyDecision != $OrphanLegacyIntent
+      DetailPrint "旧 Host 数据操作未通过 resolver 最终确认。"
+      StrCpy $InstallOutcome "failed"
+      StrCpy $InstallOutcomeCode "orphanLegacyActionRequired"
+      StrCpy $IntegrationResult "旧 Host 数据操作未通过最终验证；安装尚未写入任何数据。"
+      Goto mainSectionDone
+    ${EndIf}
+  ${EndIf}
   ClearErrors
   Call RecordInstallerEvidenceIntegrating
   IfErrors 0 +2
@@ -435,6 +553,8 @@ Section "Ligase Host（必需）" SEC_MAIN
   WriteUninstaller "$INSTDIR\Uninstall.exe"
   ${If} $DataRootMode == "migration"
     nsExec::ExecToStack 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\Deployment\Manage-LigaseInstallation.ps1" -Action Install -InstallDirectory "$INSTDIR" -DataRoot "$DataRoot" -MigrateDataRoot -ConfigureFirewall'
+  ${ElseIf} $DataRootMode == "orphanLegacyRecovery"
+    nsExec::ExecToStack 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\Deployment\Manage-LigaseInstallation.ps1" -Action Install -InstallDirectory "$INSTDIR" -DataRoot "$DataRoot" -RecoverOrphanDataRoot -RecoveryDataRootSource "$DataRootSource" -ConfigureFirewall'
   ${Else}
     nsExec::ExecToStack 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\Deployment\Manage-LigaseInstallation.ps1" -Action Install -InstallDirectory "$INSTDIR" -DataRoot "$DataRoot" -ConfigureFirewall'
   ${EndIf}
@@ -456,6 +576,8 @@ Section "Ligase Host（必需）" SEC_MAIN
   ${EndIf}
   ${If} $DataRootMode == "migration"
     StrCpy $2 '{"code":"installed","success":true,"installMode":"packaged","dataRootState":"existing","dataRootAction":"migratedToStandardDataRoot","firewallState":"configured","firewallMachineCode":"configured"}'
+  ${ElseIf} $DataRootMode == "orphanLegacyRecovery"
+    StrCpy $2 '{"code":"installed","success":true,"installMode":"packaged","dataRootState":"existing","dataRootAction":"recoveredOrphanLegacyDataRoot","firewallState":"configured","firewallMachineCode":"configured"}'
   ${ElseIf} $DataRootMode == "existing"
     StrCpy $2 '{"code":"installed","success":true,"installMode":"packaged","dataRootState":"existing","dataRootAction":"preservedExistingBootstrap","firewallState":"configured","firewallMachineCode":"configured"}'
   ${Else}

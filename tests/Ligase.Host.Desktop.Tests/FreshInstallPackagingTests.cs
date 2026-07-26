@@ -267,6 +267,58 @@ public sealed class FreshInstallPackagingTests
     }
 
     [TestMethod]
+    public async Task ElevatedOrphanRecoveryPreservesIdentityBytesAndCreatesBootstrapLast()
+    {
+        RequireElevatedAclIntegration();
+        using var fixture = new InstallFixture();
+        var source = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "Ligase Host", "Instances", Guid.NewGuid().ToString("D"));
+        var target = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+            "Ligase Host", "Instances", Guid.NewGuid().ToString("D"));
+        try
+        {
+            Directory.CreateDirectory(Path.Combine(source, "empty"));
+            foreach (var name in new[]
+                     {
+                         "ligase-authority.json", "library.json", "ligase-sync.json"
+                     })
+            {
+                await File.WriteAllTextAsync(
+                    Path.Combine(source, name),
+                    "{\"revision\":1}",
+                    new UTF8Encoding(false));
+            }
+            var authority = await File.ReadAllBytesAsync(
+                Path.Combine(source, "ligase-authority.json"));
+
+            var result = await fixture.RunAsync(
+                "Install",
+                target,
+                recoverOrphanDataRoot: true,
+                recoverySource: source);
+
+            Assert.AreEqual(0, result.ExitCode, result.Output);
+            using var outcome = JsonDocument.Parse(result.Output);
+            Assert.AreEqual(
+                "recoveredOrphanLegacyDataRoot",
+                outcome.RootElement.GetProperty("dataRootAction").GetString());
+            CollectionAssert.AreEqual(
+                authority,
+                await File.ReadAllBytesAsync(
+                    Path.Combine(target, "ligase-authority.json")));
+            Assert.IsTrue(Directory.Exists(Path.Combine(source, "empty")));
+            AssertExactDataRootAcl(target);
+        }
+        finally
+        {
+            CleanupMigrationDirectory(target);
+            CleanupMigrationDirectory(source);
+        }
+    }
+
+    [TestMethod]
     public async Task InvalidExistingBootstrapFailsClosedWithoutReplacement()
     {
         using var fixture = new InstallFixture();
@@ -444,6 +496,20 @@ public sealed class FreshInstallPackagingTests
                 "windows",
                 "ligase",
                 "LigaseInstallDirectoryHarness.nsi"));
+        var resolver = File.ReadAllText(
+            Path.Combine(
+                repo,
+                "packaging",
+                "windows",
+                "ligase",
+                "Resolve-LigaseInstallDirectory.ps1"));
+        var runtimeHarness = File.ReadAllText(
+            Path.Combine(
+                repo,
+                "packaging",
+                "windows",
+                "ligase",
+                "Test-LigaseInstallDirectoryRuntime.ps1"));
         var validationInclude = File.ReadAllText(
             Path.Combine(
                 repo,
@@ -498,6 +564,56 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(nsis, "preservedExistingBootstrap");
         StringAssert.Contains(nsis, "createdFreshBootstrap");
         StringAssert.Contains(nsis, "migratedToStandardDataRoot");
+        StringAssert.Contains(nsis, "orphanLegacyRecovery");
+        StringAssert.Contains(nsis, "recoverOrphanLegacyDataRoot");
+        StringAssert.Contains(nsis, "recoveredOrphanLegacyDataRoot");
+        StringAssert.Contains(nsis, "检测到未绑定的旧 Host 数据");
+        StringAssert.Contains(nsis, "-RecoverOrphanDataRoot");
+        StringAssert.Contains(nsis, "orphanLegacyActionRequired");
+        StringAssert.Contains(
+            nsis,
+            "${ElseIf} $OrphanLegacyDecision == \"CreateFresh\"");
+        StringAssert.Contains(
+            resolver,
+            "$silent -and $orphanAction -eq \"\"");
+        StringAssert.Contains(resolver, "\"confirmedRecover\"");
+        StringAssert.Contains(resolver, "\"confirmedCreateFresh\"");
+        StringAssert.Contains(resolver, "\"proposal\"");
+        StringAssert.Contains(nsis, "$6 == \"confirmedRecover\"");
+        StringAssert.Contains(nsis, "$6 == \"confirmedCreateFresh\"");
+        StringAssert.Contains(nsis, "Function ConsumeResolvedOrphanDecision");
+        StringAssert.Contains(nsis, "Call ConsumeResolvedOrphanDecision");
+        StringAssert.Contains(
+            nsis,
+            "$OrphanLegacyDecision != $OrphanLegacyIntent");
+        Assert.IsTrue(
+            nsis.LastIndexOf(
+                "Call ConsumeResolvedOrphanDecision",
+                StringComparison.Ordinal)
+            < nsis.IndexOf("SetOutPath \"$INSTDIR\"", StringComparison.Ordinal),
+            "The final resolver projection must be consumed before product writes.");
+        Assert.IsFalse(
+            harness.Contains(
+                "${GetOptions} $0 \"/OrphanLegacyAction=\"",
+                StringComparison.Ordinal),
+            "The native harness must consume the resolver projection, not parse a parallel action.");
+        StringAssert.Contains(
+            runtimeHarness,
+            "orphan-one-candidate-silent-without-action-fails-zero-write");
+        StringAssert.Contains(
+            runtimeHarness,
+            "orphan-one-candidate-gui-proposal-has-no-confirmed-action");
+        StringAssert.Contains(
+            runtimeHarness,
+            "orphan-one-candidate-gui-recover-consumes-confirmed-projection");
+        Assert.IsFalse(
+            nsis.Contains(
+                "${NSD_Check} $OrphanRecoveryChoice",
+                StringComparison.Ordinal)
+            && !nsis.Contains(
+                "${If} $OrphanLegacyDecision == \"Recover\"",
+                StringComparison.Ordinal),
+            "The orphan recovery radio must not receive an unconditional default.");
         StringAssert.Contains(nsis, "旧数据目录：$DataRootSource");
         StringAssert.Contains(nsis, "-MigrateDataRoot");
         StringAssert.Contains(management, "$security.SetOwner($administratorsSid)");
@@ -520,6 +636,12 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(management, "function Assert-FinalInstallReadback");
         StringAssert.Contains(management, "$script:rollbackResult = \"failed\"");
         StringAssert.Contains(management, "installationFinalReadbackFailed");
+        StringAssert.Contains(
+            management,
+            "function Invoke-DataRootMigration");
+        StringAssert.Contains(management, "$RecoverOrphanDataRoot");
+        StringAssert.Contains(management, "orphanLegacyBootstrapExists");
+        StringAssert.Contains(management, "RequireAuthorityDocuments");
         Assert.IsFalse(
             management.Contains(
                 "exceptionText =",
@@ -831,6 +953,12 @@ public sealed class FreshInstallPackagingTests
         var resultPath = Path.Combine(
             Path.GetTempPath(),
             $"ligase-installer-arguments-{Guid.NewGuid():N}.txt");
+        var operatorLocal = Path.Combine(
+            Environment.GetEnvironmentVariable("LIGASE_BUILD_ROOT")
+                ?? Path.GetTempPath(),
+            "test-output",
+            $"installer-operator-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(operatorLocal);
         var start = new ProcessStartInfo
         {
             FileName = "powershell.exe",
@@ -847,6 +975,9 @@ public sealed class FreshInstallPackagingTests
         start.Environment["LIGASE_INSTALL_BOOTSTRAP_PATH"] =
             Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"), "bootstrap.json");
         start.Environment["LIGASE_INSTALL_PROGRAM_DATA"] = @"D:\ProgramDataFixture";
+        start.Environment["LIGASE_INSTALL_VALIDATION_HARNESS"] = "1";
+        start.Environment["LIGASE_INSTALL_TEST_OPERATOR_LOCAL_APP_DATA"] =
+            operatorLocal;
         start.ArgumentList.Add("-NoProfile");
         start.ArgumentList.Add("-NonInteractive");
         start.ArgumentList.Add("-ExecutionPolicy");
@@ -871,6 +1002,7 @@ public sealed class FreshInstallPackagingTests
         {
             File.Delete(resultPath);
         }
+        Directory.Delete(operatorLocal, recursive: true);
         return (process.ExitCode, resolved, await error);
     }
 
@@ -974,7 +1106,9 @@ public sealed class FreshInstallPackagingTests
             string action,
             string? dataRoot = null,
             bool configureFirewall = false,
-            bool migrateDataRoot = false)
+            bool migrateDataRoot = false,
+            bool recoverOrphanDataRoot = false,
+            string? recoverySource = null)
         {
             var start = new ProcessStartInfo
             {
@@ -1003,6 +1137,13 @@ public sealed class FreshInstallPackagingTests
                 start.ArgumentList.Add("-ConfigureFirewall");
             if (migrateDataRoot)
                 start.ArgumentList.Add("-MigrateDataRoot");
+            if (recoverOrphanDataRoot)
+                start.ArgumentList.Add("-RecoverOrphanDataRoot");
+            if (recoverySource is not null)
+            {
+                start.ArgumentList.Add("-RecoveryDataRootSource");
+                start.ArgumentList.Add(recoverySource);
+            }
             using var process = Process.Start(start)
                 ?? throw new InvalidOperationException("testProcessStartFailed");
             var stdout = process.StandardOutput.ReadToEndAsync();

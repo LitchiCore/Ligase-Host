@@ -197,6 +197,9 @@ function Invoke-Harness(
   [string] $ExpectedInstallDirectory = "",
   [string] $ExpectedDataRoot = "",
   [string] $ExpectedDataRootPattern = "",
+  [string] $ExpectedDataRootMode = "",
+  [string] $ExpectedDataRootSource = "",
+  [int] $ExpectedNativeExitCode = -1,
   [string[]] $ForbiddenPaths = @()
 ) {
   $result = Join-Path $root "$Name.result"
@@ -206,23 +209,37 @@ function Invoke-Harness(
   if (Test-Path -LiteralPath $harnessDiagnostic) {
     Remove-Item -LiteralPath $harnessDiagnostic -Force
   }
-  $nativeArguments = @($Arguments) + "/ResultFile=$result"
+  $hasTestOperator = @($Arguments | Where-Object {
+    $_.StartsWith("/TestOperatorLocalAppData=", [StringComparison]::OrdinalIgnoreCase)
+  }).Count -gt 0
+  $nativeArguments = @($Arguments)
+  if (-not $hasTestOperator) {
+    $defaultOperatorLocal = Join-Path $root "default-empty-operator-local"
+    New-Item -ItemType Directory -Path $defaultOperatorLocal -Force | Out-Null
+    $nativeArguments += "/TestOperatorLocalAppData=$defaultOperatorLocal"
+  }
+  $nativeArguments += "/ResultFile=$result"
+  $nativeExitCode = 255
   switch ($LaunchMode) {
     "PowerShellDirect" {
       & $harness @nativeArguments
+      $nativeExitCode = $LASTEXITCODE
     }
     "PowerShellStartProcess" {
       $serialized = ($nativeArguments |
         ForEach-Object { ConvertTo-WindowsCommandLineArgument $_ }) -join " "
       $process = Start-Process -FilePath $harness `
         -ArgumentList $serialized -PassThru -Wait -WindowStyle Hidden
+      $nativeExitCode = $process.ExitCode
     }
     "PowerShellStartProcessUnsafe" {
       $process = Start-Process -FilePath $harness `
         -ArgumentList $nativeArguments -PassThru -Wait -WindowStyle Hidden
+      $nativeExitCode = $process.ExitCode
     }
     "ProcessStartInfo" {
       & $DotNet $argumentListRunner $harness @nativeArguments
+      $nativeExitCode = $LASTEXITCODE
       if ($LASTEXITCODE -notin 0,12,13,14,15,16,17,18) {
         throw "argumentListRunnerFailed:$LASTEXITCODE"
       }
@@ -231,7 +248,7 @@ function Invoke-Harness(
       $allArguments = @($harness) + $nativeArguments
       $commandLine = ($allArguments |
         ForEach-Object { ConvertTo-WindowsCommandLineArgument $_ }) -join " "
-      [void][LigaseRawProcess]::Run($harness, $commandLine)
+      $nativeExitCode = [LigaseRawProcess]::Run($harness, $commandLine)
     }
   }
   $deadline = [DateTime]::UtcNow.AddSeconds(5)
@@ -276,7 +293,7 @@ function Invoke-Harness(
       throw "harnessPositiveFailed:${Name}:$detail"
     }
     $actual = @([IO.File]::ReadAllLines($result))
-    if (@($actual).Count -ne 2 -or
+    if (@($actual).Count -ne 4 -or
         -not $actual[0].Equals(
           $ExpectedInstallDirectory,
           [StringComparison]::OrdinalIgnoreCase) -or
@@ -285,13 +302,23 @@ function Invoke-Harness(
             $ExpectedDataRoot,
             [StringComparison]::OrdinalIgnoreCase)) -or
          ($ExpectedDataRootPattern.Length -gt 0 -and
-          $actual[1] -notmatch $ExpectedDataRootPattern))) {
+          $actual[1] -notmatch $ExpectedDataRootPattern)) -or
+        ($ExpectedDataRootMode.Length -gt 0 -and
+          $actual[2] -cne $ExpectedDataRootMode) -or
+        ($ExpectedDataRootSource.Length -gt 0 -and
+          -not $actual[3].Equals(
+            $ExpectedDataRootSource,
+            [StringComparison]::OrdinalIgnoreCase))) {
       throw "harnessResultMismatch:$Name"
     }
   } elseif (@($resolverCodes).Count -lt 1 -or
       $resolverCodes[0] -eq 0 -or
       $exists) {
     throw "harnessNegativeAccepted:$Name"
+  }
+  if ($ExpectedNativeExitCode -ge 0 -and
+      $nativeExitCode -ne $ExpectedNativeExitCode) {
+    throw "harnessNativeExitMismatch:${Name}:$nativeExitCode"
   }
   foreach ($forbiddenPath in $ForbiddenPaths) {
     if (Test-Path -LiteralPath $forbiddenPath) {
@@ -301,6 +328,7 @@ function Invoke-Harness(
   [ordered]@{
     name = $Name
     exitCode = $exitCode
+    nativeExitCode = $nativeExitCode
     resultCreated = $exists
   }
 }
@@ -566,6 +594,171 @@ $results = @(
       '/DataRoot=D:\Development\..\Ligase Data') `
     -ShouldSucceed $false
 )
+
+$orphanOperatorLocal = Join-Path $root "orphan-operator-local"
+$orphanInstances = Join-Path $orphanOperatorLocal "Ligase Host\Instances"
+New-Item -ItemType Directory -Path $orphanInstances -Force | Out-Null
+$results += Invoke-Harness `
+  -Name "orphan-zero-candidates-remains-fresh" `
+  -Arguments @(
+    "/InstallDirectory=$spaceProgramPath",
+    "/TestOperatorLocalAppData=$orphanOperatorLocal") `
+  -ShouldSucceed $true `
+  -ExpectedInstallDirectory $spaceProgramPath `
+  -ExpectedDataRootPattern ('^' +
+    [regex]::Escape((Join-Path $env:ProgramData 'Ligase Host\Instances\')) +
+    '[0-9a-f-]{36}$') `
+  -ExpectedDataRootMode "freshDefault"
+
+$orphanId = "00000000-0000-0000-0000-000000000101"
+$orphanSource = Join-Path $orphanInstances $orphanId
+New-Item -ItemType Directory -Path $orphanSource -Force | Out-Null
+$orphanAcl = Get-Acl -LiteralPath $orphanSource
+$orphanAcl.AddAccessRule(
+  [Security.AccessControl.FileSystemAccessRule]::new(
+    [Security.Principal.WindowsIdentity]::GetCurrent().User,
+    [Security.AccessControl.FileSystemRights]::Modify,
+    [Security.AccessControl.InheritanceFlags](
+      [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
+      [Security.AccessControl.InheritanceFlags]::ObjectInherit),
+    [Security.AccessControl.PropagationFlags]::None,
+    [Security.AccessControl.AccessControlType]::Allow))
+Set-Acl -LiteralPath $orphanSource -AclObject $orphanAcl
+foreach ($name in @("ligase-authority.json", "library.json", "ligase-sync.json")) {
+  [IO.File]::WriteAllText(
+    (Join-Path $orphanSource $name),
+    "{}",
+    [Text.UTF8Encoding]::new($false))
+}
+$orphanEntriesBeforeSilent = @(
+  Get-ChildItem -LiteralPath $orphanInstances -Force -Recurse |
+    ForEach-Object { $_.FullName }
+)
+$results += Invoke-Harness `
+  -Name "orphan-one-candidate-silent-without-action-fails-zero-write" `
+  -Arguments @(
+    "/S",
+    "/InstallDirectory=$spaceProgramPath",
+    "/TestOperatorLocalAppData=$orphanOperatorLocal") `
+  -ShouldSucceed $false `
+  -LaunchMode "PowerShellStartProcess" `
+  -ExpectedNativeExitCode 18
+$orphanEntriesAfterSilent = @(
+  Get-ChildItem -LiteralPath $orphanInstances -Force -Recurse |
+    ForEach-Object { $_.FullName }
+)
+if (Compare-Object $orphanEntriesBeforeSilent $orphanEntriesAfterSilent) {
+  throw "orphanSilentWithoutActionMutatedSource"
+}
+$results += Invoke-Harness `
+  -Name "orphan-one-candidate-gui-proposal-has-no-confirmed-action" `
+  -Arguments @(
+    "/InstallDirectory=$spaceProgramPath",
+    "/TestOperatorLocalAppData=$orphanOperatorLocal") `
+  -ShouldSucceed $true `
+  -ExpectedInstallDirectory $spaceProgramPath `
+  -ExpectedDataRootPattern ('^' +
+    [regex]::Escape((Join-Path $env:ProgramData 'Ligase Host\Instances\')) +
+    '[0-9a-f-]{36}$') `
+  -ExpectedDataRootMode "orphanLegacyRecovery" `
+  -ExpectedDataRootSource $orphanSource
+
+$results += Invoke-Harness `
+  -Name "orphan-one-candidate-recovery-next-back-next" `
+  -Arguments @(
+    "/S",
+    "/InstallDirectory=$spaceProgramPath",
+    "/TestOperatorLocalAppData=$orphanOperatorLocal",
+    "/OrphanLegacyAction=Recover") `
+  -ShouldSucceed $true `
+  -ExpectedInstallDirectory $spaceProgramPath `
+  -ExpectedDataRootPattern ('^' +
+    [regex]::Escape((Join-Path $env:ProgramData 'Ligase Host\Instances\')) +
+    '[0-9a-f-]{36}$') `
+  -ExpectedDataRootMode "orphanLegacyRecovery" `
+  -ExpectedDataRootSource $orphanSource `
+  -ExpectedNativeExitCode 0
+
+$results += Invoke-Harness `
+  -Name "orphan-one-candidate-gui-recover-consumes-confirmed-projection" `
+  -Arguments @(
+    "/InstallDirectory=$spaceProgramPath",
+    "/TestOperatorLocalAppData=$orphanOperatorLocal",
+    "/OrphanLegacyAction=Recover") `
+  -ShouldSucceed $true `
+  -ExpectedInstallDirectory $spaceProgramPath `
+  -ExpectedDataRootPattern ('^' +
+    [regex]::Escape((Join-Path $env:ProgramData 'Ligase Host\Instances\')) +
+    '[0-9a-f-]{36}$') `
+  -ExpectedDataRootMode "orphanLegacyRecovery" `
+  -ExpectedDataRootSource $orphanSource `
+  -ExpectedNativeExitCode 0
+
+$results += Invoke-Harness `
+  -Name "orphan-one-candidate-explicit-fresh-choice" `
+  -Arguments @(
+    "/S",
+    "/InstallDirectory=$spaceProgramPath",
+    "/TestOperatorLocalAppData=$orphanOperatorLocal",
+    "/OrphanLegacyAction=CreateFresh") `
+  -ShouldSucceed $true `
+  -ExpectedInstallDirectory $spaceProgramPath `
+  -ExpectedDataRootPattern ('^' +
+    [regex]::Escape((Join-Path $env:ProgramData 'Ligase Host\Instances\')) +
+    '[0-9a-f-]{36}$') `
+  -ExpectedDataRootMode "freshDefault" `
+  -ExpectedNativeExitCode 0
+
+$secondOrphan = Join-Path $orphanInstances "00000000-0000-0000-0000-000000000102"
+New-Item -ItemType Directory -Path $secondOrphan -Force | Out-Null
+$secondAcl = Get-Acl -LiteralPath $secondOrphan
+$secondAcl.AddAccessRule(
+  [Security.AccessControl.FileSystemAccessRule]::new(
+    [Security.Principal.WindowsIdentity]::GetCurrent().User,
+    [Security.AccessControl.FileSystemRights]::Modify,
+    [Security.AccessControl.InheritanceFlags](
+      [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
+      [Security.AccessControl.InheritanceFlags]::ObjectInherit),
+    [Security.AccessControl.PropagationFlags]::None,
+    [Security.AccessControl.AccessControlType]::Allow))
+Set-Acl -LiteralPath $secondOrphan -AclObject $secondAcl
+foreach ($name in @("ligase-authority.json", "library.json", "ligase-sync.json")) {
+  [IO.File]::WriteAllText(
+    (Join-Path $secondOrphan $name),
+    "{}",
+    [Text.UTF8Encoding]::new($false))
+}
+$results += Invoke-Harness `
+  -Name "orphan-multiple-candidates-fail-closed" `
+  -Arguments @(
+    "/InstallDirectory=$spaceProgramPath",
+    "/TestOperatorLocalAppData=$orphanOperatorLocal") `
+  -ShouldSucceed $false
+
+Remove-Item -LiteralPath $secondOrphan -Recurse -Force
+[IO.File]::WriteAllText(
+  (Join-Path $orphanSource "ligase-sync.json"),
+  "{invalid",
+  [Text.UTF8Encoding]::new($false))
+$results += Invoke-Harness `
+  -Name "orphan-malformed-required-json-fail-closed" `
+  -Arguments @(
+    "/InstallDirectory=$spaceProgramPath",
+    "/TestOperatorLocalAppData=$orphanOperatorLocal") `
+  -ShouldSucceed $false
+
+Remove-Item -LiteralPath $orphanSource -Recurse -Force
+$orphanReparseTarget = Join-Path $root "orphan-reparse-target"
+New-Item -ItemType Directory -Path $orphanReparseTarget -Force | Out-Null
+New-Item -ItemType Junction `
+  -Path (Join-Path $orphanInstances "00000000-0000-0000-0000-000000000103") `
+  -Target $orphanReparseTarget | Out-Null
+$results += Invoke-Harness `
+  -Name "orphan-reparse-candidate-fail-closed" `
+  -Arguments @(
+    "/InstallDirectory=$spaceProgramPath",
+    "/TestOperatorLocalAppData=$orphanOperatorLocal") `
+  -ShouldSucceed $false
 
 $standardDriftInstall = Join-Path $root "standard-drift-install"
 $standardDriftData = Join-Path $root "ProgramDataFixture\Ligase Host\Instances\00000000-0000-0000-0000-000000000001"
