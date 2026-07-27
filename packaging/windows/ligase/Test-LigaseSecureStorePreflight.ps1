@@ -2176,6 +2176,8 @@ foreach ($token in @(
         '0x00000116',
         'StreamQueryWithoutNativeCode = 20015',
         'SetStage("queryEmptyRootStreams")',
+        '"failEmptyRootStreamQueryManaged"',
+        'querySucceeded = GetFileInformationByHandleEx(',
         'var queryError = Marshal.GetLastPInvokeError()',
         'queryError == ErrorHandleEof',
         '_emptyRootInspectionReason = "streamQueryFailed"',

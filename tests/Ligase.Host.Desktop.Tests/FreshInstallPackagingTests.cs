@@ -100,6 +100,10 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(
             program, "SetStage(\"queryEmptyRootStreams\")");
         StringAssert.Contains(
+            program, "\"failEmptyRootStreamQueryManaged\"");
+        StringAssert.Contains(
+            program, "querySucceeded = GetFileInformationByHandleEx(");
+        StringAssert.Contains(
             program, "var queryError = Marshal.GetLastPInvokeError()");
         StringAssert.Contains(program, "queryError == ErrorHandleEof");
         StringAssert.Contains(

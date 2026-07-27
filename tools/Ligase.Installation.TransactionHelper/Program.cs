@@ -2142,6 +2142,7 @@ internal static class Program
                 return false;
             if (behavior is "failEmptyRootChildPresent" or
                 "failEmptyRootNamedAds" or
+                "failEmptyRootStreamQueryManaged" or
                 "failEmptyRootStreamMalformed" or
                 "failEmptyRootStreamOffsetOverflow" or
                 "failEmptyRootStreamNearMax" or
@@ -2314,6 +2315,7 @@ internal static class Program
             "failEmptyRootOwnerMismatch" or
             "failEmptyRootChildPresent" or
             "failEmptyRootNamedAds" or
+            "failEmptyRootStreamQueryManaged" or
             "failEmptyRootStreamMalformed" or
             "failEmptyRootStreamOffsetOverflow" or
             "failEmptyRootStreamNearMax" or
@@ -2433,9 +2435,28 @@ internal static class Program
             else
             {
                 SetStage("queryEmptyRootStreams");
-                if (!GetFileInformationByHandleEx(
+                bool querySucceeded;
+                try
+                {
+                    if (validationBehavior ==
+                        "failEmptyRootStreamQueryManaged")
+                    {
+                        throw new InvalidOperationException(
+                            "validationQueryInvocationFailure");
+                    }
+                    querySucceeded = GetFileInformationByHandleEx(
                         handle, FileStreamInfo, buffer,
-                        NtQueryBufferBytes))
+                        NtQueryBufferBytes);
+                }
+                catch
+                {
+                    _emptyRootInspectionReason = "streamQueryFailed";
+                    _nativeCategory = "managedFailure";
+                    _nativeCode = StreamQueryWithoutNativeCode;
+                    throw new InvalidOperationException(
+                        "installTransactionUnavailable");
+                }
+                if (!querySucceeded)
                 {
                     var queryError = Marshal.GetLastPInvokeError();
                     if (queryError == ErrorHandleEof)
