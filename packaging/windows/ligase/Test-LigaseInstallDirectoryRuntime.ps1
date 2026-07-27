@@ -1771,10 +1771,14 @@ $stageDiagnostics = @()
 $neutralBindingDiagnostic = (
   '"bindingReason":"none","bindingRootKind":"none",' +
   '"bindingSegmentCount":0,"bindingPrefixMatched":false,' +
-  '"bindingVolumeMatched":false,"bindingFileIdentityMatched":false,')
+  '"bindingVolumeMatched":false,"bindingFileIdentityMatched":false,' +
+  '"aclInspectionReason":"none",')
 foreach ($stage in @(
     "resolveProgramData", "rejectReparse", "createSegment", "openHandle",
-    "verifyIdentity", "resolveFinalPath", "applyAcl", "assertAcl",
+    "verifyIdentity", "resolveFinalPath", "canonicalRoot", "inspectAcl",
+    "readSecurityDescriptor", "descriptorLength", "descriptorCopy",
+    "descriptorParse", "buildSecurityDescriptor",
+    "compareSecurityDescriptor", "applyAcl", "assertAcl",
     "createTemp", "atomicReplace",
     "finalReadback", "read", "delete")) {
   $stageRoot = Join-Path $combinationRoot ("stage-" + $stage)
@@ -1880,6 +1884,92 @@ foreach ($nativeCase in @(
   }
   $nativeSubstageResults += [ordered]@{
     name = "transaction-native-" + [string]$nativeCase.stage
+    passed = $true
+  }
+}
+$aclInspectionResults = @()
+foreach ($aclCase in @(
+    [ordered]@{
+      behavior = "failCanonicalRootInspection"
+      stage = "canonicalRoot"
+      reason = "canonicalRootInspectionFailed"
+      code = 20001
+    },
+    [ordered]@{
+      behavior = "failReadSecurityDescriptor"
+      stage = "readSecurityDescriptor"
+      reason = "securityDescriptorReadFailed"
+      code = 20002
+    },
+    [ordered]@{
+      behavior = "failDescriptorLength"
+      stage = "descriptorLength"
+      reason = "descriptorLengthInvalid"
+      code = 20003
+    },
+    [ordered]@{
+      behavior = "failDescriptorCopy"
+      stage = "descriptorCopy"
+      reason = "descriptorCopyFailed"
+      code = 20004
+    },
+    [ordered]@{
+      behavior = "failDescriptorParse"
+      stage = "descriptorParse"
+      reason = "descriptorParseFailed"
+      code = 20005
+    },
+    [ordered]@{
+      behavior = "failBuildSecurityDescriptor"
+      stage = "buildSecurityDescriptor"
+      reason = "expectedDescriptorBuildFailed"
+      code = 20006
+    },
+    [ordered]@{
+      behavior = "failCompareSecurityDescriptor"
+      stage = "compareSecurityDescriptor"
+      reason = "descriptorCompareFailed"
+      code = 20007
+    })) {
+  $aclRoot = Join-Path $combinationRoot (
+    "acl-inspection-" + [string]$aclCase.stage)
+  New-Item -ItemType Directory -Path $aclRoot | Out-Null
+  $aclBefore = (Get-Acl -LiteralPath $aclRoot).
+    GetSecurityDescriptorSddlForm(
+      [Security.AccessControl.AccessControlSections]::All)
+  $env:LIGASE_INSTALL_VALIDATION_HARNESS = "1"
+  $env:LIGASE_TRANSACTION_TEST_BEHAVIOR = [string]$aclCase.behavior
+  $ErrorActionPreference = "Continue"
+  $aclOutput = @(
+    & $transactionHelper preflight --test-root $aclRoot 2>&1)
+  $ErrorActionPreference = $savedErrorAction
+  $aclExit = $LASTEXITCODE
+  Remove-Item Env:\LIGASE_TRANSACTION_TEST_BEHAVIOR `
+    -ErrorAction SilentlyContinue
+  Remove-Item Env:\LIGASE_INSTALL_VALIDATION_HARNESS `
+    -ErrorAction SilentlyContinue
+  $aclFailure = (($aclOutput -join "") | ConvertFrom-Json)
+  $aclAfter = (Get-Acl -LiteralPath $aclRoot).
+    GetSecurityDescriptorSddlForm(
+      [Security.AccessControl.AccessControlSections]::All)
+  if ($aclExit -ne 18 -or
+      [string]$aclFailure.code -cne "installTransactionAclInvalid" -or
+      [string]$aclFailure.stage -cne [string]$aclCase.stage -or
+      [string]$aclFailure.nativeCategory -cne "managedFailure" -or
+      [int]$aclFailure.nativeCode -ne [int]$aclCase.code -or
+      [string]$aclFailure.aclInspectionReason -cne
+        [string]$aclCase.reason -or
+      -not [bool]$aclFailure.bindingPrefixMatched -or
+      -not [bool]$aclFailure.bindingVolumeMatched -or
+      -not [bool]$aclFailure.bindingFileIdentityMatched -or
+      [bool]$aclFailure.aclMutationOccurred -or
+      [string]$aclFailure.aclRollback -cne "notRequired" -or
+      $aclAfter -cne $aclBefore -or
+      @(Get-ChildItem -LiteralPath $aclRoot -Force).Count -ne 0) {
+    throw "installTransactionAclInspectionDiagnosticInvalid"
+  }
+  $aclInspectionResults += [ordered]@{
+    name = "transaction-acl-inspection-" + [string]$aclCase.stage
     passed = $true
   }
 }
@@ -2044,6 +2134,46 @@ $bindingResults += [ordered]@{
   passed = $systemBindingAvailable
   inconclusive = -not $systemBindingAvailable
 }
+$systemAclInspectionAvailable = Test-Path -LiteralPath $systemAdminRoot
+if ($systemAclInspectionAvailable) {
+  $systemAclBefore = (Get-Acl -LiteralPath $systemAdminRoot).
+    GetSecurityDescriptorSddlForm(
+      [Security.AccessControl.AccessControlSections]::All)
+  $systemAclChildrenBefore = @(
+    Get-ChildItem -LiteralPath $systemAdminRoot -Force).Count
+  $systemAclStreamsBefore = @(
+    Get-Item -LiteralPath $systemAdminRoot -Stream * `
+      -ErrorAction SilentlyContinue).Count
+  $env:LIGASE_INSTALL_VALIDATION_HARNESS = "1"
+  $ErrorActionPreference = "Continue"
+  $systemAclOutput = @(
+    & $transactionHelper inspectSystemAcl 2>&1)
+  $ErrorActionPreference = $savedErrorAction
+  $systemAclExit = $LASTEXITCODE
+  Remove-Item Env:\LIGASE_INSTALL_VALIDATION_HARNESS `
+    -ErrorAction SilentlyContinue
+  $systemAclResult = (($systemAclOutput -join "") | ConvertFrom-Json)
+  $systemAclAfter = (Get-Acl -LiteralPath $systemAdminRoot).
+    GetSecurityDescriptorSddlForm(
+      [Security.AccessControl.AccessControlSections]::All)
+  if ($systemAclExit -ne 0 -or
+      [string]$systemAclResult.code -cne
+        "installTransactionAclInspectionValid" -or
+      [bool]$systemAclResult.exact -or
+      [string]$systemAclResult.reason -cne "notExact" -or
+      $systemAclAfter -cne $systemAclBefore -or
+      @(Get-ChildItem -LiteralPath $systemAdminRoot -Force).Count -ne
+        $systemAclChildrenBefore -or
+      @(Get-Item -LiteralPath $systemAdminRoot -Stream * `
+        -ErrorAction SilentlyContinue).Count -ne $systemAclStreamsBefore) {
+    throw "installTransactionSystemAclReadOnlyInvalid"
+  }
+}
+$bindingResults += [ordered]@{
+  name = "transaction-system-inherited-acl-readonly-not-exact"
+  passed = $systemAclInspectionAvailable
+  inconclusive = -not $systemAclInspectionAvailable
+}
 foreach ($sequenceCase in @(
     [ordered]@{
       behavior = "failSecondBindingWrongVolume"
@@ -2121,7 +2251,8 @@ foreach ($duplicateBehavior in @(
     "emitDuplicateBindingSegmentCount",
     "emitDuplicateBindingPrefixMatched",
     "emitDuplicateBindingVolumeMatched",
-    "emitDuplicateBindingFileIdentityMatched")) {
+    "emitDuplicateBindingFileIdentityMatched",
+    "emitDuplicateAclInspectionReason")) {
   $duplicateRoot = Join-Path $combinationRoot (
     "duplicate-" + $duplicateBehavior)
   $env:LIGASE_INSTALL_VALIDATION_HARNESS = "1"
@@ -2155,6 +2286,60 @@ foreach ($duplicateBehavior in @(
     passed = $true
   }
 }
+$aclTupleResults = @()
+foreach ($tupleBehavior in @(
+    "emitAclTupleWrongStage",
+    "emitAclTupleWrongCode",
+    "emitAclTupleWrongReason",
+    "emitAclTupleCrossSplice")) {
+  $tupleRoot = Join-Path $combinationRoot (
+    "acl-tuple-" + $tupleBehavior)
+  $installBefore = @(
+    Get-ChildItem -LiteralPath $boundedInstallRoot -Recurse -File |
+      ForEach-Object {
+        $_.FullName.Substring($boundedInstallRoot.Length + 1) + "|" +
+          $_.Length + "|" +
+          (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash
+      } | Sort-Object) -join "`n"
+  $env:LIGASE_INSTALL_VALIDATION_HARNESS = "1"
+  $env:LIGASE_TRANSACTION_TEST_BEHAVIOR = $tupleBehavior
+  $ErrorActionPreference = "Continue"
+  $tupleOutput = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass `
+    -File $managementScript `
+    -Action PreflightInstallTransaction `
+    -InstallDirectory $boundedInstallRoot `
+    -InstallTransactionRoot $tupleRoot 2>&1)
+  $tupleExit = $LASTEXITCODE
+  $ErrorActionPreference = $savedErrorAction
+  Remove-Item Env:\LIGASE_TRANSACTION_TEST_BEHAVIOR `
+    -ErrorAction SilentlyContinue
+  Remove-Item Env:\LIGASE_INSTALL_VALIDATION_HARNESS `
+    -ErrorAction SilentlyContinue
+  $tupleProjection = (
+    ($tupleOutput[-1] | Out-String).Trim() | ConvertFrom-Json)
+  $installAfter = @(
+    Get-ChildItem -LiteralPath $boundedInstallRoot -Recurse -File |
+      ForEach-Object {
+        $_.FullName.Substring($boundedInstallRoot.Length + 1) + "|" +
+          $_.Length + "|" +
+          (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash
+      } | Sort-Object) -join "`n"
+  if ($tupleExit -ne 10 -or
+      [string]$tupleProjection.code -cne
+        "installTransactionInvalid" -or
+      [string]$tupleProjection.failedField -cne
+        "installTransaction" -or
+      [int]$tupleProjection.transactionHelperNativeExit -ne 18 -or
+      [string]$tupleProjection.transactionHelperStage -cne "none" -or
+      (Test-Path -LiteralPath $tupleRoot) -or
+      $installAfter -cne $installBefore) {
+    throw "installTransactionManagedAclTupleAccepted"
+  }
+  $aclTupleResults += [ordered]@{
+    name = "transaction-managed-acl-tuple-rejected-" + $tupleBehavior
+    passed = $true
+  }
+}
 $junctionRoot = Join-Path $combinationRoot "transaction-junction"
 $junctionTarget = Join-Path $combinationRoot "outside-target"
 New-Item -ItemType Directory -Path $junctionTarget -Force | Out-Null
@@ -2185,8 +2370,10 @@ $shortcutResults = @(
   $boundedResults
   $stageDiagnostics
   $nativeSubstageResults
+  $aclInspectionResults
   $bindingResults
   $duplicateResults
+  $aclTupleResults
   [ordered]@{ name = "current-to-all-owned-selected"; passed = $true },
   [ordered]@{ name = "all-users-desktop-unselected"; passed = $true },
   [ordered]@{ name = "nonowned-current-preserved"; passed = $true },

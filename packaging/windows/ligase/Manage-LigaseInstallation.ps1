@@ -70,6 +70,14 @@ param(
     "openHandle",
     "verifyIdentity",
     "resolveFinalPath",
+    "canonicalRoot",
+    "inspectAcl",
+    "readSecurityDescriptor",
+    "descriptorLength",
+    "descriptorCopy",
+    "descriptorParse",
+    "buildSecurityDescriptor",
+    "compareSecurityDescriptor",
     "applyAcl",
     "assertAcl",
     "createTemp",
@@ -94,6 +102,7 @@ param(
     "notSupported",
     "identityChanged",
     "bindingMismatch",
+    "managedFailure",
     "unknown")]
   [string]$EvidenceTransactionHelperNativeCategory = "none",
   [int]$EvidenceTransactionHelperNativeCode = 0,
@@ -104,6 +113,18 @@ param(
     "segmentMismatch",
     "fileIdentityMismatch")]
   [string]$EvidenceTransactionBindingReason = "none",
+  [ValidateSet(
+    "none",
+    "exact",
+    "notExact",
+    "canonicalRootInspectionFailed",
+    "securityDescriptorReadFailed",
+    "descriptorLengthInvalid",
+    "descriptorCopyFailed",
+    "descriptorParseFailed",
+    "expectedDescriptorBuildFailed",
+    "descriptorCompareFailed")]
+  [string]$EvidenceTransactionAclInspectionReason = "none",
   [ValidateSet(
     "none", "dosDrive", "volumeGuid", "device", "unc", "unknown")]
   [string]$EvidenceTransactionBindingRootKind = "none",
@@ -158,6 +179,7 @@ $script:transactionBindingSegmentCount = 0
 $script:transactionBindingPrefixMatched = $false
 $script:transactionBindingVolumeMatched = $false
 $script:transactionBindingFileIdentityMatched = $false
+$script:transactionAclInspectionReason = "none"
 $script:transactionAclMutationOccurred = $false
 $script:transactionAclRollback = "notRequired"
 $script:transactionRecoveryAction = "none"
@@ -791,7 +813,7 @@ function Invoke-InstallTransactionHelper(
         }
         $failure = $stderr | ConvertFrom-Json
         $properties = @($failure.PSObject.Properties.Name)
-        if ($properties.Count -ne 12 -or
+        if ($properties.Count -ne 13 -or
             $properties -notcontains "code" -or
             $properties -notcontains "stage" -or
             $properties -notcontains "nativeCategory" -or
@@ -802,6 +824,7 @@ function Invoke-InstallTransactionHelper(
             $properties -notcontains "bindingPrefixMatched" -or
             $properties -notcontains "bindingVolumeMatched" -or
             $properties -notcontains "bindingFileIdentityMatched" -or
+            $properties -notcontains "aclInspectionReason" -or
             $properties -notcontains "aclMutationOccurred" -or
             $properties -notcontains "aclRollback" -or
             [string]$failure.code -notin @(
@@ -811,6 +834,9 @@ function Invoke-InstallTransactionHelper(
             [string]$failure.stage -notin @(
               "resolveProgramData", "rejectReparse", "createSegment",
               "openHandle", "verifyIdentity", "resolveFinalPath",
+              "canonicalRoot", "inspectAcl", "readSecurityDescriptor",
+              "descriptorLength", "descriptorCopy", "descriptorParse",
+              "buildSecurityDescriptor", "compareSecurityDescriptor",
               "applyAcl", "assertAcl", "createTemp",
               "atomicReplace", "finalReadback", "read", "delete",
               "inputValidation", "processTimeout")) {
@@ -832,6 +858,7 @@ function Invoke-InstallTransactionHelper(
           notSupported = @(50)
           identityChanged = @(0)
           bindingMismatch = @(0)
+          managedFailure = @(20001, 20002, 20003, 20004, 20005, 20006, 20007)
           unknown = @(0)
         }
         $nativeCodeValid = if ($nativeCategory -ceq "unknown") {
@@ -862,6 +889,51 @@ function Invoke-InstallTransactionHelper(
               ($bindingReason -cne "none"))) {
           throw "installTransactionInvalid"
         }
+        $aclInspectionReason = [string]$failure.aclInspectionReason
+        if ($aclInspectionReason -notin @(
+            "none", "exact", "notExact",
+            "canonicalRootInspectionFailed",
+            "securityDescriptorReadFailed",
+            "descriptorLengthInvalid",
+            "descriptorCopyFailed",
+            "descriptorParseFailed",
+            "expectedDescriptorBuildFailed",
+            "descriptorCompareFailed")) {
+          throw "installTransactionInvalid"
+        }
+        $managedAclTuples = @{
+          canonicalRoot = @(20001, "canonicalRootInspectionFailed")
+          readSecurityDescriptor = @(20002, "securityDescriptorReadFailed")
+          descriptorLength = @(20003, "descriptorLengthInvalid")
+          descriptorCopy = @(20004, "descriptorCopyFailed")
+          descriptorParse = @(20005, "descriptorParseFailed")
+          buildSecurityDescriptor = @(
+            20006, "expectedDescriptorBuildFailed")
+          compareSecurityDescriptor = @(20007, "descriptorCompareFailed")
+        }
+        $managedAclReasons = @(
+          "canonicalRootInspectionFailed",
+          "securityDescriptorReadFailed",
+          "descriptorLengthInvalid",
+          "descriptorCopyFailed",
+          "descriptorParseFailed",
+          "expectedDescriptorBuildFailed",
+          "descriptorCompareFailed")
+        $managedAclCodes = 20001..20007
+        $managedAclStage = [string]$failure.stage
+        $managedAclTuple = $managedAclTuples[$managedAclStage]
+        $isExactManagedAclTuple = (
+          $nativeCategory -ceq "managedFailure" -and
+          $null -ne $managedAclTuple -and
+          $nativeCode -eq [int]$managedAclTuple[0] -and
+          $aclInspectionReason -ceq [string]$managedAclTuple[1])
+        $hasManagedAclField = (
+          $nativeCategory -ceq "managedFailure" -or
+          $nativeCode -in $managedAclCodes -or
+          $aclInspectionReason -in $managedAclReasons)
+        if ($hasManagedAclField -ne $isExactManagedAclTuple) {
+          throw "installTransactionInvalid"
+        }
         if ($failure.aclMutationOccurred -isnot [bool] -or
             [string]$failure.aclRollback -notin @(
               "notRequired", "completed", "failed") -or
@@ -881,6 +953,7 @@ function Invoke-InstallTransactionHelper(
           [bool]$failure.bindingVolumeMatched
         $script:transactionBindingFileIdentityMatched =
           [bool]$failure.bindingFileIdentityMatched
+        $script:transactionAclInspectionReason = $aclInspectionReason
         $script:transactionAclMutationOccurred =
           [bool]$failure.aclMutationOccurred
         $script:transactionAclRollback = [string]$failure.aclRollback
@@ -1188,6 +1261,10 @@ function Write-InstallerEvidence {
         $script:transactionBindingFileIdentityMatched) {
         $true
       } else { [bool]$EvidenceTransactionBindingFileIdentityMatched }
+      aclInspectionReason = if (
+        $script:transactionAclInspectionReason -ne "none") {
+        $script:transactionAclInspectionReason
+      } else { $EvidenceTransactionAclInspectionReason }
       aclMutationOccurred = if ($script:transactionAclMutationOccurred) {
         $true
       } else { [bool]$EvidenceTransactionAclMutationOccurred }

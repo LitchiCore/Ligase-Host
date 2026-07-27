@@ -59,6 +59,7 @@ internal static class Program
     private static bool _bindingVolumeMatched;
     private static bool _bindingFileIdentityMatched;
     private static int _bindingAttempt;
+    private static string _aclInspectionReason = "none";
 
     private static readonly SecurityIdentifier AdminSid =
         new(WellKnownSidType.BuiltinAdministratorsSid, null);
@@ -76,6 +77,8 @@ internal static class Program
             SetStage("resolveProgramData");
             if (action == "inspectSystemBinding")
                 return InspectSystemBinding();
+            if (action == "inspectSystemAcl")
+                return InspectSystemAcl();
             if (action == "inspectSequentialBinding")
                 return InspectSequentialBinding(args);
             var root = ResolveRoot(args);
@@ -113,6 +116,7 @@ internal static class Program
                 $"{_bindingVolumeMatched.ToString().ToLowerInvariant()}," +
                 $"\"bindingFileIdentityMatched\":" +
                 $"{_bindingFileIdentityMatched.ToString().ToLowerInvariant()}," +
+                $"\"aclInspectionReason\":\"{_aclInspectionReason}\"," +
                 $"\"aclMutationOccurred\":" +
                 $"{_aclMutationOccurred.ToString().ToLowerInvariant()}," +
                 $"\"aclRollback\":\"{_aclRollback}\"}}";
@@ -160,6 +164,39 @@ internal static class Program
                         "\"bindingFileIdentityMatched\":",
                         "\"bindingFileIdentityMatched\":true," +
                         "\"bindingFileIdentityMatched\":",
+                        StringComparison.Ordinal),
+                "emitDuplicateAclInspectionReason" =>
+                    failureJson.Replace(
+                        "\"aclInspectionReason\":",
+                        "\"aclInspectionReason\":\"descriptorParseFailed\"," +
+                        "\"aclInspectionReason\":",
+                        StringComparison.Ordinal),
+                "emitAclTupleWrongStage" => failureJson.Replace(
+                    "\"stage\":\"canonicalRoot\"",
+                    "\"stage\":\"delete\"",
+                    StringComparison.Ordinal),
+                "emitAclTupleWrongCode" => failureJson.Replace(
+                    "\"nativeCode\":20001",
+                    "\"nativeCode\":20007",
+                    StringComparison.Ordinal),
+                "emitAclTupleWrongReason" => failureJson.Replace(
+                    "\"aclInspectionReason\":\"canonicalRootInspectionFailed\"",
+                    "\"aclInspectionReason\":\"securityDescriptorReadFailed\"",
+                    StringComparison.Ordinal),
+                "emitAclTupleCrossSplice" => failureJson
+                    .Replace(
+                        "\"stage\":\"canonicalRoot\"",
+                        "\"stage\":\"descriptorCopy\"",
+                        StringComparison.Ordinal)
+                    .Replace(
+                        "\"nativeCode\":20001",
+                        "\"nativeCode\":20005",
+                        StringComparison.Ordinal)
+                    .Replace(
+                        "\"aclInspectionReason\":" +
+                        "\"canonicalRootInspectionFailed\"",
+                        "\"aclInspectionReason\":" +
+                        "\"descriptorCompareFailed\"",
                         StringComparison.Ordinal),
                 _ => failureJson
             };
@@ -231,8 +268,16 @@ internal static class Program
             case "emitDuplicateBindingPrefixMatched":
             case "emitDuplicateBindingVolumeMatched":
             case "emitDuplicateBindingFileIdentityMatched":
+            case "emitDuplicateAclInspectionReason":
                 throw new InvalidOperationException(
                     "installTransactionUnavailable");
+            case "emitAclTupleWrongStage":
+            case "emitAclTupleWrongCode":
+            case "emitAclTupleWrongReason":
+            case "emitAclTupleCrossSplice":
+                SetStage("canonicalRoot");
+                throw AclInspectionFailure(
+                    "canonicalRootInspectionFailed", 20001);
         }
     }
 
@@ -269,6 +314,32 @@ internal static class Program
             _bindingVolumeMatched.ToString().ToLowerInvariant() + "," +
             "\"fileIdentityMatched\":" +
             _bindingFileIdentityMatched.ToString().ToLowerInvariant() + "}");
+        return 0;
+    }
+
+    private static int InspectSystemAcl()
+    {
+        if (Environment.GetEnvironmentVariable(
+                "LIGASE_INSTALL_VALIDATION_HARNESS") != "1")
+            throw new InvalidOperationException("invalidArguments");
+        var common = Environment.GetFolderPath(
+            Environment.SpecialFolder.CommonApplicationData);
+        if (string.IsNullOrWhiteSpace(common))
+            throw new InvalidOperationException("installTransactionUnavailable");
+        var adminRoot = Path.Combine(common, "Ligase Host Admin");
+        using var handle = OpenPath(
+            adminRoot, directory: true, writeSecurity: false);
+        _ = VerifyHandle(handle, adminRoot, directory: true);
+        SetStage("canonicalRoot");
+        if (!IsCanonicalAdminRoot(adminRoot, common))
+            throw AclInspectionFailure(
+                "canonicalRootInspectionFailed", 20001);
+        SetStage("inspectAcl");
+        var exact = HasExactAcl(handle, directory: true);
+        Console.Write(
+            "{\"code\":\"installTransactionAclInspectionValid\"," +
+            $"\"exact\":{exact.ToString().ToLowerInvariant()}," +
+            $"\"reason\":\"{_aclInspectionReason}\"}}");
         return 0;
     }
 
@@ -329,6 +400,25 @@ internal static class Program
         _nativeCode = 0;
         _bindingReason = reason;
         return new InvalidOperationException("installTransactionInvalid");
+    }
+
+    private static InvalidOperationException AclInspectionFailure(
+        string reason, int code)
+    {
+        _nativeCategory = "managedFailure";
+        _nativeCode = code;
+        _aclInspectionReason = reason;
+        return new InvalidOperationException("installTransactionAclInvalid");
+    }
+
+    private static void InjectValidationAclFailure(
+        string behavior, string reason, int code)
+    {
+        if (Environment.GetEnvironmentVariable(
+                "LIGASE_INSTALL_VALIDATION_HARNESS") == "1" &&
+            Environment.GetEnvironmentVariable(
+                "LIGASE_TRANSACTION_TEST_BEHAVIOR") == behavior)
+            throw AclInspectionFailure(reason, code);
     }
 
     private static void InjectValidationNativeFailure(
@@ -693,9 +783,16 @@ internal static class Program
                 CreateDirectoryWithExactAcl(current);
             using var handle = OpenPath(current, true, writeSecurity: false);
             var identity = VerifyHandle(handle, current, true);
+            SetStage("canonicalRoot");
+            InjectValidationAclFailure(
+                "failCanonicalRootInspection",
+                "canonicalRootInspectionFailed", 20001);
+            var canonicalAdminRoot =
+                IsCanonicalAdminRoot(current, trustedBase);
+            SetStage("inspectAcl");
+            var exactAcl = HasExactAcl(handle, directory: true);
             if (existed && segmentIndex == 1 &&
-                IsCanonicalAdminRoot(current, trustedBase) &&
-                !HasExactAcl(handle, directory: true))
+                canonicalAdminRoot && !exactAcl)
             {
                 handle.Dispose();
                 byte[] originalSecurity;
@@ -1273,24 +1370,96 @@ internal static class Program
 
     private static bool HasExactAcl(SafeFileHandle handle, bool directory)
     {
+        _aclInspectionReason = "none";
+        SetStage("readSecurityDescriptor");
+        InjectValidationAclFailure(
+            "failReadSecurityDescriptor",
+            "securityDescriptorReadFailed", 20002);
         var result = GetSecurityInfo(handle, SeFileObject,
             OwnerSecurityInformation | DaclSecurityInformation,
             out _, out _, out _, out _, out var descriptor);
         if (result != 0 || descriptor == IntPtr.Zero)
+        {
+            _aclInspectionReason = "securityDescriptorReadFailed";
             throw NativeFailure(
                 "installTransactionAclInvalid", checked((int)result));
+        }
         try
         {
+            SetStage("descriptorLength");
+            InjectValidationAclFailure(
+                "failDescriptorLength",
+                "descriptorLengthInvalid", 20003);
             var length = GetSecurityDescriptorLength(descriptor);
+            if (length is 0 or > 1024 * 1024)
+                throw AclInspectionFailure(
+                    "descriptorLengthInvalid", 20003);
+
+            SetStage("descriptorCopy");
+            InjectValidationAclFailure(
+                "failDescriptorCopy",
+                "descriptorCopyFailed", 20004);
             var binary = new byte[length];
-            Marshal.Copy(descriptor, binary, 0, (int)length);
-            var actual = new RawSecurityDescriptor(binary, 0);
-            var expected = BuildSecurity(directory);
-            var expectedBytes = new byte[expected.BinaryLength];
-            expected.GetBinaryForm(expectedBytes, 0);
-            var actualBytes = new byte[actual.BinaryLength];
-            actual.GetBinaryForm(actualBytes, 0);
-            return actualBytes.SequenceEqual(expectedBytes);
+            try
+            {
+                Marshal.Copy(descriptor, binary, 0, checked((int)length));
+            }
+            catch
+            {
+                throw AclInspectionFailure(
+                    "descriptorCopyFailed", 20004);
+            }
+
+            SetStage("descriptorParse");
+            InjectValidationAclFailure(
+                "failDescriptorParse",
+                "descriptorParseFailed", 20005);
+            RawSecurityDescriptor actual;
+            try
+            {
+                actual = new RawSecurityDescriptor(binary, 0);
+            }
+            catch
+            {
+                throw AclInspectionFailure(
+                    "descriptorParseFailed", 20005);
+            }
+
+            SetStage("buildSecurityDescriptor");
+            InjectValidationAclFailure(
+                "failBuildSecurityDescriptor",
+                "expectedDescriptorBuildFailed", 20006);
+            CommonSecurityDescriptor expected;
+            try
+            {
+                expected = BuildSecurity(directory);
+            }
+            catch
+            {
+                throw AclInspectionFailure(
+                    "expectedDescriptorBuildFailed", 20006);
+            }
+
+            SetStage("compareSecurityDescriptor");
+            InjectValidationAclFailure(
+                "failCompareSecurityDescriptor",
+                "descriptorCompareFailed", 20007);
+            try
+            {
+                var sections = AccessControlSections.Owner |
+                    AccessControlSections.Access;
+                var matches = string.Equals(
+                    actual.GetSddlForm(sections),
+                    expected.GetSddlForm(sections),
+                    StringComparison.Ordinal);
+                _aclInspectionReason = matches ? "exact" : "notExact";
+                return matches;
+            }
+            catch
+            {
+                throw AclInspectionFailure(
+                    "descriptorCompareFailed", 20007);
+            }
         }
         finally { LocalFree(descriptor); }
     }

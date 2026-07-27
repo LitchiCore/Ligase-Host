@@ -266,13 +266,18 @@ Transaction-helper failures expose only a closed machine code, one closed
 stage, and a safe native category:
 `fileNotFound`, `pathNotFound`, `accessDenied`, `invalidHandle`, `busy`,
 `invalidParameter`, `privilegeNotHeld`, `invalidOwner`, `invalidAcl`,
-`notSupported`, `identityChanged`, `bindingMismatch`, or `unknown`. Named native categories use
+`notSupported`, `identityChanged`, `bindingMismatch`, `managedFailure`, or
+`unknown`. Named native categories use
 the corresponding allowlisted Win32 values (`2`, `3`, `5`, `6`, `32`, `87`,
 `1314`, `1307`, `1336`, `50`);
-other positive 16-bit Win32 values retain their numeric code with category
+ACL inspection uses closed managed codes `20001` through `20007`; other
+positive 16-bit Win32 values retain their numeric code with category
 `unknown`. Zero or out-of-range values are not accepted as a native failure.
 Stages are `resolveProgramData`, `rejectReparse`, `createSegment`, `openHandle`,
-`verifyIdentity`, `resolveFinalPath`, `applyAcl`, `assertAcl`, `createTemp`,
+`verifyIdentity`, `resolveFinalPath`, `canonicalRoot`, `inspectAcl`,
+`readSecurityDescriptor`, `descriptorLength`, `descriptorCopy`,
+`descriptorParse`, `buildSecurityDescriptor`, `compareSecurityDescriptor`,
+`applyAcl`, `assertAcl`, `createTemp`,
 `atomicReplace`, `finalReadback`,
 `read`, `delete`, `inputValidation`, or `processTimeout`. A write payload is
 rejected before process creation when its strict UTF-8 byte length exceeds the
@@ -309,10 +314,32 @@ Each handle verification creates a fresh binding snapshot; checks that have
 not run for the failing object remain false and can never inherit success from
 an earlier Admin-root, Transactions, probe, or journal handle.
 
+After handle binding succeeds, canonical-root and ACL inspection have separate
+closed stages. Reading, sizing, copying, parsing, building, and semantically
+comparing the security descriptor cannot inherit `resolveFinalPath`.
+Persistent evidence records only a closed ACL-inspection reason; it never
+records the descriptor, SDDL, account path, or managed exception. An inherited
+or otherwise non-exact descriptor is the closed `notExact` state that enters
+the existing empty-root recovery boundary. Malformed or unreadable descriptors
+fail before ACL, shortcut, firewall, or ARP mutation. Exactness still requires
+the Administrators owner, protected DACL, and only SYSTEM/Administrators full
+control with the frozen inheritance flags.
+
+Managed ACL inspection diagnostics are one exact tuple, not three independent
+closed fields: `canonicalRoot/20001/canonicalRootInspectionFailed`,
+`readSecurityDescriptor/20002/securityDescriptorReadFailed`,
+`descriptorLength/20003/descriptorLengthInvalid`,
+`descriptorCopy/20004/descriptorCopyFailed`,
+`descriptorParse/20005/descriptorParseFailed`,
+`buildSecurityDescriptor/20006/expectedDescriptorBuildFailed`, or
+`compareSecurityDescriptor/20007/descriptorCompareFailed`. PowerShell rejects
+any crossed stage, code, or reason before machine or persistent evidence is
+accepted.
+
 Before PowerShell materializes helper failure JSON, a strict recursive raw
 parser rejects duplicate property names at every object depth. This includes
 same-value and conflicting duplicates of the machine code, native code, and
-all binding fields; `ConvertFrom-Json` last-wins behavior is never used as a
+all binding and ACL-inspection fields; `ConvertFrom-Json` last-wins behavior is never used as a
 duplicate-property authority. The materialized object must then have the exact
 closed field set and types before any value reaches persistent evidence.
 

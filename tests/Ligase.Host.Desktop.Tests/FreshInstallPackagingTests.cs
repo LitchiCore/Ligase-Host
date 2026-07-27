@@ -803,6 +803,11 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(management, "bindingPrefixMatched");
         StringAssert.Contains(management, "bindingVolumeMatched");
         StringAssert.Contains(management, "bindingFileIdentityMatched");
+        StringAssert.Contains(management, "aclInspectionReason");
+        StringAssert.Contains(management, "managedFailure");
+        StringAssert.Contains(management, "$managedAclTuples");
+        StringAssert.Contains(management, "$isExactManagedAclTuple");
+        StringAssert.Contains(management, "$hasManagedAclField");
         StringAssert.Contains(management, "LigaseStrictJson");
         StringAssert.Contains(
             management,
@@ -843,6 +848,9 @@ public sealed class FreshInstallPackagingTests
                  {
                      "resolveProgramData", "rejectReparse", "createSegment",
                      "openHandle", "verifyIdentity", "resolveFinalPath",
+                     "canonicalRoot", "inspectAcl", "readSecurityDescriptor",
+                     "descriptorLength", "descriptorCopy", "descriptorParse",
+                     "buildSecurityDescriptor", "compareSecurityDescriptor",
                      "applyAcl", "assertAcl", "createTemp",
                      "atomicReplace", "finalReadback", "read", "delete"
                  })
@@ -864,6 +872,9 @@ public sealed class FreshInstallPackagingTests
             "installTransactionNativeSubstageDiagnosticInvalid");
         StringAssert.Contains(
             runtimeHarness,
+            "installTransactionAclInspectionDiagnosticInvalid");
+        StringAssert.Contains(
+            runtimeHarness,
             "installTransactionBindingDiagnosticInvalid");
         StringAssert.Contains(
             runtimeHarness,
@@ -871,6 +882,12 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(
             runtimeHarness,
             "installTransactionSystemBindingReadOnlyInvalid");
+        StringAssert.Contains(
+            runtimeHarness,
+            "installTransactionSystemAclReadOnlyInvalid");
+        StringAssert.Contains(
+            transactionHelper,
+            "inspectSystemAcl");
         StringAssert.Contains(
             runtimeHarness,
             "installTransactionSequentialBindingIsolationInvalid");
@@ -882,6 +899,16 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(
             runtimeHarness,
             "emitDuplicateBindingFileIdentityMatched");
+        StringAssert.Contains(
+            runtimeHarness,
+            "emitDuplicateAclInspectionReason");
+        StringAssert.Contains(
+            runtimeHarness,
+            "installTransactionManagedAclTupleAccepted");
+        StringAssert.Contains(runtimeHarness, "emitAclTupleWrongStage");
+        StringAssert.Contains(runtimeHarness, "emitAclTupleWrongCode");
+        StringAssert.Contains(runtimeHarness, "emitAclTupleWrongReason");
+        StringAssert.Contains(runtimeHarness, "emitAclTupleCrossSplice");
         StringAssert.Contains(
             runtimeHarness,
             "installTransactionNonemptyAdminRootAccepted");
