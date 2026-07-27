@@ -279,6 +279,7 @@ function Test-ClosedArtifactGateObservation {
     }
     $knownSchemas = @(
         'productionInvalidArgumentsV1',
+        'productionDiagnosticRequiredV1',
         'productionPolicySetFailureV1',
         'productionPolicyReadbackFailureV1',
         'validationArgvV1',
@@ -1017,6 +1018,65 @@ function Invoke-GateEvidenceSelfTests {
                 throw 'gateEvidenceValidProjectionRejected'
             }
         }
+        $diagnosticInvocation = [pscustomobject]@{
+            exitCode = 18
+            stdout = ''
+            stderr = $diagnosticRequiredBase
+            timedOut = $false
+            elapsedMilliseconds = 1
+        }
+        $diagnosticProjection = ConvertTo-ClosedArtifactProjection `
+            $diagnosticRequiredBase `
+            -SchemaId 'productionDiagnosticRequiredV1'
+        $diagnosticFirst = New-ArtifactGateObservation `
+            -GateId 'self-test-production-diagnostic-required' `
+            -ArtifactKind 'production' `
+            -Invocation $diagnosticInvocation `
+            -Projection $diagnosticProjection.value `
+            -Passed $false `
+            -ParseState $diagnosticProjection.state `
+            -SchemaId 'productionDiagnosticRequiredV1' `
+            -ParseReason $diagnosticProjection.reason
+        $diagnosticFirstSha = Write-ArtifactGateObservation $diagnosticFirst
+        $diagnosticFirstPath = Join-Path $Root (
+            'self-test-production-diagnostic-required.first.json')
+        $diagnosticFirstBytes = [IO.File]::ReadAllBytes(
+            $diagnosticFirstPath)
+        if ((Get-BytesSha256 $diagnosticFirstBytes) -ne
+            $diagnosticFirstSha) {
+            throw 'gateEvidenceDiagnosticRequiredReadbackDrift'
+        }
+        $diagnosticCleanup = New-ArtifactGateObservation `
+            -GateId 'self-test-production-diagnostic-required' `
+            -ArtifactKind 'production' `
+            -Invocation $diagnosticInvocation `
+            -Projection $diagnosticProjection.value `
+            -Passed $false `
+            -CleanupState 'completed' `
+            -ParseState $diagnosticProjection.state `
+            -SchemaId 'productionDiagnosticRequiredV1' `
+            -ParseReason $diagnosticProjection.reason
+        Write-ArtifactGateCleanupObservation `
+            $diagnosticCleanup $diagnosticFirstSha |
+            Out-Null
+        foreach ($invalidObservationSchema in @('none', 'unknownSchemaV1')) {
+            $invalidDiagnosticObservation =
+                [pscustomobject](New-ArtifactGateObservation `
+                    -GateId (
+                        'self-test-production-diagnostic-' +
+                        $invalidObservationSchema.ToLowerInvariant()) `
+                    -ArtifactKind 'production' `
+                    -Invocation $diagnosticInvocation `
+                    -Projection $diagnosticProjection.value `
+                    -Passed $false `
+                    -ParseState 'closed' `
+                    -SchemaId $invalidObservationSchema `
+                    -ParseReason 'none')
+            if (Test-ClosedArtifactGateObservation `
+                    $invalidDiagnosticObservation) {
+                throw 'gateEvidenceDiagnosticRequiredSchemaAccepted'
+            }
+        }
         foreach ($childCase in @(
                 @{ id = 'policy'; raw = $childBase; exit = 0;
                     stdout = $true; schema = 'validationChildPolicyV1' },
@@ -1289,6 +1349,11 @@ function Invoke-GateEvidenceSelfTests {
             }
         }
         $invalidCases = @(
+            @{ id = 'diagnostic-required-wrong-tuple';
+                schema = 'productionDiagnosticRequiredV1';
+                raw = $diagnosticRequiredBase.Replace(
+                    '"resultCode":"diagnosticChannelRequired"',
+                    '"resultCode":"invalidArguments"') },
             @{ id = 'production-duplicate-same'; schema = 'productionInvalidArgumentsV1';
                 raw = $productionBase.Replace(
                     '"nativeCode":0', '"nativeCode":0,"nativeCode":0') },

@@ -237,6 +237,15 @@ public sealed class FreshInstallPackagingTests
             sourceGate,
             "secureStorePreflightValidationSeamInProductionArtifact");
         StringAssert.Contains(sourceGate, "productionDiagnosticRequiredV1");
+        StringAssert.Contains(
+            sourceGate,
+            "gateEvidenceDiagnosticRequiredReadbackDrift");
+        StringAssert.Contains(
+            sourceGate,
+            "gateEvidenceDiagnosticRequiredSchemaAccepted");
+        StringAssert.Contains(
+            sourceGate,
+            "diagnostic-required-wrong-tuple");
         StringAssert.Contains(sourceGate, "launcherFailureV1");
         StringAssert.Contains(sourceGate, "launcherIpcValidationV1");
         StringAssert.Contains(sourceGate, "$LauncherArtifact");
