@@ -285,15 +285,18 @@ stage, and a safe native category:
 the corresponding allowlisted Win32 values (`2`, `3`, `5`, `6`, `32`, `87`,
 `1314`, `1307`, `1336`, `50`);
 ACL inspection uses closed managed codes `20001` through `20007`; empty-root
-owner/child/stream inspection uses `20008` through `20011`; other
-positive 16-bit Win32 values retain their numeric code with category
-`unknown`. Zero or out-of-range values are not accepted as a native failure.
+owner/child/stream metadata inspection uses `20008` through `20011`; the
+separate empty-root stream query uses `20015` only when a failed query has no
+native code. Other positive 16-bit Win32 values retain their numeric code with
+category `unknown`. Zero or out-of-range values are not accepted as a native
+failure.
 Stages are `resolveProgramData`, `rejectReparse`, `createSegment`, `openHandle`,
 `verifyIdentity`, `resolveFinalPath`, `canonicalRoot`, `inspectAcl`,
 `readSecurityDescriptor`, `descriptorLength`, `descriptorCopy`,
 `descriptorParse`, `buildSecurityDescriptor`, `compareSecurityDescriptor`,
 `inspectEmptyRootOwner`, `inspectEmptyRootChildren`,
-`inspectEmptyRootStreams`, `inspectEmptyRootStreamMetadata`,
+`queryEmptyRootStreams`, `inspectEmptyRootStreams`,
+`inspectEmptyRootStreamMetadata`,
 `applyAcl`, `assertAcl`, `createTemp`,
 `atomicReplace`, `finalReadback`,
 `read`, `delete`, `inputValidation`, or `processTimeout`. A write payload is
@@ -362,6 +365,11 @@ directory-query, or stream-query failure retains its allowlisted Win32
 category/code at the corresponding stage and does not inherit a completed
 `resolveFinalPath` diagnostic. Persistent evidence records only this closed
 reason, never a stream name or directory entry.
+The stream query itself is a separate `queryEmptyRootStreams` stage: exact
+`ERROR_HANDLE_EOF` means no stream records exist, another Win32 error is
+captured once and preserved, and a failed query with no native code is the
+closed `managedFailure/20015/streamQueryFailed` tuple. Metadata parsing begins
+only after a successful query.
 
 Before PowerShell materializes helper failure JSON, a strict recursive raw
 parser rejects duplicate property names at every object depth. This includes

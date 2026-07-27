@@ -45,6 +45,7 @@ internal static class Program
     private const int ErrorSharingViolation = 32;
     private const int ErrorChildProcessBlocked = 367;
     private const int ErrorHandleEof = 38;
+    private const int StreamQueryWithoutNativeCode = 20015;
     private const int ErrorNotSupported = 50;
     private const int ErrorInvalidParameter = 87;
     private const int ErrorAlreadyExists = 183;
@@ -2429,15 +2430,29 @@ internal static class Program
                         canonicalBytes.Length);
                 }
             }
-            else if (!GetFileInformationByHandleEx(
-                         handle, FileStreamInfo, buffer, NtQueryBufferBytes))
+            else
             {
-                if (Marshal.GetLastWin32Error() == ErrorHandleEof)
-                    return false;
-                throw NativeFailure(
-                    "installTransactionUnavailable",
-                    Marshal.GetLastWin32Error());
+                SetStage("queryEmptyRootStreams");
+                if (!GetFileInformationByHandleEx(
+                        handle, FileStreamInfo, buffer,
+                        NtQueryBufferBytes))
+                {
+                    var queryError = Marshal.GetLastPInvokeError();
+                    if (queryError == ErrorHandleEof)
+                        return false;
+                    if (queryError == 0)
+                    {
+                        _emptyRootInspectionReason = "streamQueryFailed";
+                        _nativeCategory = "managedFailure";
+                        _nativeCode = StreamQueryWithoutNativeCode;
+                        throw new InvalidOperationException(
+                            "installTransactionUnavailable");
+                    }
+                    throw NativeFailure(
+                        "installTransactionUnavailable", queryError);
+                }
             }
+            SetStage("inspectEmptyRootStreams");
             var offset = 0;
             var canonicalStreams = new HashSet<string>(
                 StringComparer.OrdinalIgnoreCase);

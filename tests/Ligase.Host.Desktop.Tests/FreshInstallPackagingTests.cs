@@ -95,6 +95,15 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(program, "AceType.AccessAllowed");
         StringAssert.Contains(program, "0x001200A9");
         StringAssert.Contains(program, "0x00000116");
+        StringAssert.Contains(
+            program, "StreamQueryWithoutNativeCode = 20015");
+        StringAssert.Contains(
+            program, "SetStage(\"queryEmptyRootStreams\")");
+        StringAssert.Contains(
+            program, "var queryError = Marshal.GetLastPInvokeError()");
+        StringAssert.Contains(program, "queryError == ErrorHandleEof");
+        StringAssert.Contains(
+            program, "_emptyRootInspectionReason = \"streamQueryFailed\"");
         Assert.IsFalse(program.Contains(
             "KnownPartialAdminRootSddlSha256"));
         StringAssert.Contains(
@@ -1349,6 +1358,15 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(management, "$isExactManagedAclTuple");
         StringAssert.Contains(management, "$hasManagedAclField");
         StringAssert.Contains(management, "$emptyRootTuples");
+        StringAssert.Contains(
+            management,
+            "queryEmptyRootStreams = @(20015, \"streamQueryFailed\")");
+        StringAssert.Contains(
+            management,
+            "\"queryEmptyRootStreams\", \"inspectEmptyRootStreams\"");
+        StringAssert.Contains(
+            management,
+            "20008, 20009, 20010, 20011, 20015");
         StringAssert.Contains(management, "$isExactEmptyRootTuple");
         StringAssert.Contains(management, "$hasEmptyRootField");
         StringAssert.Contains(

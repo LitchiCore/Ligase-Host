@@ -844,7 +844,8 @@ function Invoke-InstallTransactionHelper(
                "descriptorLength", "descriptorCopy", "descriptorParse",
                "buildSecurityDescriptor", "compareSecurityDescriptor",
                "inspectEmptyRootOwner", "inspectEmptyRootChildren",
-               "inspectEmptyRootStreams", "inspectEmptyRootStreamMetadata",
+               "queryEmptyRootStreams", "inspectEmptyRootStreams",
+               "inspectEmptyRootStreamMetadata",
               "applyAcl", "assertAcl", "createTemp",
               "atomicReplace", "finalReadback", "read", "delete",
               "inputValidation", "processTimeout")) {
@@ -868,7 +869,7 @@ function Invoke-InstallTransactionHelper(
           bindingMismatch = @(0)
           managedFailure = @(
             20001, 20002, 20003, 20004, 20005, 20006, 20007,
-            20008, 20009, 20010, 20011)
+            20008, 20009, 20010, 20011, 20015)
           unknown = @(0)
         }
         $nativeCodeValid = if ($nativeCategory -ceq "unknown") {
@@ -951,14 +952,17 @@ function Invoke-InstallTransactionHelper(
           inspectEmptyRootChildren = @(20009, "childEntryPresent")
           inspectEmptyRootStreams = @(20010, "namedDataStreamPresent")
           inspectEmptyRootStreamMetadata = @(20011, "streamMetadataInvalid")
+          queryEmptyRootStreams = @(20015, "streamQueryFailed")
         }
         $emptyRootReasons = @(
           "ownerNotAdministrators", "childEntryPresent",
-          "namedDataStreamPresent", "streamMetadataInvalid")
+          "namedDataStreamPresent", "streamMetadataInvalid",
+          "streamQueryFailed")
         if ($emptyRootInspectionReason -notin @(
             "none", "empty",
             "ownerNotAdministrators", "childEntryPresent",
-            "namedDataStreamPresent", "streamMetadataInvalid")) {
+            "namedDataStreamPresent", "streamMetadataInvalid",
+            "streamQueryFailed")) {
           throw "installTransactionInvalid"
         }
         $emptyRootStage = [string]$failure.stage
@@ -969,7 +973,7 @@ function Invoke-InstallTransactionHelper(
           $nativeCode -eq [int]$emptyRootTuple[0] -and
           $emptyRootInspectionReason -ceq [string]$emptyRootTuple[1])
         $hasEmptyRootField = (
-          $nativeCode -in 20008..20011 -or
+          $nativeCode -in @(20008, 20009, 20010, 20011, 20015) -or
           $emptyRootInspectionReason -in $emptyRootReasons)
         if ($hasEmptyRootField -ne $isExactEmptyRootTuple) {
           throw "installTransactionInvalid"
