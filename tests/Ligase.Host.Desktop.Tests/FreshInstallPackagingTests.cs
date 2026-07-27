@@ -53,6 +53,10 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(program, "ValidationPolicySetFault");
         StringAssert.Contains(program, "ValidationPolicyReadbackMismatch");
         StringAssert.Contains(program, "CreateSuspended");
+        StringAssert.Contains(program, "ErrorChildProcessBlocked = 367");
+        StringAssert.Contains(
+            program,
+            "nativeCode != ErrorChildProcessBlocked");
         StringAssert.Contains(program, "RunPreflightValidation()");
         StringAssert.Contains(program, "CreateProcessW(");
         StringAssert.Contains(program, "\\\"childCreationBlocked\\\":true");
@@ -228,6 +232,14 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(sourceGate, "observedResultCode");
         StringAssert.Contains(sourceGate, "observedStage");
         StringAssert.Contains(sourceGate, "observedNativeCode");
+        StringAssert.Contains(sourceGate, "$value.nativeCode -eq 367");
+        StringAssert.Contains(sourceGate, "$childResult.nativeCode -eq 367");
+        StringAssert.Contains(sourceGate, "child-code-five");
+        StringAssert.Contains(sourceGate, "child-code-other");
+        StringAssert.Contains(sourceGate, "self-test-failure-flow");
+        StringAssert.Contains(sourceGate, "gateEvidenceFailureFlowContinued");
+        Assert.IsFalse(sourceGate.Contains("exit$x"));
+        Assert.IsFalse(sourceGate.Contains("throwmodeInvalid"));
         StringAssert.Contains(
             sourceGate,
             "secureStorePreflightChildPolicyMachineFailure");

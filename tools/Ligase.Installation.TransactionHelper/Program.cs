@@ -37,6 +37,7 @@ internal static class Program
     private const int ErrorAccessDenied = 5;
     private const int ErrorInvalidHandle = 6;
     private const int ErrorSharingViolation = 32;
+    private const int ErrorChildProcessBlocked = 367;
     private const int ErrorHandleEof = 38;
     private const int ErrorNotSupported = 50;
     private const int ErrorInvalidParameter = 87;
@@ -581,7 +582,7 @@ internal static class Program
             CloseHandle(process.Thread);
         var failedProcessClosed = processHandleZero ||
             CloseHandle(process.Process);
-        if (nativeCode != ErrorAccessDenied ||
+        if (nativeCode != ErrorChildProcessBlocked ||
             !processHandleZero ||
             !threadHandleZero ||
             !failedThreadClosed ||
@@ -599,6 +600,7 @@ internal static class Program
             "\"childCreationBlocked\":true," +
             "\"childProcessCreated\":false," +
             "\"processHandlesZero\":true," +
+            "\"nativeCode\":" + ErrorChildProcessBlocked + "," +
             "\"sentinelExists\":false}");
         return 0;
     }

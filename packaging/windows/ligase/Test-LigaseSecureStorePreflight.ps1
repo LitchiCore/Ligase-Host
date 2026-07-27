@@ -475,7 +475,8 @@ function ConvertTo-ClosedArtifactProjection {
                 argumentCount = 'integer'; token = 'string'
                 childCreationBlocked = 'boolean'
                 childProcessCreated = 'boolean'
-                processHandlesZero = 'boolean'; sentinelExists = 'boolean'
+                processHandlesZero = 'boolean'; nativeCode = 'integer'
+                sentinelExists = 'boolean'
             }
             validationChildFailureV1 = [ordered]@{
                 schemaId = 'string'; result = 'string'; resultCode = 'string'
@@ -576,7 +577,8 @@ function ConvertTo-ClosedArtifactProjection {
                 $value.stage -eq 'childPolicy' -and
                 $value.policyActive -eq $true -and
                 $value.argumentCount -eq 1 -and
-                $value.token -eq '--validate-child-policy'
+                $value.token -eq '--validate-child-policy' -and
+                $value.nativeCode -eq 367
             }
             'validationChildCleanupV1' {
                 $value.schemaId -eq 'validationChildCleanupV1' -and
@@ -790,6 +792,31 @@ function Invoke-GateEvidenceSelfTests {
     $savedRoot = $script:GateEvidenceRoot
     try {
         $script:GateEvidenceRoot = $Root
+        $continuedAfterFailure = $false
+        $failurePattern =
+            '\AselfTestExpectedFailure gateId=self-test-failure-flow ' +
+            'evidenceSha256=[0-9A-F]{64}\z'
+        try {
+            Complete-ArtifactGate (
+                New-ArtifactGateObservation `
+                    -GateId 'self-test-failure-flow' `
+                    -ArtifactKind 'harness' `
+                    -Invocation ([pscustomobject]@{
+                        exitCode = 18; stdout = ''; stderr = ''
+                        timedOut = $false; elapsedMilliseconds = 1
+                    }) `
+                    -Projection $null -Passed $false) `
+                -FailureCode 'selfTestExpectedFailure' | Out-Null
+            $continuedAfterFailure = $true
+        }
+        catch {
+            if ($_.Exception.Message -notmatch $failurePattern) {
+                throw
+            }
+        }
+        if ($continuedAfterFailure) {
+            throw 'gateEvidenceFailureFlowContinued'
+        }
         foreach ($case in @(
                 @{ id = 'policy'; policy = $false; handles = $true;
                     pid = 0; sentinel = $false; cleanup = 'completed' },
@@ -859,7 +886,8 @@ function Invoke-GateEvidenceSelfTests {
             '"policyActive":true,"argumentCount":1,' +
             '"token":"--validate-child-policy",' +
             '"childCreationBlocked":true,"childProcessCreated":false,' +
-            '"processHandlesZero":true,"sentinelExists":false}'
+            '"processHandlesZero":true,"nativeCode":367,' +
+            '"sentinelExists":false}'
         $cleanupBase =
             '{"schemaId":"validationChildCleanupV1",' +
             '"result":"failed","stage":"childCleanup",' +
@@ -1225,6 +1253,12 @@ function Invoke-GateEvidenceSelfTests {
                 raw = $childBase.Replace(
                     '"processHandlesZero":true',
                     '"processHandlesZero":"true"') },
+            @{ id = 'child-code-five'; schema = 'validationChildPolicyV1';
+                raw = $childBase.Replace(
+                    '"nativeCode":367', '"nativeCode":5') },
+            @{ id = 'child-code-other'; schema = 'validationChildPolicyV1';
+                raw = $childBase.Replace(
+                    '"nativeCode":367', '"nativeCode":87') },
             @{ id = 'cleanup-pid-duplicate'; schema = 'validationChildCleanupV1';
                 raw = $cleanupBase.Replace(
                     '"childPid":0', '"childPid":0,"childPid":41') },
@@ -2243,6 +2277,7 @@ if ($RunArtifactGates) {
         $childResult.childCreationBlocked -eq $true -and
         $childResult.childProcessCreated -eq $false -and
         $childResult.processHandlesZero -eq $true -and
+        $childResult.nativeCode -eq 367 -and
         $childResult.sentinelExists -eq $false -and
         -not (Test-Path -LiteralPath $sentinel)
     Complete-ArtifactGate (
