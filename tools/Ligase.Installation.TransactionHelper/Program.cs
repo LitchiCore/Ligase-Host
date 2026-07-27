@@ -121,6 +121,35 @@ internal static class Program
     private static string _aclInspectionReason = "none";
     private static string _emptyRootInspectionReason = "none";
 
+    private readonly record struct FailureDiagnosticSnapshot(
+        string Stage, string NativeCategory, int NativeCode,
+        string BindingReason, string BindingRootKind, int BindingSegmentCount,
+        bool BindingPrefixMatched, bool BindingVolumeMatched,
+        bool BindingFileIdentityMatched, string AclInspectionReason,
+        string EmptyRootInspectionReason);
+
+    private static FailureDiagnosticSnapshot CaptureFailureDiagnostic() =>
+        new(_stage, _nativeCategory, _nativeCode, _bindingReason,
+            _bindingRootKind, _bindingSegmentCount, _bindingPrefixMatched,
+            _bindingVolumeMatched, _bindingFileIdentityMatched,
+            _aclInspectionReason, _emptyRootInspectionReason);
+
+    private static void RestoreFailureDiagnostic(
+        FailureDiagnosticSnapshot snapshot)
+    {
+        _stage = snapshot.Stage;
+        _nativeCategory = snapshot.NativeCategory;
+        _nativeCode = snapshot.NativeCode;
+        _bindingReason = snapshot.BindingReason;
+        _bindingRootKind = snapshot.BindingRootKind;
+        _bindingSegmentCount = snapshot.BindingSegmentCount;
+        _bindingPrefixMatched = snapshot.BindingPrefixMatched;
+        _bindingVolumeMatched = snapshot.BindingVolumeMatched;
+        _bindingFileIdentityMatched = snapshot.BindingFileIdentityMatched;
+        _aclInspectionReason = snapshot.AclInspectionReason;
+        _emptyRootInspectionReason = snapshot.EmptyRootInspectionReason;
+    }
+
     private static readonly SecurityIdentifier AdminSid =
         new(WellKnownSidType.BuiltinAdministratorsSid, null);
     private static readonly SecurityIdentifier SystemSid =
@@ -1540,7 +1569,15 @@ internal static class Program
                 }
                 catch
                 {
-                    recoveryLease?.Rollback();
+                    var failureDiagnostic = CaptureFailureDiagnostic();
+                    try
+                    {
+                        recoveryLease?.Rollback();
+                    }
+                    finally
+                    {
+                        RestoreFailureDiagnostic(failureDiagnostic);
+                    }
                     throw;
                 }
                 finally

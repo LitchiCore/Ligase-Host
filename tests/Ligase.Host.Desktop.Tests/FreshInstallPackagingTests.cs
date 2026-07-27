@@ -115,6 +115,10 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(
             program, "_aclRollback = completed");
         StringAssert.Contains(program, "AdminRootRecoveryLease");
+        StringAssert.Contains(program, "FailureDiagnosticSnapshot");
+        StringAssert.Contains(program, "CaptureFailureDiagnostic()");
+        StringAssert.Contains(
+            program, "RestoreFailureDiagnostic(failureDiagnostic)");
         StringAssert.Contains(program, "RecoveryLeaseState.Unarmed");
         StringAssert.Contains(program, "RecoveryLeaseState.Frozen");
         StringAssert.Contains(program, "RecoveryLeaseState.Mutated");

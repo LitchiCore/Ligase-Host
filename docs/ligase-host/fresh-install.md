@@ -372,6 +372,11 @@ closed `managedFailure/20015/streamQueryFailed` tuple. A managed query-stage
 setup or invocation failure before a native return uses the same
 no-native-code tuple rather than leaving `none/0`. Metadata parsing begins only
 after a successful query.
+If store establishment fails after a known-residue ACL mutation, the helper
+freezes the complete original failure diagnostic before rollback proof runs.
+Rollback may update only the authoritative ACL-mutation, ACL-rollback, and
+recovery-action fields; its identity, ACL, and empty-root proof stages cannot
+replace the original failure tuple in IPC or persistent evidence.
 
 Before PowerShell materializes helper failure JSON, a strict recursive raw
 parser rejects duplicate property names at every object depth. This includes
