@@ -342,8 +342,14 @@ records the descriptor, SDDL, account path, or managed exception. An inherited
 or otherwise non-exact descriptor is the closed `notExact` state that enters
 the existing empty-root recovery boundary. Malformed or unreadable descriptors
 fail before ACL, shortcut, firewall, or ARP mutation. Exactness still requires
-the Administrators owner, protected DACL, and only SYSTEM/Administrators full
-control with the frozen inheritance flags.
+the Administrators owner, a protected DACL, and the exact SYSTEM and
+Administrators allow ACE multiset (type, SID, mask, inheritance flags, and
+count). Comparison is semantic rather than serialized-SDDL equality: Windows
+may retain the `DiscretionaryAclAutoInherited` bookkeeping flag when an
+existing directory receives a protected replacement DACL. That flag alone is
+accepted only when every authoritative owner/DACL/ACE field is exact;
+DACL `Defaulted`, `Untrusted`, or `AutoInheritRequired`,
+inherited/extra/deny/object ACEs, or any SID/mask/flag drift remain non-exact.
 
 Managed ACL inspection diagnostics are one exact tuple, not three independent
 closed fields: `canonicalRoot/20001/canonicalRootInspectionFailed`,

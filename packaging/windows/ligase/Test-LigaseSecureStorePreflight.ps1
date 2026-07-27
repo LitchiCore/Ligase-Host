@@ -2187,6 +2187,13 @@ foreach ($token in @(
         'CaptureFailureDiagnostic()',
         'RestoreFailureDiagnostic(failureDiagnostic)',
         'RollbackPreservingFailure(recoveryLease)',
+        'HasExactAclSemantics(actual, expected)',
+        'actualFlags != (requiredFlags |',
+        'ControlFlags.DiscretionaryAclUntrusted',
+        'actualAcl.Count != expectedAcl.Count',
+        'actualAce.AceType != expectedAce.AceType',
+        'actualAce.AccessMask != expectedAce.AccessMask',
+        'actualAce.AceFlags != expectedAce.AceFlags',
         'RecoveryLeaseState.Unarmed',
         'RecoveryLeaseState.Frozen',
         'RecoveryLeaseState.Mutated',
@@ -2233,6 +2240,14 @@ if ($program.IndexOf(
         'KnownPartialAdminRootSddlSha256',
         [StringComparison]::Ordinal) -ge 0) {
     throw 'preflightKnownResidueStillUsesSddlHash'
+}
+if ($program.IndexOf(
+        'actual.GetSddlForm(sections)',
+        [StringComparison]::Ordinal) -ge 0 -or
+    $program.IndexOf(
+        'expected.GetSddlForm(sections)',
+        [StringComparison]::Ordinal) -ge 0) {
+    throw 'preflightExactAclStillUsesSddlStringAuthority'
 }
 foreach ($token in @(
         'NamedPipeServerStreamAcl.Create',

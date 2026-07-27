@@ -2850,12 +2850,7 @@ internal static class Program
                 "descriptorCompareFailed", 20007);
             try
             {
-                var sections = AccessControlSections.Owner |
-                    AccessControlSections.Access;
-                var matches = string.Equals(
-                    actual.GetSddlForm(sections),
-                    expected.GetSddlForm(sections),
-                    StringComparison.Ordinal);
+                var matches = HasExactAclSemantics(actual, expected);
                 _aclInspectionReason = matches ? "exact" : "notExact";
                 return matches;
             }
@@ -2866,6 +2861,66 @@ internal static class Program
             }
         }
         finally { LocalFree(descriptor); }
+    }
+
+    private static bool HasExactAclSemantics(
+        RawSecurityDescriptor actual,
+        CommonSecurityDescriptor expected)
+    {
+        if (actual.Owner is null || expected.Owner is null ||
+            !actual.Owner.Equals(expected.Owner))
+            return false;
+
+        const ControlFlags aclFlags =
+            ControlFlags.DiscretionaryAclPresent |
+            ControlFlags.DiscretionaryAclDefaulted |
+            ControlFlags.DiscretionaryAclUntrusted |
+            ControlFlags.DiscretionaryAclAutoInherited |
+            ControlFlags.DiscretionaryAclAutoInheritRequired |
+            ControlFlags.DiscretionaryAclProtected;
+        const ControlFlags requiredFlags =
+            ControlFlags.DiscretionaryAclPresent |
+            ControlFlags.DiscretionaryAclProtected;
+        var actualFlags = actual.ControlFlags & aclFlags;
+        var expectedFlags = expected.ControlFlags & aclFlags;
+        if ((actualFlags != requiredFlags &&
+             actualFlags != (requiredFlags |
+                 ControlFlags.DiscretionaryAclAutoInherited)) ||
+            expectedFlags != requiredFlags)
+            return false;
+
+        var actualAcl = actual.DiscretionaryAcl;
+        var expectedAcl = expected.DiscretionaryAcl;
+        if (actualAcl is null || expectedAcl is null ||
+            actualAcl.Count != expectedAcl.Count)
+            return false;
+        var matched = new bool[expectedAcl.Count];
+        foreach (GenericAce actualGeneric in actualAcl)
+        {
+            if (actualGeneric is not QualifiedAce actualAce)
+                return false;
+            var match = -1;
+            for (var candidate = 0;
+                 candidate < expectedAcl.Count; candidate++)
+            {
+                if (matched[candidate] ||
+                    expectedAcl[candidate] is not QualifiedAce expectedAce ||
+                    actualAce.AceType != expectedAce.AceType ||
+                    actualAce.AccessMask != expectedAce.AccessMask ||
+                    actualAce.AceFlags != expectedAce.AceFlags ||
+                    actualAce.SecurityIdentifier is null ||
+                    expectedAce.SecurityIdentifier is null ||
+                    !actualAce.SecurityIdentifier.Equals(
+                        expectedAce.SecurityIdentifier))
+                    continue;
+                match = candidate;
+                break;
+            }
+            if (match < 0)
+                return false;
+            matched[match] = true;
+        }
+        return matched.All(value => value);
     }
 
     private readonly record struct FileIdentity(uint Volume, ulong FileId);

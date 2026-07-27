@@ -124,6 +124,22 @@ public sealed class FreshInstallPackagingTests
             Regex.Matches(
                 program,
                 @"RollbackPreservingFailure\(recoveryLease\)").Count);
+        StringAssert.Contains(
+            program, "HasExactAclSemantics(actual, expected)");
+        StringAssert.Contains(
+            program, "actualFlags != (requiredFlags |");
+        StringAssert.Contains(
+            program, "ControlFlags.DiscretionaryAclUntrusted");
+        StringAssert.Contains(
+            program, "actualAcl.Count != expectedAcl.Count");
+        StringAssert.Contains(
+            program, "actualAce.AceType != expectedAce.AceType");
+        StringAssert.Contains(
+            program, "actualAce.AccessMask != expectedAce.AccessMask");
+        StringAssert.Contains(
+            program, "actualAce.AceFlags != expectedAce.AceFlags");
+        Assert.IsFalse(program.Contains("actual.GetSddlForm(sections)"));
+        Assert.IsFalse(program.Contains("expected.GetSddlForm(sections)"));
         StringAssert.Contains(program, "RecoveryLeaseState.Unarmed");
         StringAssert.Contains(program, "RecoveryLeaseState.Frozen");
         StringAssert.Contains(program, "RecoveryLeaseState.Mutated");
