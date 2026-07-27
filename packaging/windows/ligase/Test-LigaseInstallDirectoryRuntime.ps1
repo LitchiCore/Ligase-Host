@@ -2240,12 +2240,22 @@ $systemAdminRoot = Join-Path (
   [Environment]::GetFolderPath(
     [Environment+SpecialFolder]::CommonApplicationData)) "Ligase Host Admin"
 $systemBindingAvailable = Test-Path -LiteralPath $systemAdminRoot -PathType Container
+$systemBindingReadable = $false
 if ($systemBindingAvailable) {
-  $systemBindingAclBefore = (Get-Acl -LiteralPath $systemAdminRoot).
-    GetSecurityDescriptorSddlForm(
-      [Security.AccessControl.AccessControlSections]::All)
-  $systemBindingChildrenBefore = @(
-    Get-ChildItem -LiteralPath $systemAdminRoot -Force).Count
+  try {
+    $systemBindingAclBefore = (Get-Acl -LiteralPath $systemAdminRoot).
+      GetSecurityDescriptorSddlForm(
+        [Security.AccessControl.AccessControlSections]::All)
+    $systemBindingChildrenBefore = @(
+      Get-ChildItem -LiteralPath $systemAdminRoot -Force).Count
+    $systemBindingReadable = $true
+  } catch [UnauthorizedAccessException] {
+    # An exact admin-only root intentionally denies this non-elevated build
+    # harness. Keep the real-system observation explicitly inconclusive.
+    $systemBindingReadable = $false
+  }
+}
+if ($systemBindingReadable) {
   $env:LIGASE_INSTALL_VALIDATION_HARNESS = "1"
   $systemBindingOutput = @(& $transactionHelper inspectSystemBinding)
   $systemBindingExit = $LASTEXITCODE
@@ -2272,19 +2282,27 @@ if ($systemBindingAvailable) {
 }
 $bindingResults += [ordered]@{
   name = "transaction-system-programdata-alias-readonly-binding"
-  passed = $systemBindingAvailable
-  inconclusive = -not $systemBindingAvailable
+  passed = $systemBindingReadable
+  inconclusive = -not $systemBindingReadable
 }
 $systemAclInspectionAvailable = Test-Path -LiteralPath $systemAdminRoot
+$systemAclInspectionReadable = $false
 if ($systemAclInspectionAvailable) {
-  $systemAclBefore = (Get-Acl -LiteralPath $systemAdminRoot).
-    GetSecurityDescriptorSddlForm(
-      [Security.AccessControl.AccessControlSections]::All)
-  $systemAclChildrenBefore = @(
-    Get-ChildItem -LiteralPath $systemAdminRoot -Force).Count
-  $systemAclStreamsBefore = @(
-    Get-Item -LiteralPath $systemAdminRoot -Stream * `
-      -ErrorAction SilentlyContinue).Count
+  try {
+    $systemAclBefore = (Get-Acl -LiteralPath $systemAdminRoot).
+      GetSecurityDescriptorSddlForm(
+        [Security.AccessControl.AccessControlSections]::All)
+    $systemAclChildrenBefore = @(
+      Get-ChildItem -LiteralPath $systemAdminRoot -Force).Count
+    $systemAclStreamsBefore = @(
+      Get-Item -LiteralPath $systemAdminRoot -Stream * `
+        -ErrorAction SilentlyContinue).Count
+    $systemAclInspectionReadable = $true
+  } catch [UnauthorizedAccessException] {
+    $systemAclInspectionReadable = $false
+  }
+}
+if ($systemAclInspectionReadable) {
   $env:LIGASE_INSTALL_VALIDATION_HARNESS = "1"
   $ErrorActionPreference = "Continue"
   $systemAclOutput = @(
@@ -2312,8 +2330,8 @@ if ($systemAclInspectionAvailable) {
 }
 $bindingResults += [ordered]@{
   name = "transaction-system-inherited-acl-readonly-not-exact"
-  passed = $systemAclInspectionAvailable
-  inconclusive = -not $systemAclInspectionAvailable
+  passed = $systemAclInspectionReadable
+  inconclusive = -not $systemAclInspectionReadable
 }
 foreach ($sequenceCase in @(
     [ordered]@{

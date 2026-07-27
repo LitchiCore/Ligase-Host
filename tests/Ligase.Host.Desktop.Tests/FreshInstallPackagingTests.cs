@@ -121,7 +121,7 @@ public sealed class FreshInstallPackagingTests
             program, "RestoreFailureDiagnostic(failureDiagnostic)");
         Assert.AreEqual(
             2,
-            Regex.Matches(
+            System.Text.RegularExpressions.Regex.Matches(
                 program,
                 @"RollbackPreservingFailure\(recoveryLease\)").Count);
         StringAssert.Contains(
@@ -1480,6 +1480,21 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(
             runtimeHarness,
             "installTransactionSystemBindingReadOnlyInvalid");
+        StringAssert.Contains(
+            runtimeHarness,
+            "catch [UnauthorizedAccessException]");
+        StringAssert.Contains(
+            runtimeHarness,
+            "passed = $systemBindingReadable");
+        StringAssert.Contains(
+            runtimeHarness,
+            "inconclusive = -not $systemBindingReadable");
+        StringAssert.Contains(
+            runtimeHarness,
+            "passed = $systemAclInspectionReadable");
+        StringAssert.Contains(
+            runtimeHarness,
+            "inconclusive = -not $systemAclInspectionReadable");
         StringAssert.Contains(
             runtimeHarness,
             "installTransactionSystemAclReadOnlyInvalid");

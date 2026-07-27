@@ -371,6 +371,12 @@ directory-query, or stream-query failure retains its allowlisted Win32
 category/code at the corresponding stage and does not inherit a completed
 `resolveFinalPath` diagnostic. Persistent evidence records only this closed
 reason, never a stream name or directory entry.
+The validation-only real-ProgramData alias probe remains read-only. When an
+existing exact admin-only root denies ACL or child enumeration to the
+non-elevated build harness, that single real-system observation is explicitly
+`Inconclusive`, never `PASS`; the isolated binding fixtures remain
+authoritative. If the initial snapshot is readable, any later readback failure
+or drift remains fail closed.
 The stream query itself is a separate `queryEmptyRootStreams` stage: exact
 `ERROR_HANDLE_EOF` means no stream records exist, another Win32 error is
 captured once and preserved, and a failed query with no native code is the
