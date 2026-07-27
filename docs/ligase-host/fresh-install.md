@@ -541,9 +541,16 @@ between the hash check and UAC image load. A `PublicRelease` preflight requires
 an allowlisted Authenticode publisher, RFC 3161 timestamp, protected staging
 that prevents replacement before execution, and a new security review.
 
-The current one-machine development recovery allowlist includes the exact safe
-fingerprint of the known empty partial-ACL residue left by the earlier failed
-gate. While holding the exclusive directory handle, recovery freezes the
+The development recovery gate includes one exact semantic ACL shape for the
+known empty partial-ACL residue left by the earlier failed gate: Administrators
+owner, protected and auto-inherited DACL control flags, and the exact multiset
+of SYSTEM, Administrators, Creator Owner, and Users allow ACEs with their
+frozen masks and inheritance flags. ACE serialization order is not authority;
+missing, extra, deny, SID, mask, inheritance, owner, or control-flag drift is
+rejected. A semantic mismatch reports the closed
+`knownResidue/managedFailure/20014` tuple rather than `none/0`. No raw SDDL,
+descriptor, SID list, or path is emitted. While holding the exclusive directory
+handle, recovery freezes the
 original descriptor bytes/hash and FileId. Any ACL apply/readback failure
 compares the live descriptor with those bytes and, if changed, restores and
 rereads the original descriptor on the same handle. That compensation handle
@@ -555,8 +562,8 @@ restores the original Admin descriptor on the still-bound FileId, and verifies
 the original empty/no-ADS fingerprint. A failed restore is a closed
 `rollbackFailed` result, never `notAttempted` or `notRequired`. An unknown
 non-exact ACL, FileId drift, child, named ADS, or reparse point is never
-adopted. This machine-specific allowance is not a general installer recovery
-policy.
+adopted. This previously observed residue shape is not a general installer
+recovery policy and is not widened by adding machine-specific SDDL hashes.
 
 The compensation lease has a closed state machine:
 `Unarmed -> Frozen -> Mutated -> Committed`. Before `FreezeOriginal` succeeds,

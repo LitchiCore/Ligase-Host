@@ -2166,8 +2166,14 @@ foreach ($token in @(
         'TryOpenDiagnosticPipe(args)',
         'GetNamedPipeServerProcessId',
         'TrySendDiagnostic(failureBytes)',
-        'KnownPartialAdminRootSddlSha256',
+        'KnownResidueMismatchCode = 20014',
         'AssertKnownPartialAdminRoot',
+        'KnownResidueAce',
+        'ControlFlags.DiscretionaryAclAutoInherited',
+        'WellKnownSidType.CreatorOwnerSid',
+        'AceType.AccessAllowed',
+        '0x001200A9',
+        '0x00000116',
         'AdminRootRecoveryLease',
         'RecoveryLeaseState.Unarmed',
         'RecoveryLeaseState.Frozen',
@@ -2210,6 +2216,11 @@ foreach ($token in @(
     if ($program.IndexOf($token, [StringComparison]::Ordinal) -lt 0) {
         throw ('secureStorePreflightBoundaryMissing:' + $token)
     }
+}
+if ($program.IndexOf(
+        'KnownPartialAdminRootSddlSha256',
+        [StringComparison]::Ordinal) -ge 0) {
+    throw 'preflightKnownResidueStillUsesSddlHash'
 }
 foreach ($token in @(
         'NamedPipeServerStreamAcl.Create',

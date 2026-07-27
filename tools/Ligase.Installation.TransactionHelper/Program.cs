@@ -312,8 +312,7 @@ internal static class Program
 #if PREFLIGHT_ONLY
     private const string PreflightReleaseKind = "UnsignedDev";
     private const string PreflightTrustBoundary = "localManualExactSha";
-    private const string KnownPartialAdminRootSddlSha256 =
-        "4B31277EA740269D3B46A1C8688328B4A60FBBB16A7E427BEA8A0852D5F394E7";
+    private const int KnownResidueMismatchCode = 20014;
 
     private static int RunStandaloneSecureStorePreflight(string[] args)
     {
@@ -1956,16 +1955,98 @@ internal static class Program
     private static void AssertKnownPartialAdminRoot(byte[] binary)
     {
         SetStage("knownResidue");
-        var descriptor = new RawSecurityDescriptor(binary, 0);
-        var sddl = descriptor.GetSddlForm(
-            AccessControlSections.Owner | AccessControlSections.Access);
-        var hash = Convert.ToHexString(SHA256.HashData(
-            Encoding.UTF8.GetBytes(sddl)));
-        if (!string.Equals(
-                hash, KnownPartialAdminRootSddlSha256,
-                StringComparison.Ordinal))
-            throw new InvalidOperationException(
-                "installTransactionKnownResidueMismatch");
+        try
+        {
+            var descriptor = new RawSecurityDescriptor(binary, 0);
+            var requiredFlags =
+                ControlFlags.DiscretionaryAclPresent |
+                ControlFlags.DiscretionaryAclAutoInherited |
+                ControlFlags.DiscretionaryAclProtected;
+            var relevantFlags = descriptor.ControlFlags &
+                (ControlFlags.DiscretionaryAclPresent |
+                 ControlFlags.DiscretionaryAclDefaulted |
+                 ControlFlags.DiscretionaryAclAutoInherited |
+                 ControlFlags.DiscretionaryAclAutoInheritRequired |
+                 ControlFlags.DiscretionaryAclProtected);
+            var expected = new[]
+            {
+                new KnownResidueAce(SystemSid, 0x001F01FF,
+                    AceFlags.ObjectInherit | AceFlags.ContainerInherit),
+                new KnownResidueAce(AdminSid, 0x001F01FF,
+                    AceFlags.ObjectInherit | AceFlags.ContainerInherit),
+                new KnownResidueAce(
+                    new SecurityIdentifier(
+                        WellKnownSidType.CreatorOwnerSid, null),
+                    unchecked((int)0x10000000),
+                    AceFlags.ObjectInherit | AceFlags.ContainerInherit |
+                    AceFlags.InheritOnly),
+                new KnownResidueAce(
+                    new SecurityIdentifier(
+                        WellKnownSidType.BuiltinUsersSid, null),
+                    0x001200A9,
+                    AceFlags.ObjectInherit | AceFlags.ContainerInherit),
+                new KnownResidueAce(
+                    new SecurityIdentifier(
+                        WellKnownSidType.BuiltinUsersSid, null),
+                    0x00000116, AceFlags.ContainerInherit)
+            };
+            var matched = new bool[expected.Length];
+            var dacl = descriptor.DiscretionaryAcl;
+            if (descriptor.Owner is null ||
+                !AdminSid.Equals(descriptor.Owner) ||
+                relevantFlags != requiredFlags ||
+                dacl is null || dacl.Count != expected.Length)
+                throw KnownResidueMismatch();
+            foreach (GenericAce generic in dacl)
+            {
+                if (generic is not QualifiedAce ace ||
+                    generic.AceType != AceType.AccessAllowed)
+                    throw KnownResidueMismatch();
+                var index = -1;
+                for (var candidate = 0;
+                     candidate < expected.Length; candidate++)
+                {
+                    if (!matched[candidate] &&
+                        expected[candidate].Matches(ace))
+                    {
+                        index = candidate;
+                        break;
+                    }
+                }
+                if (index < 0) throw KnownResidueMismatch();
+                matched[index] = true;
+            }
+            if (matched.Any(value => !value))
+                throw KnownResidueMismatch();
+        }
+        catch (InvalidOperationException exception)
+            when (exception.Message ==
+                  "installTransactionKnownResidueMismatch")
+        {
+            throw;
+        }
+        catch
+        {
+            throw KnownResidueMismatch();
+        }
+    }
+
+    private static InvalidOperationException KnownResidueMismatch()
+    {
+        _nativeCategory = "managedFailure";
+        _nativeCode = KnownResidueMismatchCode;
+        return new InvalidOperationException(
+            "installTransactionKnownResidueMismatch");
+    }
+
+    private readonly record struct KnownResidueAce(
+        SecurityIdentifier Sid, int Mask, AceFlags Flags)
+    {
+        public bool Matches(QualifiedAce ace) =>
+            ace.SecurityIdentifier is not null &&
+            Sid.Equals(ace.SecurityIdentifier) &&
+            ace.AccessMask == Mask &&
+            ace.AceFlags == Flags;
     }
 #endif
 

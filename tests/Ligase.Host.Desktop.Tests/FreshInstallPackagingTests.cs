@@ -85,8 +85,18 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(program, "GetNamedPipeServerProcessId");
         StringAssert.Contains(program, "diagnosticPeerInvalid");
         StringAssert.Contains(program, "TrySendDiagnostic(failureBytes)");
-        StringAssert.Contains(program, "KnownPartialAdminRootSddlSha256");
+        StringAssert.Contains(program, "KnownResidueMismatchCode = 20014");
         StringAssert.Contains(program, "AssertKnownPartialAdminRoot");
+        StringAssert.Contains(program, "KnownResidueAce");
+        StringAssert.Contains(
+            program, "ControlFlags.DiscretionaryAclAutoInherited");
+        StringAssert.Contains(
+            program, "WellKnownSidType.CreatorOwnerSid");
+        StringAssert.Contains(program, "AceType.AccessAllowed");
+        StringAssert.Contains(program, "0x001200A9");
+        StringAssert.Contains(program, "0x00000116");
+        Assert.IsFalse(program.Contains(
+            "KnownPartialAdminRootSddlSha256"));
         StringAssert.Contains(
             program, "_aclRollback = completed");
         StringAssert.Contains(program, "AdminRootRecoveryLease");
