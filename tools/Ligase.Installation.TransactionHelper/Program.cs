@@ -48,6 +48,23 @@ internal static class Program
     private const int FileStreamInfo = 7;
     private const int ProcessChildProcessPolicy = 13;
     private const uint NoChildProcessCreation = 1;
+#if PREFLIGHT_VALIDATION
+    private const uint CreateNoWindow = 0x08000000;
+    private const uint CreateSuspended = 0x00000004;
+    private const uint WaitObject0 = 0;
+    private const string ValidationArgvToken = "--validate-argv-token";
+    private const string ValidationChildPolicy = "--validate-child-policy";
+    private const string ValidationHangPipes = "--validate-hang-pipes";
+    private const string ValidationPolicySetFault =
+        "--validate-policy-set-fault";
+    private const string ValidationPolicyReadbackMismatch =
+        "--validate-policy-readback-mismatch";
+    private static string _preflightValidationAction = "";
+    private static int _preflightValidationChildPid;
+    private static string _preflightValidationChildCleanup = "notRequired";
+    private static IntPtr _preflightValidationChildProcess;
+    private static IntPtr _preflightValidationChildThread;
+#endif
     private const int StatusSuccess = 0;
     private const int StatusNoMoreFiles = unchecked((int)0x80000006);
     private const int NtQueryBufferBytes = 64 * 1024;
@@ -279,8 +296,22 @@ internal static class Program
         try
         {
             _stage = "securityInitialization";
+#if PREFLIGHT_VALIDATION
+            if (args.Length != 1 ||
+                args[0] is not (
+                    ValidationArgvToken or
+                    ValidationChildPolicy or
+                    ValidationHangPipes or
+                    ValidationPolicySetFault or
+                    ValidationPolicyReadbackMismatch))
+                throw new InvalidOperationException("invalidArguments");
+            _preflightValidationAction = args[0];
+#endif
             EnableChildProcessMitigation();
             _stage = "inputValidation";
+#if PREFLIGHT_VALIDATION
+            return RunPreflightValidation();
+#else
             if (args.Length != 0)
                 throw new InvalidOperationException("invalidArguments");
 
@@ -321,6 +352,7 @@ internal static class Program
             committingStore.WriteEvidence(
                 SerializeStandalonePreflightEvidence(result));
             return 0;
+#endif
         }
         catch (Exception exception)
         {
@@ -341,6 +373,19 @@ internal static class Program
             if (result.Probe == "failed")
                 result.Cleanup = "unknown";
             var failureBytes = SerializeStandalonePreflightEvidence(result);
+#if PREFLIGHT_VALIDATION
+            if (_preflightValidationChildCleanup == "failed")
+                CompleteValidationChildCleanup();
+            if (_preflightValidationChildPid != 0 ||
+                _preflightValidationChildCleanup != "notRequired")
+            {
+                failureBytes = Encoding.UTF8.GetBytes(
+                    "{\"result\":\"failed\",\"stage\":\"childCleanup\"," +
+                    "\"childPid\":" + _preflightValidationChildPid + "," +
+                    "\"childCleanup\":\"" +
+                    _preflightValidationChildCleanup + "\"}");
+            }
+#endif
             if (store is not null && !evidenceWriteInProgress)
             {
                 evidenceWriteInProgress = true;
@@ -410,6 +455,15 @@ internal static class Program
 
     private static void EnableChildProcessMitigation()
     {
+#if PREFLIGHT_VALIDATION
+        if (_preflightValidationAction == ValidationPolicySetFault)
+        {
+            _nativeCategory = "accessDenied";
+            _nativeCode = ErrorAccessDenied;
+            throw new InvalidOperationException(
+                "installTransactionUnavailable");
+        }
+#endif
         var policy = NoChildProcessCreation;
         if (!SetProcessMitigationPolicy(
                 ProcessChildProcessPolicy,
@@ -427,6 +481,11 @@ internal static class Program
             throw NativeFailure(
                 "installTransactionUnavailable",
                 Marshal.GetLastWin32Error());
+#if PREFLIGHT_VALIDATION
+        if (_preflightValidationAction ==
+            ValidationPolicyReadbackMismatch)
+            readback = 0;
+#endif
         if (readback != NoChildProcessCreation)
         {
             _nativeCategory = "managedFailure";
@@ -434,6 +493,146 @@ internal static class Program
             throw new InvalidOperationException("installTransactionUnavailable");
         }
     }
+
+#if PREFLIGHT_VALIDATION
+    private static int RunPreflightValidation()
+    {
+        if (_preflightValidationAction == ValidationArgvToken)
+        {
+            Console.Out.Write(
+                "{\"result\":\"passed\",\"stage\":\"inputValidation\"," +
+                "\"policyActive\":true,\"argumentCount\":1," +
+                "\"token\":\"--validate-argv-token\"}");
+            return 0;
+        }
+
+        if (_preflightValidationAction == ValidationHangPipes)
+        {
+            Thread.Sleep(Timeout.Infinite);
+            throw new InvalidOperationException(
+                "validationHangReturned");
+        }
+
+        if (_preflightValidationAction != ValidationChildPolicy)
+            throw new InvalidOperationException(
+                "installTransactionUnavailable");
+
+        _stage = "childPolicy";
+        const string sentinelName =
+            "ligase-preflight-child-sentinel.txt";
+        if (File.Exists(sentinelName))
+            throw new InvalidOperationException("validationSentinelExists");
+
+        var systemDirectory = new StringBuilder(260);
+        var systemDirectoryLength = GetSystemDirectoryW(
+            systemDirectory, systemDirectory.Capacity);
+        if (systemDirectoryLength == 0 ||
+            systemDirectoryLength >= systemDirectory.Capacity)
+            throw NativeFailure(
+                "installTransactionUnavailable",
+                Marshal.GetLastWin32Error());
+        var command = Path.Combine(
+            systemDirectory.ToString(), "cmd.exe");
+        var commandLine = new StringBuilder(
+            "cmd.exe /d /c echo child>" + sentinelName);
+        var startup = new StartupInfo
+        {
+            Size = Marshal.SizeOf<StartupInfo>()
+        };
+        var created = CreateProcessW(
+            command,
+            commandLine,
+            IntPtr.Zero,
+            IntPtr.Zero,
+            false,
+            CreateNoWindow | CreateSuspended,
+            IntPtr.Zero,
+            Environment.CurrentDirectory,
+            ref startup,
+            out var process);
+        var nativeCode = created ? 0 : Marshal.GetLastWin32Error();
+        var processHandleZero = process.Process == IntPtr.Zero;
+        var threadHandleZero = process.Thread == IntPtr.Zero;
+        if (created)
+        {
+            _preflightValidationChildPid = process.ProcessId;
+            _preflightValidationChildProcess = process.Process;
+            _preflightValidationChildThread = process.Thread;
+            CompleteValidationChildCleanup();
+            _stage = "childCleanup";
+            throw new InvalidOperationException(
+                _preflightValidationChildCleanup == "completed"
+                    ? "childCreationUnexpectedlyAllowed"
+                    : "childCleanupFailed");
+        }
+        var failedThreadClosed = threadHandleZero ||
+            CloseHandle(process.Thread);
+        var failedProcessClosed = processHandleZero ||
+            CloseHandle(process.Process);
+        if (nativeCode != ErrorAccessDenied ||
+            !processHandleZero ||
+            !threadHandleZero ||
+            !failedThreadClosed ||
+            !failedProcessClosed ||
+            File.Exists(sentinelName))
+            throw NativeFailure(
+                "installTransactionUnavailable",
+                nativeCode);
+
+        Console.Out.Write(
+            "{\"result\":\"passed\",\"stage\":\"childPolicy\"," +
+            "\"policyActive\":true,\"argumentCount\":1," +
+            "\"token\":\"--validate-child-policy\"," +
+            "\"childCreationBlocked\":true," +
+            "\"childProcessCreated\":false," +
+            "\"processHandlesZero\":true," +
+            "\"sentinelExists\":false}");
+        return 0;
+    }
+
+    private static void CompleteValidationChildCleanup()
+    {
+        _stage = "childCleanup";
+        var cleanup = Stopwatch.StartNew();
+        var terminated = false;
+        var waited = false;
+        while (cleanup.ElapsedMilliseconds < 4000)
+        {
+            if (!terminated)
+                terminated =
+                    _preflightValidationChildProcess != IntPtr.Zero &&
+                    TerminateProcess(
+                        _preflightValidationChildProcess, 18);
+            if (terminated)
+            {
+                waited = WaitForSingleObject(
+                    _preflightValidationChildProcess, 100) ==
+                    WaitObject0;
+                if (waited)
+                    break;
+            }
+            Thread.Sleep(25);
+        }
+        if (!terminated || !waited)
+        {
+            _preflightValidationChildCleanup = "failed";
+            return;
+        }
+
+        var threadClosed =
+            _preflightValidationChildThread == IntPtr.Zero ||
+            CloseHandle(_preflightValidationChildThread);
+        var processClosed =
+            _preflightValidationChildProcess == IntPtr.Zero ||
+            CloseHandle(_preflightValidationChildProcess);
+        if (threadClosed)
+            _preflightValidationChildThread = IntPtr.Zero;
+        if (processClosed)
+            _preflightValidationChildProcess = IntPtr.Zero;
+        _preflightValidationChildCleanup =
+            threadClosed && processClosed ? "completed" : "failed";
+    }
+#endif
 
     private static void AppendJsonString(
         StringBuilder json,
@@ -2024,6 +2223,40 @@ internal static class Program
         public IntPtr Information;
     }
 
+#if PREFLIGHT_VALIDATION
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct StartupInfo
+    {
+        public int Size;
+        public string? Reserved;
+        public string? Desktop;
+        public string? Title;
+        public int X;
+        public int Y;
+        public int XSize;
+        public int YSize;
+        public int XCountChars;
+        public int YCountChars;
+        public int FillAttribute;
+        public int Flags;
+        public short ShowWindow;
+        public short Reserved2Length;
+        public IntPtr Reserved2;
+        public IntPtr StandardInput;
+        public IntPtr StandardOutput;
+        public IntPtr StandardError;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct ProcessInformation
+    {
+        public IntPtr Process;
+        public IntPtr Thread;
+        public int ProcessId;
+        public int ThreadId;
+    }
+#endif
+
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern bool CreateDirectoryW(
         string path, ref SecurityAttributes securityAttributes);
@@ -2048,6 +2281,42 @@ internal static class Program
         int mitigationPolicy,
         out uint buffer,
         nuint length);
+
+#if PREFLIGHT_VALIDATION
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CreateProcessW(
+        string applicationName,
+        StringBuilder commandLine,
+        IntPtr processAttributes,
+        IntPtr threadAttributes,
+        [MarshalAs(UnmanagedType.Bool)] bool inheritHandles,
+        uint creationFlags,
+        IntPtr environment,
+        string currentDirectory,
+        ref StartupInfo startupInfo,
+        out ProcessInformation processInformation);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern uint GetSystemDirectoryW(
+        StringBuilder buffer,
+        int size);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CloseHandle(IntPtr handle);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool TerminateProcess(
+        IntPtr process,
+        uint exitCode);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern uint WaitForSingleObject(
+        IntPtr handle,
+        uint milliseconds);
+#endif
 
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]

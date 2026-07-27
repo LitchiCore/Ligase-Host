@@ -46,6 +46,23 @@ public sealed class FreshInstallPackagingTests
             program,
             "if (readback != NoChildProcessCreation)");
         StringAssert.Contains(program, "_nativeCode = 20013");
+        StringAssert.Contains(program, "#if PREFLIGHT_VALIDATION");
+        StringAssert.Contains(program, "ValidationArgvToken");
+        StringAssert.Contains(program, "ValidationChildPolicy");
+        StringAssert.Contains(program, "ValidationHangPipes");
+        StringAssert.Contains(program, "ValidationPolicySetFault");
+        StringAssert.Contains(program, "ValidationPolicyReadbackMismatch");
+        StringAssert.Contains(program, "CreateSuspended");
+        StringAssert.Contains(program, "RunPreflightValidation()");
+        StringAssert.Contains(program, "CreateProcessW(");
+        StringAssert.Contains(program, "\\\"childCreationBlocked\\\":true");
+        StringAssert.Contains(program, "\\\"processHandlesZero\\\":true");
+        StringAssert.Contains(program, "TerminateProcess(");
+        StringAssert.Contains(program, "WaitForSingleObject(");
+        Assert.IsFalse(program.Contains("ResumeThread"));
+        StringAssert.Contains(program, "childCleanupFailed");
+        StringAssert.Contains(program, "_preflightValidationChildPid");
+        StringAssert.Contains(program, "_preflightValidationChildCleanup");
         StringAssert.Contains(program, "_stage = \"inputValidation\"");
         StringAssert.Contains(program, "SetStage(\"inputValidation\")");
         StringAssert.Contains(program, "if (args.Length != 0)");
@@ -87,11 +104,70 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(project, "<PublishTrimmed>true</PublishTrimmed>");
         StringAssert.Contains(project, "<SelfContained>true</SelfContained>");
         StringAssert.Contains(project, "IL2026;IL3050");
+        Assert.IsFalse(project.Contains("PREFLIGHT_VALIDATION"));
         Assert.IsFalse(program.Contains("JsonSerializer"));
         StringAssert.Contains(program, "private static void AppendJsonString(");
         StringAssert.Contains(program, "secureStorePreflightEncodingFailed");
         StringAssert.Contains(sourceGate, "secureStorePreflightForbiddenSurface");
         StringAssert.Contains(sourceGate, "transactionHelperInitialStageDrifted");
+        StringAssert.Contains(
+            sourceGate,
+            "$ErrorActionPreference = 'Stop'");
+        Assert.IsFalse(sourceGate.Contains(".ArgumentList"));
+        StringAssert.Contains(
+            sourceGate,
+            "$start.Arguments = $Token");
+        StringAssert.Contains(
+            sourceGate,
+            "secureStorePreflightUnsupportedArgumentApi");
+        StringAssert.Contains(
+            sourceGate,
+            "secureStorePreflightUnsupportedApiStartedProcess");
+        StringAssert.Contains(
+            sourceGate,
+            "secureStorePreflightValidationSeamInProductionArtifact");
+        StringAssert.Contains(
+            sourceGate,
+            "Get-SafeAdminRootFingerprint");
+        StringAssert.Contains(
+            sourceGate,
+            "$entry -is [IO.FileInfo]");
+        StringAssert.Contains(
+            sourceGate,
+            "secureStorePreflightNestedFingerprintInvalid");
+        StringAssert.Contains(
+            sourceGate,
+            "ReadToEndAsync()");
+        StringAssert.Contains(
+            sourceGate,
+            "Diagnostics.Stopwatch");
+        StringAssert.Contains(
+            sourceGate,
+            "secureStorePreflightArtifactHangNotBounded");
+        StringAssert.Contains(
+            sourceGate,
+            "secureStorePreflightCleanupFailed");
+        StringAssert.Contains(
+            sourceGate,
+            "secureStorePreflightTaskkillWaitFailed");
+        StringAssert.Contains(
+            sourceGate,
+            "secureStorePreflightTaskkillResidue");
+        StringAssert.Contains(
+            sourceGate,
+            "secureStorePreflightCleanupFaultNotBounded");
+        StringAssert.Contains(sourceGate, "taskkillHang");
+        StringAssert.Contains(sourceGate, "taskkillExitNonzero");
+        StringAssert.Contains(sourceGate, "targetKillFailure");
+        StringAssert.Contains(sourceGate, "targetWaitTimeout");
+        Assert.IsFalse(sourceGate.Contains("ping -n"));
+        Assert.IsFalse(sourceGate.Contains("System32\\cmd.exe"));
+        StringAssert.Contains(
+            sourceGate,
+            "secureStorePreflightValidationChildResumePresent");
+        StringAssert.Contains(
+            sourceGate,
+            "$childResult.processHandlesZero");
         StringAssert.Contains(sourceGate, "executableBuilt = $false");
     }
 
