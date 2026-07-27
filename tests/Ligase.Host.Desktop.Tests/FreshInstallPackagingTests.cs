@@ -357,6 +357,25 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(
             sourceGate,
             "productionPolicyReadbackFailureV1");
+        StringAssert.Contains(sourceGate, "validationPolicySetFailureV1");
+        StringAssert.Contains(
+            sourceGate,
+            "validationPolicyReadbackFailureV1");
+        StringAssert.Contains(
+            sourceGate,
+            "gateEvidenceValidationPolicyProjectionRejected");
+        StringAssert.Contains(
+            sourceGate,
+            "gateEvidenceValidationPolicyReadbackDrift");
+        StringAssert.Contains(
+            sourceGate,
+            "gateEvidenceValidationPolicyKindSchemaAccepted");
+        StringAssert.Contains(
+            sourceGate,
+            "validation-policy-set-wrong-stage");
+        StringAssert.Contains(
+            sourceGate,
+            "validation-policy-readback-wrong-code");
         StringAssert.Contains(sourceGate, "validationArgvV1");
         StringAssert.Contains(sourceGate, "validationChildPolicyV1");
         StringAssert.Contains(sourceGate, "validationChildFailureV1");

@@ -285,6 +285,8 @@ function Test-ClosedArtifactGateObservation {
         'productionDiagnosticRequiredV1',
         'productionPolicySetFailureV1',
         'productionPolicyReadbackFailureV1',
+        'validationPolicySetFailureV1',
+        'validationPolicyReadbackFailureV1',
         'validationArgvV1',
         'validationChildPolicyV1',
         'validationChildFailureV1',
@@ -302,6 +304,8 @@ function Test-ClosedArtifactGateObservation {
         ($Observation.artifactKind -ceq 'validation' -and
             @(
                 'validationArgvV1',
+                'validationPolicySetFailureV1',
+                'validationPolicyReadbackFailureV1',
                 'validationChildPolicyV1',
                 'validationChildFailureV1',
                 'validationChildCleanupV1') -ccontains
@@ -462,6 +466,8 @@ function ConvertTo-ClosedArtifactProjection {
             'productionDiagnosticRequiredV1',
             'productionPolicySetFailureV1',
             'productionPolicyReadbackFailureV1',
+            'validationPolicySetFailureV1',
+            'validationPolicyReadbackFailureV1',
             'validationArgvV1',
             'validationChildPolicyV1',
             'validationChildFailureV1',
@@ -504,6 +510,8 @@ function ConvertTo-ClosedArtifactProjection {
             productionDiagnosticRequiredV1 = $productionShape
             productionPolicySetFailureV1 = $productionShape
             productionPolicyReadbackFailureV1 = $productionShape
+            validationPolicySetFailureV1 = $productionShape
+            validationPolicyReadbackFailureV1 = $productionShape
             validationArgvV1 = [ordered]@{
                 result = 'string'; stage = 'string'; policyActive = 'boolean'
                 argumentCount = 'integer'; token = 'string'
@@ -587,7 +595,9 @@ function ConvertTo-ClosedArtifactProjection {
                     'productionInvalidArgumentsV1',
                     'productionDiagnosticRequiredV1',
                     'productionPolicySetFailureV1',
-                    'productionPolicyReadbackFailureV1') } {
+                    'productionPolicyReadbackFailureV1',
+                    'validationPolicySetFailureV1',
+                    'validationPolicyReadbackFailureV1') } {
                 $tupleValid = switch ($SchemaId) {
                     'productionInvalidArgumentsV1' {
                         $value.resultCode -eq 'invalidArguments' -and
@@ -610,6 +620,18 @@ function ConvertTo-ClosedArtifactProjection {
                         $value.nativeCode -eq 5
                     }
                     'productionPolicyReadbackFailureV1' {
+                        $value.resultCode -eq 'secureStorePreflightFailed' -and
+                        $value.stage -eq 'securityInitialization' -and
+                        $value.nativeCategory -eq 'managedFailure' -and
+                        $value.nativeCode -eq 20013
+                    }
+                    'validationPolicySetFailureV1' {
+                        $value.resultCode -eq 'secureStorePreflightFailed' -and
+                        $value.stage -eq 'securityInitialization' -and
+                        $value.nativeCategory -eq 'accessDenied' -and
+                        $value.nativeCode -eq 5
+                    }
+                    'validationPolicyReadbackFailureV1' {
                         $value.resultCode -eq 'secureStorePreflightFailed' -and
                         $value.stage -eq 'securityInitialization' -and
                         $value.nativeCategory -eq 'managedFailure' -and
@@ -1032,6 +1054,10 @@ function Invoke-GateEvidenceSelfTests {
                     raw = $policySetBase },
                 @{ schema = 'productionPolicyReadbackFailureV1';
                     raw = $policyReadbackBase },
+                @{ schema = 'validationPolicySetFailureV1';
+                    raw = $policySetBase },
+                @{ schema = 'validationPolicyReadbackFailureV1';
+                    raw = $policyReadbackBase },
                 @{ schema = 'validationArgvV1'; raw = $argvBase },
                 @{ schema = 'validationChildPolicyV1'; raw = $childBase },
                 @{ schema = 'validationChildFailureV1';
@@ -1089,6 +1115,86 @@ function Invoke-GateEvidenceSelfTests {
         Write-ArtifactGateCleanupObservation `
             $diagnosticCleanup $diagnosticFirstSha |
             Out-Null
+        foreach ($validationPolicyCase in @(
+                @{ id = 'set'; schema = 'validationPolicySetFailureV1';
+                    raw = $policySetBase },
+                @{ id = 'readback';
+                    schema = 'validationPolicyReadbackFailureV1';
+                    raw = $policyReadbackBase })) {
+            $policyProjection = ConvertTo-ClosedArtifactProjection `
+                ([string]$validationPolicyCase.raw) `
+                -SchemaId ([string]$validationPolicyCase.schema)
+            if ($policyProjection.state -ne 'closed') {
+                throw 'gateEvidenceValidationPolicyProjectionRejected'
+            }
+            $policyInvocation = [pscustomobject]@{
+                exitCode = 18
+                stdout = ''
+                stderr = [string]$validationPolicyCase.raw
+                timedOut = $false
+                elapsedMilliseconds = 1
+            }
+            $policyGateId =
+                'self-test-validation-policy-' +
+                [string]$validationPolicyCase.id
+            $policyFirst = New-ArtifactGateObservation `
+                -GateId $policyGateId `
+                -ArtifactKind 'validation' `
+                -Invocation $policyInvocation `
+                -Projection $policyProjection.value `
+                -Passed $false `
+                -ParseState $policyProjection.state `
+                -SchemaId ([string]$validationPolicyCase.schema) `
+                -ParseReason $policyProjection.reason
+            $policyFirstSha = Write-ArtifactGateObservation $policyFirst
+            $policyFirstPath = Join-Path $Root ($policyGateId + '.first.json')
+            if ((Get-BytesSha256 ([IO.File]::ReadAllBytes(
+                        $policyFirstPath))) -ne $policyFirstSha) {
+                throw 'gateEvidenceValidationPolicyReadbackDrift'
+            }
+            $policyFirst.cleanupState = 'completed'
+            Write-ArtifactGateCleanupObservation `
+                $policyFirst $policyFirstSha | Out-Null
+        }
+        foreach ($validationPolicyNegative in @(
+                @{ id = 'production-validation-schema';
+                    kind = 'production'; schema = 'validationPolicySetFailureV1' },
+                @{ id = 'validation-production-schema';
+                    kind = 'validation'; schema = 'productionPolicySetFailureV1' },
+                @{ id = 'validation-kind-case';
+                    kind = 'Validation'; schema = 'validationPolicySetFailureV1' },
+                @{ id = 'validation-schema-case';
+                    kind = 'validation'; schema = 'ValidationPolicySetFailureV1' })) {
+            $policyNegative = New-ArtifactGateObservation `
+                -GateId (
+                    'self-test-policy-kind-' +
+                    [string]$validationPolicyNegative.id) `
+                -ArtifactKind 'harness' `
+                -Invocation $diagnosticInvocation `
+                -Projection $diagnosticProjection.value `
+                -Passed $false `
+                -ParseState 'invalid' `
+                -SchemaId 'productionDiagnosticRequiredV1' `
+                -ParseReason 'semanticTupleMismatch'
+            $policyNegative.artifactKind =
+                [string]$validationPolicyNegative.kind
+            $policyNegative.schemaId =
+                [string]$validationPolicyNegative.schema
+            $policyWriterRejected = $false
+            try {
+                Write-ArtifactGateObservation $policyNegative | Out-Null
+            }
+            catch {
+                $policyWriterRejected =
+                    $_.Exception.Message -eq 'gateEvidenceUnavailable'
+            }
+            $policyNegativePath = Join-Path $Root (
+                [string]$policyNegative.gateId + '.first.json')
+            if (-not $policyWriterRejected -or
+                (Test-Path -LiteralPath $policyNegativePath)) {
+                throw 'gateEvidenceValidationPolicyKindSchemaAccepted'
+            }
+        }
         foreach ($launcherObservationCase in @(
                 @{ id = 'launcher'; kind = 'launcher';
                     schema = 'launcherFailureV1';
@@ -1571,6 +1677,24 @@ function Invoke-GateEvidenceSelfTests {
                 raw = $policyReadbackBase.Replace(
                     '"nativeCategory":"managedFailure"',
                     '"nativeCategory":"accessDenied"') },
+            @{ id = 'validation-policy-set-wrong-stage';
+                schema = 'validationPolicySetFailureV1';
+                raw = $policySetBase.Replace(
+                    '"stage":"securityInitialization"',
+                    '"stage":"inputValidation"') },
+            @{ id = 'validation-policy-set-wrong-code';
+                schema = 'validationPolicySetFailureV1';
+                raw = $policySetBase.Replace(
+                    '"nativeCode":5', '"nativeCode":20013') },
+            @{ id = 'validation-policy-readback-wrong-stage';
+                schema = 'validationPolicyReadbackFailureV1';
+                raw = $policyReadbackBase.Replace(
+                    '"stage":"securityInitialization"',
+                    '"stage":"inputValidation"') },
+            @{ id = 'validation-policy-readback-wrong-code';
+                schema = 'validationPolicyReadbackFailureV1';
+                raw = $policyReadbackBase.Replace(
+                    '"nativeCode":20013', '"nativeCode":5') },
             @{ id = 'argv-policy-duplicate'; schema = 'validationArgvV1';
                 raw = $argvBase.Replace(
                     '"policyActive":true',
@@ -3015,10 +3139,10 @@ if ($RunArtifactGates) {
         $failure = Invoke-FixedArtifactToken `
             -Artifact $ValidationArtifact -Token $fault
         $failureSchemaId = if ($fault -eq '--validate-policy-set-fault') {
-            'productionPolicySetFailureV1'
+            'validationPolicySetFailureV1'
         }
         else {
-            'productionPolicyReadbackFailureV1'
+            'validationPolicyReadbackFailureV1'
         }
         $failureParse = ConvertTo-ClosedArtifactProjection `
             $failure.stderr -SchemaId $failureSchemaId
