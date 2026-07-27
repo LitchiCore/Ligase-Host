@@ -150,6 +150,20 @@ internal static class Program
         _emptyRootInspectionReason = snapshot.EmptyRootInspectionReason;
     }
 
+    private static void RollbackPreservingFailure(
+        AdminRootRecoveryLease? recoveryLease)
+    {
+        var failureDiagnostic = CaptureFailureDiagnostic();
+        try
+        {
+            recoveryLease?.Rollback();
+        }
+        finally
+        {
+            RestoreFailureDiagnostic(failureDiagnostic);
+        }
+    }
+
     private static readonly SecurityIdentifier AdminSid =
         new(WellKnownSidType.BuiltinAdministratorsSid, null);
     private static readonly SecurityIdentifier SystemSid =
@@ -1569,15 +1583,7 @@ internal static class Program
                 }
                 catch
                 {
-                    var failureDiagnostic = CaptureFailureDiagnostic();
-                    try
-                    {
-                        recoveryLease?.Rollback();
-                    }
-                    finally
-                    {
-                        RestoreFailureDiagnostic(failureDiagnostic);
-                    }
+                    RollbackPreservingFailure(recoveryLease);
                     throw;
                 }
                 finally
@@ -1943,7 +1949,7 @@ internal static class Program
                     }
                     catch
                     {
-                        recoveryLease.Rollback();
+                        RollbackPreservingFailure(recoveryLease);
                         throw;
                     }
                 }

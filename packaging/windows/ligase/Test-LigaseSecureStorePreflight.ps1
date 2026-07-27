@@ -2186,6 +2186,7 @@ foreach ($token in @(
         'FailureDiagnosticSnapshot',
         'CaptureFailureDiagnostic()',
         'RestoreFailureDiagnostic(failureDiagnostic)',
+        'RollbackPreservingFailure(recoveryLease)',
         'RecoveryLeaseState.Unarmed',
         'RecoveryLeaseState.Frozen',
         'RecoveryLeaseState.Mutated',

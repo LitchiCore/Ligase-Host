@@ -119,6 +119,11 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(program, "CaptureFailureDiagnostic()");
         StringAssert.Contains(
             program, "RestoreFailureDiagnostic(failureDiagnostic)");
+        Assert.AreEqual(
+            2,
+            Regex.Matches(
+                program,
+                @"RollbackPreservingFailure\(recoveryLease\)").Count);
         StringAssert.Contains(program, "RecoveryLeaseState.Unarmed");
         StringAssert.Contains(program, "RecoveryLeaseState.Frozen");
         StringAssert.Contains(program, "RecoveryLeaseState.Mutated");

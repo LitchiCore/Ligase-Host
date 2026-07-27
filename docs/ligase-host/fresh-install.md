@@ -376,7 +376,9 @@ If store establishment fails after a known-residue ACL mutation, the helper
 freezes the complete original failure diagnostic before rollback proof runs.
 Rollback may update only the authoritative ACL-mutation, ACL-rollback, and
 recovery-action fields; its identity, ACL, and empty-root proof stages cannot
-replace the original failure tuple in IPC or persistent evidence.
+replace the original failure tuple in IPC or persistent evidence. Every
+rollback entry point uses the same snapshot-preserving wrapper, including the
+inner ACL-apply/readback catch and the outer store-establishment catch.
 
 Before PowerShell materializes helper failure JSON, a strict recursive raw
 parser rejects duplicate property names at every object depth. This includes
