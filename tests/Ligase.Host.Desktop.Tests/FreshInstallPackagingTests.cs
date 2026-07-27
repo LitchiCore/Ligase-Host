@@ -33,7 +33,19 @@ public sealed class FreshInstallPackagingTests
             "Test-LigaseSecureStorePreflight.ps1"));
 
         StringAssert.Contains(program, "#if PREFLIGHT_ONLY");
+        StringAssert.Contains(
+            program,
+            "private static string _stage = \"inputValidation\"");
+        StringAssert.Contains(program, "SetStage(\"inputValidation\")");
         StringAssert.Contains(program, "if (args.Length != 0)");
+        StringAssert.Contains(program, "? \"invalidArguments\"");
+        Assert.IsTrue(
+            program.IndexOf(
+                "if (args.Length != 0)",
+                StringComparison.Ordinal) <
+            program.IndexOf(
+                "\"LIGASE_INSTALL_VALIDATION_HARNESS\", null",
+                StringComparison.Ordinal));
         StringAssert.Contains(program, "localManualExactSha");
         StringAssert.Contains(program, "\"Ligase Host Admin\", \"Transactions\"");
         StringAssert.Contains(

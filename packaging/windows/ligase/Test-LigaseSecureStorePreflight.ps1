@@ -27,7 +27,10 @@ $document = Get-Content -LiteralPath $documentPath -Raw
 foreach ($token in @(
         '#if PREFLIGHT_ONLY',
         'RunStandaloneSecureStorePreflight',
+        'private static string _stage = "inputValidation"',
+        'SetStage("inputValidation")',
         'if (args.Length != 0)',
+        '? "invalidArguments"',
         'PreflightReleaseKind = "UnsignedDev"',
         'PreflightTrustBoundary = "localManualExactSha"',
         '"Ligase Host Admin", "Transactions"',
@@ -42,7 +45,7 @@ foreach ($token in @(
         'Console.Error.Write(',
         'Success = true',
         'ResultCode = "secureStorePreflightReady"',
-        'ResultCode = evidenceWriteInProgress',
+        ': evidenceWriteInProgress',
         'var committingStore = store',
         'store = null',
         'private static void AppendJsonString(',
@@ -89,6 +92,27 @@ if ($preflightStart -lt 0 -or $preflightEnd -le $preflightStart) {
 }
 $preflight = $program.Substring(
     $preflightStart, $preflightEnd - $preflightStart)
+$inputStage = $preflight.IndexOf(
+    'SetStage("inputValidation")',
+    [StringComparison]::Ordinal)
+$argumentCheck = $preflight.IndexOf(
+    'if (args.Length != 0)',
+    [StringComparison]::Ordinal)
+$environmentAccess = $preflight.IndexOf(
+    'Environment.SetEnvironmentVariable(',
+    [StringComparison]::Ordinal)
+$programDataAccess = $preflight.IndexOf(
+    'Environment.GetFolderPath(',
+    [StringComparison]::Ordinal)
+$secureStoreAccess = $preflight.IndexOf(
+    'SecureStore.Open(',
+    [StringComparison]::Ordinal)
+if ($argumentCheck -lt 0 -or $environmentAccess -le $argumentCheck -or
+    $inputStage -le $environmentAccess -or
+    $programDataAccess -le $inputStage -or
+    $secureStoreAccess -le $inputStage) {
+    throw 'secureStorePreflightInputStageOrderInvalid'
+}
 foreach ($forbidden in @(
         'Process.Start',
         'powershell',

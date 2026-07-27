@@ -7,7 +7,7 @@ using Microsoft.Win32.SafeHandles;
 
 internal static class Program
 {
-    private static string _stage = "resolveProgramData";
+    private static string _stage = "inputValidation";
     private const int MaxBytes = 4 * 1024 * 1024 + 64 * 1024;
     private const uint GenericRead = 0x80000000;
     private const uint GenericWrite = 0x40000000;
@@ -287,6 +287,7 @@ internal static class Program
                 "LIGASE_TRANSACTION_FAILURE_STAGE", null);
             Environment.SetEnvironmentVariable(
                 "LIGASE_TRANSACTION_TEST_ROOT", null);
+            SetStage("inputValidation");
             var programData = Environment.GetFolderPath(
                 Environment.SpecialFolder.CommonApplicationData);
             var transactionRoot = Path.Combine(
@@ -316,12 +317,14 @@ internal static class Program
                 SerializeStandalonePreflightEvidence(result));
             return 0;
         }
-        catch
+        catch (Exception exception)
         {
             result.Success = false;
-            result.ResultCode = evidenceWriteInProgress
-                ? "secureStorePreflightEvidenceFailed"
-                : "secureStorePreflightFailed";
+            result.ResultCode = exception.Message == "invalidArguments"
+                ? "invalidArguments"
+                : evidenceWriteInProgress
+                    ? "secureStorePreflightEvidenceFailed"
+                    : "secureStorePreflightFailed";
             result.Stage = _stage;
             result.NativeCategory = _nativeCategory;
             result.NativeCode = _nativeCode;
