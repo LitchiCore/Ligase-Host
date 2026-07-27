@@ -266,7 +266,7 @@ Transaction-helper failures expose only a closed machine code, one closed
 stage, and a safe native category:
 `fileNotFound`, `pathNotFound`, `accessDenied`, `invalidHandle`, `busy`,
 `invalidParameter`, `privilegeNotHeld`, `invalidOwner`, `invalidAcl`,
-`notSupported`, `identityChanged`, or `unknown`. Named native categories use
+`notSupported`, `identityChanged`, `bindingMismatch`, or `unknown`. Named native categories use
 the corresponding allowlisted Win32 values (`2`, `3`, `5`, `6`, `32`, `87`,
 `1314`, `1307`, `1336`, `50`);
 other positive 16-bit Win32 values retain their numeric code with category
@@ -288,6 +288,33 @@ records the native helper exit, stage, safe category/code, and the closed
 recovery action without recording a raw path, exception, journal bytes,
 nonce, or secret. The `installTransaction` component and `failedField`
 distinguish this boundary from firewall and shortcut failures.
+
+`resolveFinalPath` does not compare a DOS path supplied by the caller with a
+device or volume path returned by Windows. The helper first opens the trusted
+ProgramData root without following reparse points, captures its volume/file
+identity and handle-derived NT final path, and then binds each closed
+`Ligase Host Admin` / `Transactions` segment beneath that handle-derived
+prefix. Every child must remain on the same volume, have the expected segment
+depth and name, and retain the same file identity before and after final-path
+resolution. DOS-drive, device, and volume aliases therefore cannot create a
+false rejection or become a path authority. A mismatch fails before ACL,
+shortcut, firewall, or ARP mutation with `bindingMismatch` and one closed
+reason: `trustedRootInvalid`, `volumeMismatch`, `segmentMismatch`, or
+`fileIdentityMismatch`.
+
+Persistent evidence may include only the closed root kind, segment count, and
+boolean prefix/volume/file-identity results. It never includes the trusted or
+resolved raw path, volume name, file identifier, exception, or user profile.
+Each handle verification creates a fresh binding snapshot; checks that have
+not run for the failing object remain false and can never inherit success from
+an earlier Admin-root, Transactions, probe, or journal handle.
+
+Before PowerShell materializes helper failure JSON, a strict recursive raw
+parser rejects duplicate property names at every object depth. This includes
+same-value and conflicting duplicates of the machine code, native code, and
+all binding fields; `ConvertFrom-Json` last-wins behavior is never used as a
+duplicate-property authority. The materialized object must then have the exact
+closed field set and types before any value reaches persistent evidence.
 
 Directory discovery uses only list-directory, read-attributes, read-control,
 and synchronize rights on its shared identification handle. It does not ask

@@ -25,6 +25,7 @@ internal static class Program
     private const uint FileFlagBackupSemantics = 0x02000000;
     private const uint FileFlagOpenReparsePoint = 0x00200000;
     private const uint FileAttributeNormal = 0x80;
+    private const uint VolumeNameNt = 0x2;
     private const uint MoveReplaceExisting = 1;
     private const uint MoveWriteThrough = 8;
     private const int SeFileObject = 1;
@@ -51,6 +52,13 @@ internal static class Program
     private static int _nativeCode;
     private static bool _aclMutationOccurred;
     private static string _aclRollback = "notRequired";
+    private static string _bindingReason = "none";
+    private static string _bindingRootKind = "none";
+    private static int _bindingSegmentCount;
+    private static bool _bindingPrefixMatched;
+    private static bool _bindingVolumeMatched;
+    private static bool _bindingFileIdentityMatched;
+    private static int _bindingAttempt;
 
     private static readonly SecurityIdentifier AdminSid =
         new(WellKnownSidType.BuiltinAdministratorsSid, null);
@@ -66,6 +74,10 @@ internal static class Program
                 throw new InvalidOperationException("invalidArguments");
             var action = args[0];
             SetStage("resolveProgramData");
+            if (action == "inspectSystemBinding")
+                return InspectSystemBinding();
+            if (action == "inspectSequentialBinding")
+                return InspectSequentialBinding(args);
             var root = ResolveRoot(args);
             SetStage("rejectReparse");
             using var store = SecureStore.Open(
@@ -88,13 +100,70 @@ internal static class Program
                 "installTransactionUnavailable" => exception.Message,
                 _ => "installTransactionInvalid"
             };
-            Console.Error.Write(
+            var failureJson =
                 $"{{\"code\":\"{code}\",\"stage\":\"{_stage}\"," +
                 $"\"nativeCategory\":\"{_nativeCategory}\"," +
                 $"\"nativeCode\":{_nativeCode}," +
+                $"\"bindingReason\":\"{_bindingReason}\"," +
+                $"\"bindingRootKind\":\"{_bindingRootKind}\"," +
+                $"\"bindingSegmentCount\":{_bindingSegmentCount}," +
+                $"\"bindingPrefixMatched\":" +
+                $"{_bindingPrefixMatched.ToString().ToLowerInvariant()}," +
+                $"\"bindingVolumeMatched\":" +
+                $"{_bindingVolumeMatched.ToString().ToLowerInvariant()}," +
+                $"\"bindingFileIdentityMatched\":" +
+                $"{_bindingFileIdentityMatched.ToString().ToLowerInvariant()}," +
                 $"\"aclMutationOccurred\":" +
                 $"{_aclMutationOccurred.ToString().ToLowerInvariant()}," +
-                $"\"aclRollback\":\"{_aclRollback}\"}}");
+                $"\"aclRollback\":\"{_aclRollback}\"}}";
+            var validationBehavior = Environment.GetEnvironmentVariable(
+                "LIGASE_TRANSACTION_TEST_BEHAVIOR");
+            failureJson = validationBehavior switch
+            {
+                "emitDuplicateCode" => failureJson.Replace(
+                    "{\"code\":",
+                    "{\"code\":\"installTransactionUnavailable\",\"code\":",
+                    StringComparison.Ordinal),
+                "emitDuplicateCodeLastConflicting" => failureJson.Replace(
+                    "\"stage\":",
+                    "\"code\":\"installTransactionInvalid\",\"stage\":",
+                    StringComparison.Ordinal),
+                "emitDuplicateNativeCode" => failureJson.Replace(
+                    "\"nativeCode\":",
+                    "\"nativeCode\":5,\"nativeCode\":",
+                    StringComparison.Ordinal),
+                "emitDuplicateBindingReason" => failureJson.Replace(
+                    "\"bindingReason\":",
+                    "\"bindingReason\":\"segmentMismatch\"," +
+                    "\"bindingReason\":",
+                    StringComparison.Ordinal),
+                "emitDuplicateBindingRootKind" => failureJson.Replace(
+                    "\"bindingRootKind\":",
+                    "\"bindingRootKind\":\"device\",\"bindingRootKind\":",
+                    StringComparison.Ordinal),
+                "emitDuplicateBindingSegmentCount" => failureJson.Replace(
+                    "\"bindingSegmentCount\":",
+                    "\"bindingSegmentCount\":1,\"bindingSegmentCount\":",
+                    StringComparison.Ordinal),
+                "emitDuplicateBindingPrefixMatched" => failureJson.Replace(
+                    "\"bindingPrefixMatched\":",
+                    "\"bindingPrefixMatched\":true," +
+                    "\"bindingPrefixMatched\":",
+                    StringComparison.Ordinal),
+                "emitDuplicateBindingVolumeMatched" => failureJson.Replace(
+                    "\"bindingVolumeMatched\":",
+                    "\"bindingVolumeMatched\":true," +
+                    "\"bindingVolumeMatched\":",
+                    StringComparison.Ordinal),
+                "emitDuplicateBindingFileIdentityMatched" =>
+                    failureJson.Replace(
+                        "\"bindingFileIdentityMatched\":",
+                        "\"bindingFileIdentityMatched\":true," +
+                        "\"bindingFileIdentityMatched\":",
+                        StringComparison.Ordinal),
+                _ => failureJson
+            };
+            Console.Error.Write(failureJson);
             return 18;
         }
     }
@@ -153,6 +222,17 @@ internal static class Program
                     child?.WaitForExit();
                 }
                 break;
+            case "emitDuplicateCode":
+            case "emitDuplicateCodeLastConflicting":
+            case "emitDuplicateNativeCode":
+            case "emitDuplicateBindingReason":
+            case "emitDuplicateBindingRootKind":
+            case "emitDuplicateBindingSegmentCount":
+            case "emitDuplicateBindingPrefixMatched":
+            case "emitDuplicateBindingVolumeMatched":
+            case "emitDuplicateBindingFileIdentityMatched":
+                throw new InvalidOperationException(
+                    "installTransactionUnavailable");
         }
     }
 
@@ -164,6 +244,53 @@ internal static class Program
             Environment.GetEnvironmentVariable(
                 "LIGASE_INSTALL_VALIDATION_HARNESS") == "1")
             throw new InvalidOperationException("installTransactionUnavailable");
+    }
+
+    private static int InspectSystemBinding()
+    {
+        if (Environment.GetEnvironmentVariable(
+                "LIGASE_INSTALL_VALIDATION_HARNESS") != "1")
+            throw new InvalidOperationException("invalidArguments");
+        var common = Environment.GetFolderPath(
+            Environment.SpecialFolder.CommonApplicationData);
+        if (string.IsNullOrWhiteSpace(common))
+            throw new InvalidOperationException("installTransactionUnavailable");
+        var adminRoot = Path.Combine(common, "Ligase Host Admin");
+        using var handle = OpenPath(
+            adminRoot, directory: true, writeSecurity: false);
+        _ = VerifyHandle(handle, adminRoot, directory: true);
+        Console.Write(
+            "{\"code\":\"installTransactionBindingValid\"," +
+            "\"rootKind\":\"" + _bindingRootKind + "\"," +
+            "\"segmentCount\":" + _bindingSegmentCount + "," +
+            "\"prefixMatched\":" +
+            _bindingPrefixMatched.ToString().ToLowerInvariant() + "," +
+            "\"volumeMatched\":" +
+            _bindingVolumeMatched.ToString().ToLowerInvariant() + "," +
+            "\"fileIdentityMatched\":" +
+            _bindingFileIdentityMatched.ToString().ToLowerInvariant() + "}");
+        return 0;
+    }
+
+    private static int InspectSequentialBinding(string[] args)
+    {
+        if (Environment.GetEnvironmentVariable(
+                "LIGASE_INSTALL_VALIDATION_HARNESS") != "1" ||
+            args.Length != 3 || args[1] != "--test-root")
+            throw new InvalidOperationException("invalidArguments");
+        var second = Path.GetFullPath(args[2]);
+        var first = Path.Combine(
+            Path.GetDirectoryName(second)!, "binding-first");
+        using (var firstHandle = OpenPath(
+                   first, directory: true, writeSecurity: false))
+            _ = VerifyHandle(firstHandle, first, directory: true);
+        using var secondHandle = OpenPath(
+            second, directory: true, writeSecurity: false);
+        _ = VerifyHandle(secondHandle, second, directory: true);
+        Console.Write(
+            "{\"code\":\"installTransactionSequentialBindingValid\"," +
+            "\"success\":true}");
+        return 0;
     }
 
     private static InvalidOperationException NativeFailure(
@@ -193,6 +320,14 @@ internal static class Program
     {
         _nativeCategory = "identityChanged";
         _nativeCode = 0;
+        return new InvalidOperationException("installTransactionInvalid");
+    }
+
+    private static InvalidOperationException BindingFailure(string reason)
+    {
+        _nativeCategory = "bindingMismatch";
+        _nativeCode = 0;
+        _bindingReason = reason;
         return new InvalidOperationException("installTransactionInvalid");
     }
 
@@ -966,6 +1101,13 @@ internal static class Program
     private static FileIdentity VerifyHandle(
         SafeFileHandle handle, string expected, bool directory)
     {
+        _bindingAttempt++;
+        _bindingReason = "none";
+        _bindingRootKind = "none";
+        _bindingSegmentCount = 0;
+        _bindingPrefixMatched = false;
+        _bindingVolumeMatched = false;
+        _bindingFileIdentityMatched = false;
         SetStage("verifyIdentity");
         InjectValidationNativeFailure(
             "failVerifyIdentityInvalidHandle", ErrorInvalidHandle);
@@ -976,21 +1118,114 @@ internal static class Program
             directory !=
                 ((info.FileAttributes & (uint)FileAttributes.Directory) != 0))
             throw IdentityChanged();
+        var identity = new FileIdentity(
+            info.VolumeSerialNumber,
+            ((ulong)info.FileIndexHigh << 32) | info.FileIndexLow);
         SetStage("resolveFinalPath");
         InjectValidationNativeFailure(
             "failResolveFinalPathInvalidParameter", ErrorInvalidParameter);
-        var builder = new StringBuilder(32768);
-        if (GetFinalPathNameByHandleW(handle, builder, builder.Capacity, 0) == 0)
+        var expectedFull = Path.GetFullPath(expected).TrimEnd('\\');
+        var test = Environment.GetEnvironmentVariable(
+            "LIGASE_INSTALL_VALIDATION_HARNESS") == "1";
+        var trustedBase = test
+            ? Path.GetDirectoryName(Path.GetFullPath(
+                Environment.GetEnvironmentVariable(
+                    "LIGASE_TRANSACTION_TEST_ROOT") ?? expectedFull))!
+            : Environment.GetFolderPath(
+                Environment.SpecialFolder.CommonApplicationData);
+        trustedBase = Path.GetFullPath(trustedBase).TrimEnd('\\');
+        var relative = Path.GetRelativePath(trustedBase, expectedFull);
+        var segments = relative == "."
+            ? Array.Empty<string>()
+            : relative.Split('\\', StringSplitOptions.RemoveEmptyEntries);
+        if (segments.Any(segment =>
+                segment is "." or ".." ||
+                segment.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0))
+            throw BindingFailure("segmentMismatch");
+        _bindingSegmentCount = segments.Length;
+
+        using var trustedHandle = CreateFileW(
+            trustedBase,
+            FileListDirectory | FileReadAttributes | ReadControl | Synchronize,
+            FileShareRead | FileShareWrite | FileShareDelete,
+            IntPtr.Zero, OpenExisting,
+            FileFlagOpenReparsePoint | FileFlagBackupSemantics,
+            IntPtr.Zero);
+        if (trustedHandle.IsInvalid)
             throw NativeFailure("installTransactionUnavailable",
                 Marshal.GetLastWin32Error());
-        var final = builder.ToString();
-        if (final.StartsWith(@"\\?\", StringComparison.Ordinal)) final = final[4..];
-        if (!string.Equals(Path.GetFullPath(final).TrimEnd('\\'),
-                Path.GetFullPath(expected).TrimEnd('\\'),
+        if (!GetFileInformationByHandle(trustedHandle, out var trustedInfo))
+            throw NativeFailure("installTransactionUnavailable",
+                Marshal.GetLastWin32Error());
+        if ((trustedInfo.FileAttributes &
+                (uint)FileAttributes.ReparsePoint) != 0 ||
+            (trustedInfo.FileAttributes &
+                (uint)FileAttributes.Directory) == 0)
+            throw BindingFailure("trustedRootInvalid");
+
+        var trustedFinal = GetHandleFinalPath(trustedHandle);
+        var actualFinal = GetHandleFinalPath(handle);
+        _bindingRootKind = ClassifyFinalPath(trustedFinal);
+        _bindingVolumeMatched =
+            trustedInfo.VolumeSerialNumber == info.VolumeSerialNumber;
+        var validationBehavior = Environment.GetEnvironmentVariable(
+            "LIGASE_TRANSACTION_TEST_BEHAVIOR");
+        if (test && (validationBehavior == "failBindingWrongVolume" ||
+            validationBehavior == "failSecondBindingWrongVolume" &&
+            _bindingAttempt == 2))
+            _bindingVolumeMatched = false;
+        if (!_bindingVolumeMatched)
+            throw BindingFailure("volumeMismatch");
+        var expectedFinal = segments.Aggregate(
+            trustedFinal.TrimEnd('\\'), Path.Combine);
+        _bindingPrefixMatched = string.Equals(
+            actualFinal.TrimEnd('\\'), expectedFinal.TrimEnd('\\'),
+            StringComparison.OrdinalIgnoreCase);
+        if (test && (validationBehavior == "failBindingSegmentMismatch" ||
+            validationBehavior == "failSecondBindingSegmentMismatch" &&
+            _bindingAttempt == 2))
+            _bindingPrefixMatched = false;
+        if (!_bindingPrefixMatched)
+            throw BindingFailure("segmentMismatch");
+        if (!GetFileInformationByHandle(handle, out var finalInfo))
+            throw NativeFailure("installTransactionUnavailable",
+                Marshal.GetLastWin32Error());
+        var finalIdentity = new FileIdentity(
+            finalInfo.VolumeSerialNumber,
+            ((ulong)finalInfo.FileIndexHigh << 32) | finalInfo.FileIndexLow);
+        _bindingFileIdentityMatched = finalIdentity == identity;
+        if (test && (validationBehavior == "failBindingIdentitySwap" ||
+            validationBehavior == "failSecondBindingIdentitySwap" &&
+            _bindingAttempt == 2))
+            _bindingFileIdentityMatched = false;
+        if (!_bindingFileIdentityMatched)
+            throw BindingFailure("fileIdentityMismatch");
+        return identity;
+    }
+
+    private static string GetHandleFinalPath(SafeFileHandle handle)
+    {
+        var builder = new StringBuilder(32768);
+        if (GetFinalPathNameByHandleW(
+                handle, builder, builder.Capacity, VolumeNameNt) == 0)
+            throw NativeFailure("installTransactionUnavailable",
+                Marshal.GetLastWin32Error());
+        return builder.ToString();
+    }
+
+    private static string ClassifyFinalPath(string path)
+    {
+        if (path.StartsWith(@"\\?\Volume{",
                 StringComparison.OrdinalIgnoreCase))
-            throw new InvalidOperationException("installTransactionInvalid");
-        return new(info.VolumeSerialNumber,
-            ((ulong)info.FileIndexHigh << 32) | info.FileIndexLow);
+            return "volumeGuid";
+        if (path.StartsWith(@"\Device\", StringComparison.OrdinalIgnoreCase))
+            return "device";
+        if (path.StartsWith(@"\\", StringComparison.Ordinal))
+            return "unc";
+        if (path.Length >= 3 && char.IsLetter(path[0]) &&
+            path[1] == ':' && path[2] == '\\')
+            return "dosDrive";
+        return "unknown";
     }
 
     private static void ApplyExactAcl(SafeFileHandle handle, bool directory)

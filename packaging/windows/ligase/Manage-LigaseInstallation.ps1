@@ -93,9 +93,25 @@ param(
     "invalidAcl",
     "notSupported",
     "identityChanged",
+    "bindingMismatch",
     "unknown")]
   [string]$EvidenceTransactionHelperNativeCategory = "none",
   [int]$EvidenceTransactionHelperNativeCode = 0,
+  [ValidateSet(
+    "none",
+    "trustedRootInvalid",
+    "volumeMismatch",
+    "segmentMismatch",
+    "fileIdentityMismatch")]
+  [string]$EvidenceTransactionBindingReason = "none",
+  [ValidateSet(
+    "none", "dosDrive", "volumeGuid", "device", "unc", "unknown")]
+  [string]$EvidenceTransactionBindingRootKind = "none",
+  [ValidateRange(0, 32)]
+  [int]$EvidenceTransactionBindingSegmentCount = 0,
+  [switch]$EvidenceTransactionBindingPrefixMatched,
+  [switch]$EvidenceTransactionBindingVolumeMatched,
+  [switch]$EvidenceTransactionBindingFileIdentityMatched,
   [switch]$EvidenceTransactionAclMutationOccurred,
   [ValidateSet("notRequired", "completed", "failed")]
   [string]$EvidenceTransactionAclRollback = "notRequired",
@@ -136,6 +152,12 @@ $script:transactionHelperNativeExit = -1
 $script:transactionHelperStage = "none"
 $script:transactionHelperNativeCategory = "none"
 $script:transactionHelperNativeCode = 0
+$script:transactionBindingReason = "none"
+$script:transactionBindingRootKind = "none"
+$script:transactionBindingSegmentCount = 0
+$script:transactionBindingPrefixMatched = $false
+$script:transactionBindingVolumeMatched = $false
+$script:transactionBindingFileIdentityMatched = $false
 $script:transactionAclMutationOccurred = $false
 $script:transactionAclRollback = "notRequired"
 $script:transactionRecoveryAction = "none"
@@ -307,6 +329,209 @@ public static class LigaseFileIdentity
             if (!GetFileInformationByHandle(stream.SafeFileHandle, out information))
                 throw new IOException("dataRootEnumerationFailed");
             return information.NumberOfLinks;
+        }
+    }
+}
+"@
+
+Add-Type -TypeDefinition @"
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.Text;
+
+public static class LigaseStrictJson
+{
+    public static bool HasUniqueProperties(string value)
+    {
+        try
+        {
+            var parser = new Parser(value);
+            parser.ParseValue();
+            parser.SkipWhitespace();
+            return parser.AtEnd;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private sealed class Parser
+    {
+        private readonly string _value;
+        private int _offset;
+
+        public Parser(string value)
+        {
+            if (value == null) throw new ArgumentNullException("value");
+            _value = value;
+        }
+
+        public bool AtEnd
+        {
+            get { return _offset == _value.Length; }
+        }
+
+        public void SkipWhitespace()
+        {
+            while (_offset < _value.Length &&
+                   (_value[_offset] == ' ' || _value[_offset] == '\t' ||
+                    _value[_offset] == '\r' || _value[_offset] == '\n'))
+                _offset++;
+        }
+
+        public void ParseValue()
+        {
+            SkipWhitespace();
+            if (_offset >= _value.Length) throw new FormatException();
+            switch (_value[_offset])
+            {
+                case '{': ParseObject(); return;
+                case '[': ParseArray(); return;
+                case '"': ParseString(); return;
+                case 't': ParseLiteral("true"); return;
+                case 'f': ParseLiteral("false"); return;
+                case 'n': ParseLiteral("null"); return;
+                default: ParseNumber(); return;
+            }
+        }
+
+        private void ParseObject()
+        {
+            _offset++;
+            SkipWhitespace();
+            var names = new HashSet<string>(StringComparer.Ordinal);
+            if (Consume('}')) return;
+            while (true)
+            {
+                SkipWhitespace();
+                var name = ParseString();
+                if (!names.Add(name)) throw new FormatException();
+                SkipWhitespace();
+                Require(':');
+                ParseValue();
+                SkipWhitespace();
+                if (Consume('}')) return;
+                Require(',');
+            }
+        }
+
+        private void ParseArray()
+        {
+            _offset++;
+            SkipWhitespace();
+            if (Consume(']')) return;
+            while (true)
+            {
+                ParseValue();
+                SkipWhitespace();
+                if (Consume(']')) return;
+                Require(',');
+            }
+        }
+
+        private string ParseString()
+        {
+            Require('"');
+            var result = new StringBuilder();
+            while (_offset < _value.Length)
+            {
+                var current = _value[_offset++];
+                if (current == '"') return result.ToString();
+                if (current < 0x20) throw new FormatException();
+                if (current != '\\')
+                {
+                    result.Append(current);
+                    continue;
+                }
+                if (_offset >= _value.Length) throw new FormatException();
+                var escaped = _value[_offset++];
+                switch (escaped)
+                {
+                    case '"': result.Append('"'); break;
+                    case '\\': result.Append('\\'); break;
+                    case '/': result.Append('/'); break;
+                    case 'b': result.Append('\b'); break;
+                    case 'f': result.Append('\f'); break;
+                    case 'n': result.Append('\n'); break;
+                    case 'r': result.Append('\r'); break;
+                    case 't': result.Append('\t'); break;
+                    case 'u':
+                        if (_offset + 4 > _value.Length)
+                            throw new FormatException();
+                        result.Append((char)Int32.Parse(
+                            _value.Substring(_offset, 4),
+                            NumberStyles.AllowHexSpecifier,
+                            CultureInfo.InvariantCulture));
+                        _offset += 4;
+                        break;
+                    default: throw new FormatException();
+                }
+            }
+            throw new FormatException();
+        }
+
+        private void ParseNumber()
+        {
+            var start = _offset;
+            if (Consume('-')) { }
+            if (Consume('0'))
+            {
+                if (_offset < _value.Length &&
+                    Char.IsDigit(_value[_offset]))
+                    throw new FormatException();
+            }
+            else
+            {
+                if (_offset >= _value.Length ||
+                    _value[_offset] < '1' || _value[_offset] > '9')
+                    throw new FormatException();
+                while (_offset < _value.Length &&
+                       Char.IsDigit(_value[_offset])) _offset++;
+            }
+            if (Consume('.'))
+            {
+                var fraction = _offset;
+                while (_offset < _value.Length &&
+                       Char.IsDigit(_value[_offset])) _offset++;
+                if (_offset == fraction) throw new FormatException();
+            }
+            if (_offset < _value.Length &&
+                (_value[_offset] == 'e' || _value[_offset] == 'E'))
+            {
+                _offset++;
+                if (_offset < _value.Length &&
+                    (_value[_offset] == '+' || _value[_offset] == '-'))
+                    _offset++;
+                var exponent = _offset;
+                while (_offset < _value.Length &&
+                       Char.IsDigit(_value[_offset])) _offset++;
+                if (_offset == exponent) throw new FormatException();
+            }
+            if (_offset == start) throw new FormatException();
+        }
+
+        private void ParseLiteral(string expected)
+        {
+            if (_offset + expected.Length > _value.Length ||
+                String.CompareOrdinal(
+                    _value, _offset, expected, 0, expected.Length) != 0)
+                throw new FormatException();
+            _offset += expected.Length;
+        }
+
+        private bool Consume(char expected)
+        {
+            if (_offset >= _value.Length || _value[_offset] != expected)
+                return false;
+            _offset++;
+            return true;
+        }
+
+        private void Require(char expected)
+        {
+            if (!Consume(expected)) throw new FormatException();
         }
     }
 }
@@ -561,13 +786,22 @@ function Invoke-InstallTransactionHelper(
         if ([Text.Encoding]::UTF8.GetByteCount($stderr) -gt 512) {
           throw "installTransactionInvalid"
         }
+        if (-not [LigaseStrictJson]::HasUniqueProperties($stderr)) {
+          throw "installTransactionInvalid"
+        }
         $failure = $stderr | ConvertFrom-Json
         $properties = @($failure.PSObject.Properties.Name)
-        if ($properties.Count -ne 6 -or
+        if ($properties.Count -ne 12 -or
             $properties -notcontains "code" -or
             $properties -notcontains "stage" -or
             $properties -notcontains "nativeCategory" -or
             $properties -notcontains "nativeCode" -or
+            $properties -notcontains "bindingReason" -or
+            $properties -notcontains "bindingRootKind" -or
+            $properties -notcontains "bindingSegmentCount" -or
+            $properties -notcontains "bindingPrefixMatched" -or
+            $properties -notcontains "bindingVolumeMatched" -or
+            $properties -notcontains "bindingFileIdentityMatched" -or
             $properties -notcontains "aclMutationOccurred" -or
             $properties -notcontains "aclRollback" -or
             [string]$failure.code -notin @(
@@ -597,6 +831,7 @@ function Invoke-InstallTransactionHelper(
           invalidAcl = @(1336)
           notSupported = @(50)
           identityChanged = @(0)
+          bindingMismatch = @(0)
           unknown = @(0)
         }
         $nativeCodeValid = if ($nativeCategory -ceq "unknown") {
@@ -606,6 +841,25 @@ function Invoke-InstallTransactionHelper(
             $nativeCode -in $allowedNativeCodes[$nativeCategory]
         }
         if (-not $nativeCodeValid) {
+          throw "installTransactionInvalid"
+        }
+        $bindingReason = [string]$failure.bindingReason
+        $bindingRootKind = [string]$failure.bindingRootKind
+        $bindingSegmentCount = [int]$failure.bindingSegmentCount
+        $bindingReasonValid = $bindingReason -in @(
+          "none", "trustedRootInvalid", "volumeMismatch",
+          "segmentMismatch", "fileIdentityMismatch")
+        $bindingRootKindValid = $bindingRootKind -in @(
+          "none", "dosDrive", "volumeGuid", "device", "unc", "unknown")
+        if (-not $bindingReasonValid -or
+            -not $bindingRootKindValid -or
+            $bindingSegmentCount -lt 0 -or
+            $bindingSegmentCount -gt 32 -or
+            $failure.bindingPrefixMatched -isnot [bool] -or
+            $failure.bindingVolumeMatched -isnot [bool] -or
+            $failure.bindingFileIdentityMatched -isnot [bool] -or
+            (($nativeCategory -ceq "bindingMismatch") -ne
+              ($bindingReason -cne "none"))) {
           throw "installTransactionInvalid"
         }
         if ($failure.aclMutationOccurred -isnot [bool] -or
@@ -618,6 +872,15 @@ function Invoke-InstallTransactionHelper(
         $script:transactionHelperStage = [string]$failure.stage
         $script:transactionHelperNativeCategory = $nativeCategory
         $script:transactionHelperNativeCode = $nativeCode
+        $script:transactionBindingReason = $bindingReason
+        $script:transactionBindingRootKind = $bindingRootKind
+        $script:transactionBindingSegmentCount = $bindingSegmentCount
+        $script:transactionBindingPrefixMatched =
+          [bool]$failure.bindingPrefixMatched
+        $script:transactionBindingVolumeMatched =
+          [bool]$failure.bindingVolumeMatched
+        $script:transactionBindingFileIdentityMatched =
+          [bool]$failure.bindingFileIdentityMatched
         $script:transactionAclMutationOccurred =
           [bool]$failure.aclMutationOccurred
         $script:transactionAclRollback = [string]$failure.aclRollback
@@ -905,6 +1168,26 @@ function Write-InstallerEvidence {
       nativeCode = if ($script:transactionHelperNativeCode -ne 0) {
         $script:transactionHelperNativeCode
       } else { $EvidenceTransactionHelperNativeCode }
+      bindingReason = if ($script:transactionBindingReason -ne "none") {
+        $script:transactionBindingReason
+      } else { $EvidenceTransactionBindingReason }
+      bindingRootKind = if ($script:transactionBindingRootKind -ne "none") {
+        $script:transactionBindingRootKind
+      } else { $EvidenceTransactionBindingRootKind }
+      bindingSegmentCount = if (
+        $script:transactionBindingSegmentCount -ne 0) {
+        $script:transactionBindingSegmentCount
+      } else { $EvidenceTransactionBindingSegmentCount }
+      bindingPrefixMatched = if ($script:transactionBindingPrefixMatched) {
+        $true
+      } else { [bool]$EvidenceTransactionBindingPrefixMatched }
+      bindingVolumeMatched = if ($script:transactionBindingVolumeMatched) {
+        $true
+      } else { [bool]$EvidenceTransactionBindingVolumeMatched }
+      bindingFileIdentityMatched = if (
+        $script:transactionBindingFileIdentityMatched) {
+        $true
+      } else { [bool]$EvidenceTransactionBindingFileIdentityMatched }
       aclMutationOccurred = if ($script:transactionAclMutationOccurred) {
         $true
       } else { [bool]$EvidenceTransactionAclMutationOccurred }
@@ -2963,6 +3246,22 @@ try {
       transactionHelperNativeExit =
         [int]$script:transactionHelperNativeExit
       transactionHelperStage = [string]$script:transactionHelperStage
+      transactionHelperNativeCategory =
+        [string]$script:transactionHelperNativeCategory
+      transactionHelperNativeCode =
+        [int]$script:transactionHelperNativeCode
+      transactionBindingReason =
+        [string]$script:transactionBindingReason
+      transactionBindingRootKind =
+        [string]$script:transactionBindingRootKind
+      transactionBindingSegmentCount =
+        [int]$script:transactionBindingSegmentCount
+      transactionBindingPrefixMatched =
+        [bool]$script:transactionBindingPrefixMatched
+      transactionBindingVolumeMatched =
+        [bool]$script:transactionBindingVolumeMatched
+      transactionBindingFileIdentityMatched =
+        [bool]$script:transactionBindingFileIdentityMatched
     }
     exit 10
   }

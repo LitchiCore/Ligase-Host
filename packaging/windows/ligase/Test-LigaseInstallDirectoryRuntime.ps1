@@ -1768,6 +1768,10 @@ if ($emptyRecoveryAvailable) {
   }
 }
 $stageDiagnostics = @()
+$neutralBindingDiagnostic = (
+  '"bindingReason":"none","bindingRootKind":"none",' +
+  '"bindingSegmentCount":0,"bindingPrefixMatched":false,' +
+  '"bindingVolumeMatched":false,"bindingFileIdentityMatched":false,')
 foreach ($stage in @(
     "resolveProgramData", "rejectReparse", "createSegment", "openHandle",
     "verifyIdentity", "resolveFinalPath", "applyAcl", "assertAcl",
@@ -1787,19 +1791,23 @@ foreach ($stage in @(
   $expectedStage = (
     '{"code":"installTransactionUnavailable","stage":"' + $stage +
     '","nativeCategory":"none","nativeCode":0,' +
+    $neutralBindingDiagnostic +
     '"aclMutationOccurred":false,"aclRollback":"notRequired"}')
   $exactStage = $stageExit -eq 18 -and $stageRaw -ceq $expectedStage
   $nonElevatedOpen = (
     '{"code":"installTransactionUnavailable","stage":"openHandle",' +
     '"nativeCategory":"none","nativeCode":0,' +
+    $neutralBindingDiagnostic +
     '"aclMutationOccurred":false,"aclRollback":"notRequired"}')
   $nonElevatedOpenAccessDenied = (
     '{"code":"installTransactionUnavailable","stage":"openHandle",' +
     '"nativeCategory":"accessDenied","nativeCode":5,' +
+    $neutralBindingDiagnostic +
     '"aclMutationOccurred":false,"aclRollback":"notRequired"}')
   $nonElevatedOwner = (
     '{"code":"installTransactionAclInvalid","stage":"createSegment",' +
     '"nativeCategory":"invalidOwner","nativeCode":1307,' +
+    $neutralBindingDiagnostic +
     '"aclMutationOccurred":false,"aclRollback":"notRequired"}')
   $blockedByNonElevatedAcl = $stageExit -eq 18 -and
     $stageRaw -in @(
@@ -1859,7 +1867,8 @@ foreach ($nativeCase in @(
     '{"code":"installTransactionUnavailable","stage":"' +
     [string]$nativeCase.stage + '","nativeCategory":"' +
     [string]$nativeCase.category + '","nativeCode":' +
-    [string]$nativeCase.code + ',"aclMutationOccurred":false,' +
+    [string]$nativeCase.code + ',' + $neutralBindingDiagnostic +
+    '"aclMutationOccurred":false,' +
     '"aclRollback":"notRequired"}')
   $nativeAclAfter = (Get-Acl -LiteralPath $nativeRoot).
     GetSecurityDescriptorSddlForm(
@@ -1871,6 +1880,278 @@ foreach ($nativeCase in @(
   }
   $nativeSubstageResults += [ordered]@{
     name = "transaction-native-" + [string]$nativeCase.stage
+    passed = $true
+  }
+}
+$bindingResults = @()
+foreach ($bindingCase in @(
+    [ordered]@{
+      behavior = "failBindingWrongVolume"
+      reason = "volumeMismatch"
+      volume = $false
+      prefix = $false
+      file = $false
+    },
+    [ordered]@{
+      behavior = "failBindingSegmentMismatch"
+      reason = "segmentMismatch"
+      volume = $true
+      prefix = $false
+      file = $false
+    },
+    [ordered]@{
+      behavior = "failBindingIdentitySwap"
+      reason = "fileIdentityMismatch"
+      volume = $true
+      prefix = $true
+      file = $false
+    })) {
+  $bindingRoot = Join-Path $combinationRoot (
+    "binding-" + [string]$bindingCase.reason)
+  New-Item -ItemType Directory -Path $bindingRoot | Out-Null
+  $bindingAclBefore = (Get-Acl -LiteralPath $bindingRoot).
+    GetSecurityDescriptorSddlForm(
+      [Security.AccessControl.AccessControlSections]::All)
+  $env:LIGASE_INSTALL_VALIDATION_HARNESS = "1"
+  $env:LIGASE_TRANSACTION_TEST_BEHAVIOR = [string]$bindingCase.behavior
+  $ErrorActionPreference = "Continue"
+  $bindingOutput = @(
+    & $transactionHelper preflight --test-root $bindingRoot 2>&1)
+  $ErrorActionPreference = $savedErrorAction
+  $bindingExit = $LASTEXITCODE
+  Remove-Item Env:\LIGASE_TRANSACTION_TEST_BEHAVIOR `
+    -ErrorAction SilentlyContinue
+  Remove-Item Env:\LIGASE_INSTALL_VALIDATION_HARNESS `
+    -ErrorAction SilentlyContinue
+  $bindingFailure = (($bindingOutput -join "") | ConvertFrom-Json)
+  $bindingAclAfter = (Get-Acl -LiteralPath $bindingRoot).
+    GetSecurityDescriptorSddlForm(
+      [Security.AccessControl.AccessControlSections]::All)
+  if ($bindingExit -ne 18 -or
+      [string]$bindingFailure.code -cne "installTransactionInvalid" -or
+      [string]$bindingFailure.stage -cne "resolveFinalPath" -or
+      [string]$bindingFailure.nativeCategory -cne "bindingMismatch" -or
+      [int]$bindingFailure.nativeCode -ne 0 -or
+      [string]$bindingFailure.bindingReason -cne
+        [string]$bindingCase.reason -or
+      [bool]$bindingFailure.bindingVolumeMatched -ne
+        [bool]$bindingCase.volume -or
+      [bool]$bindingFailure.bindingPrefixMatched -ne
+        [bool]$bindingCase.prefix -or
+      [bool]$bindingFailure.bindingFileIdentityMatched -ne
+        [bool]$bindingCase.file -or
+      [int]$bindingFailure.bindingSegmentCount -ne 1 -or
+      [string]$bindingFailure.bindingRootKind -notin @(
+        "dosDrive", "volumeGuid", "device") -or
+      [bool]$bindingFailure.aclMutationOccurred -or
+      [string]$bindingFailure.aclRollback -cne "notRequired" -or
+      $bindingAclAfter -cne $bindingAclBefore -or
+      @(Get-ChildItem -LiteralPath $bindingRoot -Force).Count -ne 0) {
+    throw "installTransactionBindingDiagnosticInvalid"
+  }
+  $bindingResults += [ordered]@{
+    name = "transaction-binding-" + [string]$bindingCase.reason
+    passed = $true
+  }
+  $bindingManageRoot = Join-Path $combinationRoot (
+    "binding-manage-" + [string]$bindingCase.reason)
+  New-Item -ItemType Directory -Path $bindingManageRoot | Out-Null
+  $bindingManageAclBefore = (Get-Acl -LiteralPath $bindingManageRoot).
+    GetSecurityDescriptorSddlForm(
+      [Security.AccessControl.AccessControlSections]::All)
+  $env:LIGASE_INSTALL_VALIDATION_HARNESS = "1"
+  $env:LIGASE_TRANSACTION_TEST_BEHAVIOR = [string]$bindingCase.behavior
+  $ErrorActionPreference = "Continue"
+  $bindingManageOutput = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass `
+    -File $managementScript `
+    -Action PreflightInstallTransaction `
+    -InstallDirectory $boundedInstallRoot `
+    -InstallTransactionRoot $bindingManageRoot 2>&1)
+  $bindingManageExit = $LASTEXITCODE
+  $ErrorActionPreference = $savedErrorAction
+  Remove-Item Env:\LIGASE_TRANSACTION_TEST_BEHAVIOR `
+    -ErrorAction SilentlyContinue
+  Remove-Item Env:\LIGASE_INSTALL_VALIDATION_HARNESS `
+    -ErrorAction SilentlyContinue
+  $bindingProjection = (
+    ($bindingManageOutput[-1] | Out-String).Trim() | ConvertFrom-Json)
+  $bindingManageAclAfter = (Get-Acl -LiteralPath $bindingManageRoot).
+    GetSecurityDescriptorSddlForm(
+      [Security.AccessControl.AccessControlSections]::All)
+  if ($bindingManageExit -ne 10 -or
+      [string]$bindingProjection.code -cne "installTransactionInvalid" -or
+      [string]$bindingProjection.failedField -cne "installTransaction" -or
+      [int]$bindingProjection.transactionHelperNativeExit -ne 18 -or
+      [string]$bindingProjection.transactionHelperStage -cne
+        "resolveFinalPath" -or
+      [string]$bindingProjection.transactionHelperNativeCategory -cne
+        "bindingMismatch" -or
+      [int]$bindingProjection.transactionHelperNativeCode -ne 0 -or
+      [string]$bindingProjection.transactionBindingReason -cne
+        [string]$bindingCase.reason -or
+      [bool]$bindingProjection.transactionBindingVolumeMatched -ne
+        [bool]$bindingCase.volume -or
+      [bool]$bindingProjection.transactionBindingPrefixMatched -ne
+        [bool]$bindingCase.prefix -or
+      [bool]$bindingProjection.transactionBindingFileIdentityMatched -ne
+        [bool]$bindingCase.file -or
+      $bindingManageAclAfter -cne $bindingManageAclBefore -or
+      @(Get-ChildItem -LiteralPath $bindingManageRoot -Force).Count -ne 0) {
+    throw "installTransactionBindingProjectionInvalid"
+  }
+  $bindingResults += [ordered]@{
+    name = "transaction-binding-projection-" +
+      [string]$bindingCase.reason
+    passed = $true
+  }
+}
+$systemAdminRoot = Join-Path (
+  [Environment]::GetFolderPath(
+    [Environment+SpecialFolder]::CommonApplicationData)) "Ligase Host Admin"
+$systemBindingAvailable = Test-Path -LiteralPath $systemAdminRoot -PathType Container
+if ($systemBindingAvailable) {
+  $systemBindingAclBefore = (Get-Acl -LiteralPath $systemAdminRoot).
+    GetSecurityDescriptorSddlForm(
+      [Security.AccessControl.AccessControlSections]::All)
+  $systemBindingChildrenBefore = @(
+    Get-ChildItem -LiteralPath $systemAdminRoot -Force).Count
+  $env:LIGASE_INSTALL_VALIDATION_HARNESS = "1"
+  $systemBindingOutput = @(& $transactionHelper inspectSystemBinding)
+  $systemBindingExit = $LASTEXITCODE
+  Remove-Item Env:\LIGASE_INSTALL_VALIDATION_HARNESS `
+    -ErrorAction SilentlyContinue
+  $systemBinding = (($systemBindingOutput -join "") | ConvertFrom-Json)
+  $systemBindingAclAfter = (Get-Acl -LiteralPath $systemAdminRoot).
+    GetSecurityDescriptorSddlForm(
+      [Security.AccessControl.AccessControlSections]::All)
+  if ($systemBindingExit -ne 0 -or
+      [string]$systemBinding.code -cne
+        "installTransactionBindingValid" -or
+      [string]$systemBinding.rootKind -notin @(
+        "dosDrive", "volumeGuid", "device") -or
+      [int]$systemBinding.segmentCount -ne 1 -or
+      -not [bool]$systemBinding.prefixMatched -or
+      -not [bool]$systemBinding.volumeMatched -or
+      -not [bool]$systemBinding.fileIdentityMatched -or
+      $systemBindingAclAfter -cne $systemBindingAclBefore -or
+      @(Get-ChildItem -LiteralPath $systemAdminRoot -Force).Count -ne
+        $systemBindingChildrenBefore) {
+    throw "installTransactionSystemBindingReadOnlyInvalid"
+  }
+}
+$bindingResults += [ordered]@{
+  name = "transaction-system-programdata-alias-readonly-binding"
+  passed = $systemBindingAvailable
+  inconclusive = -not $systemBindingAvailable
+}
+foreach ($sequenceCase in @(
+    [ordered]@{
+      behavior = "failSecondBindingWrongVolume"
+      reason = "volumeMismatch"
+      volume = $false
+      prefix = $false
+      file = $false
+    },
+    [ordered]@{
+      behavior = "failSecondBindingSegmentMismatch"
+      reason = "segmentMismatch"
+      volume = $true
+      prefix = $false
+      file = $false
+    },
+    [ordered]@{
+      behavior = "failSecondBindingIdentitySwap"
+      reason = "fileIdentityMismatch"
+      volume = $true
+      prefix = $true
+      file = $false
+    })) {
+  $sequenceParent = Join-Path $combinationRoot (
+    "binding-sequence-" + [string]$sequenceCase.reason)
+  $sequenceFirst = Join-Path $sequenceParent "binding-first"
+  $sequenceSecond = Join-Path $sequenceParent "binding-second"
+  New-Item -ItemType Directory -Path $sequenceFirst -Force | Out-Null
+  New-Item -ItemType Directory -Path $sequenceSecond -Force | Out-Null
+  $sequenceAclBefore = (Get-Acl -LiteralPath $sequenceSecond).
+    GetSecurityDescriptorSddlForm(
+      [Security.AccessControl.AccessControlSections]::All)
+  $env:LIGASE_INSTALL_VALIDATION_HARNESS = "1"
+  $env:LIGASE_TRANSACTION_TEST_BEHAVIOR = [string]$sequenceCase.behavior
+  $ErrorActionPreference = "Continue"
+  $sequenceOutput = @(& $transactionHelper inspectSequentialBinding `
+    --test-root $sequenceSecond 2>&1)
+  $ErrorActionPreference = $savedErrorAction
+  $sequenceExit = $LASTEXITCODE
+  Remove-Item Env:\LIGASE_TRANSACTION_TEST_BEHAVIOR `
+    -ErrorAction SilentlyContinue
+  Remove-Item Env:\LIGASE_INSTALL_VALIDATION_HARNESS `
+    -ErrorAction SilentlyContinue
+  $sequenceFailure = (($sequenceOutput -join "") | ConvertFrom-Json)
+  if ($sequenceExit -ne 18 -or
+      [string]$sequenceFailure.nativeCategory -cne "bindingMismatch" -or
+      [string]$sequenceFailure.bindingReason -cne
+        [string]$sequenceCase.reason -or
+      [bool]$sequenceFailure.bindingVolumeMatched -ne
+        [bool]$sequenceCase.volume -or
+      [bool]$sequenceFailure.bindingPrefixMatched -ne
+        [bool]$sequenceCase.prefix -or
+      [bool]$sequenceFailure.bindingFileIdentityMatched -ne
+        [bool]$sequenceCase.file -or
+      (Get-Acl -LiteralPath $sequenceSecond).
+        GetSecurityDescriptorSddlForm(
+          [Security.AccessControl.AccessControlSections]::All) -cne
+        $sequenceAclBefore -or
+      @(Get-ChildItem -LiteralPath $sequenceFirst -Force).Count -ne 0 -or
+      @(Get-ChildItem -LiteralPath $sequenceSecond -Force).Count -ne 0) {
+    throw "installTransactionSequentialBindingIsolationInvalid"
+  }
+  $bindingResults += [ordered]@{
+    name = "transaction-binding-sequence-" +
+      [string]$sequenceCase.reason
+    passed = $true
+  }
+}
+$duplicateResults = @()
+foreach ($duplicateBehavior in @(
+    "emitDuplicateCode",
+    "emitDuplicateCodeLastConflicting",
+    "emitDuplicateNativeCode",
+    "emitDuplicateBindingReason",
+    "emitDuplicateBindingRootKind",
+    "emitDuplicateBindingSegmentCount",
+    "emitDuplicateBindingPrefixMatched",
+    "emitDuplicateBindingVolumeMatched",
+    "emitDuplicateBindingFileIdentityMatched")) {
+  $duplicateRoot = Join-Path $combinationRoot (
+    "duplicate-" + $duplicateBehavior)
+  $env:LIGASE_INSTALL_VALIDATION_HARNESS = "1"
+  $env:LIGASE_TRANSACTION_TEST_BEHAVIOR = $duplicateBehavior
+  $ErrorActionPreference = "Continue"
+  $duplicateOutput = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass `
+    -File $managementScript `
+    -Action PreflightInstallTransaction `
+    -InstallDirectory $boundedInstallRoot `
+    -InstallTransactionRoot $duplicateRoot 2>&1)
+  $duplicateExit = $LASTEXITCODE
+  $ErrorActionPreference = $savedErrorAction
+  Remove-Item Env:\LIGASE_TRANSACTION_TEST_BEHAVIOR `
+    -ErrorAction SilentlyContinue
+  Remove-Item Env:\LIGASE_INSTALL_VALIDATION_HARNESS `
+    -ErrorAction SilentlyContinue
+  $duplicateProjection = (
+    ($duplicateOutput[-1] | Out-String).Trim() | ConvertFrom-Json)
+  if ($duplicateExit -ne 10 -or
+      [string]$duplicateProjection.code -cne
+        "installTransactionInvalid" -or
+      [string]$duplicateProjection.failedField -cne
+        "installTransaction" -or
+      [int]$duplicateProjection.transactionHelperNativeExit -ne 18 -or
+      [string]$duplicateProjection.transactionHelperStage -cne "none" -or
+      (Test-Path -LiteralPath $duplicateRoot)) {
+    throw "installTransactionDuplicatePropertyAccepted"
+  }
+  $duplicateResults += [ordered]@{
+    name = "transaction-duplicate-rejected-" + $duplicateBehavior
     passed = $true
   }
 }
@@ -1904,6 +2185,8 @@ $shortcutResults = @(
   $boundedResults
   $stageDiagnostics
   $nativeSubstageResults
+  $bindingResults
+  $duplicateResults
   [ordered]@{ name = "current-to-all-owned-selected"; passed = $true },
   [ordered]@{ name = "all-users-desktop-unselected"; passed = $true },
   [ordered]@{ name = "nonowned-current-preserved"; passed = $true },

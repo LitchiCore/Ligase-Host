@@ -739,6 +739,40 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(transactionHelper, "\"invalidOwner\"");
         StringAssert.Contains(transactionHelper, "\"invalidAcl\"");
         StringAssert.Contains(transactionHelper, "\"identityChanged\"");
+        StringAssert.Contains(transactionHelper, "\"bindingMismatch\"");
+        StringAssert.Contains(transactionHelper, "\"volumeMismatch\"");
+        StringAssert.Contains(transactionHelper, "\"segmentMismatch\"");
+        StringAssert.Contains(transactionHelper, "\"fileIdentityMismatch\"");
+        StringAssert.Contains(transactionHelper, "VolumeNameNt");
+        StringAssert.Contains(
+            transactionHelper,
+            "trustedInfo.VolumeSerialNumber == info.VolumeSerialNumber");
+        StringAssert.Contains(
+            transactionHelper,
+            "segments.Aggregate(");
+        StringAssert.Contains(
+            transactionHelper,
+            "GetHandleFinalPath(trustedHandle)");
+        Assert.IsFalse(transactionHelper.Contains(
+            "Path.GetFullPath(final).TrimEnd",
+            StringComparison.Ordinal));
+        StringAssert.Contains(transactionHelper, "InspectSystemBinding");
+        StringAssert.Contains(transactionHelper, "InspectSequentialBinding");
+        StringAssert.Contains(
+            transactionHelper,
+            "installTransactionBindingValid");
+        StringAssert.Contains(
+            transactionHelper,
+            "_bindingPrefixMatched = false;");
+        StringAssert.Contains(
+            transactionHelper,
+            "failSecondBindingWrongVolume");
+        StringAssert.Contains(
+            transactionHelper,
+            "failSecondBindingSegmentMismatch");
+        StringAssert.Contains(
+            transactionHelper,
+            "failSecondBindingIdentitySwap");
         StringAssert.Contains(
             transactionHelper,
             "nativeCode is > 0 and <= ushort.MaxValue");
@@ -763,6 +797,26 @@ public sealed class FreshInstallPackagingTests
             "SetStage(\"openSegment\")", StringComparison.Ordinal));
         StringAssert.Contains(management, "transactionAclMutationOccurred");
         StringAssert.Contains(management, "transactionAclRollback");
+        StringAssert.Contains(management, "bindingReason");
+        StringAssert.Contains(management, "bindingRootKind");
+        StringAssert.Contains(management, "bindingSegmentCount");
+        StringAssert.Contains(management, "bindingPrefixMatched");
+        StringAssert.Contains(management, "bindingVolumeMatched");
+        StringAssert.Contains(management, "bindingFileIdentityMatched");
+        StringAssert.Contains(management, "LigaseStrictJson");
+        StringAssert.Contains(
+            management,
+            "HasUniqueProperties($stderr)");
+        StringAssert.Contains(
+            management,
+            "new HashSet<string>(StringComparer.Ordinal)");
+        Assert.IsTrue(
+            management.IndexOf(
+                "HasUniqueProperties($stderr)",
+                StringComparison.Ordinal) <
+            management.IndexOf(
+                "$failure = $stderr | ConvertFrom-Json",
+                StringComparison.Ordinal));
         StringAssert.Contains(
             management,
             "$nativeCode -ge 1 -and $nativeCode -le 65535");
@@ -808,6 +862,26 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(
             runtimeHarness,
             "installTransactionNativeSubstageDiagnosticInvalid");
+        StringAssert.Contains(
+            runtimeHarness,
+            "installTransactionBindingDiagnosticInvalid");
+        StringAssert.Contains(
+            runtimeHarness,
+            "\"transaction-binding-\"");
+        StringAssert.Contains(
+            runtimeHarness,
+            "installTransactionSystemBindingReadOnlyInvalid");
+        StringAssert.Contains(
+            runtimeHarness,
+            "installTransactionSequentialBindingIsolationInvalid");
+        StringAssert.Contains(
+            runtimeHarness,
+            "installTransactionDuplicatePropertyAccepted");
+        StringAssert.Contains(runtimeHarness, "emitDuplicateCode");
+        StringAssert.Contains(runtimeHarness, "emitDuplicateNativeCode");
+        StringAssert.Contains(
+            runtimeHarness,
+            "emitDuplicateBindingFileIdentityMatched");
         StringAssert.Contains(
             runtimeHarness,
             "installTransactionNonemptyAdminRootAccepted");
