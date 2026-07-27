@@ -40,6 +40,8 @@ public sealed class FreshInstallPackagingTests
             program,
             "private static string _stage = \"inputValidation\"");
         StringAssert.Contains(program, "_stage = \"securityInitialization\"");
+        StringAssert.Contains(
+            program, "_stage = \"diagnosticChannelValidation\"");
         StringAssert.Contains(program, "EnableChildProcessMitigation()");
         StringAssert.Contains(program, "ProcessChildProcessPolicy = 13");
         StringAssert.Contains(program, "NoChildProcessCreation = 1");
@@ -116,7 +118,9 @@ public sealed class FreshInstallPackagingTests
             program.IndexOf(
                 "InjectPostAclRecoveryFailure(\"failTransactionsVerify\")",
                 StringComparison.Ordinal));
-        StringAssert.Contains(program, "? \"invalidArguments\"");
+        StringAssert.Contains(
+            program, "\"invalidArguments\" => \"invalidArguments\"");
+        StringAssert.Contains(program, "\"diagnosticChannelRequired\" =>");
         Assert.IsTrue(
             program.IndexOf(
                 "TryOpenDiagnosticPipe(args)",
@@ -151,6 +155,48 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(launcher, "GetNamedPipeClientProcessId");
         StringAssert.Contains(launcher, "GetProcessUserSid(child.Handle)");
         StringAssert.Contains(launcher, "Verb = \"runas\"");
+        StringAssert.Contains(launcher, "#if LAUNCHER_VALIDATION");
+        StringAssert.Contains(launcher, "ValidationChildFileName");
+        StringAssert.Contains(launcher, "--validate-ipc-success");
+        StringAssert.Contains(launcher, "--validate-ipc-early-failure");
+        StringAssert.Contains(launcher, "--validate-ipc-nonce-mismatch");
+        StringAssert.Contains(
+            launcher, "--validate-ipc-client-pid-mismatch");
+        StringAssert.Contains(
+            launcher, "--validate-ipc-client-session-mismatch");
+        StringAssert.Contains(
+            launcher, "--validate-ipc-client-sid-mismatch");
+        StringAssert.Contains(
+            launcher, "--validate-ipc-server-pid-mismatch");
+        StringAssert.Contains(
+            launcher, "--validate-ipc-server-session-mismatch");
+        StringAssert.Contains(
+            launcher, "--validate-ipc-server-sid-mismatch");
+        StringAssert.Contains(launcher, "--validate-ipc-frame-oversize");
+        StringAssert.Contains(launcher, "--validate-ipc-disconnect");
+        StringAssert.Contains(launcher, "--validate-ipc-timeout");
+        StringAssert.Contains(launcher, "--validate-ipc-timeout-tree");
+        StringAssert.Contains(
+            launcher, "--validate-ipc-cleanup-kill-fault");
+        StringAssert.Contains(
+            launcher, "--validate-ipc-cleanup-snapshot-fault");
+        StringAssert.Contains(
+            launcher, "--validate-ipc-cleanup-wait-timeout");
+        StringAssert.Contains(
+            launcher, "--validate-ipc-cleanup-has-exited-fault");
+        StringAssert.Contains(
+            launcher, "--validate-ipc-cleanup-pid-check-fault");
+        StringAssert.Contains(
+            launcher, "child.Kill(entireProcessTree: true)");
+        StringAssert.Contains(
+            launcher, "VerifyProcessTreeAbsent(treePids)");
+        StringAssert.Contains(launcher, "CreateToolhelp32Snapshot");
+        StringAssert.Contains(launcher, "\\\"killAttempted\\\"");
+        StringAssert.Contains(launcher, "\\\"rootFallbackAttempted\\\"");
+        StringAssert.Contains(launcher, "\\\"rootPidZero\\\"");
+        StringAssert.Contains(launcher, "\\\"withinDeadline\\\"");
+        StringAssert.Contains(launcher, "UseShellExecute = false");
+        StringAssert.Contains(launcher, "CreateNoWindow = true");
         StringAssert.Contains(launcher, "Arguments = \"--diagnostic-pipe \"");
         StringAssert.Contains(
             launcher, "secure-store-preflight-review-evidence.json");
@@ -165,6 +211,10 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(project, "<SelfContained>true</SelfContained>");
         StringAssert.Contains(project, "IL2026;IL3050");
         Assert.IsFalse(project.Contains("PREFLIGHT_VALIDATION"));
+        var launcherProject = File.ReadAllText(Path.Combine(
+            root, "tools", "Ligase.SecureStore.Preflight.Launcher",
+            "Ligase.SecureStore.Preflight.Launcher.csproj"));
+        Assert.IsFalse(launcherProject.Contains("LAUNCHER_VALIDATION"));
         Assert.IsFalse(program.Contains("JsonSerializer"));
         StringAssert.Contains(program, "private static void AppendJsonString(");
         StringAssert.Contains(program, "secureStorePreflightEncodingFailed");
@@ -186,6 +236,20 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(
             sourceGate,
             "secureStorePreflightValidationSeamInProductionArtifact");
+        StringAssert.Contains(sourceGate, "productionDiagnosticRequiredV1");
+        StringAssert.Contains(sourceGate, "launcherFailureV1");
+        StringAssert.Contains(sourceGate, "launcherIpcValidationV1");
+        StringAssert.Contains(sourceGate, "$LauncherArtifact");
+        StringAssert.Contains(sourceGate, "$LauncherValidationArtifact");
+        StringAssert.Contains(
+            sourceGate, "production-diagnostic-channel-required");
+        StringAssert.Contains(sourceGate, "launcher-production-extra-argv");
+        StringAssert.Contains(sourceGate, "--validate-ipc-timeout-tree");
+        StringAssert.Contains(
+            sourceGate,
+            "secureStorePreflightLauncherCleanupNotClosed");
+        StringAssert.Contains(
+            sourceGate, "launcher-production-validation-seam-scan");
         StringAssert.Contains(
             sourceGate,
             "Get-SafeAdminRootFingerprint");

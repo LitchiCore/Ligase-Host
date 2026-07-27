@@ -11,15 +11,51 @@ using Microsoft.Win32.SafeHandles;
 internal static class Program
 {
     private const int TimeoutMilliseconds = 30000;
+    private const int CleanupTimeoutMilliseconds = 5000;
+#if LAUNCHER_VALIDATION
+    private const int ValidationTimeoutMilliseconds = 1000;
+#endif
     private const int MaximumFrameBytes = 4096;
     private const string ChildFileName = "Ligase.SecureStore.Preflight.exe";
     private const string EvidenceFileName =
         "secure-store-preflight-review-evidence.json";
+#if LAUNCHER_VALIDATION
+    private const string ValidationChildFileName =
+        "Ligase.SecureStore.Preflight.Validation.exe";
+    private static readonly HashSet<string> ValidationActions =
+        new(StringComparer.Ordinal)
+        {
+            "--validate-ipc-success",
+            "--validate-ipc-early-failure",
+            "--validate-ipc-nonce-mismatch",
+            "--validate-ipc-client-pid-mismatch",
+            "--validate-ipc-client-session-mismatch",
+            "--validate-ipc-client-sid-mismatch",
+            "--validate-ipc-server-pid-mismatch",
+            "--validate-ipc-server-session-mismatch",
+            "--validate-ipc-server-sid-mismatch",
+            "--validate-ipc-frame-oversize",
+            "--validate-ipc-disconnect",
+            "--validate-ipc-timeout",
+            "--validate-ipc-timeout-tree",
+            "--validate-ipc-cleanup-kill-fault",
+            "--validate-ipc-cleanup-snapshot-fault",
+            "--validate-ipc-cleanup-wait-timeout",
+            "--validate-ipc-cleanup-has-exited-fault",
+            "--validate-ipc-cleanup-pid-check-fault"
+        };
+#endif
 
     private static int Main(string[] args)
     {
+#if LAUNCHER_VALIDATION
+        if (args.Length != 1 || !ValidationActions.Contains(args[0]))
+            return Fail("invalidArguments", "inputValidation", 18);
+        var validationAction = args[0];
+#else
         if (args.Length != 0)
             return Fail("invalidArguments", "inputValidation", 18);
+#endif
 
         var pipeName = "LigaseSecureStore-" +
             Convert.ToHexString(RandomNumberGenerator.GetBytes(24));
@@ -45,7 +81,13 @@ internal static class Program
             PipeOptions.Asynchronous | PipeOptions.WriteThrough,
             4096, 4096, security);
         var childPath = Path.Combine(
-            AppContext.BaseDirectory, ChildFileName);
+            AppContext.BaseDirectory,
+#if LAUNCHER_VALIDATION
+            ValidationChildFileName
+#else
+            ChildFileName
+#endif
+            );
         if (!File.Exists(childPath) ||
             (File.GetAttributes(childPath) & FileAttributes.ReparsePoint) != 0)
             return Fail("childArtifactUnavailable", "inputValidation", 18);
@@ -55,9 +97,19 @@ internal static class Program
             FileName = childPath,
             Arguments = "--diagnostic-pipe " + pipeName +
                 " --nonce " + nonce +
-                " --parent-pid " + parentPid,
+                " --parent-pid " + parentPid
+#if LAUNCHER_VALIDATION
+                + " --validation-action " +
+                ToChildValidationAction(validationAction)
+#endif
+                ,
+#if LAUNCHER_VALIDATION
+            UseShellExecute = false,
+            CreateNoWindow = true,
+#else
             UseShellExecute = true,
             Verb = "runas",
+#endif
             WorkingDirectory = AppContext.BaseDirectory,
             WindowStyle = ProcessWindowStyle.Hidden
         };
@@ -70,16 +122,32 @@ internal static class Program
             if (child is null)
                 return Fail("childStartFailed", "launch", 18);
             using var deadline = new CancellationTokenSource(
+#if LAUNCHER_VALIDATION
+                ValidationTimeoutMilliseconds);
+#else
                 TimeoutMilliseconds);
+#endif
             pipe.WaitForConnectionAsync(deadline.Token)
                 .GetAwaiter().GetResult();
             if (!GetNamedPipeClientProcessId(
                     pipe.SafePipeHandle, out var clientPid) ||
-                clientPid != (uint)child.Id ||
-                child.SessionId != Process.GetCurrentProcess().SessionId ||
+                clientPid != (uint)child.Id
+#if LAUNCHER_VALIDATION
+                || validationAction == "--validate-ipc-client-pid-mismatch"
+#endif
+                ||
+                child.SessionId != Process.GetCurrentProcess().SessionId
+#if LAUNCHER_VALIDATION
+                || validationAction == "--validate-ipc-client-session-mismatch"
+#endif
+                ||
                 !string.Equals(
                     GetProcessUserSid(child.Handle), userSid.Value,
-                    StringComparison.Ordinal))
+                    StringComparison.Ordinal)
+#if LAUNCHER_VALIDATION
+                || validationAction == "--validate-ipc-client-sid-mismatch"
+#endif
+                )
                 throw new InvalidOperationException("childPeerInvalid");
 
             var hello = ReadFrame(pipe, deadline.Token);
@@ -113,23 +181,33 @@ internal static class Program
                 "\",\"elapsedMilliseconds\":" +
                 stopwatch.ElapsedMilliseconds + "}");
             WriteEvidence(evidence);
+#if LAUNCHER_VALIDATION
+            Console.Out.Write(
+                "{\"schemaId\":\"launcherIpcValidationV1\"," +
+                "\"result\":\"observed\",\"action\":\"" +
+                validationAction.Substring("--validate-".Length) + "\"," +
+                "\"childExit\":" + child.ExitCode + "," +
+                "\"diagnosticLength\":" + diagnostic.Length + "," +
+                "\"diagnosticSha256\":\"" + diagnosticHash + "\"," +
+                "\"stage\":\"" + projection.Stage + "\"," +
+                "\"nativeCode\":" + projection.NativeCode + "}");
+#endif
             return child.ExitCode;
         }
         catch
         {
-            if (child is not null && !child.HasExited)
-            {
-                try
-                {
-                    child.Kill(entireProcessTree: true);
-                    child.WaitForExit(2000);
-                }
-                catch
-                {
-                    return Fail("childCleanupFailed", "cleanup", 18);
-                }
-            }
-            return Fail("diagnosticChannelFailed", "ipc", 18);
+#if LAUNCHER_VALIDATION
+            var cleanup = CleanupChild(child, validationAction);
+#else
+            var cleanup = CleanupChild(child, "");
+#endif
+            return cleanup.Completed
+                ? Fail(
+                    "diagnosticChannelFailed", "ipc", 18, "completed",
+                    cleanup)
+                : Fail(
+                    "childCleanupFailed", "cleanup", 18, "failed",
+                    cleanup);
         }
         finally
         {
@@ -137,13 +215,296 @@ internal static class Program
         }
     }
 
-    private static int Fail(string result, string stage, int exit)
+#if LAUNCHER_VALIDATION
+    private static string ToChildValidationAction(string action) =>
+        action switch
+        {
+            "--validate-ipc-success" => "ipcSuccess",
+            "--validate-ipc-early-failure" => "earlyFailure",
+            "--validate-ipc-nonce-mismatch" => "nonceMismatch",
+            "--validate-ipc-server-pid-mismatch" => "serverPidMismatch",
+            "--validate-ipc-server-session-mismatch" =>
+                "serverSessionMismatch",
+            "--validate-ipc-server-sid-mismatch" => "serverSidMismatch",
+            "--validate-ipc-frame-oversize" => "frameOversize",
+            "--validate-ipc-disconnect" => "disconnect",
+            "--validate-ipc-timeout" => "timeout",
+            "--validate-ipc-timeout-tree" => "timeoutTree",
+            "--validate-ipc-cleanup-kill-fault" => "timeout",
+            "--validate-ipc-cleanup-snapshot-fault" => "timeout",
+            "--validate-ipc-cleanup-wait-timeout" => "timeout",
+            "--validate-ipc-cleanup-has-exited-fault" => "timeout",
+            "--validate-ipc-cleanup-pid-check-fault" => "timeout",
+            _ => "ipcSuccess"
+        };
+#endif
+
+    private static CleanupResult CleanupChild(
+        Process? child, string validationAction)
     {
+        if (child is null)
+            return new(true, 0, false, false, true, true, true);
+
+        var deadline = Stopwatch.StartNew();
+        var cleanupFault = false;
+        var killAttempted = false;
+        var rootFallbackAttempted = false;
+        var waitCompleted = false;
+        var rootPid = 0;
+        var treePids = new HashSet<int>();
+        var snapshotAvailable = false;
+        try
+        {
+            rootPid = child.Id;
+#if LAUNCHER_VALIDATION
+            if (validationAction ==
+                "--validate-ipc-cleanup-snapshot-fault")
+                throw new InvalidOperationException(
+                    "validationSnapshotFault");
+#endif
+            treePids = GetProcessTree(rootPid);
+            snapshotAvailable = true;
+        }
+        catch
+        {
+            cleanupFault = true;
+        }
+
+        try
+        {
+#if LAUNCHER_VALIDATION
+            if (validationAction ==
+                "--validate-ipc-cleanup-has-exited-fault")
+            {
+                cleanupFault = true;
+            }
+            else
+#endif
+            if (child.HasExited)
+                return new(
+                    !cleanupFault &&
+                    snapshotAvailable &&
+                    VerifyProcessTreeAbsent(treePids),
+                    rootPid, false, false, true, true,
+                    deadline.ElapsedMilliseconds <=
+                        CleanupTimeoutMilliseconds);
+        }
+        catch
+        {
+            cleanupFault = true;
+        }
+
+        try
+        {
+            killAttempted = true;
+#if LAUNCHER_VALIDATION
+            if (validationAction == "--validate-ipc-cleanup-kill-fault")
+                cleanupFault = true;
+#endif
+            child.Kill(entireProcessTree: true);
+        }
+        catch
+        {
+            cleanupFault = true;
+            rootFallbackAttempted = true;
+            try { child.Kill(); } catch { }
+        }
+        if (!snapshotAvailable)
+        {
+            rootFallbackAttempted = true;
+            try
+            {
+                if (!child.HasExited)
+                    child.Kill();
+            }
+            catch { }
+        }
+
+        var remaining = RemainingMilliseconds(deadline);
+        var waited = false;
+        if (remaining > 0)
+        {
+            try
+            {
+                waited = child.WaitForExit(remaining);
+                waitCompleted = waited;
+#if LAUNCHER_VALIDATION
+                if (validationAction ==
+                    "--validate-ipc-cleanup-wait-timeout")
+                {
+                    cleanupFault = true;
+                    waited = false;
+                    waitCompleted = false;
+                }
+#endif
+            }
+            catch
+            {
+                cleanupFault = true;
+            }
+        }
+
+        if (!waited)
+        {
+            cleanupFault = true;
+            try
+            {
+                if (!child.HasExited)
+                    child.Kill(entireProcessTree: true);
+            }
+            catch { }
+            remaining = RemainingMilliseconds(deadline);
+            if (remaining > 0)
+            {
+                try { child.WaitForExit(remaining); } catch { }
+                try { waitCompleted = child.HasExited; } catch { }
+            }
+        }
+
+        bool hasExited;
+        try
+        {
+            hasExited = child.HasExited;
+        }
+        catch
+        {
+            return new(
+                false, rootPid, killAttempted, rootFallbackAttempted,
+                waitCompleted, false,
+                deadline.ElapsedMilliseconds <= CleanupTimeoutMilliseconds);
+        }
+        if (!hasExited)
+            return new(
+                false, rootPid, killAttempted, rootFallbackAttempted,
+                waitCompleted, false,
+                deadline.ElapsedMilliseconds <= CleanupTimeoutMilliseconds);
+
+        var rootPidZero = rootPid == 0 ||
+            VerifyProcessTreeAbsent(new[] { rootPid });
+        if (!rootPidZero)
+            return new(
+                false, rootPid, killAttempted, rootFallbackAttempted,
+                waitCompleted, false,
+                deadline.ElapsedMilliseconds <= CleanupTimeoutMilliseconds);
+
+#if LAUNCHER_VALIDATION
+        if (validationAction ==
+            "--validate-ipc-cleanup-pid-check-fault")
+        {
+            cleanupFault = true;
+        }
+        else
+#endif
+        if (snapshotAvailable &&
+            !VerifyProcessTreeAbsent(treePids))
+            return new(
+                false, rootPid, killAttempted, rootFallbackAttempted,
+                waitCompleted, true,
+                deadline.ElapsedMilliseconds <= CleanupTimeoutMilliseconds);
+
+        return new(
+            !cleanupFault && snapshotAvailable,
+            rootPid, killAttempted, rootFallbackAttempted,
+            waitCompleted, true,
+            deadline.ElapsedMilliseconds <= CleanupTimeoutMilliseconds);
+    }
+
+    private static int RemainingMilliseconds(Stopwatch deadline) =>
+        Math.Max(
+            0,
+            CleanupTimeoutMilliseconds -
+            checked((int)Math.Min(
+                deadline.ElapsedMilliseconds,
+                CleanupTimeoutMilliseconds)));
+
+    private static HashSet<int> GetProcessTree(int rootPid)
+    {
+        var parents = new Dictionary<int, int>();
+        var snapshot = CreateToolhelp32Snapshot(2, 0);
+        if (snapshot == new IntPtr(-1))
+            throw new InvalidOperationException("processSnapshotFailed");
+        try
+        {
+            var entry = new ProcessEntry32
+            {
+                Size = (uint)Marshal.SizeOf<ProcessEntry32>()
+            };
+            if (!Process32First(snapshot, ref entry))
+                throw new InvalidOperationException("processSnapshotFailed");
+            do
+            {
+                parents[checked((int)entry.ProcessId)] =
+                    checked((int)entry.ParentProcessId);
+                entry.Size = (uint)Marshal.SizeOf<ProcessEntry32>();
+            } while (Process32Next(snapshot, ref entry));
+        }
+        finally
+        {
+            CloseHandle(snapshot);
+        }
+
+        var result = new HashSet<int> { rootPid };
+        var changed = true;
+        while (changed)
+        {
+            changed = false;
+            foreach (var pair in parents)
+            {
+                if (!result.Contains(pair.Key) &&
+                    result.Contains(pair.Value))
+                {
+                    result.Add(pair.Key);
+                    changed = true;
+                }
+            }
+        }
+        return result;
+    }
+
+    private static bool VerifyProcessTreeAbsent(IEnumerable<int> pids)
+    {
+        foreach (var pid in pids)
+        {
+            try
+            {
+                using var process = Process.GetProcessById(pid);
+                if (!process.HasExited)
+                    return false;
+            }
+            catch (ArgumentException)
+            {
+            }
+            catch
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static int Fail(
+        string result, string stage, int exit,
+        string cleanup = "notRequired",
+        CleanupResult? cleanupResult = null)
+    {
+        var detail = cleanupResult ??
+            new CleanupResult(true, 0, false, false, true, true, true);
         var bytes = Encoding.UTF8.GetBytes(
             "{\"schemaVersion\":1,\"releaseKind\":\"UnsignedDev\"," +
             "\"trustBoundary\":\"localManualExactSha\",\"result\":\"" +
             result + "\",\"stage\":\"" + stage +
-            "\",\"nativeExit\":" + exit + "}");
+            "\",\"nativeExit\":" + exit + ",\"cleanup\":\"" +
+            cleanup + "\",\"childPid\":" + detail.ChildPid +
+            ",\"killAttempted\":" +
+            (detail.KillAttempted ? "true" : "false") +
+            ",\"rootFallbackAttempted\":" +
+            (detail.RootFallbackAttempted ? "true" : "false") +
+            ",\"waitCompleted\":" +
+            (detail.WaitCompleted ? "true" : "false") +
+            ",\"rootPidZero\":" +
+            (detail.RootPidZero ? "true" : "false") +
+            ",\"withinDeadline\":" +
+            (detail.WithinDeadline ? "true" : "false") + "}");
         try { WriteEvidence(bytes); } catch { }
         try { Console.Error.Write(Encoding.UTF8.GetString(bytes)); } catch { }
         return exit;
@@ -224,6 +585,31 @@ internal static class Program
         bool AclMutationOccurred,
         string AclRollback);
 
+    private readonly record struct CleanupResult(
+        bool Completed,
+        int ChildPid,
+        bool KillAttempted,
+        bool RootFallbackAttempted,
+        bool WaitCompleted,
+        bool RootPidZero,
+        bool WithinDeadline);
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct ProcessEntry32
+    {
+        public uint Size;
+        public uint Usage;
+        public uint ProcessId;
+        public IntPtr DefaultHeapId;
+        public uint ModuleId;
+        public uint Threads;
+        public uint ParentProcessId;
+        public int PriorityClassBase;
+        public uint Flags;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)]
+        public string ExeFile;
+    }
+
     private static byte[] ReadFrame(
         Stream stream, CancellationToken cancellationToken)
     {
@@ -287,6 +673,15 @@ internal static class Program
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool GetNamedPipeClientProcessId(
         SafePipeHandle pipe, out uint clientProcessId);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr CreateToolhelp32Snapshot(
+        uint flags, uint processId);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool Process32First(
+        IntPtr snapshot, ref ProcessEntry32 entry);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool Process32Next(
+        IntPtr snapshot, ref ProcessEntry32 entry);
     [DllImport("advapi32.dll", SetLastError = true)]
     private static extern bool OpenProcessToken(
         IntPtr processHandle, uint desiredAccess, out IntPtr tokenHandle);

@@ -7,6 +7,10 @@ param(
 
     [string] $ValidationArtifact,
 
+    [string] $LauncherArtifact,
+
+    [string] $LauncherValidationArtifact,
+
     [string] $FixtureRoot,
 
     [switch] $RunArtifactGates,
@@ -424,12 +428,15 @@ function ConvertTo-ClosedArtifactProjection {
         [Parameter(Mandatory = $true)]
         [ValidateSet(
             'productionInvalidArgumentsV1',
+            'productionDiagnosticRequiredV1',
             'productionPolicySetFailureV1',
             'productionPolicyReadbackFailureV1',
             'validationArgvV1',
             'validationChildPolicyV1',
             'validationChildFailureV1',
-            'validationChildCleanupV1')]
+            'validationChildCleanupV1',
+            'launcherFailureV1',
+            'launcherIpcValidationV1')]
         [string] $SchemaId
     )
 
@@ -463,6 +470,7 @@ function ConvertTo-ClosedArtifactProjection {
         }
         $schemas = @{
             productionInvalidArgumentsV1 = $productionShape
+            productionDiagnosticRequiredV1 = $productionShape
             productionPolicySetFailureV1 = $productionShape
             productionPolicyReadbackFailureV1 = $productionShape
             validationArgvV1 = [ordered]@{
@@ -487,6 +495,22 @@ function ConvertTo-ClosedArtifactProjection {
                 schemaId = 'string'; result = 'string'; stage = 'string'
                 childPid = 'integer'
                 childCleanup = 'string'
+            }
+            launcherFailureV1 = [ordered]@{
+                schemaVersion = 'integer'; releaseKind = 'string'
+                trustBoundary = 'string'; result = 'string'
+                stage = 'string'; nativeExit = 'integer'
+                cleanup = 'string'
+                childPid = 'integer'; killAttempted = 'boolean'
+                rootFallbackAttempted = 'boolean'
+                waitCompleted = 'boolean'; rootPidZero = 'boolean'
+                withinDeadline = 'boolean'
+            }
+            launcherIpcValidationV1 = [ordered]@{
+                schemaId = 'string'; result = 'string'; action = 'string'
+                childExit = 'integer'; diagnosticLength = 'integer'
+                diagnosticSha256 = 'string'; stage = 'string'
+                nativeCode = 'integer'
             }
         }
         $schema = $schemas[$SchemaId]
@@ -530,12 +554,21 @@ function ConvertTo-ClosedArtifactProjection {
         $closedValue = switch ($SchemaId) {
             { $_ -in @(
                     'productionInvalidArgumentsV1',
+                    'productionDiagnosticRequiredV1',
                     'productionPolicySetFailureV1',
                     'productionPolicyReadbackFailureV1') } {
                 $tupleValid = switch ($SchemaId) {
                     'productionInvalidArgumentsV1' {
                         $value.resultCode -eq 'invalidArguments' -and
-                        $value.stage -eq 'inputValidation' -and
+                        $value.stage -eq 'diagnosticChannelValidation' -and
+                        $value.nativeCategory -eq 'none' -and
+                        $value.nativeCode -eq 0
+                    }
+                    'productionDiagnosticRequiredV1' {
+                        $value.resultCode -eq
+                            'diagnosticChannelRequired' -and
+                        $value.stage -eq
+                            'diagnosticChannelValidation' -and
                         $value.nativeCategory -eq 'none' -and
                         $value.nativeCode -eq 0
                     }
@@ -602,6 +635,49 @@ function ConvertTo-ClosedArtifactProjection {
                         $value.nativeCode -eq 0) -or
                     ($value.nativeCategory -ne 'none' -and
                         $value.nativeCode -gt 0))
+            }
+            'launcherFailureV1' {
+                $value.schemaVersion -eq 1 -and
+                $value.releaseKind -eq 'UnsignedDev' -and
+                $value.trustBoundary -eq 'localManualExactSha' -and
+                $value.result -in @(
+                    'invalidArguments', 'childArtifactUnavailable',
+                    'childStartFailed', 'childCleanupFailed',
+                    'diagnosticChannelFailed') -and
+                $value.stage -in @(
+                    'inputValidation', 'launch', 'cleanup', 'ipc') -and
+                $value.nativeExit -eq 18 -and
+                $value.cleanup -in @(
+                    'notRequired', 'completed', 'failed') -and
+                (($value.result -eq 'childCleanupFailed' -and
+                        $value.stage -eq 'cleanup' -and
+                        $value.cleanup -eq 'failed' -and
+                        $value.withinDeadline -eq $true) -or
+                    ($value.result -eq 'diagnosticChannelFailed' -and
+                        $value.stage -eq 'ipc' -and
+                        $value.cleanup -eq 'completed' -and
+                        $value.rootPidZero -eq $true -and
+                        $value.withinDeadline -eq $true) -or
+                    ($value.result -notin @(
+                            'childCleanupFailed',
+                            'diagnosticChannelFailed') -and
+                        $value.cleanup -eq 'notRequired' -and
+                        $value.childPid -eq 0 -and
+                        $value.killAttempted -eq $false -and
+                        $value.rootFallbackAttempted -eq $false))
+            }
+            'launcherIpcValidationV1' {
+                $value.schemaId -eq 'launcherIpcValidationV1' -and
+                $value.result -eq 'observed' -and
+                $value.action -in @(
+                    'ipc-success', 'ipc-early-failure') -and
+                $value.childExit -in @(0, 18) -and
+                $value.diagnosticLength -gt 0 -and
+                $value.diagnosticLength -le 4096 -and
+                $value.diagnosticSha256 -match '^[0-9A-F]{64}$' -and
+                $value.stage -in @(
+                    'diagnosticReadback', 'securityInitialization') -and
+                [long]$value.nativeCode -le 65535
             }
             default { $false }
         }
@@ -859,7 +935,8 @@ function Invoke-GateEvidenceSelfTests {
         $productionBase =
             '{"schemaVersion":1,"releaseKind":"UnsignedDev",' +
             '"trustBoundary":"localManualExactSha","success":false,' +
-            '"resultCode":"invalidArguments","stage":"inputValidation",' +
+            '"resultCode":"invalidArguments",' +
+            '"stage":"diagnosticChannelValidation",' +
             '"nativeCategory":"none","nativeCode":0,"acl":"notAttempted",' +
             '"recovery":"notAttempted","probe":"notAttempted",' +
             '"cleanup":"notAttempted","aclMutationOccurred":false,' +
@@ -867,7 +944,7 @@ function Invoke-GateEvidenceSelfTests {
         $policySetBase = $productionBase.
             Replace('"resultCode":"invalidArguments"',
                 '"resultCode":"secureStorePreflightFailed"').
-            Replace('"stage":"inputValidation"',
+            Replace('"stage":"diagnosticChannelValidation"',
                 '"stage":"securityInitialization"').
             Replace('"nativeCategory":"none"',
                 '"nativeCategory":"accessDenied"').
@@ -876,6 +953,9 @@ function Invoke-GateEvidenceSelfTests {
             Replace('"nativeCategory":"accessDenied"',
                 '"nativeCategory":"managedFailure"').
             Replace('"nativeCode":5', '"nativeCode":20013')
+        $diagnosticRequiredBase = $productionBase.Replace(
+            '"resultCode":"invalidArguments"',
+            '"resultCode":"diagnosticChannelRequired"')
         $argvBase =
             '{"result":"passed","stage":"inputValidation",' +
             '"policyActive":true,"argumentCount":1,' +
@@ -898,9 +978,25 @@ function Invoke-GateEvidenceSelfTests {
             '"resultCode":"secureStorePreflightFailed",' +
             '"stage":"childPolicy","nativeCategory":"accessDenied",' +
             '"nativeCode":5}'
+        $launcherFailureBase =
+            '{"schemaVersion":1,"releaseKind":"UnsignedDev",' +
+            '"trustBoundary":"localManualExactSha",' +
+            '"result":"invalidArguments","stage":"inputValidation",' +
+            '"nativeExit":18,"cleanup":"notRequired","childPid":0,' +
+            '"killAttempted":false,"rootFallbackAttempted":false,' +
+            '"waitCompleted":true,"rootPidZero":true,' +
+            '"withinDeadline":true}'
+        $launcherIpcBase =
+            '{"schemaId":"launcherIpcValidationV1",' +
+            '"result":"observed","action":"ipc-success",' +
+            '"childExit":0,"diagnosticLength":256,' +
+            '"diagnosticSha256":"' + ('A' * 64) + '",' +
+            '"stage":"diagnosticReadback","nativeCode":0}'
         foreach ($validCase in @(
                 @{ schema = 'productionInvalidArgumentsV1';
                     raw = $productionBase },
+                @{ schema = 'productionDiagnosticRequiredV1';
+                    raw = $diagnosticRequiredBase },
                 @{ schema = 'productionPolicySetFailureV1';
                     raw = $policySetBase },
                 @{ schema = 'productionPolicyReadbackFailureV1';
@@ -909,7 +1005,11 @@ function Invoke-GateEvidenceSelfTests {
                 @{ schema = 'validationChildPolicyV1'; raw = $childBase },
                 @{ schema = 'validationChildFailureV1';
                     raw = $childFailureBase },
-                @{ schema = 'validationChildCleanupV1'; raw = $cleanupBase })) {
+                @{ schema = 'validationChildCleanupV1'; raw = $cleanupBase },
+                @{ schema = 'launcherFailureV1';
+                    raw = $launcherFailureBase },
+                @{ schema = 'launcherIpcValidationV1';
+                    raw = $launcherIpcBase })) {
             $validProjection = ConvertTo-ClosedArtifactProjection `
                 ([string]$validCase.raw) -SchemaId ([string]$validCase.schema)
             if ($validProjection.state -ne 'closed' -or
@@ -1219,7 +1319,8 @@ function Invoke-GateEvidenceSelfTests {
                 raw = $productionBase.Replace('"success":false', '"success":true') },
             @{ id = 'production-stage-drift'; schema = 'productionInvalidArgumentsV1';
                 raw = $productionBase.Replace(
-                    '"stage":"inputValidation"', '"stage":"finalReadback"') },
+                    '"stage":"diagnosticChannelValidation"',
+                    '"stage":"finalReadback"') },
             @{ id = 'production-acl-drift'; schema = 'productionInvalidArgumentsV1';
                 raw = $productionBase.Replace(
                     '"acl":"notAttempted"', '"acl":"exact"') },
@@ -1427,7 +1528,26 @@ function New-FixedAsciiProcessStartInfo {
             '--validate-child-policy',
             '--validate-hang-pipes',
             '--validate-policy-set-fault',
-            '--validate-policy-readback-mismatch')]
+            '--validate-policy-readback-mismatch',
+            '--launcher-extra-argv',
+            '--validate-ipc-success',
+            '--validate-ipc-early-failure',
+            '--validate-ipc-nonce-mismatch',
+            '--validate-ipc-client-pid-mismatch',
+            '--validate-ipc-client-session-mismatch',
+            '--validate-ipc-client-sid-mismatch',
+            '--validate-ipc-server-pid-mismatch',
+            '--validate-ipc-server-session-mismatch',
+            '--validate-ipc-server-sid-mismatch',
+            '--validate-ipc-frame-oversize',
+            '--validate-ipc-disconnect',
+            '--validate-ipc-timeout',
+            '--validate-ipc-timeout-tree',
+            '--validate-ipc-cleanup-kill-fault',
+            '--validate-ipc-cleanup-snapshot-fault',
+            '--validate-ipc-cleanup-wait-timeout',
+            '--validate-ipc-cleanup-has-exited-fault',
+            '--validate-ipc-cleanup-pid-check-fault')]
         [string] $Token,
         [switch] $SimulateUnsupportedArgumentApi
     )
@@ -1456,7 +1576,7 @@ function Invoke-FixedArtifactToken {
     param(
         [Parameter(Mandatory = $true)]
         [string] $Artifact,
-        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
         [string] $Token,
         [hashtable] $Environment = @{},
         [ValidateSet(
@@ -1468,8 +1588,21 @@ function Invoke-FixedArtifactToken {
         [string] $CleanupFaultMode = 'none'
     )
 
-    $start = New-FixedAsciiProcessStartInfo `
-        -Artifact $Artifact -Token $Token
+    $start = if ([string]::IsNullOrEmpty($Token)) {
+        $noArgumentStart = [Diagnostics.ProcessStartInfo]::new()
+        $noArgumentStart.FileName = $Artifact
+        $noArgumentStart.WorkingDirectory = Split-Path -Parent $Artifact
+        $noArgumentStart.UseShellExecute = $false
+        $noArgumentStart.RedirectStandardOutput = $true
+        $noArgumentStart.RedirectStandardError = $true
+        $noArgumentStart.CreateNoWindow = $true
+        $noArgumentStart.Arguments = ''
+        $noArgumentStart
+    }
+    else {
+        New-FixedAsciiProcessStartInfo `
+            -Artifact $Artifact -Token $Token
+    }
     foreach ($name in $Environment.Keys) {
         $start.EnvironmentVariables[$name] = [string]$Environment[$name]
     }
@@ -1635,11 +1768,14 @@ $projectPath = Join-Path $RepositoryRoot `
     'tools\Ligase.SecureStore.Preflight\Ligase.SecureStore.Preflight.csproj'
 $launcherPath = Join-Path $RepositoryRoot `
     'tools\Ligase.SecureStore.Preflight.Launcher\Program.cs'
+$launcherProjectPath = Join-Path $RepositoryRoot `
+    'tools\Ligase.SecureStore.Preflight.Launcher\Ligase.SecureStore.Preflight.Launcher.csproj'
 $documentPath = Join-Path $RepositoryRoot `
     'docs\ligase-host\fresh-install.md'
 
 foreach ($path in @(
-        $programPath, $projectPath, $launcherPath, $documentPath)) {
+        $programPath, $projectPath, $launcherPath, $launcherProjectPath,
+        $documentPath)) {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
         throw 'secureStorePreflightSourceMissing'
     }
@@ -1648,6 +1784,7 @@ foreach ($path in @(
 $program = Get-Content -LiteralPath $programPath -Raw
 $project = Get-Content -LiteralPath $projectPath -Raw
 $launcher = Get-Content -LiteralPath $launcherPath -Raw
+$launcherProject = Get-Content -LiteralPath $launcherProjectPath -Raw
 $document = Get-Content -LiteralPath $documentPath -Raw
 
 foreach ($token in @(
@@ -1655,6 +1792,7 @@ foreach ($token in @(
         'RunStandaloneSecureStorePreflight',
         'private static string _stage = "inputValidation"',
         '_stage = "securityInitialization"',
+        '_stage = "diagnosticChannelValidation"',
         'EnableChildProcessMitigation()',
         'ProcessChildProcessPolicy = 13',
         'NoChildProcessCreation = 1',
@@ -1694,7 +1832,8 @@ foreach ($token in @(
         'failTransactionsCreate',
         'failTransactionsVerify',
         'failOpenVerified',
-        '? "invalidArguments"',
+        '"invalidArguments" => "invalidArguments"',
+        '"diagnosticChannelRequired" =>',
         'PreflightReleaseKind = "UnsignedDev"',
         'PreflightTrustBoundary = "localManualExactSha"',
         '"Ligase Host Admin", "Transactions"',
@@ -1709,7 +1848,7 @@ foreach ($token in @(
         'Console.Error.Write(',
         'Success = true',
         'ResultCode = "secureStorePreflightReady"',
-        ': evidenceWriteInProgress',
+        '_ => evidenceWriteInProgress',
         'var committingStore = store',
         'store = null',
         'private static void AppendJsonString(',
@@ -1718,7 +1857,7 @@ foreach ($token in @(
         '"LIGASE_INSTALL_VALIDATION_HARNESS", null',
         '#if !PREFLIGHT_ONLY')) {
     if ($program.IndexOf($token, [StringComparison]::Ordinal) -lt 0) {
-        throw 'secureStorePreflightBoundaryMissing'
+        throw ('secureStorePreflightBoundaryMissing:' + $token)
     }
 }
 foreach ($token in @(
@@ -1732,6 +1871,46 @@ foreach ($token in @(
     if ($launcher.IndexOf($token, [StringComparison]::Ordinal) -lt 0) {
         throw 'secureStorePreflightLauncherBoundaryMissing'
     }
+}
+foreach ($token in @(
+        '#if LAUNCHER_VALIDATION',
+        'ValidationChildFileName',
+        '--validate-ipc-success',
+        '--validate-ipc-early-failure',
+        '--validate-ipc-nonce-mismatch',
+        '--validate-ipc-client-pid-mismatch',
+        '--validate-ipc-client-session-mismatch',
+        '--validate-ipc-client-sid-mismatch',
+        '--validate-ipc-server-pid-mismatch',
+        '--validate-ipc-server-session-mismatch',
+        '--validate-ipc-server-sid-mismatch',
+        '--validate-ipc-frame-oversize',
+        '--validate-ipc-disconnect',
+        '--validate-ipc-timeout',
+        '--validate-ipc-timeout-tree',
+        '--validate-ipc-cleanup-kill-fault',
+        '--validate-ipc-cleanup-snapshot-fault',
+        '--validate-ipc-cleanup-wait-timeout',
+        '--validate-ipc-cleanup-has-exited-fault',
+        '--validate-ipc-cleanup-pid-check-fault',
+        'CleanupChild(child, validationAction)',
+        'child.Kill(entireProcessTree: true)',
+        'VerifyProcessTreeAbsent(treePids)',
+        'CreateToolhelp32Snapshot',
+        '\"killAttempted\"',
+        '\"rootFallbackAttempted\"',
+        '\"rootPidZero\"',
+        '\"withinDeadline\"',
+        'UseShellExecute = false',
+        'CreateNoWindow = true')) {
+    if ($launcher.IndexOf($token, [StringComparison]::Ordinal) -lt 0) {
+        throw 'secureStorePreflightLauncherValidationBoundaryMissing'
+    }
+}
+if ($launcherProject.IndexOf(
+        'LAUNCHER_VALIDATION',
+        [StringComparison]::Ordinal) -ge 0) {
+    throw 'secureStorePreflightLauncherValidationSymbolInProductionProject'
 }
 foreach ($forbidden in @(
         'payloadRoot', 'Manage-LigaseInstallation', 'PowerShell')) {
@@ -1797,11 +1976,18 @@ if ($ordinaryProgram.IndexOf(
 }
 $preflight = $program.Substring(
     $preflightStart, $preflightEnd - $preflightStart)
-$mitigation = $preflight.IndexOf(
+$productionPreflight = [regex]::Replace(
+    $preflight,
+    '(?s)#if PREFLIGHT_VALIDATION.*?#endif',
+    '')
+$mitigation = $preflight.LastIndexOf(
     'EnableChildProcessMitigation()',
     [StringComparison]::Ordinal)
-$securityStage = $preflight.IndexOf(
+$securityStage = $preflight.LastIndexOf(
     '_stage = "securityInitialization"',
+    [StringComparison]::Ordinal)
+$diagnosticStage = $preflight.LastIndexOf(
+    '_stage = "diagnosticChannelValidation"',
     [StringComparison]::Ordinal)
 $inputStage = $preflight.IndexOf(
     '_stage = "inputValidation"',
@@ -1821,8 +2007,10 @@ $programDataAccess = $preflight.IndexOf(
 $secureStoreAccess = $preflight.IndexOf(
     'SecureStore.Open(',
     [StringComparison]::Ordinal)
-if ($securityStage -lt 0 -or $argumentCheck -le $securityStage -or
-    $mitigation -le $argumentCheck -or
+if ($diagnosticStage -lt 0 -or
+    $argumentCheck -le $diagnosticStage -or
+    $securityStage -le $argumentCheck -or
+    $mitigation -le $securityStage -or
     $inputStage -le $mitigation -or
     $environmentAccess -le $argumentCheck -or
     $validatedStage -le $environmentAccess -or
@@ -1842,7 +2030,7 @@ foreach ($forbidden in @(
         'firewall',
         'shortcut',
         'registry')) {
-    if ($preflight.IndexOf(
+    if ($productionPreflight.IndexOf(
             $forbidden, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
         throw 'secureStorePreflightForbiddenSurface'
     }
@@ -1930,7 +2118,9 @@ if ($RunEvidenceSelfTests) {
     Invoke-GateEvidenceSelfTests $evidenceSelfTestRoot
 }
 if ($RunArtifactGates) {
-    foreach ($artifact in @($ProductionArtifact, $ValidationArtifact)) {
+    foreach ($artifact in @(
+            $ProductionArtifact, $ValidationArtifact, $LauncherArtifact,
+            $LauncherValidationArtifact)) {
         if ([string]::IsNullOrWhiteSpace($artifact) -or
             -not (Test-Path -LiteralPath $artifact -PathType Leaf)) {
             throw 'secureStorePreflightArtifactMissing'
@@ -2062,7 +2252,12 @@ if ($RunArtifactGates) {
         $script:GateEvidenceRoot = $savedEvidenceRoot
     }
 
-    $before = Get-SafeAdminRootFingerprint
+    $adminSurfaceSentinel = Join-Path $fixtureFull `
+        'system-surface-sentinel\Admin'
+    New-Item -ItemType Directory -Path (
+        Join-Path $adminSurfaceSentinel 'Transactions') -Force |
+        Out-Null
+    $before = Get-SafeAdminRootFingerprint $adminSurfaceSentinel
     $startCountBefore = $script:ProcessStartCount
     try {
         New-FixedAsciiProcessStartInfo `
@@ -2100,6 +2295,208 @@ if ($RunArtifactGates) {
         LIGASE_TRANSACTION_FAILURE_STAGE = 'inputValidation'
         LIGASE_TRANSACTION_TEST_ROOT = 'C:\must-not-be-used'
     }
+    $productionDirect = Invoke-FixedArtifactToken `
+        -Artifact $ProductionArtifact -Token ''
+    $productionDirectParse = ConvertTo-ClosedArtifactProjection `
+        $productionDirect.stderr -SchemaId 'productionDiagnosticRequiredV1'
+    $productionDirectPassed = $productionDirect.exitCode -eq 18 -and
+        $productionDirect.stdout.Length -eq 0 -and
+        $productionDirectParse.state -eq 'closed' -and
+        $productionDirectParse.value.resultCode -eq
+            'diagnosticChannelRequired' -and
+        $productionDirectParse.value.stage -eq
+            'diagnosticChannelValidation'
+    Complete-ArtifactGate (
+        New-ArtifactGateObservation `
+            -GateId 'production-diagnostic-channel-required' `
+            -ArtifactKind 'production' `
+            -Invocation $productionDirect `
+            -Projection $productionDirectParse.value `
+            -Passed $productionDirectPassed `
+            -ParseState $productionDirectParse.state `
+            -SchemaId 'productionDiagnosticRequiredV1' `
+            -ParseReason $productionDirectParse.reason) `
+        -FailureCode 'secureStorePreflightDirectInvocationNotRejected' |
+        Out-Null
+
+    $launcherExtra = Invoke-FixedArtifactToken `
+        -Artifact $LauncherArtifact `
+        -Token '--launcher-extra-argv'
+    $launcherExtraParse = ConvertTo-ClosedArtifactProjection `
+        $launcherExtra.stderr -SchemaId 'launcherFailureV1'
+    $launcherExtraPassed = $launcherExtra.exitCode -eq 18 -and
+        $launcherExtra.stdout.Length -eq 0 -and
+        $launcherExtraParse.state -eq 'closed' -and
+        $launcherExtraParse.value.result -eq 'invalidArguments' -and
+        $launcherExtraParse.value.stage -eq 'inputValidation'
+    Complete-ArtifactGate (
+        New-ArtifactGateObservation `
+            -GateId 'launcher-production-extra-argv' `
+            -ArtifactKind 'launcher' `
+            -Invocation $launcherExtra `
+            -Projection $launcherExtraParse.value `
+            -Passed $launcherExtraPassed `
+            -ParseState $launcherExtraParse.state `
+            -SchemaId 'launcherFailureV1' `
+            -ParseReason $launcherExtraParse.reason) `
+        -FailureCode 'secureStorePreflightLauncherArgvBoundaryInvalid' |
+        Out-Null
+
+    foreach ($ipcAction in @(
+            '--validate-ipc-success',
+            '--validate-ipc-early-failure')) {
+        $ipc = Invoke-FixedArtifactToken `
+            -Artifact $LauncherValidationArtifact -Token $ipcAction
+        $ipcParse = ConvertTo-ClosedArtifactProjection `
+            $ipc.stdout -SchemaId 'launcherIpcValidationV1'
+        $expectedExit = if (
+            $ipcAction -eq '--validate-ipc-success') { 0 } else { 18 }
+        $ipcPassed = $ipc.exitCode -eq $expectedExit -and
+            $ipc.stderr.Length -eq 0 -and
+            $ipcParse.state -eq 'closed' -and
+            $ipcParse.value.childExit -eq $expectedExit
+        Complete-ArtifactGate (
+            New-ArtifactGateObservation `
+                -GateId ('launcher-' + $ipcAction.Substring(11)) `
+                -ArtifactKind 'launcherValidation' `
+                -Invocation $ipc -Projection $ipcParse.value `
+                -Passed $ipcPassed -ParseState $ipcParse.state `
+                -SchemaId 'launcherIpcValidationV1' `
+                -ParseReason $ipcParse.reason) `
+            -FailureCode 'secureStorePreflightLauncherIpcTupleInvalid' |
+            Out-Null
+    }
+    foreach ($ipcFailureAction in @(
+            '--validate-ipc-nonce-mismatch',
+            '--validate-ipc-client-pid-mismatch',
+            '--validate-ipc-client-session-mismatch',
+            '--validate-ipc-client-sid-mismatch',
+            '--validate-ipc-server-pid-mismatch',
+            '--validate-ipc-server-session-mismatch',
+            '--validate-ipc-server-sid-mismatch',
+            '--validate-ipc-frame-oversize',
+            '--validate-ipc-disconnect')) {
+        $ipcFailure = Invoke-FixedArtifactToken `
+            -Artifact $LauncherValidationArtifact `
+            -Token $ipcFailureAction
+        $ipcFailureParse = ConvertTo-ClosedArtifactProjection `
+            $ipcFailure.stderr -SchemaId 'launcherFailureV1'
+        $ipcFailurePassed = $ipcFailure.exitCode -eq 18 -and
+            $ipcFailure.stdout.Length -eq 0 -and
+            $ipcFailureParse.state -eq 'closed' -and
+            $ipcFailureParse.value.result -eq 'diagnosticChannelFailed' -and
+            $ipcFailureParse.value.cleanup -eq 'completed' -and
+            $ipcFailureParse.value.rootPidZero -eq $true -and
+            $ipcFailureParse.value.withinDeadline -eq $true
+        Complete-ArtifactGate (
+            New-ArtifactGateObservation `
+                -GateId ('launcher-' + $ipcFailureAction.Substring(11)) `
+                -ArtifactKind 'launcherValidation' `
+                -Invocation $ipcFailure `
+                -Projection $ipcFailureParse.value `
+                -Passed $ipcFailurePassed `
+                -ParseState $ipcFailureParse.state `
+                -SchemaId 'launcherFailureV1' `
+                -ParseReason $ipcFailureParse.reason) `
+            -FailureCode 'secureStorePreflightLauncherAttackNotRejected' |
+            Out-Null
+    }
+    foreach ($ipcTimeoutAction in @(
+            '--validate-ipc-timeout',
+            '--validate-ipc-timeout-tree')) {
+        $ipcTimeout = Invoke-FixedArtifactToken `
+            -Artifact $LauncherValidationArtifact `
+            -Token $ipcTimeoutAction
+        $ipcTimeoutParse = ConvertTo-ClosedArtifactProjection `
+            $ipcTimeout.stderr -SchemaId 'launcherFailureV1'
+        $ipcTimeoutPassed = -not $ipcTimeout.timedOut -and
+            $ipcTimeout.exitCode -eq 18 -and
+            $ipcTimeout.stdout.Length -eq 0 -and
+            $ipcTimeout.elapsedMilliseconds -le 20000 -and
+            $ipcTimeout.pipesDrained -and
+            $ipcTimeoutParse.state -eq 'closed' -and
+            $ipcTimeoutParse.value.result -eq `
+                'diagnosticChannelFailed' -and
+            $ipcTimeoutParse.value.cleanup -eq 'completed' -and
+            $ipcTimeoutParse.value.killAttempted -eq $true -and
+            $ipcTimeoutParse.value.waitCompleted -eq $true -and
+            $ipcTimeoutParse.value.rootPidZero -eq $true -and
+            $ipcTimeoutParse.value.withinDeadline -eq $true -and
+            $null -eq (Get-Process -Id $ipcTimeout.processId `
+                -ErrorAction SilentlyContinue)
+        Complete-ArtifactGate (
+            New-ArtifactGateObservation `
+                -GateId ('launcher-' +
+                    $ipcTimeoutAction.Substring(11)) `
+                -ArtifactKind 'launcherValidation' `
+                -Invocation $ipcTimeout `
+                -Projection $ipcTimeoutParse.value `
+                -Passed $ipcTimeoutPassed `
+                -ParseState $ipcTimeoutParse.state `
+                -SchemaId 'launcherFailureV1' `
+                -ParseReason $ipcTimeoutParse.reason `
+                -CleanupState $(if ($ipcTimeoutPassed) {
+                    'completed'
+                } else {
+                    'failed'
+                })) `
+            -FailureCode 'secureStorePreflightLauncherTimeoutNotBounded' |
+            Out-Null
+    }
+
+    foreach ($cleanupFaultAction in @(
+            '--validate-ipc-cleanup-kill-fault',
+            '--validate-ipc-cleanup-snapshot-fault',
+            '--validate-ipc-cleanup-wait-timeout',
+            '--validate-ipc-cleanup-has-exited-fault',
+            '--validate-ipc-cleanup-pid-check-fault')) {
+        $cleanupFault = Invoke-FixedArtifactToken `
+            -Artifact $LauncherValidationArtifact `
+            -Token $cleanupFaultAction
+        $cleanupFaultParse = ConvertTo-ClosedArtifactProjection `
+            $cleanupFault.stderr -SchemaId 'launcherFailureV1'
+        $cleanupFaultPassed = -not $cleanupFault.timedOut -and
+            $cleanupFault.exitCode -eq 18 -and
+            $cleanupFault.stdout.Length -eq 0 -and
+            $cleanupFault.elapsedMilliseconds -le 20000 -and
+            $cleanupFault.pipesDrained -and
+            $cleanupFaultParse.state -eq 'closed' -and
+            $cleanupFaultParse.value.result -eq 'childCleanupFailed' -and
+            $cleanupFaultParse.value.stage -eq 'cleanup' -and
+            $cleanupFaultParse.value.cleanup -eq 'failed' -and
+            $cleanupFaultParse.value.killAttempted -eq $true -and
+            $cleanupFaultParse.value.rootPidZero -eq $true -and
+            $cleanupFaultParse.value.withinDeadline -eq $true -and
+            ($cleanupFaultAction -ne
+                '--validate-ipc-cleanup-snapshot-fault' -or
+                ($cleanupFaultParse.value.rootFallbackAttempted -eq $true -and
+                    $cleanupFaultParse.value.waitCompleted -eq $true)) -and
+            ($cleanupFaultParse.value.childPid -eq 0 -or
+                $null -eq (Get-Process `
+                    -Id $cleanupFaultParse.value.childPid `
+                    -ErrorAction SilentlyContinue)) -and
+            $null -eq (Get-Process -Id $cleanupFault.processId `
+                -ErrorAction SilentlyContinue)
+        Complete-ArtifactGate (
+            New-ArtifactGateObservation `
+                -GateId ('launcher-' +
+                    $cleanupFaultAction.Substring(11)) `
+                -ArtifactKind 'launcherValidation' `
+                -Invocation $cleanupFault `
+                -Projection $cleanupFaultParse.value `
+                -Passed $cleanupFaultPassed `
+                -ParseState $cleanupFaultParse.state `
+                -SchemaId 'launcherFailureV1' `
+                -ParseReason $cleanupFaultParse.reason `
+                -CleanupState $(if ($cleanupFaultPassed) {
+                    'completed'
+                } else {
+                    'failed'
+                })) `
+            -FailureCode 'secureStorePreflightLauncherCleanupNotClosed' |
+            Out-Null
+    }
+
     $production = Invoke-FixedArtifactToken `
         -Artifact $ProductionArtifact `
         -Token '--production-extra-argv' `
@@ -2117,7 +2514,7 @@ if ($RunArtifactGates) {
     $productionFailure = $productionParse.value
     $productionPassed = $productionPassed -and
         $productionParse.state -eq 'closed' -and
-        $productionFailure.stage -eq 'inputValidation' -and
+        $productionFailure.stage -eq 'diagnosticChannelValidation' -and
         $productionFailure.resultCode -eq 'invalidArguments' -and
         $productionFailure.success -eq $false
     Complete-ArtifactGate (
@@ -2452,13 +2849,43 @@ if ($RunArtifactGates) {
             -Invocation $null -Projection $null -Passed $true) `
         -FailureCode 'secureStorePreflightValidationSeamInProductionArtifact' |
         Out-Null
-    $rootUnchanged = (Get-SafeAdminRootFingerprint) -eq $before
+    $launcherBytes = [IO.File]::ReadAllBytes($LauncherArtifact)
+    $launcherStrings =
+        [Text.Encoding]::UTF8.GetString($launcherBytes) +
+        [Text.Encoding]::Unicode.GetString($launcherBytes)
+    foreach ($launcherValidationString in @(
+            '--validate-ipc-success',
+            '--validate-ipc-early-failure',
+            'Ligase.SecureStore.Preflight.Validation.exe')) {
+        if ($launcherStrings.IndexOf(
+                $launcherValidationString,
+                [StringComparison]::Ordinal) -ge 0) {
+            Complete-ArtifactGate (
+                New-ArtifactGateObservation `
+                    -GateId 'launcher-production-validation-seam-scan' `
+                    -ArtifactKind 'launcher' `
+                    -Invocation $null -Projection $null -Passed $false) `
+                -FailureCode `
+                    'secureStorePreflightLauncherValidationSeamInProduction' |
+                Out-Null
+        }
+    }
     Complete-ArtifactGate (
         New-ArtifactGateObservation `
-            -GateId 'real-admin-root-fingerprint' `
+            -GateId 'launcher-production-validation-seam-scan' `
+            -ArtifactKind 'launcher' `
+            -Invocation $null -Projection $null -Passed $true) `
+        -FailureCode `
+            'secureStorePreflightLauncherValidationSeamInProduction' |
+        Out-Null
+    $rootUnchanged = (
+        Get-SafeAdminRootFingerprint $adminSurfaceSentinel) -eq $before
+    Complete-ArtifactGate (
+        New-ArtifactGateObservation `
+            -GateId 'd-fixture-admin-surface-fingerprint' `
             -ArtifactKind 'harness' `
             -Invocation $null -Projection $null -Passed $rootUnchanged) `
-        -FailureCode 'secureStorePreflightArtifactTouchedAdminRoot' |
+        -FailureCode 'secureStorePreflightArtifactTouchedAdminSurface' |
         Out-Null
     $artifactChecks = 5
 }

@@ -457,11 +457,40 @@ no arguments, creates a CSPRNG-named one-shot pipe and nonce with an ACL
 limited to the current user, SYSTEM, and Administrators, and performs one
 manual `RunAs` of the fixed sibling `Ligase.SecureStore.Preflight.exe`. The
 elevated child accepts only the closed pipe-name, nonce, and parent-PID tuple.
+Before opening a pipe it enters the closed
+`diagnosticChannelValidation` stage. A missing channel is reported as
+`diagnosticChannelRequired`; malformed, extra, unknown, or out-of-range IPC
+arguments are `invalidArguments`. Both return native 18 without opening a pipe
+or resolving ProgramData. Only a parsed tuple may open the pipe, and only a
+completed peer handshake advances to `securityInitialization`.
 Both endpoints verify peer PID, session, and user SID before the bounded,
 length-prefixed handshake. The IPC accepts no path, script, payload root,
 manifest, security descriptor, or secret. The parent writes only a bounded
 review observation beside the frozen D-drive artifacts; it is not a product or
 secure-store authority.
+
+If launch, peer validation, framing, or timeout fails after a child exists,
+the launcher owns a single monotonic bounded cleanup. It snapshots the child
+process tree, requests whole-tree termination, checks the bounded wait result,
+then verifies the child and every observed descendant PID are absent. Only
+that exact result may report `diagnosticChannelFailed` with cleanup completed.
+Any kill, wait, exit-state, PID, or tree verification failure reports the
+closed `childCleanupFailed` result with cleanup failed; an outer validation
+harness may contain a test accident but is not cleanup authority for the
+launcher. Process-tree enumeration is proof input, not a prerequisite for
+containment: if the snapshot fails, the launcher still attempts whole-tree
+termination, root fallback, bounded wait, and root-PID absence verification,
+records those closed cleanup facts, and returns `childCleanupFailed` because
+complete descendant absence could not be proven.
+
+Artifact validation uses separately compiled development-only surfaces. A
+`LAUNCHER_VALIDATION` launcher accepts only fixed test tokens, starts only the
+fixed sibling validation executable without `RunAs`, and drives the real pipe
+ACL, nonce, PID/session/SID, framing, timeout, disconnect, and cleanup code
+against D-drive fixtures. The sibling is compiled with
+`PREFLIGHT_ONLY;PREFLIGHT_VALIDATION` and returns before ProgramData access.
+Neither symbol is present in the production launcher project, and production
+binary gates reject every validation token or seam.
 
 The child is a purpose-built, self-contained x64 development diagnostic. After
 the IPC handshake it enables and reads back the no-child process mitigation

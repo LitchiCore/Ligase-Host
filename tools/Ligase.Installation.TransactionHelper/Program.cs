@@ -72,7 +72,32 @@ internal static class Program
         "--validate-policy-set-fault";
     private const string ValidationPolicyReadbackMismatch =
         "--validate-policy-readback-mismatch";
+    private const string ValidationDiagnosticAction =
+        "--validation-action";
+    private const string ValidationDiagnosticSuccess =
+        "ipcSuccess";
+    private const string ValidationDiagnosticEarlyFailure =
+        "earlyFailure";
+    private const string ValidationDiagnosticNonceMismatch =
+        "nonceMismatch";
+    private const string ValidationDiagnosticServerPidMismatch =
+        "serverPidMismatch";
+    private const string ValidationDiagnosticServerSessionMismatch =
+        "serverSessionMismatch";
+    private const string ValidationDiagnosticServerSidMismatch =
+        "serverSidMismatch";
+    private const string ValidationDiagnosticFrameOversize =
+        "frameOversize";
+    private const string ValidationDiagnosticDisconnect =
+        "disconnect";
+    private const string ValidationDiagnosticTimeout =
+        "timeout";
+    private const string ValidationDiagnosticTimeoutTree =
+        "timeoutTree";
+    private const string ValidationDiagnosticTreeLeaf =
+        "--validation-tree-leaf";
     private static string _preflightValidationAction = "";
+    private static string _preflightDiagnosticValidationAction = "";
     private static int _preflightValidationChildPid;
     private static string _preflightValidationChildCleanup = "notRequired";
     private static IntPtr _preflightValidationChildProcess;
@@ -310,8 +335,37 @@ internal static class Program
 
         try
         {
-            _stage = "securityInitialization";
 #if PREFLIGHT_VALIDATION
+            if (args.Length == 1 &&
+                args[0] == ValidationDiagnosticTreeLeaf)
+            {
+                Thread.Sleep(Timeout.Infinite);
+                throw new InvalidOperationException(
+                    "validationTreeLeafReturned");
+            }
+            if (args.Length == 8 &&
+                args[6] == ValidationDiagnosticAction &&
+                args[7] is (
+                    ValidationDiagnosticSuccess or
+                    ValidationDiagnosticEarlyFailure or
+                    ValidationDiagnosticNonceMismatch or
+                    ValidationDiagnosticServerPidMismatch or
+                    ValidationDiagnosticServerSessionMismatch or
+                    ValidationDiagnosticServerSidMismatch or
+                    ValidationDiagnosticFrameOversize or
+                    ValidationDiagnosticDisconnect or
+                    ValidationDiagnosticTimeout or
+                    ValidationDiagnosticTimeoutTree))
+            {
+                _preflightDiagnosticValidationAction = args[7];
+                _stage = "diagnosticChannelValidation";
+                if (!TryOpenDiagnosticPipe(args[..6]))
+                    throw new InvalidOperationException("invalidArguments");
+                _stage = "securityInitialization";
+                EnableChildProcessMitigation();
+                return RunDiagnosticChannelValidation();
+            }
+            _stage = "securityInitialization";
             if (args.Length != 1 ||
                 args[0] is not (
                     ValidationArgvToken or
@@ -322,8 +376,13 @@ internal static class Program
                 throw new InvalidOperationException("invalidArguments");
             _preflightValidationAction = args[0];
 #else
+            _stage = "diagnosticChannelValidation";
+            if (args.Length == 0)
+                throw new InvalidOperationException(
+                    "diagnosticChannelRequired");
             if (!TryOpenDiagnosticPipe(args))
                 throw new InvalidOperationException("invalidArguments");
+            _stage = "securityInitialization";
 #endif
             EnableChildProcessMitigation();
             _stage = "inputValidation";
@@ -374,11 +433,15 @@ internal static class Program
         catch (Exception exception)
         {
             result.Success = false;
-            result.ResultCode = exception.Message == "invalidArguments"
-                ? "invalidArguments"
-                : evidenceWriteInProgress
+            result.ResultCode = exception.Message switch
+            {
+                "invalidArguments" => "invalidArguments",
+                "diagnosticChannelRequired" =>
+                    "diagnosticChannelRequired",
+                _ => evidenceWriteInProgress
                     ? "secureStorePreflightEvidenceFailed"
-                    : "secureStorePreflightFailed";
+                    : "secureStorePreflightFailed"
+            };
             result.Stage = _stage;
             result.NativeCategory = _nativeCategory;
             result.NativeCode = _nativeCode;
@@ -424,6 +487,10 @@ internal static class Program
                 }
             }
             TrySendDiagnostic(failureBytes);
+#if PREFLIGHT_VALIDATION
+            if (string.IsNullOrEmpty(
+                    _preflightDiagnosticValidationAction))
+#endif
             try
             {
                 Console.Error.Write(Encoding.UTF8.GetString(failureBytes));
@@ -445,7 +512,7 @@ internal static class Program
         }
     }
 
-#if PREFLIGHT_ONLY && !PREFLIGHT_VALIDATION
+#if PREFLIGHT_ONLY
     private static bool TryOpenDiagnosticPipe(string[] args)
     {
         if (args.Length != 6 ||
@@ -469,19 +536,59 @@ internal static class Program
         pipe.ConnectAsync(timeout.Token).GetAwaiter().GetResult();
         if (!GetNamedPipeServerProcessId(
                 pipe.SafePipeHandle, out var actualParentPid) ||
-            actualParentPid != (uint)expectedParentPid)
+            actualParentPid != (uint)expectedParentPid
+#if PREFLIGHT_VALIDATION
+            || _preflightDiagnosticValidationAction ==
+                ValidationDiagnosticServerPidMismatch
+#endif
+            )
             throw new InvalidOperationException("diagnosticPeerInvalid");
         using var parent = Process.GetProcessById(expectedParentPid);
         if (parent.SessionId != Process.GetCurrentProcess().SessionId ||
             !string.Equals(
                 GetProcessUserSid(parent.Handle),
                 WindowsIdentity.GetCurrent().User?.Value,
-                StringComparison.Ordinal))
+                StringComparison.Ordinal)
+#if PREFLIGHT_VALIDATION
+            || _preflightDiagnosticValidationAction is
+                ValidationDiagnosticServerSessionMismatch or
+                ValidationDiagnosticServerSidMismatch
+#endif
+            )
             throw new InvalidOperationException("diagnosticPeerInvalid");
 
+        var helloNonce = args[3].ToUpperInvariant();
+#if PREFLIGHT_VALIDATION
+        if (_preflightDiagnosticValidationAction ==
+            ValidationDiagnosticNonceMismatch)
+            helloNonce = new string('0', 64);
+        if (_preflightDiagnosticValidationAction ==
+            ValidationDiagnosticDisconnect)
+            throw new EndOfStreamException();
+        if (_preflightDiagnosticValidationAction ==
+            ValidationDiagnosticTimeout)
+            Thread.Sleep(TimeSpan.FromSeconds(60));
+        if (_preflightDiagnosticValidationAction ==
+            ValidationDiagnosticTimeoutTree)
+        {
+            using var descendant = Process.Start(new ProcessStartInfo
+            {
+                FileName = Environment.ProcessPath ??
+                    throw new InvalidOperationException(
+                        "validationProcessPathUnavailable"),
+                Arguments = ValidationDiagnosticTreeLeaf,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            });
+            if (descendant is null)
+                throw new InvalidOperationException(
+                    "validationDescendantUnavailable");
+            Thread.Sleep(TimeSpan.FromSeconds(60));
+        }
+#endif
         var hello = Encoding.UTF8.GetBytes(
             "{\"schemaId\":\"secureStoreDiagnosticHelloV1\"," +
-            "\"nonce\":\"" + args[3].ToUpperInvariant() + "\"," +
+            "\"nonce\":\"" + helloNonce + "\"," +
             "\"pid\":" + Environment.ProcessId + "," +
             "\"parentPid\":" + expectedParentPid + "}");
         WriteDiagnosticFrame(pipe, hello);
@@ -660,6 +767,47 @@ internal static class Program
     }
 
 #if PREFLIGHT_VALIDATION
+    private static int RunDiagnosticChannelValidation()
+    {
+        if (_preflightDiagnosticValidationAction ==
+            ValidationDiagnosticEarlyFailure)
+        {
+            _nativeCategory = "accessDenied";
+            _nativeCode = ErrorAccessDenied;
+            throw new InvalidOperationException(
+                "installTransactionUnavailable");
+        }
+        if (_preflightDiagnosticValidationAction ==
+            ValidationDiagnosticFrameOversize)
+        {
+            Span<byte> prefix = stackalloc byte[4];
+            BitConverter.TryWriteBytes(prefix, 4097);
+            _diagnosticPipe!.Write(prefix);
+            _diagnosticPipe.Flush();
+            return 18;
+        }
+
+        var result = new StandalonePreflightResult
+        {
+            SchemaVersion = 1,
+            ReleaseKind = PreflightReleaseKind,
+            TrustBoundary = PreflightTrustBoundary,
+            Success = true,
+            ResultCode = "secureStoreDiagnosticValidationReady",
+            Stage = "diagnosticReadback",
+            NativeCategory = "none",
+            NativeCode = 0,
+            Acl = "notAttempted",
+            Recovery = "notAttempted",
+            Probe = "notAttempted",
+            Cleanup = "notRequired",
+            AclMutationOccurred = false,
+            AclRollback = "notRequired"
+        };
+        TrySendDiagnostic(SerializeStandalonePreflightEvidence(result));
+        return 0;
+    }
+
     private static int RunPreflightValidation()
     {
         if (_preflightValidationAction == ValidationArgvToken)
