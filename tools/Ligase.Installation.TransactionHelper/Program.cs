@@ -3,7 +3,6 @@ using System.Runtime.InteropServices;
 using System.Security.AccessControl;
 using System.Security.Principal;
 using System.Text;
-using System.Text.Json;
 using Microsoft.Win32.SafeHandles;
 
 internal static class Program
@@ -367,12 +366,80 @@ internal static class Program
     private static byte[] SerializeStandalonePreflightEvidence(
         StandalonePreflightResult result)
     {
-        return JsonSerializer.SerializeToUtf8Bytes(
-            result,
-            new JsonSerializerOptions
+        var json = new StringBuilder(512);
+        json.Append("{\"schemaVersion\":").Append(result.SchemaVersion);
+        AppendJsonString(json, "releaseKind", result.ReleaseKind);
+        AppendJsonString(json, "trustBoundary", result.TrustBoundary);
+        json.Append(",\"success\":")
+            .Append(result.Success ? "true" : "false");
+        AppendJsonString(json, "resultCode", result.ResultCode);
+        AppendJsonString(json, "stage", result.Stage);
+        AppendJsonString(json, "nativeCategory", result.NativeCategory);
+        json.Append(",\"nativeCode\":").Append(result.NativeCode);
+        AppendJsonString(json, "acl", result.Acl);
+        AppendJsonString(json, "recovery", result.Recovery);
+        AppendJsonString(json, "probe", result.Probe);
+        AppendJsonString(json, "cleanup", result.Cleanup);
+        json.Append(",\"aclMutationOccurred\":")
+            .Append(result.AclMutationOccurred ? "true" : "false");
+        AppendJsonString(json, "aclRollback", result.AclRollback);
+        json.Append('}');
+        if (json.Length > 4096)
+            return Encoding.UTF8.GetBytes(
+                "{\"schemaVersion\":1,\"releaseKind\":\"UnsignedDev\"," +
+                "\"trustBoundary\":\"localManualExactSha\"," +
+                "\"success\":false," +
+                "\"resultCode\":\"secureStorePreflightEncodingFailed\"," +
+                "\"stage\":\"evidenceEncoding\"," +
+                "\"nativeCategory\":\"managedFailure\"," +
+                "\"nativeCode\":20012,\"acl\":\"unknown\"," +
+                "\"recovery\":\"unknown\",\"probe\":\"unknown\"," +
+                "\"cleanup\":\"unknown\"," +
+                "\"aclMutationOccurred\":false," +
+                "\"aclRollback\":\"unknown\"}");
+        return Encoding.UTF8.GetBytes(json.ToString());
+    }
+
+    private static void AppendJsonString(
+        StringBuilder json,
+        string name,
+        string value)
+    {
+        json.Append(",\"").Append(name).Append("\":\"");
+        foreach (var character in value)
+        {
+            switch (character)
             {
-                PropertyNamingPolicy = JsonNamingPolicy.CamelCase
-            });
+                case '"':
+                    json.Append("\\\"");
+                    break;
+                case '\\':
+                    json.Append("\\\\");
+                    break;
+                case '\b':
+                    json.Append("\\b");
+                    break;
+                case '\f':
+                    json.Append("\\f");
+                    break;
+                case '\n':
+                    json.Append("\\n");
+                    break;
+                case '\r':
+                    json.Append("\\r");
+                    break;
+                case '\t':
+                    json.Append("\\t");
+                    break;
+                default:
+                    if (character < 0x20)
+                        json.Append("\\u").Append(((int)character).ToString("x4"));
+                    else
+                        json.Append(character);
+                    break;
+            }
+        }
+        json.Append('"');
     }
 
     private sealed class StandalonePreflightResult

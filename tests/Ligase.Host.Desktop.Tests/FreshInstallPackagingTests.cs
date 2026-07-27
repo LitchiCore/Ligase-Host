@@ -63,6 +63,10 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(project, "PREFLIGHT_ONLY");
         StringAssert.Contains(project, "<PublishTrimmed>true</PublishTrimmed>");
         StringAssert.Contains(project, "<SelfContained>true</SelfContained>");
+        StringAssert.Contains(project, "IL2026;IL3050");
+        Assert.IsFalse(program.Contains("JsonSerializer"));
+        StringAssert.Contains(program, "private static void AppendJsonString(");
+        StringAssert.Contains(program, "secureStorePreflightEncodingFailed");
         StringAssert.Contains(sourceGate, "secureStorePreflightForbiddenSurface");
         StringAssert.Contains(sourceGate, "executableBuilt = $false");
     }

@@ -45,6 +45,8 @@ foreach ($token in @(
         'ResultCode = evidenceWriteInProgress',
         'var committingStore = store',
         'store = null',
+        'private static void AppendJsonString(',
+        'secureStorePreflightEncodingFailed',
         'Environment.SetEnvironmentVariable(',
         '"LIGASE_INSTALL_VALIDATION_HARNESS", null',
         '#if !PREFLIGHT_ONLY')) {
@@ -56,10 +58,22 @@ foreach ($token in @(
 foreach ($token in @(
         '<DefineConstants>$(DefineConstants);PREFLIGHT_ONLY</DefineConstants>',
         '<PublishTrimmed>true</PublishTrimmed>',
+        '<WarningsAsErrors>$(WarningsAsErrors);IL2026;IL3050</WarningsAsErrors>',
         '<SelfContained>true</SelfContained>',
         '<RuntimeIdentifier>win-x64</RuntimeIdentifier>')) {
     if ($project.IndexOf($token, [StringComparison]::Ordinal) -lt 0) {
         throw 'secureStorePreflightProjectBoundaryInvalid'
+    }
+}
+
+foreach ($forbiddenSerializer in @(
+        'JsonSerializer',
+        'JsonSerializerOptions',
+        'JsonNamingPolicy')) {
+    if ($program.IndexOf(
+            $forbiddenSerializer,
+            [StringComparison]::Ordinal) -ge 0) {
+        throw 'secureStorePreflightReflectionSerializerPresent'
     }
 }
 
