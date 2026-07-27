@@ -1772,13 +1772,15 @@ $neutralBindingDiagnostic = (
   '"bindingReason":"none","bindingRootKind":"none",' +
   '"bindingSegmentCount":0,"bindingPrefixMatched":false,' +
   '"bindingVolumeMatched":false,"bindingFileIdentityMatched":false,' +
-  '"aclInspectionReason":"none",')
+  '"aclInspectionReason":"none","emptyRootInspectionReason":"none",')
 foreach ($stage in @(
     "resolveProgramData", "rejectReparse", "createSegment", "openHandle",
     "verifyIdentity", "resolveFinalPath", "canonicalRoot", "inspectAcl",
     "readSecurityDescriptor", "descriptorLength", "descriptorCopy",
     "descriptorParse", "buildSecurityDescriptor",
     "compareSecurityDescriptor", "applyAcl", "assertAcl",
+    "inspectEmptyRootOwner", "inspectEmptyRootChildren",
+    "inspectEmptyRootStreams", "inspectEmptyRootStreamMetadata",
     "createTemp", "atomicReplace",
     "finalReadback", "read", "delete")) {
   $stageRoot = Join-Path $combinationRoot ("stage-" + $stage)
@@ -1972,6 +1974,145 @@ foreach ($aclCase in @(
     name = "transaction-acl-inspection-" + [string]$aclCase.stage
     passed = $true
   }
+}
+$emptyRootInspectionResults = @()
+foreach ($emptyRootCase in @(
+    [ordered]@{
+      behavior = "failEmptyRootOwnerMismatch"
+      stage = "inspectEmptyRootOwner"
+      reason = "ownerNotAdministrators"
+      code = 20008
+    },
+    [ordered]@{
+      behavior = "failEmptyRootChildPresent"
+      stage = "inspectEmptyRootChildren"
+      reason = "childEntryPresent"
+      code = 20009
+    },
+    [ordered]@{
+      behavior = "failEmptyRootNamedAds"
+      stage = "inspectEmptyRootStreams"
+      reason = "namedDataStreamPresent"
+      code = 20010
+    },
+    [ordered]@{
+      behavior = "failEmptyRootStreamMalformed"
+      stage = "inspectEmptyRootStreamMetadata"
+      reason = "streamMetadataInvalid"
+      code = 20011
+    },
+    [ordered]@{
+      behavior = "failEmptyRootStreamOffsetOverflow"
+      stage = "inspectEmptyRootStreamMetadata"
+      reason = "streamMetadataInvalid"
+      code = 20011
+    },
+    [ordered]@{
+      behavior = "failEmptyRootStreamNearMax"
+      stage = "inspectEmptyRootStreamMetadata"
+      reason = "streamMetadataInvalid"
+      code = 20011
+    },
+    [ordered]@{
+      behavior = "failEmptyRootStreamRemainingShort"
+      stage = "inspectEmptyRootStreamMetadata"
+      reason = "streamMetadataInvalid"
+      code = 20011
+    },
+    [ordered]@{
+      behavior = "failEmptyRootStreamZeroProgress"
+      stage = "inspectEmptyRootStreamMetadata"
+      reason = "streamMetadataInvalid"
+      code = 20011
+    })) {
+  $inspectionRoot = Join-Path $combinationRoot (
+    "empty-root-" + [string]$emptyRootCase.behavior)
+  New-Item -ItemType Directory -Path $inspectionRoot | Out-Null
+  $aclBefore = (Get-Acl -LiteralPath $inspectionRoot).
+    GetSecurityDescriptorSddlForm(
+      [Security.AccessControl.AccessControlSections]::All)
+  $env:LIGASE_INSTALL_VALIDATION_HARNESS = "1"
+  $env:LIGASE_TRANSACTION_TEST_BEHAVIOR =
+    [string]$emptyRootCase.behavior
+  $ErrorActionPreference = "Continue"
+  $inspectionOutput = @(
+    & $transactionHelper preflight --test-root $inspectionRoot 2>&1)
+  $ErrorActionPreference = $savedErrorAction
+  $inspectionExit = $LASTEXITCODE
+  Remove-Item Env:\LIGASE_TRANSACTION_TEST_BEHAVIOR `
+    -ErrorAction SilentlyContinue
+  Remove-Item Env:\LIGASE_INSTALL_VALIDATION_HARNESS `
+    -ErrorAction SilentlyContinue
+  $failure = (($inspectionOutput -join "") | ConvertFrom-Json)
+  $aclAfter = (Get-Acl -LiteralPath $inspectionRoot).
+    GetSecurityDescriptorSddlForm(
+      [Security.AccessControl.AccessControlSections]::All)
+  if ($inspectionExit -ne 18 -or
+      [string]$failure.code -cne "installTransactionInvalid" -or
+      [string]$failure.stage -cne [string]$emptyRootCase.stage -or
+      [string]$failure.nativeCategory -cne "managedFailure" -or
+      [int]$failure.nativeCode -ne [int]$emptyRootCase.code -or
+      [string]$failure.emptyRootInspectionReason -cne
+        [string]$emptyRootCase.reason -or
+      [bool]$failure.aclMutationOccurred -or
+      [string]$failure.aclRollback -cne "notRequired" -or
+      $aclAfter -cne $aclBefore -or
+      @(Get-ChildItem -LiteralPath $inspectionRoot -Force).Count -ne 0) {
+    throw "installTransactionEmptyRootDiagnosticInvalid"
+  }
+  $emptyRootInspectionResults += [ordered]@{
+    name = "transaction-empty-root-" + [string]$emptyRootCase.behavior
+    passed = $true
+  }
+}
+$realStreamRoot = Join-Path $combinationRoot "real-directory-streams"
+New-Item -ItemType Directory -Path $realStreamRoot | Out-Null
+$streamAclBefore = (Get-Acl -LiteralPath $realStreamRoot).
+  GetSecurityDescriptorSddlForm(
+    [Security.AccessControl.AccessControlSections]::All)
+$env:LIGASE_INSTALL_VALIDATION_HARNESS = "1"
+$env:LIGASE_TRANSACTION_TEST_BEHAVIOR = "inspectFixtureStreams"
+$emptyStreamOutput = @(
+  & $transactionHelper inspectEmptyRoot --test-root $realStreamRoot 2>&1)
+$emptyStreamExit = $LASTEXITCODE
+if ($emptyStreamExit -ne 0 -or
+    [string](($emptyStreamOutput -join "") | ConvertFrom-Json).reason -cne
+      "empty") {
+  throw "installTransactionCanonicalDirectoryStreamRejected"
+}
+Set-Content -LiteralPath "${realStreamRoot}:named" `
+  -Value "preserve" -NoNewline
+$ErrorActionPreference = "Continue"
+$namedStreamOutput = @(
+  & $transactionHelper inspectEmptyRoot --test-root $realStreamRoot 2>&1)
+$namedStreamExit = $LASTEXITCODE
+$ErrorActionPreference = $savedErrorAction
+Remove-Item Env:\LIGASE_TRANSACTION_TEST_BEHAVIOR `
+  -ErrorAction SilentlyContinue
+Remove-Item Env:\LIGASE_INSTALL_VALIDATION_HARNESS `
+  -ErrorAction SilentlyContinue
+$namedStreamFailure = (($namedStreamOutput -join "") | ConvertFrom-Json)
+$streamAclAfter = (Get-Acl -LiteralPath $realStreamRoot).
+  GetSecurityDescriptorSddlForm(
+    [Security.AccessControl.AccessControlSections]::All)
+if ($namedStreamExit -ne 18 -or
+    [string]$namedStreamFailure.stage -cne "inspectEmptyRootStreams" -or
+    [int]$namedStreamFailure.nativeCode -ne 20010 -or
+    [string]$namedStreamFailure.emptyRootInspectionReason -cne
+      "namedDataStreamPresent" -or
+    (Get-Content -LiteralPath "${realStreamRoot}:named" -Raw) -cne
+      "preserve" -or
+    $streamAclAfter -cne $streamAclBefore -or
+    @(Get-ChildItem -LiteralPath $realStreamRoot -Force).Count -ne 0) {
+  throw "installTransactionNamedDirectoryStreamNotRejected"
+}
+$emptyRootInspectionResults += [ordered]@{
+  name = "transaction-empty-root-real-canonical-stream"
+  passed = $true
+}
+$emptyRootInspectionResults += [ordered]@{
+  name = "transaction-empty-root-real-named-ads"
+  passed = $true
 }
 $bindingResults = @()
 foreach ($bindingCase in @(
@@ -2252,7 +2393,8 @@ foreach ($duplicateBehavior in @(
     "emitDuplicateBindingPrefixMatched",
     "emitDuplicateBindingVolumeMatched",
     "emitDuplicateBindingFileIdentityMatched",
-    "emitDuplicateAclInspectionReason")) {
+    "emitDuplicateAclInspectionReason",
+    "emitDuplicateEmptyRootInspectionReason")) {
   $duplicateRoot = Join-Path $combinationRoot (
     "duplicate-" + $duplicateBehavior)
   $env:LIGASE_INSTALL_VALIDATION_HARNESS = "1"
@@ -2291,7 +2433,11 @@ foreach ($tupleBehavior in @(
     "emitAclTupleWrongStage",
     "emitAclTupleWrongCode",
     "emitAclTupleWrongReason",
-    "emitAclTupleCrossSplice")) {
+    "emitAclTupleCrossSplice",
+    "emitEmptyRootTupleWrongStage",
+    "emitEmptyRootTupleWrongCode",
+    "emitEmptyRootTupleWrongReason",
+    "emitEmptyRootTupleCrossSplice")) {
   $tupleRoot = Join-Path $combinationRoot (
     "acl-tuple-" + $tupleBehavior)
   $installBefore = @(
@@ -2371,6 +2517,7 @@ $shortcutResults = @(
   $stageDiagnostics
   $nativeSubstageResults
   $aclInspectionResults
+  $emptyRootInspectionResults
   $bindingResults
   $duplicateResults
   $aclTupleResults

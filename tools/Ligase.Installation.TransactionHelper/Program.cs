@@ -37,6 +37,7 @@ internal static class Program
     private const int ErrorAccessDenied = 5;
     private const int ErrorInvalidHandle = 6;
     private const int ErrorSharingViolation = 32;
+    private const int ErrorHandleEof = 38;
     private const int ErrorNotSupported = 50;
     private const int ErrorInvalidParameter = 87;
     private const int ErrorAlreadyExists = 183;
@@ -44,7 +45,7 @@ internal static class Program
     private const int ErrorPrivilegeNotHeld = 1314;
     private const int ErrorInvalidAcl = 1336;
     private const int FileDirectoryInformation = 1;
-    private const int FileStreamInformation = 22;
+    private const int FileStreamInfo = 7;
     private const int StatusSuccess = 0;
     private const int StatusNoMoreFiles = unchecked((int)0x80000006);
     private const int NtQueryBufferBytes = 64 * 1024;
@@ -60,6 +61,7 @@ internal static class Program
     private static bool _bindingFileIdentityMatched;
     private static int _bindingAttempt;
     private static string _aclInspectionReason = "none";
+    private static string _emptyRootInspectionReason = "none";
 
     private static readonly SecurityIdentifier AdminSid =
         new(WellKnownSidType.BuiltinAdministratorsSid, null);
@@ -79,6 +81,10 @@ internal static class Program
                 return InspectSystemBinding();
             if (action == "inspectSystemAcl")
                 return InspectSystemAcl();
+            if (action == "inspectSystemEmptyRoot")
+                return InspectSystemEmptyRoot();
+            if (action == "inspectEmptyRoot")
+                return InspectEmptyRoot(args);
             if (action == "inspectSequentialBinding")
                 return InspectSequentialBinding(args);
             var root = ResolveRoot(args);
@@ -117,6 +123,8 @@ internal static class Program
                 $"\"bindingFileIdentityMatched\":" +
                 $"{_bindingFileIdentityMatched.ToString().ToLowerInvariant()}," +
                 $"\"aclInspectionReason\":\"{_aclInspectionReason}\"," +
+                $"\"emptyRootInspectionReason\":" +
+                $"\"{_emptyRootInspectionReason}\"," +
                 $"\"aclMutationOccurred\":" +
                 $"{_aclMutationOccurred.ToString().ToLowerInvariant()}," +
                 $"\"aclRollback\":\"{_aclRollback}\"}}";
@@ -171,6 +179,13 @@ internal static class Program
                         "\"aclInspectionReason\":\"descriptorParseFailed\"," +
                         "\"aclInspectionReason\":",
                         StringComparison.Ordinal),
+                "emitDuplicateEmptyRootInspectionReason" =>
+                    failureJson.Replace(
+                        "\"emptyRootInspectionReason\":",
+                        "\"emptyRootInspectionReason\":" +
+                        "\"ownerNotAdministrators\"," +
+                        "\"emptyRootInspectionReason\":",
+                        StringComparison.Ordinal),
                 "emitAclTupleWrongStage" => failureJson.Replace(
                     "\"stage\":\"canonicalRoot\"",
                     "\"stage\":\"delete\"",
@@ -197,6 +212,34 @@ internal static class Program
                         "\"canonicalRootInspectionFailed\"",
                         "\"aclInspectionReason\":" +
                         "\"descriptorCompareFailed\"",
+                        StringComparison.Ordinal),
+                "emitEmptyRootTupleWrongStage" => failureJson.Replace(
+                    "\"stage\":\"inspectEmptyRootOwner\"",
+                    "\"stage\":\"delete\"",
+                    StringComparison.Ordinal),
+                "emitEmptyRootTupleWrongCode" => failureJson.Replace(
+                    "\"nativeCode\":20008",
+                    "\"nativeCode\":20011",
+                    StringComparison.Ordinal),
+                "emitEmptyRootTupleWrongReason" => failureJson.Replace(
+                    "\"emptyRootInspectionReason\":" +
+                    "\"ownerNotAdministrators\"",
+                    "\"emptyRootInspectionReason\":\"childEntryPresent\"",
+                    StringComparison.Ordinal),
+                "emitEmptyRootTupleCrossSplice" => failureJson
+                    .Replace(
+                        "\"stage\":\"inspectEmptyRootOwner\"",
+                        "\"stage\":\"inspectEmptyRootStreams\"",
+                        StringComparison.Ordinal)
+                    .Replace(
+                        "\"nativeCode\":20008",
+                        "\"nativeCode\":20010",
+                        StringComparison.Ordinal)
+                    .Replace(
+                        "\"emptyRootInspectionReason\":" +
+                        "\"ownerNotAdministrators\"",
+                        "\"emptyRootInspectionReason\":" +
+                        "\"streamMetadataInvalid\"",
                         StringComparison.Ordinal),
                 _ => failureJson
             };
@@ -269,6 +312,7 @@ internal static class Program
             case "emitDuplicateBindingVolumeMatched":
             case "emitDuplicateBindingFileIdentityMatched":
             case "emitDuplicateAclInspectionReason":
+            case "emitDuplicateEmptyRootInspectionReason":
                 throw new InvalidOperationException(
                     "installTransactionUnavailable");
             case "emitAclTupleWrongStage":
@@ -278,6 +322,13 @@ internal static class Program
                 SetStage("canonicalRoot");
                 throw AclInspectionFailure(
                     "canonicalRootInspectionFailed", 20001);
+            case "emitEmptyRootTupleWrongStage":
+            case "emitEmptyRootTupleWrongCode":
+            case "emitEmptyRootTupleWrongReason":
+            case "emitEmptyRootTupleCrossSplice":
+                SetStage("inspectEmptyRootOwner");
+                _emptyRootInspectionReason = "ownerNotAdministrators";
+                throw ManagedEmptyRootFailure(20008);
         }
     }
 
@@ -340,6 +391,38 @@ internal static class Program
             "{\"code\":\"installTransactionAclInspectionValid\"," +
             $"\"exact\":{exact.ToString().ToLowerInvariant()}," +
             $"\"reason\":\"{_aclInspectionReason}\"}}");
+        return 0;
+    }
+
+    private static int InspectSystemEmptyRoot()
+    {
+        if (Environment.GetEnvironmentVariable(
+                "LIGASE_INSTALL_VALIDATION_HARNESS") != "1")
+            throw new InvalidOperationException("invalidArguments");
+        var common = Environment.GetFolderPath(
+            Environment.SpecialFolder.CommonApplicationData);
+        var adminRoot = Path.Combine(common, "Ligase Host Admin");
+        using var handle = OpenPath(
+            adminRoot, directory: true, writeSecurity: false);
+        VerifyHandle(handle, adminRoot, directory: true);
+        VerifyEmptyAdminRoot(handle);
+        Console.Out.Write("{\"code\":\"emptyAdminRootValid\"," +
+            $"\"reason\":\"{_emptyRootInspectionReason}\"}}");
+        return 0;
+    }
+
+    private static int InspectEmptyRoot(string[] args)
+    {
+        if (Environment.GetEnvironmentVariable(
+                "LIGASE_INSTALL_VALIDATION_HARNESS") != "1")
+            throw new InvalidOperationException("invalidArguments");
+        var root = ResolveRoot(args);
+        using var handle = OpenPath(
+            root, directory: true, writeSecurity: false, shareMode: 0);
+        VerifyHandle(handle, root, directory: true);
+        VerifyEmptyAdminRoot(handle);
+        Console.Out.Write("{\"code\":\"emptyAdminRootValid\"," +
+            $"\"reason\":\"{_emptyRootInspectionReason}\"}}");
         return 0;
     }
 
@@ -875,10 +958,45 @@ internal static class Program
 
     private static void VerifyEmptyAdminRoot(SafeFileHandle handle)
     {
-        if (!HasExpectedOwner(handle) ||
-            HasDirectoryEntries(handle) ||
-            HasAlternateDataStream(handle))
-            throw new InvalidOperationException("installTransactionInvalid");
+        SetStage("inspectEmptyRootOwner");
+        _emptyRootInspectionReason = "none";
+        if (!HasExpectedOwner(handle))
+        {
+            _emptyRootInspectionReason = "ownerNotAdministrators";
+            throw ManagedEmptyRootFailure(20008);
+        }
+
+        SetStage("inspectEmptyRootChildren");
+        _emptyRootInspectionReason = "none";
+        if (HasDirectoryEntries(handle))
+        {
+            _emptyRootInspectionReason = "childEntryPresent";
+            throw ManagedEmptyRootFailure(20009);
+        }
+
+        SetStage("inspectEmptyRootStreams");
+        _emptyRootInspectionReason = "none";
+        if (HasAlternateDataStream(handle))
+        {
+            _emptyRootInspectionReason = "namedDataStreamPresent";
+            throw ManagedEmptyRootFailure(20010);
+        }
+
+        _emptyRootInspectionReason = "empty";
+    }
+
+    private static Exception ManagedEmptyRootFailure(int code)
+    {
+        _nativeCategory = "managedFailure";
+        _nativeCode = code;
+        return new InvalidOperationException("installTransactionInvalid");
+    }
+
+    private static Exception StreamInspectionFailure()
+    {
+        SetStage("inspectEmptyRootStreamMetadata");
+        _emptyRootInspectionReason = "streamMetadataInvalid";
+        return ManagedEmptyRootFailure(20011);
     }
 
     private static void AttemptValidationResidueInjection(string path)
@@ -908,6 +1026,23 @@ internal static class Program
 
     private static bool HasExpectedOwner(SafeFileHandle handle)
     {
+        if (Environment.GetEnvironmentVariable(
+                "LIGASE_INSTALL_VALIDATION_HARNESS") == "1")
+        {
+            var behavior = Environment.GetEnvironmentVariable(
+                "LIGASE_TRANSACTION_TEST_BEHAVIOR");
+            if (behavior == "failEmptyRootOwnerMismatch")
+                return false;
+            if (behavior is "failEmptyRootChildPresent" or
+                "failEmptyRootNamedAds" or
+                "failEmptyRootStreamMalformed" or
+                "failEmptyRootStreamOffsetOverflow" or
+                "failEmptyRootStreamNearMax" or
+                "failEmptyRootStreamRemainingShort" or
+                "failEmptyRootStreamZeroProgress" or
+                "inspectFixtureStreams")
+                return true;
+        }
         var result = GetSecurityInfo(handle, SeFileObject,
             OwnerSecurityInformation, out _, out _, out _, out _,
             out var descriptor);
@@ -1063,8 +1198,23 @@ internal static class Program
 
     private static SafeFileHandle OpenRecoveryDirectory(string path)
     {
+        var validationBehavior = Environment.GetEnvironmentVariable(
+            "LIGASE_INSTALL_VALIDATION_HARNESS") == "1"
+            ? Environment.GetEnvironmentVariable(
+                "LIGASE_TRANSACTION_TEST_BEHAVIOR")
+            : null;
+        var inspectOnlyValidation = validationBehavior is
+            "failEmptyRootOwnerMismatch" or
+            "failEmptyRootChildPresent" or
+            "failEmptyRootNamedAds" or
+            "failEmptyRootStreamMalformed" or
+            "failEmptyRootStreamOffsetOverflow" or
+            "failEmptyRootStreamNearMax" or
+            "failEmptyRootStreamRemainingShort" or
+            "failEmptyRootStreamZeroProgress";
         var access = FileListDirectory | FileReadAttributes | ReadControl |
-            WriteDac | WriteOwner | Synchronize;
+            Synchronize |
+            (inspectOnlyValidation ? 0 : WriteDac | WriteOwner);
         SetStage("openHandle");
         InjectValidationNativeFailure(
             "failOpenHandleAccessDenied", ErrorAccessDenied);
@@ -1081,6 +1231,12 @@ internal static class Program
 
     private static bool HasDirectoryEntries(SafeFileHandle handle)
     {
+        if (Environment.GetEnvironmentVariable(
+                "LIGASE_INSTALL_VALIDATION_HARNESS") == "1" &&
+            Environment.GetEnvironmentVariable(
+                "LIGASE_TRANSACTION_TEST_BEHAVIOR") ==
+            "failEmptyRootChildPresent")
+            return true;
         var buffer = Marshal.AllocHGlobal(NtQueryBufferBytes);
         try
         {
@@ -1118,43 +1274,105 @@ internal static class Program
 
     private static bool HasAlternateDataStream(SafeFileHandle handle)
     {
+        var validationBehavior = Environment.GetEnvironmentVariable(
+            "LIGASE_INSTALL_VALIDATION_HARNESS") == "1"
+            ? Environment.GetEnvironmentVariable(
+                "LIGASE_TRANSACTION_TEST_BEHAVIOR")
+            : null;
+        if (Environment.GetEnvironmentVariable(
+                "LIGASE_INSTALL_VALIDATION_HARNESS") == "1")
+        {
+            if (validationBehavior == "failEmptyRootNamedAds")
+                return true;
+            if (validationBehavior == "failEmptyRootStreamMalformed")
+                throw StreamInspectionFailure();
+        }
         var buffer = Marshal.AllocHGlobal(NtQueryBufferBytes);
         try
         {
-            var status = NtQueryInformationFile(
-                handle, out _, buffer, NtQueryBufferBytes,
-                FileStreamInformation);
-            if (status != StatusSuccess)
+            if (validationBehavior is
+                "failEmptyRootStreamOffsetOverflow" or
+                "failEmptyRootStreamNearMax" or
+                "failEmptyRootStreamRemainingShort" or
+                "failEmptyRootStreamZeroProgress")
+            {
+                var zero = new byte[NtQueryBufferBytes];
+                Marshal.Copy(zero, 0, buffer, zero.Length);
+                var firstNext = validationBehavior switch
+                {
+                    "failEmptyRootStreamOffsetOverflow" => 24,
+                    "failEmptyRootStreamNearMax" => int.MaxValue - 7,
+                    "failEmptyRootStreamRemainingShort" =>
+                        NtQueryBufferBytes - 16,
+                    _ => 8
+                };
+                Marshal.WriteInt32(buffer, 0, firstNext);
+                Marshal.WriteInt32(buffer, 4, 0);
+                if (validationBehavior ==
+                    "failEmptyRootStreamOffsetOverflow")
+                {
+                    var second = IntPtr.Add(buffer, 24);
+                    Marshal.WriteInt32(second, 0, int.MaxValue - 7);
+                    const string canonicalData = "::$DATA";
+                    var canonicalBytes = Encoding.Unicode.GetBytes(
+                        canonicalData);
+                    Marshal.WriteInt32(
+                        second, 4, canonicalBytes.Length);
+                    Marshal.Copy(
+                        canonicalBytes, 0, IntPtr.Add(second, 24),
+                        canonicalBytes.Length);
+                }
+            }
+            else if (!GetFileInformationByHandleEx(
+                         handle, FileStreamInfo, buffer, NtQueryBufferBytes))
+            {
+                if (Marshal.GetLastWin32Error() == ErrorHandleEof)
+                    return false;
                 throw NativeFailure(
                     "installTransactionUnavailable",
-                    NtStatusToSafeWin32(status));
+                    Marshal.GetLastWin32Error());
+            }
             var offset = 0;
+            var canonicalStreams = new HashSet<string>(
+                StringComparer.OrdinalIgnoreCase);
             for (var entry = 0; entry < 64; entry++)
             {
                 if (offset < 0 || offset > NtQueryBufferBytes - 24)
-                    throw new InvalidOperationException(
-                        "installTransactionInvalid");
+                    throw StreamInspectionFailure();
                 var current = IntPtr.Add(buffer, offset);
                 var next = Marshal.ReadInt32(current, 0);
                 var nameLength = Marshal.ReadInt32(current, 4);
                 if (nameLength < 0 ||
                     nameLength > NtQueryBufferBytes - offset - 24 ||
                     (nameLength & 1) != 0)
-                    throw new InvalidOperationException(
-                        "installTransactionInvalid");
+                    throw StreamInspectionFailure();
                 var name = Marshal.PtrToStringUni(
                     IntPtr.Add(current, 24), nameLength / 2);
-                if (!string.Equals(name, "::$DATA",
+                if (name is null)
+                    throw StreamInspectionFailure();
+                // Directories may expose their unnamed data stream and their
+                // canonical $I30 index-allocation stream. Neither is a
+                // caller-created named ADS.
+                // Any other stream name is caller-created data and therefore
+                // disqualifies automatic recovery of an allegedly empty root.
+                if (name.Length != 0 &&
+                    !string.Equals(name, "::$DATA",
+                        StringComparison.OrdinalIgnoreCase) &&
+                    !string.Equals(name, "::$INDEX_ALLOCATION",
+                        StringComparison.OrdinalIgnoreCase) &&
+                    !string.Equals(name, ":$I30:$INDEX_ALLOCATION",
                         StringComparison.OrdinalIgnoreCase))
                     return true;
+                if (!canonicalStreams.Add(name))
+                    throw StreamInspectionFailure();
                 if (next == 0)
                     return false;
-                if (next < 24 || (next & 7) != 0)
-                    throw new InvalidOperationException(
-                        "installTransactionInvalid");
+                if (next < 24 || (next & 7) != 0 ||
+                    next > NtQueryBufferBytes - offset)
+                    throw StreamInspectionFailure();
                 offset = checked(offset + next);
             }
-            throw new InvalidOperationException("installTransactionInvalid");
+            throw StreamInspectionFailure();
         }
         finally
         {
@@ -1507,10 +1725,11 @@ internal static class Program
         IntPtr fileInformation, int length, int fileInformationClass,
         [MarshalAs(UnmanagedType.U1)] bool returnSingleEntry,
         IntPtr fileName, [MarshalAs(UnmanagedType.U1)] bool restartScan);
-    [DllImport("ntdll.dll")]
-    private static extern int NtQueryInformationFile(
-        SafeFileHandle fileHandle, out IoStatusBlock ioStatusBlock,
-        IntPtr fileInformation, int length, int fileInformationClass);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetFileInformationByHandleEx(
+        SafeFileHandle fileHandle, int fileInformationClass,
+        IntPtr fileInformation, int bufferSize);
     [DllImport("ntdll.dll")]
     private static extern uint RtlNtStatusToDosError(int status);
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]

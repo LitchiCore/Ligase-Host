@@ -724,10 +724,52 @@ public sealed class FreshInstallPackagingTests
             "new(directory, false, ControlFlags.DiscretionaryAclProtected");
         StringAssert.Contains(transactionHelper, "OpenRecoveryDirectory");
         StringAssert.Contains(transactionHelper, "NtQueryDirectoryFile");
-        StringAssert.Contains(transactionHelper, "NtQueryInformationFile");
+        StringAssert.Contains(
+            transactionHelper,
+            "GetFileInformationByHandleEx");
+        StringAssert.Contains(transactionHelper, "FileStreamInfo");
+        StringAssert.Contains(transactionHelper, "ErrorHandleEof");
         StringAssert.Contains(transactionHelper, "CreateFileW(path, access, 0");
         StringAssert.Contains(transactionHelper, "HasDirectoryEntries(handle)");
         StringAssert.Contains(transactionHelper, "HasAlternateDataStream(handle)");
+        StringAssert.Contains(
+            transactionHelper,
+            "\"::$INDEX_ALLOCATION\"");
+        StringAssert.Contains(
+            transactionHelper,
+            "\":$I30:$INDEX_ALLOCATION\"");
+        StringAssert.Contains(
+            transactionHelper,
+            "inspectEmptyRootOwner");
+        StringAssert.Contains(
+            transactionHelper,
+            "inspectEmptyRootChildren");
+        StringAssert.Contains(
+            transactionHelper,
+            "inspectEmptyRootStreams");
+        StringAssert.Contains(
+            transactionHelper,
+            "emptyRootInspectionReason");
+        StringAssert.Contains(
+            transactionHelper,
+            "ownerNotAdministrators");
+        StringAssert.Contains(transactionHelper, "childEntryPresent");
+        StringAssert.Contains(transactionHelper, "namedDataStreamPresent");
+        StringAssert.Contains(transactionHelper, "streamMetadataInvalid");
+        StringAssert.Contains(
+            transactionHelper,
+            "next > NtQueryBufferBytes - offset");
+        StringAssert.Contains(
+            transactionHelper,
+            "failEmptyRootStreamOffsetOverflow");
+        StringAssert.Contains(
+            transactionHelper,
+            "failEmptyRootStreamRemainingShort");
+        StringAssert.Contains(
+            transactionHelper,
+            "failEmptyRootStreamZeroProgress");
+        StringAssert.Contains(transactionHelper, "InspectEmptyRoot(args)");
+        StringAssert.Contains(transactionHelper, "inspectFixtureStreams");
         StringAssert.Contains(transactionHelper, "recoverEmptyAdminRoot");
         StringAssert.Contains(transactionHelper, "\"accessDenied\"");
         StringAssert.Contains(transactionHelper, "\"fileNotFound\"");
@@ -808,6 +850,15 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(management, "$managedAclTuples");
         StringAssert.Contains(management, "$isExactManagedAclTuple");
         StringAssert.Contains(management, "$hasManagedAclField");
+        StringAssert.Contains(management, "$emptyRootTuples");
+        StringAssert.Contains(management, "$isExactEmptyRootTuple");
+        StringAssert.Contains(management, "$hasEmptyRootField");
+        StringAssert.Contains(
+            transactionHelper,
+            "emitDuplicateEmptyRootInspectionReason");
+        StringAssert.Contains(
+            transactionHelper,
+            "emitEmptyRootTupleCrossSplice");
         StringAssert.Contains(management, "LigaseStrictJson");
         StringAssert.Contains(
             management,

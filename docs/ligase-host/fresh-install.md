@@ -247,11 +247,25 @@ The one recovery exception is an exact
 installation. The install confirmation discloses this recovery. The helper
 accepts it only when the same trusted handle proves that it is the direct
 canonical directory, non-reparse, owned by `Administrators`, completely empty
-(including no alternate data streams), and has no `Transactions` child,
+(including no named alternate data streams), and has no `Transactions` child,
 marker, or journal. Recovery obtains that directory with zero share mode and
 the minimum list/attribute/security rights. Child entries and streams are
 enumerated through that same handle before and after the ACL transition; path
-enumeration is not an authority. An existing or concurrent handle that
+enumeration is not an authority. Windows may expose a zero-length unnamed
+stream name, the canonical unnamed `::$DATA` spelling, and the directory's
+canonical `:$I30:$INDEX_ALLOCATION`
+system stream (with the unnamed index spelling accepted where Windows returns
+it);
+neither is user data. Any other stream name, duplicate canonical stream, or
+malformed stream record fails closed as named or untrusted data. An existing
+`ERROR_HANDLE_EOF` response from the documented handle stream query is the
+closed no-stream state, not a failure or an alternate stream.
+Every nonterminal `NextEntryOffset` must make aligned forward progress by at
+least one complete header and fit within the bytes remaining in the bounded
+buffer before any offset addition occurs. Near-maximum, truncated,
+out-of-range, overflow, or loop-like record chains therefore map to the closed
+`inspectEmptyRootStreamMetadata/20011/streamMetadataInvalid` tuple.
+or concurrent handle that
 prevents exclusivity fails with `busy`/Win32 `32` before ACL mutation. It
 applies the final descriptor to that same file identity, repeats the
 handle-based empty/stream/owner/DACL checks, reopens and verifies it, and reports
@@ -270,13 +284,16 @@ stage, and a safe native category:
 `unknown`. Named native categories use
 the corresponding allowlisted Win32 values (`2`, `3`, `5`, `6`, `32`, `87`,
 `1314`, `1307`, `1336`, `50`);
-ACL inspection uses closed managed codes `20001` through `20007`; other
+ACL inspection uses closed managed codes `20001` through `20007`; empty-root
+owner/child/stream inspection uses `20008` through `20011`; other
 positive 16-bit Win32 values retain their numeric code with category
 `unknown`. Zero or out-of-range values are not accepted as a native failure.
 Stages are `resolveProgramData`, `rejectReparse`, `createSegment`, `openHandle`,
 `verifyIdentity`, `resolveFinalPath`, `canonicalRoot`, `inspectAcl`,
 `readSecurityDescriptor`, `descriptorLength`, `descriptorCopy`,
 `descriptorParse`, `buildSecurityDescriptor`, `compareSecurityDescriptor`,
+`inspectEmptyRootOwner`, `inspectEmptyRootChildren`,
+`inspectEmptyRootStreams`, `inspectEmptyRootStreamMetadata`,
 `applyAcl`, `assertAcl`, `createTemp`,
 `atomicReplace`, `finalReadback`,
 `read`, `delete`, `inputValidation`, or `processTimeout`. A write payload is
@@ -335,6 +352,16 @@ closed fields: `canonicalRoot/20001/canonicalRootInspectionFailed`,
 `compareSecurityDescriptor/20007/descriptorCompareFailed`. PowerShell rejects
 any crossed stage, code, or reason before machine or persistent evidence is
 accepted.
+
+The existing-empty-root checks likewise publish one exact tuple:
+`inspectEmptyRootOwner/20008/ownerNotAdministrators`,
+`inspectEmptyRootChildren/20009/childEntryPresent`,
+`inspectEmptyRootStreams/20010/namedDataStreamPresent`, or
+`inspectEmptyRootStreamMetadata/20011/streamMetadataInvalid`. A native owner,
+directory-query, or stream-query failure retains its allowlisted Win32
+category/code at the corresponding stage and does not inherit a completed
+`resolveFinalPath` diagnostic. Persistent evidence records only this closed
+reason, never a stream name or directory entry.
 
 Before PowerShell materializes helper failure JSON, a strict recursive raw
 parser rejects duplicate property names at every object depth. This includes

@@ -126,6 +126,10 @@ param(
     "descriptorCompareFailed")]
   [string]$EvidenceTransactionAclInspectionReason = "none",
   [ValidateSet(
+    "none", "empty", "ownerNotAdministrators", "childEntryPresent",
+    "namedDataStreamPresent", "streamMetadataInvalid")]
+  [string]$EvidenceTransactionEmptyRootInspectionReason = "none",
+  [ValidateSet(
     "none", "dosDrive", "volumeGuid", "device", "unc", "unknown")]
   [string]$EvidenceTransactionBindingRootKind = "none",
   [ValidateRange(0, 32)]
@@ -180,6 +184,7 @@ $script:transactionBindingPrefixMatched = $false
 $script:transactionBindingVolumeMatched = $false
 $script:transactionBindingFileIdentityMatched = $false
 $script:transactionAclInspectionReason = "none"
+$script:transactionEmptyRootInspectionReason = "none"
 $script:transactionAclMutationOccurred = $false
 $script:transactionAclRollback = "notRequired"
 $script:transactionRecoveryAction = "none"
@@ -813,7 +818,7 @@ function Invoke-InstallTransactionHelper(
         }
         $failure = $stderr | ConvertFrom-Json
         $properties = @($failure.PSObject.Properties.Name)
-        if ($properties.Count -ne 13 -or
+        if ($properties.Count -ne 14 -or
             $properties -notcontains "code" -or
             $properties -notcontains "stage" -or
             $properties -notcontains "nativeCategory" -or
@@ -825,6 +830,7 @@ function Invoke-InstallTransactionHelper(
             $properties -notcontains "bindingVolumeMatched" -or
             $properties -notcontains "bindingFileIdentityMatched" -or
             $properties -notcontains "aclInspectionReason" -or
+            $properties -notcontains "emptyRootInspectionReason" -or
             $properties -notcontains "aclMutationOccurred" -or
             $properties -notcontains "aclRollback" -or
             [string]$failure.code -notin @(
@@ -835,8 +841,10 @@ function Invoke-InstallTransactionHelper(
               "resolveProgramData", "rejectReparse", "createSegment",
               "openHandle", "verifyIdentity", "resolveFinalPath",
               "canonicalRoot", "inspectAcl", "readSecurityDescriptor",
-              "descriptorLength", "descriptorCopy", "descriptorParse",
-              "buildSecurityDescriptor", "compareSecurityDescriptor",
+               "descriptorLength", "descriptorCopy", "descriptorParse",
+               "buildSecurityDescriptor", "compareSecurityDescriptor",
+               "inspectEmptyRootOwner", "inspectEmptyRootChildren",
+               "inspectEmptyRootStreams", "inspectEmptyRootStreamMetadata",
               "applyAcl", "assertAcl", "createTemp",
               "atomicReplace", "finalReadback", "read", "delete",
               "inputValidation", "processTimeout")) {
@@ -858,7 +866,9 @@ function Invoke-InstallTransactionHelper(
           notSupported = @(50)
           identityChanged = @(0)
           bindingMismatch = @(0)
-          managedFailure = @(20001, 20002, 20003, 20004, 20005, 20006, 20007)
+          managedFailure = @(
+            20001, 20002, 20003, 20004, 20005, 20006, 20007,
+            20008, 20009, 20010, 20011)
           unknown = @(0)
         }
         $nativeCodeValid = if ($nativeCategory -ceq "unknown") {
@@ -934,6 +944,36 @@ function Invoke-InstallTransactionHelper(
         if ($hasManagedAclField -ne $isExactManagedAclTuple) {
           throw "installTransactionInvalid"
         }
+        $emptyRootInspectionReason =
+          [string]$failure.emptyRootInspectionReason
+        $emptyRootTuples = @{
+          inspectEmptyRootOwner = @(20008, "ownerNotAdministrators")
+          inspectEmptyRootChildren = @(20009, "childEntryPresent")
+          inspectEmptyRootStreams = @(20010, "namedDataStreamPresent")
+          inspectEmptyRootStreamMetadata = @(20011, "streamMetadataInvalid")
+        }
+        $emptyRootReasons = @(
+          "ownerNotAdministrators", "childEntryPresent",
+          "namedDataStreamPresent", "streamMetadataInvalid")
+        if ($emptyRootInspectionReason -notin @(
+            "none", "empty",
+            "ownerNotAdministrators", "childEntryPresent",
+            "namedDataStreamPresent", "streamMetadataInvalid")) {
+          throw "installTransactionInvalid"
+        }
+        $emptyRootStage = [string]$failure.stage
+        $emptyRootTuple = $emptyRootTuples[$emptyRootStage]
+        $isExactEmptyRootTuple = (
+          $nativeCategory -ceq "managedFailure" -and
+          $null -ne $emptyRootTuple -and
+          $nativeCode -eq [int]$emptyRootTuple[0] -and
+          $emptyRootInspectionReason -ceq [string]$emptyRootTuple[1])
+        $hasEmptyRootField = (
+          $nativeCode -in 20008..20011 -or
+          $emptyRootInspectionReason -in $emptyRootReasons)
+        if ($hasEmptyRootField -ne $isExactEmptyRootTuple) {
+          throw "installTransactionInvalid"
+        }
         if ($failure.aclMutationOccurred -isnot [bool] -or
             [string]$failure.aclRollback -notin @(
               "notRequired", "completed", "failed") -or
@@ -954,6 +994,8 @@ function Invoke-InstallTransactionHelper(
         $script:transactionBindingFileIdentityMatched =
           [bool]$failure.bindingFileIdentityMatched
         $script:transactionAclInspectionReason = $aclInspectionReason
+        $script:transactionEmptyRootInspectionReason =
+          $emptyRootInspectionReason
         $script:transactionAclMutationOccurred =
           [bool]$failure.aclMutationOccurred
         $script:transactionAclRollback = [string]$failure.aclRollback
@@ -1265,6 +1307,10 @@ function Write-InstallerEvidence {
         $script:transactionAclInspectionReason -ne "none") {
         $script:transactionAclInspectionReason
       } else { $EvidenceTransactionAclInspectionReason }
+      emptyRootInspectionReason = if (
+        $script:transactionEmptyRootInspectionReason -ne "none") {
+        $script:transactionEmptyRootInspectionReason
+      } else { $EvidenceTransactionEmptyRootInspectionReason }
       aclMutationOccurred = if ($script:transactionAclMutationOccurred) {
         $true
       } else { [bool]$EvidenceTransactionAclMutationOccurred }
