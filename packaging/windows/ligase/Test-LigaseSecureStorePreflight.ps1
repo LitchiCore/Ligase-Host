@@ -1633,10 +1633,13 @@ $programPath = Join-Path $RepositoryRoot `
     'tools\Ligase.Installation.TransactionHelper\Program.cs'
 $projectPath = Join-Path $RepositoryRoot `
     'tools\Ligase.SecureStore.Preflight\Ligase.SecureStore.Preflight.csproj'
+$launcherPath = Join-Path $RepositoryRoot `
+    'tools\Ligase.SecureStore.Preflight.Launcher\Program.cs'
 $documentPath = Join-Path $RepositoryRoot `
     'docs\ligase-host\fresh-install.md'
 
-foreach ($path in @($programPath, $projectPath, $documentPath)) {
+foreach ($path in @(
+        $programPath, $projectPath, $launcherPath, $documentPath)) {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
         throw 'secureStorePreflightSourceMissing'
     }
@@ -1644,6 +1647,7 @@ foreach ($path in @($programPath, $projectPath, $documentPath)) {
 
 $program = Get-Content -LiteralPath $programPath -Raw
 $project = Get-Content -LiteralPath $projectPath -Raw
+$launcher = Get-Content -LiteralPath $launcherPath -Raw
 $document = Get-Content -LiteralPath $documentPath -Raw
 
 foreach ($token in @(
@@ -1670,7 +1674,26 @@ foreach ($token in @(
         '\"childCreationBlocked\":true',
         '_stage = "inputValidation"',
         'SetStage("inputValidation")',
-        'if (args.Length != 0)',
+        'TryOpenDiagnosticPipe(args)',
+        'GetNamedPipeServerProcessId',
+        'TrySendDiagnostic(failureBytes)',
+        'KnownPartialAdminRootSddlSha256',
+        'AssertKnownPartialAdminRoot',
+        'AdminRootRecoveryLease',
+        'RecoveryLeaseState.Unarmed',
+        'RecoveryLeaseState.Frozen',
+        'RecoveryLeaseState.Mutated',
+        'RecoveryLeaseState.Committed',
+        'failPreArmIdentity',
+        'failPreArmReadSecurity',
+        'failPreArmKnownResidue',
+        'failEmptyRootChildPresent',
+        'failEmptyRootNamedAds',
+        'recoveryLease?.Commit()',
+        'recoveryLease?.Rollback()',
+        'failTransactionsCreate',
+        'failTransactionsVerify',
+        'failOpenVerified',
         '? "invalidArguments"',
         'PreflightReleaseKind = "UnsignedDev"',
         'PreflightTrustBoundary = "localManualExactSha"',
@@ -1696,6 +1719,25 @@ foreach ($token in @(
         '#if !PREFLIGHT_ONLY')) {
     if ($program.IndexOf($token, [StringComparison]::Ordinal) -lt 0) {
         throw 'secureStorePreflightBoundaryMissing'
+    }
+}
+foreach ($token in @(
+        'NamedPipeServerStreamAcl.Create',
+        'RandomNumberGenerator.GetBytes(32)',
+        'GetNamedPipeClientProcessId',
+        'GetProcessUserSid(child.Handle)',
+        'Verb = "runas"',
+        'Arguments = "--diagnostic-pipe "',
+        'secure-store-preflight-review-evidence.json')) {
+    if ($launcher.IndexOf($token, [StringComparison]::Ordinal) -lt 0) {
+        throw 'secureStorePreflightLauncherBoundaryMissing'
+    }
+}
+foreach ($forbidden in @(
+        'payloadRoot', 'Manage-LigaseInstallation', 'PowerShell')) {
+    if ($launcher.IndexOf(
+            $forbidden, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+        throw 'secureStorePreflightLauncherForbiddenSurface'
     }
 }
 if ($program.IndexOf(
@@ -1765,7 +1807,7 @@ $inputStage = $preflight.IndexOf(
     '_stage = "inputValidation"',
     [StringComparison]::Ordinal)
 $argumentCheck = $preflight.IndexOf(
-    'if (args.Length != 0)',
+    'if (!TryOpenDiagnosticPipe(args))',
     [StringComparison]::Ordinal)
 $environmentAccess = $preflight.IndexOf(
     'Environment.SetEnvironmentVariable(',
@@ -1779,9 +1821,9 @@ $programDataAccess = $preflight.IndexOf(
 $secureStoreAccess = $preflight.IndexOf(
     'SecureStore.Open(',
     [StringComparison]::Ordinal)
-if ($securityStage -lt 0 -or $mitigation -le $securityStage -or
+if ($securityStage -lt 0 -or $argumentCheck -le $securityStage -or
+    $mitigation -le $argumentCheck -or
     $inputStage -le $mitigation -or
-    $argumentCheck -le $inputStage -or
     $environmentAccess -le $argumentCheck -or
     $validatedStage -le $environmentAccess -or
     $programDataAccess -le $validatedStage -or

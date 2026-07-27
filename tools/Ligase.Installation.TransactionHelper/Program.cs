@@ -1,5 +1,7 @@
 using System.Diagnostics;
+using System.IO.Pipes;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Security.AccessControl;
 using System.Security.Principal;
 using System.Text;
@@ -8,6 +10,10 @@ using Microsoft.Win32.SafeHandles;
 internal static class Program
 {
     private static string _stage = "inputValidation";
+    private static string _recoveryAction = "notAttempted";
+#if PREFLIGHT_ONLY
+    private static NamedPipeClientStream? _diagnosticPipe;
+#endif
     private const int MaxBytes = 4 * 1024 * 1024 + 64 * 1024;
     private const uint GenericRead = 0x80000000;
     private const uint GenericWrite = 0x40000000;
@@ -281,6 +287,8 @@ internal static class Program
 #if PREFLIGHT_ONLY
     private const string PreflightReleaseKind = "UnsignedDev";
     private const string PreflightTrustBoundary = "localManualExactSha";
+    private const string KnownPartialAdminRootSddlSha256 =
+        "4B31277EA740269D3B46A1C8688328B4A60FBBB16A7E427BEA8A0852D5F394E7";
 
     private static int RunStandaloneSecureStorePreflight(string[] args)
     {
@@ -313,15 +321,15 @@ internal static class Program
                     ValidationPolicyReadbackMismatch))
                 throw new InvalidOperationException("invalidArguments");
             _preflightValidationAction = args[0];
+#else
+            if (!TryOpenDiagnosticPipe(args))
+                throw new InvalidOperationException("invalidArguments");
 #endif
             EnableChildProcessMitigation();
             _stage = "inputValidation";
 #if PREFLIGHT_VALIDATION
             return RunPreflightValidation();
 #else
-            if (args.Length != 0)
-                throw new InvalidOperationException("invalidArguments");
-
             Environment.SetEnvironmentVariable(
                 "LIGASE_INSTALL_VALIDATION_HARNESS", null);
             Environment.SetEnvironmentVariable(
@@ -358,6 +366,8 @@ internal static class Program
             store = null;
             committingStore.WriteEvidence(
                 SerializeStandalonePreflightEvidence(result));
+            TrySendDiagnostic(
+                SerializeStandalonePreflightEvidence(result));
             return 0;
 #endif
         }
@@ -374,6 +384,7 @@ internal static class Program
             result.NativeCode = _nativeCode;
             result.AclMutationOccurred = _aclMutationOccurred;
             result.AclRollback = _aclRollback;
+            result.Recovery = _recoveryAction;
             if (result.Probe == "notAttempted" &&
                 _stage is "createTemp" or "atomicReplace" or "read" or "delete")
                 result.Probe = "failed";
@@ -412,6 +423,7 @@ internal static class Program
                     // never opens a second storage authority.
                 }
             }
+            TrySendDiagnostic(failureBytes);
             try
             {
                 Console.Error.Write(Encoding.UTF8.GetString(failureBytes));
@@ -426,8 +438,148 @@ internal static class Program
         finally
         {
             store?.Dispose();
+#if PREFLIGHT_ONLY
+            _diagnosticPipe?.Dispose();
+            _diagnosticPipe = null;
+#endif
         }
     }
+
+#if PREFLIGHT_ONLY && !PREFLIGHT_VALIDATION
+    private static bool TryOpenDiagnosticPipe(string[] args)
+    {
+        if (args.Length != 6 ||
+            args[0] != "--diagnostic-pipe" ||
+            args[2] != "--nonce" ||
+            args[4] != "--parent-pid" ||
+            args[1].Length is < 32 or > 96 ||
+            !args[1].StartsWith("LigaseSecureStore-", StringComparison.Ordinal) ||
+            args[3].Length != 64 ||
+            args[3].Any(character => !Uri.IsHexDigit(character)) ||
+            !int.TryParse(args[5], out var expectedParentPid) ||
+            expectedParentPid <= 0)
+            return false;
+
+        var pipe = new NamedPipeClientStream(
+            ".", args[1], PipeDirection.InOut,
+            PipeOptions.Asynchronous | PipeOptions.WriteThrough,
+            TokenImpersonationLevel.Identification);
+        using var timeout = new CancellationTokenSource(
+            TimeSpan.FromSeconds(15));
+        pipe.ConnectAsync(timeout.Token).GetAwaiter().GetResult();
+        if (!GetNamedPipeServerProcessId(
+                pipe.SafePipeHandle, out var actualParentPid) ||
+            actualParentPid != (uint)expectedParentPid)
+            throw new InvalidOperationException("diagnosticPeerInvalid");
+        using var parent = Process.GetProcessById(expectedParentPid);
+        if (parent.SessionId != Process.GetCurrentProcess().SessionId ||
+            !string.Equals(
+                GetProcessUserSid(parent.Handle),
+                WindowsIdentity.GetCurrent().User?.Value,
+                StringComparison.Ordinal))
+            throw new InvalidOperationException("diagnosticPeerInvalid");
+
+        var hello = Encoding.UTF8.GetBytes(
+            "{\"schemaId\":\"secureStoreDiagnosticHelloV1\"," +
+            "\"nonce\":\"" + args[3].ToUpperInvariant() + "\"," +
+            "\"pid\":" + Environment.ProcessId + "," +
+            "\"parentPid\":" + expectedParentPid + "}");
+        WriteDiagnosticFrame(pipe, hello);
+        var ack = ReadDiagnosticFrame(pipe, 512, timeout.Token);
+        var expectedAck = Encoding.UTF8.GetBytes(
+            "{\"schemaId\":\"secureStoreDiagnosticAckV1\"," +
+            "\"nonce\":\"" + args[3].ToUpperInvariant() + "\"}");
+        if (!ack.SequenceEqual(expectedAck))
+            throw new InvalidOperationException("diagnosticPeerInvalid");
+        _diagnosticPipe = pipe;
+        return true;
+    }
+#endif
+
+#if PREFLIGHT_ONLY
+    private static void TrySendDiagnostic(byte[] bytes)
+    {
+        if (_diagnosticPipe is null) return;
+        try
+        {
+            WriteDiagnosticFrame(_diagnosticPipe, bytes);
+        }
+        catch
+        {
+            // Diagnostic IPC is observation-only. It cannot change the
+            // secure-store transaction or terminal native result.
+        }
+    }
+
+    private static void WriteDiagnosticFrame(Stream stream, byte[] bytes)
+    {
+        if (bytes.Length is <= 0 or > 4096)
+            throw new InvalidOperationException("diagnosticFrameInvalid");
+        Span<byte> prefix = stackalloc byte[4];
+        BitConverter.TryWriteBytes(prefix, bytes.Length);
+        stream.Write(prefix);
+        stream.Write(bytes);
+        stream.Flush();
+    }
+
+    private static byte[] ReadDiagnosticFrame(
+        Stream stream, int maximum, CancellationToken cancellationToken)
+    {
+        var prefix = new byte[4];
+        ReadDiagnosticExactly(stream, prefix, cancellationToken);
+        var length = BitConverter.ToInt32(prefix);
+        if (length is <= 0 || length > maximum)
+            throw new InvalidOperationException("diagnosticFrameInvalid");
+        var bytes = new byte[length];
+        ReadDiagnosticExactly(stream, bytes, cancellationToken);
+        return bytes;
+    }
+
+    private static void ReadDiagnosticExactly(
+        Stream stream, byte[] bytes, CancellationToken cancellationToken)
+    {
+        var offset = 0;
+        while (offset < bytes.Length)
+        {
+            var read = stream.ReadAsync(
+                bytes.AsMemory(offset), cancellationToken)
+                .AsTask().GetAwaiter().GetResult();
+            if (read == 0)
+                throw new EndOfStreamException();
+            offset += read;
+        }
+    }
+
+    private static string GetProcessUserSid(IntPtr processHandle)
+    {
+        if (!OpenProcessToken(processHandle, 0x0008, out var token))
+            throw new InvalidOperationException("diagnosticPeerInvalid");
+        try
+        {
+            GetTokenInformation(token, 1, IntPtr.Zero, 0, out var length);
+            if (length == 0)
+                throw new InvalidOperationException("diagnosticPeerInvalid");
+            var buffer = Marshal.AllocHGlobal(checked((int)length));
+            try
+            {
+                if (!GetTokenInformation(
+                        token, 1, buffer, length, out _))
+                    throw new InvalidOperationException(
+                        "diagnosticPeerInvalid");
+                var sidPointer = Marshal.ReadIntPtr(buffer);
+                return new SecurityIdentifier(sidPointer).Value;
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(buffer);
+            }
+        }
+        finally
+        {
+            CloseHandle(token);
+        }
+    }
+#endif
 
     private static byte[] SerializeStandalonePreflightEvidence(
         StandalonePreflightResult result)
@@ -1069,6 +1221,126 @@ internal static class Program
         return output.ToArray();
     }
 
+    private sealed class AdminRootRecoveryLease : IDisposable
+    {
+        private enum RecoveryLeaseState
+        {
+            Unarmed,
+            Frozen,
+            Mutated,
+            Committed
+        }
+
+        private readonly SafeFileHandle _handle;
+        private readonly string _path;
+        private readonly FileIdentity _identity;
+        private byte[]? _originalSecurity;
+        private string? _createdTransactionPath;
+        private FileIdentity? _createdTransactionIdentity;
+        private RecoveryLeaseState _state = RecoveryLeaseState.Unarmed;
+        private bool _mutationObserved;
+        private bool _rollbackAttempted;
+
+        public AdminRootRecoveryLease(
+            SafeFileHandle handle, string path, FileIdentity identity)
+        {
+            _handle = handle;
+            _path = path;
+            _identity = identity;
+        }
+
+        public void FreezeOriginal(byte[] bytes)
+        {
+            _originalSecurity = bytes.ToArray();
+            _state = RecoveryLeaseState.Frozen;
+        }
+
+        public void MarkMutation()
+        {
+            _mutationObserved = true;
+            _aclMutationOccurred = true;
+            _recoveryAction = "recoverEmptyAdminRoot";
+            _state = RecoveryLeaseState.Mutated;
+        }
+
+        public void RecordCreatedTransaction(
+            string path, FileIdentity identity)
+        {
+            _createdTransactionPath = path;
+            _createdTransactionIdentity = identity;
+        }
+
+        public void Commit()
+        {
+            _state = RecoveryLeaseState.Committed;
+            _recoveryAction = "recoverEmptyAdminRoot";
+        }
+
+        public void Rollback()
+        {
+            if (_state is RecoveryLeaseState.Unarmed or
+                RecoveryLeaseState.Committed || _rollbackAttempted)
+                return;
+            _rollbackAttempted = true;
+            var completed = false;
+            try
+            {
+                if (_originalSecurity is null ||
+                    VerifyHandle(_handle, _path, directory: true) != _identity)
+                    throw IdentityChanged();
+
+                if (_createdTransactionPath is not null &&
+                    _createdTransactionIdentity is not null)
+                {
+                    TryCleanupCreatedDirectory(
+                        _createdTransactionPath,
+                        _createdTransactionIdentity.Value);
+                    if (Directory.Exists(_createdTransactionPath))
+                        throw new InvalidOperationException(
+                            "installTransactionRollbackFailed");
+                }
+
+                VerifyEmptyAdminRoot(_handle);
+                var live = ReadSecurityDescriptor(_handle);
+                var changed = !live.SequenceEqual(_originalSecurity);
+                if (changed)
+                    _state = RecoveryLeaseState.Mutated;
+                _mutationObserved |= changed;
+                _aclMutationOccurred |= changed;
+                if (changed &&
+                    !TryRestoreSecurityDescriptor(
+                        _handle, _originalSecurity))
+                    throw new InvalidOperationException(
+                        "installTransactionRollbackFailed");
+                if (!ReadSecurityDescriptor(_handle)
+                        .SequenceEqual(_originalSecurity) ||
+                    VerifyHandle(_handle, _path, directory: true) !=
+                        _identity)
+                    throw new InvalidOperationException(
+                        "installTransactionRollbackFailed");
+                VerifyEmptyAdminRoot(_handle);
+                completed = true;
+            }
+            finally
+            {
+                _aclRollback = completed
+                    ? _mutationObserved ? "completed" : "notRequired"
+                    : "failed";
+                if (!completed)
+                    _recoveryAction = "rollbackFailed";
+            }
+        }
+
+        public void Dispose()
+        {
+            if ((_state is RecoveryLeaseState.Frozen or
+                    RecoveryLeaseState.Mutated) &&
+                !_rollbackAttempted)
+                Rollback();
+            _handle.Dispose();
+        }
+    }
+
     private sealed class SecureStore : IDisposable
     {
         private readonly string _root;
@@ -1106,10 +1378,27 @@ internal static class Program
             if (create)
             {
                 SetStage("createSegment");
-                var recoveredEmptyAdminRoot = HardenDirectoryChain(
-                    root,
-                    test ? Path.GetDirectoryName(root)! : programData);
-                return OpenVerified(root, recoveredEmptyAdminRoot);
+                AdminRootRecoveryLease? recoveryLease = null;
+                try
+                {
+                    var recoveredEmptyAdminRoot = HardenDirectoryChain(
+                        root,
+                        test ? Path.GetDirectoryName(root)! : programData,
+                        ref recoveryLease);
+                    InjectPostAclRecoveryFailure("failOpenVerified");
+                    var store = OpenVerified(root, recoveredEmptyAdminRoot);
+                    recoveryLease?.Commit();
+                    return store;
+                }
+                catch
+                {
+                    recoveryLease?.Rollback();
+                    throw;
+                }
+                finally
+                {
+                    recoveryLease?.Dispose();
+                }
             }
             if (!Directory.Exists(root))
                 throw new InvalidOperationException("installTransactionUnavailable");
@@ -1387,7 +1676,10 @@ internal static class Program
         }
     }
 
-    private static bool HardenDirectoryChain(string root, string trustedBase)
+    private static bool HardenDirectoryChain(
+        string root,
+        string trustedBase,
+        ref AdminRootRecoveryLease? recoveryLease)
     {
         var current = Path.GetFullPath(trustedBase).TrimEnd('\\');
         var relative = Path.GetRelativePath(current, root);
@@ -1398,10 +1690,16 @@ internal static class Program
             segmentIndex++;
             current = Path.Combine(current, part);
             var existed = Directory.Exists(current);
+            if (segmentIndex == 2 && recoveryLease is not null)
+                InjectPostAclRecoveryFailure("failTransactionsCreate");
             if (!existed)
                 CreateDirectoryWithExactAcl(current);
             using var handle = OpenPath(current, true, writeSecurity: false);
             var identity = VerifyHandle(handle, current, true);
+            if (!existed && segmentIndex == 2 && recoveryLease is not null)
+                recoveryLease.RecordCreatedTransaction(current, identity);
+            if (segmentIndex == 2 && recoveryLease is not null)
+                InjectPostAclRecoveryFailure("failTransactionsVerify");
             SetStage("canonicalRoot");
             InjectValidationAclFailure(
                 "failCanonicalRootInspection",
@@ -1427,49 +1725,42 @@ internal static class Program
                     throw new InvalidOperationException(
                         "installTransactionInvalid");
                 }
-                using (var exclusive = OpenRecoveryDirectory(current))
+                var exclusive = OpenRecoveryDirectory(current);
+                recoveryLease = new AdminRootRecoveryLease(
+                    exclusive, current, identity);
                 {
+                    InjectPreArmRecoveryFailure("failPreArmIdentity");
                     if (VerifyHandle(exclusive, current, true) != identity)
                         throw IdentityChanged();
                     VerifyEmptyAdminRoot(exclusive);
                     AttemptValidationResidueInjection(current);
                     VerifyEmptyAdminRoot(exclusive);
+                    InjectPreArmRecoveryFailure("failPreArmReadSecurity");
                     originalSecurity = ReadSecurityDescriptor(exclusive);
-                    SetStage("applyAcl");
-                    ApplyExactAcl(exclusive, true);
-                    _aclMutationOccurred = true;
-                    SetStage("finalReadback");
+#if PREFLIGHT_ONLY
+                    InjectPreArmRecoveryFailure("failPreArmKnownResidue");
+                    AssertKnownPartialAdminRoot(originalSecurity);
+#endif
+                    recoveryLease.FreezeOriginal(originalSecurity);
                     try
                     {
+                        SetStage("applyAcl");
+                        ApplyExactAcl(exclusive, true);
+                        _aclMutationOccurred =
+                            !ReadSecurityDescriptor(exclusive)
+                                .SequenceEqual(originalSecurity);
+                        recoveryLease.MarkMutation();
+                        SetStage("finalReadback");
                         if (VerifyHandle(exclusive, current, true) != identity)
                             throw IdentityChanged();
                         VerifyEmptyAdminRoot(exclusive);
+                        AssertAcl(exclusive, directory: true);
                     }
                     catch
                     {
-                        _aclRollback = TryRestoreSecurityDescriptor(
-                            exclusive, originalSecurity)
-                            ? "completed"
-                            : "failed";
+                        recoveryLease.Rollback();
                         throw;
                     }
-                }
-                try
-                {
-                    using var reopened = OpenPath(
-                        current, directory: true, writeSecurity: false);
-                    AssertAcl(reopened, directory: true);
-                    if (VerifyHandle(reopened, current, true) != identity)
-                        throw IdentityChanged();
-                    VerifyEmptyAdminRoot(reopened);
-                }
-                catch
-                {
-                    _aclRollback = TryRestoreSecurityDescriptor(
-                        current, identity, originalSecurity)
-                        ? "completed"
-                        : "failed";
-                    throw;
                 }
                 recoveredEmptyAdminRoot = true;
                 continue;
@@ -1479,6 +1770,56 @@ internal static class Program
         }
         return recoveredEmptyAdminRoot;
     }
+
+    private static void InjectPostAclRecoveryFailure(string behavior)
+    {
+        if (Environment.GetEnvironmentVariable(
+                "LIGASE_INSTALL_VALIDATION_HARNESS") == "1" &&
+            Environment.GetEnvironmentVariable(
+                "LIGASE_TRANSACTION_TEST_BEHAVIOR") == behavior)
+            throw new InvalidOperationException(
+                "installTransactionUnavailable");
+    }
+
+    private static void InjectPreArmRecoveryFailure(string behavior)
+    {
+        if (Environment.GetEnvironmentVariable(
+                "LIGASE_INSTALL_VALIDATION_HARNESS") != "1" ||
+            Environment.GetEnvironmentVariable(
+                "LIGASE_TRANSACTION_TEST_BEHAVIOR") != behavior)
+            return;
+        if (behavior == "failPreArmIdentity")
+        {
+            SetStage("verifyIdentity");
+            throw BindingFailure("fileIdentityMismatch");
+        }
+        if (behavior == "failPreArmReadSecurity")
+        {
+            SetStage("readSecurityDescriptor");
+            throw NativeFailure(
+                "installTransactionAclInvalid", ErrorAccessDenied);
+        }
+        SetStage("knownResidue");
+        throw new InvalidOperationException(
+            "installTransactionKnownResidueMismatch");
+    }
+
+#if PREFLIGHT_ONLY
+    private static void AssertKnownPartialAdminRoot(byte[] binary)
+    {
+        SetStage("knownResidue");
+        var descriptor = new RawSecurityDescriptor(binary, 0);
+        var sddl = descriptor.GetSddlForm(
+            AccessControlSections.Owner | AccessControlSections.Access);
+        var hash = Convert.ToHexString(SHA256.HashData(
+            Encoding.UTF8.GetBytes(sddl)));
+        if (!string.Equals(
+                hash, KnownPartialAdminRootSddlSha256,
+                StringComparison.Ordinal))
+            throw new InvalidOperationException(
+                "installTransactionKnownResidueMismatch");
+    }
+#endif
 
     private static bool IsCanonicalAdminRoot(string path, string trustedBase)
     {
@@ -2310,6 +2651,25 @@ internal static class Program
         out uint buffer,
         nuint length);
 
+#if PREFLIGHT_ONLY
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetNamedPipeServerProcessId(
+        SafePipeHandle pipe, out uint serverProcessId);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool OpenProcessToken(
+        IntPtr processHandle, uint desiredAccess, out IntPtr tokenHandle);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetTokenInformation(
+        IntPtr tokenHandle, int tokenInformationClass,
+        IntPtr tokenInformation, uint tokenInformationLength,
+        out uint returnLength);
+#endif
+
 #if PREFLIGHT_VALIDATION
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
@@ -2332,10 +2692,6 @@ internal static class Program
 
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool CloseHandle(IntPtr handle);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool TerminateProcess(
         IntPtr process,
         uint exitCode);
@@ -2345,6 +2701,10 @@ internal static class Program
         IntPtr handle,
         uint milliseconds);
 #endif
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CloseHandle(IntPtr handle);
 
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]

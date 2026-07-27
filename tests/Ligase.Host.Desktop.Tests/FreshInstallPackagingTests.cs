@@ -31,6 +31,9 @@ public sealed class FreshInstallPackagingTests
             "windows",
             "ligase",
             "Test-LigaseSecureStorePreflight.ps1"));
+        var launcher = File.ReadAllText(Path.Combine(
+            root, "tools", "Ligase.SecureStore.Preflight.Launcher",
+            "Program.cs"));
 
         StringAssert.Contains(program, "#if PREFLIGHT_ONLY");
         StringAssert.Contains(
@@ -76,11 +79,47 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(program, "_preflightValidationChildCleanup");
         StringAssert.Contains(program, "_stage = \"inputValidation\"");
         StringAssert.Contains(program, "SetStage(\"inputValidation\")");
-        StringAssert.Contains(program, "if (args.Length != 0)");
+        StringAssert.Contains(program, "TryOpenDiagnosticPipe(args)");
+        StringAssert.Contains(program, "GetNamedPipeServerProcessId");
+        StringAssert.Contains(program, "diagnosticPeerInvalid");
+        StringAssert.Contains(program, "TrySendDiagnostic(failureBytes)");
+        StringAssert.Contains(program, "KnownPartialAdminRootSddlSha256");
+        StringAssert.Contains(program, "AssertKnownPartialAdminRoot");
+        StringAssert.Contains(
+            program, "_aclRollback = completed");
+        StringAssert.Contains(program, "AdminRootRecoveryLease");
+        StringAssert.Contains(program, "RecoveryLeaseState.Unarmed");
+        StringAssert.Contains(program, "RecoveryLeaseState.Frozen");
+        StringAssert.Contains(program, "RecoveryLeaseState.Mutated");
+        StringAssert.Contains(program, "RecoveryLeaseState.Committed");
+        StringAssert.Contains(program, "failPreArmIdentity");
+        StringAssert.Contains(program, "failPreArmReadSecurity");
+        StringAssert.Contains(program, "failPreArmKnownResidue");
+        StringAssert.Contains(program, "failEmptyRootChildPresent");
+        StringAssert.Contains(program, "failEmptyRootNamedAds");
+        StringAssert.Contains(program, "recoveryLease?.Commit()");
+        StringAssert.Contains(program, "recoveryLease?.Rollback()");
+        StringAssert.Contains(program, "failTransactionsCreate");
+        StringAssert.Contains(program, "failTransactionsVerify");
+        StringAssert.Contains(program, "failOpenVerified");
+        Assert.IsTrue(
+            program.IndexOf(
+                "var store = OpenVerified(root, recoveredEmptyAdminRoot)",
+                StringComparison.Ordinal) <
+            program.IndexOf(
+                "recoveryLease?.Commit()",
+                StringComparison.Ordinal));
+        Assert.IsTrue(
+            program.IndexOf(
+                "recoveryLease.RecordCreatedTransaction(current, identity)",
+                StringComparison.Ordinal) <
+            program.IndexOf(
+                "InjectPostAclRecoveryFailure(\"failTransactionsVerify\")",
+                StringComparison.Ordinal));
         StringAssert.Contains(program, "? \"invalidArguments\"");
         Assert.IsTrue(
             program.IndexOf(
-                "if (args.Length != 0)",
+                "TryOpenDiagnosticPipe(args)",
                 StringComparison.Ordinal) <
             program.IndexOf(
                 "\"LIGASE_INSTALL_VALIDATION_HARNESS\", null",
@@ -107,6 +146,16 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(program, "store = null");
         StringAssert.Contains(program, "HasAlternateDataStream(verify)");
         Assert.IsFalse(program.Contains("Ligase Host Diagnostics"));
+        StringAssert.Contains(launcher, "NamedPipeServerStreamAcl.Create");
+        StringAssert.Contains(launcher, "RandomNumberGenerator.GetBytes(32)");
+        StringAssert.Contains(launcher, "GetNamedPipeClientProcessId");
+        StringAssert.Contains(launcher, "GetProcessUserSid(child.Handle)");
+        StringAssert.Contains(launcher, "Verb = \"runas\"");
+        StringAssert.Contains(launcher, "Arguments = \"--diagnostic-pipe \"");
+        StringAssert.Contains(
+            launcher, "secure-store-preflight-review-evidence.json");
+        Assert.IsFalse(launcher.Contains("payloadRoot"));
+        Assert.IsFalse(launcher.Contains("Manage-LigaseInstallation"));
         StringAssert.Contains(
             program,
             "\"LIGASE_INSTALL_VALIDATION_HARNESS\", null");

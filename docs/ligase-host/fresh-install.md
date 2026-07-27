@@ -451,9 +451,21 @@ options.
 
 ### Unsigned development secure-store preflight
 
-The standalone `Ligase.SecureStore.Preflight.exe` is a purpose-built,
-self-contained x64 development diagnostic. It accepts no command-line
-arguments. Its compiled entry point calls only the closed secure-store
+The standalone preflight is launched only by the sibling purpose-built
+`Ligase.SecureStore.Preflight.Launcher.exe`. The non-elevated launcher accepts
+no arguments, creates a CSPRNG-named one-shot pipe and nonce with an ACL
+limited to the current user, SYSTEM, and Administrators, and performs one
+manual `RunAs` of the fixed sibling `Ligase.SecureStore.Preflight.exe`. The
+elevated child accepts only the closed pipe-name, nonce, and parent-PID tuple.
+Both endpoints verify peer PID, session, and user SID before the bounded,
+length-prefixed handshake. The IPC accepts no path, script, payload root,
+manifest, security descriptor, or secret. The parent writes only a bounded
+review observation beside the frozen D-drive artifacts; it is not a product or
+secure-store authority.
+
+The child is a purpose-built, self-contained x64 development diagnostic. After
+the IPC handshake it enables and reads back the no-child process mitigation
+before ProgramData access. Its compiled entry point calls only the closed secure-store
 recover/probe/readback path: the canonical
 `%ProgramData%\Ligase Host Admin\Transactions` chain, an exact empty-root
 recovery when eligible, and a marker-owned write/read/atomic-replace/delete
@@ -468,8 +480,10 @@ identity, reparse, ACL, same-directory temporary-file, and atomic-replace gates;
 the elevated executable creates no separate public diagnostics path. Evidence
 can be persisted only after that secure chain is established. An earlier
 fail-closed root/open failure returns a closed nonzero outcome without creating
-a weaker evidence path; its closed result is emitted on the native diagnostic
-stream only. An evidence-write failure is never retried through another path
+a weaker elevated evidence path; its bounded stage/category/code and ACL
+mutation/rollback state is sent through the authenticated one-shot pipe and
+recorded by the non-elevated parent in D-drive review evidence. An
+evidence-write failure is never retried through another path
 and cannot turn the original failure into success. After the root is verified,
 the tool removes only its exact-owned prior evidence and writes a closed
 `secureStorePreflightPending` record. Probe and cleanup success are not terminal
@@ -497,6 +511,33 @@ does not defend against a malicious local standard user replacing the image
 between the hash check and UAC image load. A `PublicRelease` preflight requires
 an allowlisted Authenticode publisher, RFC 3161 timestamp, protected staging
 that prevents replacement before execution, and a new security review.
+
+The current one-machine development recovery allowlist includes the exact safe
+fingerprint of the known empty partial-ACL residue left by the earlier failed
+gate. While holding the exclusive directory handle, recovery freezes the
+original descriptor bytes/hash and FileId. Any ACL apply/readback failure
+compares the live descriptor with those bytes and, if changed, restores and
+rereads the original descriptor on the same handle. That compensation handle
+remains owned until Transactions creation, its ACL/identity/reparse/empty
+checks, and the final `SecureStore.OpenVerified` handle/readback all succeed.
+Only then does an explicit commit release rollback authority. Any earlier
+failure removes only a transaction-created empty Transactions directory,
+restores the original Admin descriptor on the still-bound FileId, and verifies
+the original empty/no-ADS fingerprint. A failed restore is a closed
+`rollbackFailed` result, never `notAttempted` or `notRequired`. An unknown
+non-exact ACL, FileId drift, child, named ADS, or reparse point is never
+adopted. This machine-specific allowance is not a general installer recovery
+policy.
+
+The compensation lease has a closed state machine:
+`Unarmed -> Frozen -> Mutated -> Committed`. Before `FreezeOriginal` succeeds,
+the lease owns only a handle/identity context and has no rollback authority;
+identity, child, named-ADS, descriptor-read, or known-fingerprint rejection
+therefore preserves the original diagnostic and reports no mutation,
+`aclRollback=notRequired`, and `recovery=notAttempted`. `Frozen` stores the
+original descriptor and empty/no-ADS fingerprint but remains non-mutating.
+Observed or possible ACL change advances to `Mutated`, where rollback is
+mandatory. Only complete store establishment advances to `Committed`.
 
 The self-contained .NET runtime may import general Windows child-process
 functions even though the preflight application contains no
