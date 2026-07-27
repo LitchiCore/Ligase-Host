@@ -168,6 +168,127 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(
             sourceGate,
             "$childResult.processHandlesZero");
+        StringAssert.Contains(
+            sourceGate,
+            "function New-ArtifactGateObservation");
+        StringAssert.Contains(
+            sourceGate,
+            "function Write-ArtifactGateObservation");
+        StringAssert.Contains(
+            sourceGate,
+            "function Write-ArtifactGateCleanupObservation");
+        StringAssert.Contains(
+            sourceGate,
+            "function Test-ClosedArtifactGateObservation");
+        StringAssert.Contains(sourceGate, "function Test-FixedTimeSha256");
+        StringAssert.Contains(sourceGate, "$ExpectedFirstSha256");
+        StringAssert.Contains(sourceGate, "firstEvidenceShaMismatch");
+        StringAssert.Contains(sourceGate, "firstEvidenceJsonInvalid");
+        StringAssert.Contains(sourceGate, "firstEvidenceShapeInvalid");
+        StringAssert.Contains(
+            sourceGate,
+            "function Complete-ArtifactGate");
+        StringAssert.Contains(
+            sourceGate,
+            "function ConvertTo-ClosedArtifactProjection");
+        StringAssert.Contains(
+            sourceGate,
+            "public static class LigaseArtifactStrictJson");
+        StringAssert.Contains(
+            sourceGate,
+            "IsUniqueAndComplete");
+        StringAssert.Contains(sourceGate, "StringComparer.Ordinal");
+        StringAssert.Contains(sourceGate, "productionInvalidArgumentsV1");
+        StringAssert.Contains(sourceGate, "productionPolicySetFailureV1");
+        StringAssert.Contains(
+            sourceGate,
+            "productionPolicyReadbackFailureV1");
+        StringAssert.Contains(sourceGate, "validationArgvV1");
+        StringAssert.Contains(sourceGate, "validationChildPolicyV1");
+        StringAssert.Contains(sourceGate, "validationChildCleanupV1");
+        StringAssert.Contains(sourceGate, "syntaxOrDuplicate");
+        StringAssert.Contains(sourceGate, "propertySet");
+        StringAssert.Contains(sourceGate, "propertyType");
+        StringAssert.Contains(sourceGate, "schemaId");
+        StringAssert.Contains(sourceGate, "parseReason");
+        StringAssert.Contains(sourceGate, "stdoutLength");
+        StringAssert.Contains(sourceGate, "stderrLength");
+        StringAssert.Contains(sourceGate, "gateEvidenceProvenanceInvalid");
+        StringAssert.Contains(sourceGate, "cleanupProvenanceMismatch");
+        StringAssert.Contains(sourceGate, "self-test-no-parse-inference");
+        StringAssert.Contains(sourceGate, "self-test-wrong-schema");
+        StringAssert.Contains(sourceGate, "self-test-cleanup-hash-drift");
+        StringAssert.Contains(sourceGate, "self-test-first-tamper-");
+        StringAssert.Contains(sourceGate, "gateEvidenceTamperCleanupCreated");
+        StringAssert.Contains(sourceGate, "production-duplicate-same");
+        StringAssert.Contains(sourceGate, "production-duplicate-conflict");
+        StringAssert.Contains(sourceGate, "production-unknown");
+        StringAssert.Contains(sourceGate, "production-missing");
+        StringAssert.Contains(sourceGate, "production-type");
+        StringAssert.Contains(sourceGate, "production-negative");
+        StringAssert.Contains(sourceGate, "production-overflow");
+        StringAssert.Contains(sourceGate, "production-trailing");
+        StringAssert.Contains(sourceGate, "argv-policy-duplicate");
+        StringAssert.Contains(sourceGate, "child-handles-type");
+        StringAssert.Contains(sourceGate, "cleanup-pid-duplicate");
+        StringAssert.Contains(sourceGate, "production-ready-code");
+        StringAssert.Contains(sourceGate, "production-success-true");
+        StringAssert.Contains(sourceGate, "production-stage-drift");
+        StringAssert.Contains(sourceGate, "production-acl-drift");
+        StringAssert.Contains(sourceGate, "production-recovery-drift");
+        StringAssert.Contains(sourceGate, "production-probe-drift");
+        StringAssert.Contains(sourceGate, "production-cleanup-drift");
+        StringAssert.Contains(sourceGate, "production-rollback-drift");
+        StringAssert.Contains(sourceGate, "policy-set-cross-code");
+        StringAssert.Contains(sourceGate, "policy-readback-cross-category");
+        StringAssert.Contains(sourceGate, "semanticTupleMismatch");
+        StringAssert.Contains(sourceGate, "function Test-ArtifactNativeTuple");
+        StringAssert.Contains(
+            sourceGate,
+            "gateEvidenceCanonicalCleanupRejected");
+        StringAssert.Contains(sourceGate, "failed-exit-zero");
+        StringAssert.Contains(sourceGate, "success-exit-eighteen");
+        StringAssert.Contains(sourceGate, "cleanup-exit-zero");
+        StringAssert.Contains(sourceGate, "child-policy-exit-eighteen");
+        StringAssert.Contains(sourceGate, "cleanup-stderr-empty");
+        StringAssert.Contains(sourceGate, "cleanup-wrong-schema");
+        Assert.IsTrue(
+            sourceGate.IndexOf(
+                "$firstFailureSha = Write-ArtifactGateObservation",
+                StringComparison.Ordinal) <
+            sourceGate.IndexOf(
+                "$childDeadline = [Diagnostics.Stopwatch]::StartNew()",
+                StringComparison.Ordinal));
+        Assert.IsTrue(
+            sourceGate.IndexOf(
+                "$childCleanupObservation $firstFailureSha",
+                StringComparison.Ordinal) >
+            sourceGate.IndexOf(
+                "$childDeadline = [Diagnostics.Stopwatch]::StartNew()",
+                StringComparison.Ordinal));
+        StringAssert.Contains(sourceGate, "gateEvidenceUnavailable");
+        StringAssert.Contains(sourceGate, "gateEvidenceDuplicateProperty");
+        StringAssert.Contains(sourceGate, "gateEvidenceReadbackInvalid");
+        StringAssert.Contains(sourceGate, "evidenceSha256=");
+        StringAssert.Contains(sourceGate, ".first.json");
+        StringAssert.Contains(sourceGate, "{ '.cleanup' } else { '.first' }");
+        StringAssert.Contains(sourceGate, "[IO.File]::Move($temp, $destination)");
+        StringAssert.Contains(
+            sourceGate,
+            "self-test-child-field-failure");
+        StringAssert.Contains(
+            sourceGate,
+            "$id = 'self-test-child-' + [string]$case.id");
+        StringAssert.Contains(sourceGate, "@{ id = 'policy'");
+        StringAssert.Contains(sourceGate, "@{ id = 'handles'");
+        StringAssert.Contains(sourceGate, "@{ id = 'pid'");
+        StringAssert.Contains(sourceGate, "@{ id = 'sentinel'");
+        StringAssert.Contains(sourceGate, "@{ id = 'cleanup'");
+        StringAssert.Contains(sourceGate, "stdoutSha256");
+        StringAssert.Contains(sourceGate, "stderrSha256");
+        StringAssert.Contains(sourceGate, "parseState");
+        StringAssert.Contains(sourceGate, "elapsedMilliseconds");
+        Assert.IsFalse(sourceGate.Contains("ProgramData\\Ligase Host"));
         StringAssert.Contains(sourceGate, "executableBuilt = $false");
     }
 
