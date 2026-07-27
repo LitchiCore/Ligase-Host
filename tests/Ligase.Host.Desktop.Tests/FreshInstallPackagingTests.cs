@@ -61,6 +61,13 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(program, "WaitForSingleObject(");
         Assert.IsFalse(program.Contains("ResumeThread"));
         StringAssert.Contains(program, "childCleanupFailed");
+        StringAssert.Contains(program, "validationChildPolicyV1");
+        StringAssert.Contains(program, "validationChildFailureV1");
+        StringAssert.Contains(program, "validationChildCleanupV1");
+        StringAssert.Contains(program, "SerializeValidationChildFailure()");
+        StringAssert.Contains(
+            program,
+            "\\\"resultCode\\\":\\\"secureStorePreflightFailed\\\"");
         StringAssert.Contains(program, "_preflightValidationChildPid");
         StringAssert.Contains(program, "_preflightValidationChildCleanup");
         StringAssert.Contains(program, "_stage = \"inputValidation\"");
@@ -205,7 +212,33 @@ public sealed class FreshInstallPackagingTests
             "productionPolicyReadbackFailureV1");
         StringAssert.Contains(sourceGate, "validationArgvV1");
         StringAssert.Contains(sourceGate, "validationChildPolicyV1");
+        StringAssert.Contains(sourceGate, "validationChildFailureV1");
         StringAssert.Contains(sourceGate, "validationChildCleanupV1");
+        StringAssert.Contains(
+            sourceGate,
+            "function Get-ClosedChildArtifactDiscriminator");
+        StringAssert.Contains(
+            sourceGate,
+            "function ConvertTo-DiscriminatedChildProjection");
+        StringAssert.Contains(sourceGate, "discriminatorSyntaxOrDuplicate");
+        StringAssert.Contains(sourceGate, "discriminatorValue");
+        StringAssert.Contains(sourceGate, "observedPropertyCount");
+        StringAssert.Contains(sourceGate, "propertyNameSetHash");
+        StringAssert.Contains(sourceGate, "declaredSchemaId");
+        StringAssert.Contains(sourceGate, "observedResultCode");
+        StringAssert.Contains(sourceGate, "observedStage");
+        StringAssert.Contains(sourceGate, "observedNativeCode");
+        StringAssert.Contains(
+            sourceGate,
+            "secureStorePreflightChildPolicyMachineFailure");
+        StringAssert.Contains(
+            sourceGate,
+            "self-test-child-discriminator-");
+        StringAssert.Contains(sourceGate, "duplicate-conflict");
+        Assert.IsFalse(sourceGate.Contains(
+            "if ($child.exitCode -eq 0) {" +
+            Environment.NewLine +
+            "        $childSchemaId = 'validationChildPolicyV1'"));
         StringAssert.Contains(sourceGate, "syntaxOrDuplicate");
         StringAssert.Contains(sourceGate, "propertySet");
         StringAssert.Contains(sourceGate, "propertyType");

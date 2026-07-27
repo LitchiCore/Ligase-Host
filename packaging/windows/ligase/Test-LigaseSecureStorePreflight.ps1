@@ -91,6 +91,15 @@ function Get-BytesSha256 {
     }
 }
 
+function Get-ArtifactPropertyNameSetHash {
+    param([Parameter(Mandatory = $true)][object] $Value)
+
+    $names = [string[]]@(
+        $Value.PSObject.Properties | ForEach-Object { [string]$_.Name })
+    [Array]::Sort($names, [StringComparer]::Ordinal)
+    return Get-TextSha256 ([string]::Join("`n", $names))
+}
+
 function Test-FixedTimeSha256 {
     param(
         [Parameter(Mandatory = $true)][string] $Left,
@@ -120,7 +129,8 @@ function New-ArtifactGateObservation {
         [ValidateSet('closed', 'invalid', 'notParsed')]
         [string] $ParseState = 'notParsed',
         [string] $SchemaId = 'none',
-        [string] $ParseReason = 'none'
+        [string] $ParseReason = 'none',
+        [object] $ProjectionMetadata
     )
 
     $property = {
@@ -146,6 +156,19 @@ function New-ArtifactGateObservation {
     $nativeCode = [int](& $property $Projection 'nativeCode' 0)
     $childCleanup = [string](
         & $property $Projection 'childCleanup' 'notEvaluated')
+    $observedPropertyCount = [int](
+        & $property $ProjectionMetadata 'observedPropertyCount' 0)
+    $propertyNameSetHash = [string](
+        & $property $ProjectionMetadata 'propertyNameSetHash' (
+            Get-TextSha256 ''))
+    $declaredSchemaId = [string](
+        & $property $ProjectionMetadata 'declaredSchemaId' 'none')
+    $observedResultCode = [string](
+        & $property $ProjectionMetadata 'observedResultCode' 'none')
+    $observedStage = [string](
+        & $property $ProjectionMetadata 'observedStage' 'none')
+    $observedNativeCode = [int](
+        & $property $ProjectionMetadata 'observedNativeCode' 0)
 
     return [ordered]@{
         schemaVersion = 1
@@ -175,6 +198,12 @@ function New-ArtifactGateObservation {
         stderrClosed = -not $timedOut
         parseState = $ParseState
         parseReason = $ParseReason
+        observedPropertyCount = $observedPropertyCount
+        propertyNameSetHash = $propertyNameSetHash
+        declaredSchemaId = $declaredSchemaId
+        observedResultCode = $observedResultCode
+        observedStage = $observedStage
+        observedNativeCode = $observedNativeCode
         elapsedMilliseconds = $elapsed
         timedOut = $timedOut
     }
@@ -190,6 +219,9 @@ function Get-ArtifactGateObservationFieldNames {
         'sentinelExists', 'stdoutLength', 'stderrLength',
         'stdoutSha256', 'stderrSha256',
         'stdoutClosed', 'stderrClosed', 'parseState', 'parseReason',
+        'observedPropertyCount', 'propertyNameSetHash',
+        'declaredSchemaId', 'observedResultCode', 'observedStage',
+        'observedNativeCode',
         'elapsedMilliseconds', 'timedOut')
 }
 
@@ -207,6 +239,7 @@ function Test-ClosedArtifactGateObservation {
     $integerFields = @(
         'schemaVersion', 'nativeExit', 'createProcessWin32Code',
         'childPid', 'stdoutLength', 'stderrLength', 'elapsedMilliseconds')
+    $integerFields += @('observedPropertyCount', 'observedNativeCode')
     $booleanFields = @(
         'passed', 'policyActive', 'createProcessReturned',
         'processHandleZero', 'threadHandleZero', 'sentinelExists',
@@ -234,19 +267,26 @@ function Test-ClosedArtifactGateObservation {
         $Observation.stderrSha256 -notmatch '\A[0-9A-F]{64}\z') {
         return $false
     }
+    if ($Observation.observedPropertyCount -lt 0 -or
+        $Observation.observedNativeCode -lt 0 -or
+        $Observation.observedNativeCode -gt 65535 -or
+        $Observation.propertyNameSetHash -notmatch '\A[0-9A-F]{64}\z') {
+        return $false
+    }
     $knownSchemas = @(
         'productionInvalidArgumentsV1',
         'productionPolicySetFailureV1',
         'productionPolicyReadbackFailureV1',
         'validationArgvV1',
         'validationChildPolicyV1',
+        'validationChildFailureV1',
         'validationChildCleanupV1')
     return (
         ($Observation.parseState -eq 'closed' -and
             $Observation.schemaId -in $knownSchemas -and
             $Observation.parseReason -eq 'none') -or
         ($Observation.parseState -eq 'invalid' -and
-            $Observation.schemaId -in $knownSchemas -and
+            $Observation.schemaId -in @($knownSchemas + 'none') -and
             $Observation.parseReason -ne 'none') -or
         ($Observation.parseState -eq 'notParsed' -and
             $Observation.schemaId -eq 'none' -and
@@ -362,6 +402,9 @@ function Write-ArtifactGateCleanupObservation {
         }
         foreach ($name in @(
                 'schemaId', 'parseState', 'parseReason',
+                'observedPropertyCount', 'propertyNameSetHash',
+                'declaredSchemaId', 'observedResultCode',
+                'observedStage', 'observedNativeCode',
                 'stdoutLength', 'stderrLength',
                 'stdoutSha256', 'stderrSha256')) {
             if ($first.$name -ne $Observation[$name]) {
@@ -385,6 +428,7 @@ function ConvertTo-ClosedArtifactProjection {
             'productionPolicyReadbackFailureV1',
             'validationArgvV1',
             'validationChildPolicyV1',
+            'validationChildFailureV1',
             'validationChildCleanupV1')]
         [string] $SchemaId
     )
@@ -426,14 +470,21 @@ function ConvertTo-ClosedArtifactProjection {
                 argumentCount = 'integer'; token = 'string'
             }
             validationChildPolicyV1 = [ordered]@{
-                result = 'string'; stage = 'string'; policyActive = 'boolean'
+                schemaId = 'string'; result = 'string'; stage = 'string'
+                policyActive = 'boolean'
                 argumentCount = 'integer'; token = 'string'
                 childCreationBlocked = 'boolean'
                 childProcessCreated = 'boolean'
                 processHandlesZero = 'boolean'; sentinelExists = 'boolean'
             }
+            validationChildFailureV1 = [ordered]@{
+                schemaId = 'string'; result = 'string'; resultCode = 'string'
+                stage = 'string'; nativeCategory = 'string'
+                nativeCode = 'integer'
+            }
             validationChildCleanupV1 = [ordered]@{
-                result = 'string'; stage = 'string'; childPid = 'integer'
+                schemaId = 'string'; result = 'string'; stage = 'string'
+                childPid = 'integer'
                 childCleanup = 'string'
             }
         }
@@ -520,6 +571,7 @@ function ConvertTo-ClosedArtifactProjection {
                 $value.token -eq '--validate-argv-token'
             }
             'validationChildPolicyV1' {
+                $value.schemaId -eq 'validationChildPolicyV1' -and
                 $value.result -eq 'passed' -and
                 $value.stage -eq 'childPolicy' -and
                 $value.policyActive -eq $true -and
@@ -527,10 +579,27 @@ function ConvertTo-ClosedArtifactProjection {
                 $value.token -eq '--validate-child-policy'
             }
             'validationChildCleanupV1' {
+                $value.schemaId -eq 'validationChildCleanupV1' -and
                 $value.result -eq 'failed' -and
                 $value.stage -eq 'childCleanup' -and
                 (@('completed', 'failed') -contains
                     [string]$value.childCleanup)
+            }
+            'validationChildFailureV1' {
+                $knownNativeCategories = @(
+                    'none', 'accessDenied', 'privilegeNotHeld',
+                    'invalidOwner', 'invalidAcl', 'notSupported',
+                    'identityChanged', 'unknown', 'managedFailure')
+                $value.schemaId -eq 'validationChildFailureV1' -and
+                $value.result -eq 'failed' -and
+                $value.resultCode -eq 'secureStorePreflightFailed' -and
+                $value.stage -in @(
+                    'securityInitialization', 'childPolicy') -and
+                $value.nativeCategory -in $knownNativeCategories -and
+                (($value.nativeCategory -eq 'none' -and
+                        $value.nativeCode -eq 0) -or
+                    ($value.nativeCategory -ne 'none' -and
+                        $value.nativeCode -gt 0))
             }
             default { $false }
         }
@@ -550,6 +619,108 @@ function ConvertTo-ClosedArtifactProjection {
     }
 }
 
+function Get-ClosedChildArtifactDiscriminator {
+    param([AllowEmptyString()][string] $Text)
+
+    $emptyHash = Get-TextSha256 ''
+    $invalid = {
+        param([string] $Reason)
+        return [pscustomobject]@{
+            state = 'invalid'; reason = $Reason; value = $null
+            observedPropertyCount = 0
+            propertyNameSetHash = $emptyHash
+            declaredSchemaId = 'none'
+            observedResultCode = 'none'
+            observedStage = 'none'
+            observedNativeCode = 0
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($Text) -or $Text.Length -gt 4096) {
+        return & $invalid 'discriminatorSize'
+    }
+    if (-not [LigaseArtifactStrictJson]::IsUniqueAndComplete($Text)) {
+        return & $invalid 'discriminatorSyntaxOrDuplicate'
+    }
+    try {
+        $value = $Text | ConvertFrom-Json
+        if ($null -eq $value -or $value -is [Array] -or
+            $value -isnot [pscustomobject]) {
+            return & $invalid 'discriminatorRootType'
+        }
+        $properties = @($value.PSObject.Properties)
+        $metadata = [ordered]@{
+            observedPropertyCount = $properties.Count
+            propertyNameSetHash = Get-ArtifactPropertyNameSetHash $value
+            declaredSchemaId = 'none'
+            observedResultCode = 'none'
+            observedStage = 'none'
+            observedNativeCode = 0
+        }
+        $schema = $value.PSObject.Properties['schemaId']
+        if ($null -eq $schema -or $schema.Value -isnot [string] -or
+            $schema.Value -notin @(
+                'validationChildPolicyV1',
+                'validationChildFailureV1',
+                'validationChildCleanupV1')) {
+            return [pscustomobject](@{
+                state = 'invalid'; reason = 'discriminatorValue'
+                value = $null
+            } + $metadata)
+        }
+        $metadata.declaredSchemaId = [string]$schema.Value
+        $resultCode = $value.PSObject.Properties['resultCode']
+        if ($null -ne $resultCode -and $resultCode.Value -is [string]) {
+            $metadata.observedResultCode = [string]$resultCode.Value
+        }
+        $stage = $value.PSObject.Properties['stage']
+        if ($null -ne $stage -and $stage.Value -is [string]) {
+            $metadata.observedStage = [string]$stage.Value
+        }
+        $nativeCode = $value.PSObject.Properties['nativeCode']
+        if ($null -ne $nativeCode -and
+            ($nativeCode.Value -is [int] -or
+                $nativeCode.Value -is [long]) -and
+            [long]$nativeCode.Value -ge 0 -and
+            [long]$nativeCode.Value -le 65535) {
+            $metadata.observedNativeCode = [int]$nativeCode.Value
+        }
+        return [pscustomobject](@{
+            state = 'closed'; reason = 'none'; value = $value
+        } + $metadata)
+    }
+    catch {
+        return & $invalid 'discriminatorProjection'
+    }
+}
+
+function ConvertTo-DiscriminatedChildProjection {
+    param([Parameter(Mandatory = $true)][object] $Invocation)
+
+    $stdout = [string]$Invocation.stdout
+    $stderr = [string]$Invocation.stderr
+    if (($stdout.Length -eq 0) -eq ($stderr.Length -eq 0)) {
+        return Get-ClosedChildArtifactDiscriminator ''
+    }
+    $raw = if ($stdout.Length -ne 0) { $stdout } else { $stderr }
+    $discriminator = Get-ClosedChildArtifactDiscriminator $raw
+    if ($discriminator.state -ne 'closed') {
+        return $discriminator
+    }
+    $full = ConvertTo-ClosedArtifactProjection `
+        $raw -SchemaId $discriminator.declaredSchemaId
+    return [pscustomobject]@{
+        state = $full.state
+        reason = $full.reason
+        value = $full.value
+        observedPropertyCount = $discriminator.observedPropertyCount
+        propertyNameSetHash = $discriminator.propertyNameSetHash
+        declaredSchemaId = $discriminator.declaredSchemaId
+        observedResultCode = $discriminator.observedResultCode
+        observedStage = $discriminator.observedStage
+        observedNativeCode = $discriminator.observedNativeCode
+    }
+}
+
 function Close-ArtifactProjectionSemantics {
     param(
         [Parameter(Mandatory = $true)][object] $Projection,
@@ -557,10 +728,28 @@ function Close-ArtifactProjectionSemantics {
     )
 
     if ($Projection.state -eq 'closed' -and -not $NativeTupleValid) {
+        $metadata = {
+            param([string] $Name, [object] $Default)
+            $property = $Projection.PSObject.Properties[$Name]
+            if ($null -eq $property) { return $Default }
+            return $property.Value
+        }
         return [pscustomobject]@{
             state = 'invalid'
             reason = 'semanticTupleMismatch'
             value = $null
+            observedPropertyCount = [int](
+                & $metadata 'observedPropertyCount' 0)
+            propertyNameSetHash = [string](
+                & $metadata 'propertyNameSetHash' (Get-TextSha256 ''))
+            declaredSchemaId = [string](
+                & $metadata 'declaredSchemaId' 'none')
+            observedResultCode = [string](
+                & $metadata 'observedResultCode' 'none')
+            observedStage = [string](
+                & $metadata 'observedStage' 'none')
+            observedNativeCode = [int](
+                & $metadata 'observedNativeCode' 0)
         }
     }
     return $Projection
@@ -578,6 +767,11 @@ function Test-ArtifactNativeTuple {
                 $Invocation.stderr.Length -eq 0
         }
         'validationChildCleanupV1' {
+            return $Invocation.exitCode -eq 18 -and
+                $Invocation.stdout.Length -eq 0 -and
+                $Invocation.stderr.Length -le 4096
+        }
+        'validationChildFailureV1' {
             return $Invocation.exitCode -eq 18 -and
                 $Invocation.stdout.Length -eq 0 -and
                 $Invocation.stderr.Length -le 4096
@@ -660,14 +854,22 @@ function Invoke-GateEvidenceSelfTests {
             '"policyActive":true,"argumentCount":1,' +
             '"token":"--validate-argv-token"}'
         $childBase =
-            '{"result":"passed","stage":"childPolicy",' +
+            '{"schemaId":"validationChildPolicyV1",' +
+            '"result":"passed","stage":"childPolicy",' +
             '"policyActive":true,"argumentCount":1,' +
             '"token":"--validate-child-policy",' +
             '"childCreationBlocked":true,"childProcessCreated":false,' +
             '"processHandlesZero":true,"sentinelExists":false}'
         $cleanupBase =
-            '{"result":"failed","stage":"childCleanup",' +
+            '{"schemaId":"validationChildCleanupV1",' +
+            '"result":"failed","stage":"childCleanup",' +
             '"childPid":0,"childCleanup":"failed"}'
+        $childFailureBase =
+            '{"schemaId":"validationChildFailureV1",' +
+            '"result":"failed",' +
+            '"resultCode":"secureStorePreflightFailed",' +
+            '"stage":"childPolicy","nativeCategory":"accessDenied",' +
+            '"nativeCode":5}'
         foreach ($validCase in @(
                 @{ schema = 'productionInvalidArgumentsV1';
                     raw = $productionBase },
@@ -677,6 +879,8 @@ function Invoke-GateEvidenceSelfTests {
                     raw = $policyReadbackBase },
                 @{ schema = 'validationArgvV1'; raw = $argvBase },
                 @{ schema = 'validationChildPolicyV1'; raw = $childBase },
+                @{ schema = 'validationChildFailureV1';
+                    raw = $childFailureBase },
                 @{ schema = 'validationChildCleanupV1'; raw = $cleanupBase })) {
             $validProjection = ConvertTo-ClosedArtifactProjection `
                 ([string]$validCase.raw) -SchemaId ([string]$validCase.schema)
@@ -684,6 +888,88 @@ function Invoke-GateEvidenceSelfTests {
                 $null -eq $validProjection.value) {
                 throw 'gateEvidenceValidProjectionRejected'
             }
+        }
+        foreach ($childCase in @(
+                @{ id = 'policy'; raw = $childBase; exit = 0;
+                    stdout = $true; schema = 'validationChildPolicyV1' },
+                @{ id = 'failure'; raw = $childFailureBase; exit = 18;
+                    stdout = $false; schema = 'validationChildFailureV1' },
+                @{ id = 'cleanup'; raw = $cleanupBase; exit = 18;
+                    stdout = $false; schema = 'validationChildCleanupV1' })) {
+            $invocation = [pscustomobject]@{
+                exitCode = [int]$childCase.exit
+                stdout = if ([bool]$childCase.stdout) {
+                    [string]$childCase.raw
+                } else { '' }
+                stderr = if ([bool]$childCase.stdout) {
+                    ''
+                } else { [string]$childCase.raw }
+                timedOut = $false
+                elapsedMilliseconds = 1
+            }
+            $projection = ConvertTo-DiscriminatedChildProjection $invocation
+            if ($projection.state -ne 'closed' -or
+                $projection.declaredSchemaId -ne
+                    [string]$childCase.schema -or
+                $projection.observedPropertyCount -le 0 -or
+                $projection.propertyNameSetHash -notmatch
+                    '\A[0-9A-F]{64}\z' -or
+                $projection.observedStage -eq 'none' -or
+                -not (Test-ArtifactNativeTuple `
+                    ([string]$childCase.schema) $invocation)) {
+                throw 'gateEvidenceChildDiscriminatorRejected'
+            }
+            if ([string]$childCase.schema -eq
+                    'validationChildFailureV1' -and
+                ($projection.observedResultCode -ne
+                        'secureStorePreflightFailed' -or
+                    $projection.observedNativeCode -ne 5)) {
+                throw 'gateEvidenceChildFailureMetadataInvalid'
+            }
+        }
+        foreach ($discriminatorCase in @(
+                @{ id = 'missing'; raw = $childBase.Replace(
+                    '"schemaId":"validationChildPolicyV1",', '') },
+                @{ id = 'duplicate-same'; raw = $childBase.Replace(
+                    '"schemaId":"validationChildPolicyV1"',
+                    '"schemaId":"validationChildPolicyV1",' +
+                    '"schemaId":"validationChildPolicyV1"') },
+                @{ id = 'duplicate-conflict'; raw = $childBase.Replace(
+                    '"schemaId":"validationChildPolicyV1"',
+                    '"schemaId":"validationChildPolicyV1",' +
+                    '"schemaId":"validationChildCleanupV1"') },
+                @{ id = 'unknown'; raw = $childBase.Replace(
+                    'validationChildPolicyV1', 'validationChildUnknownV1') })) {
+            $badInvocation = [pscustomobject]@{
+                exitCode = 0
+                stdout = [string]$discriminatorCase.raw
+                stderr = ''
+                timedOut = $false
+                elapsedMilliseconds = 1
+            }
+            $badProjection =
+                ConvertTo-DiscriminatedChildProjection $badInvocation
+            if ($badProjection.state -ne 'invalid' -or
+                $badProjection.reason -eq 'none') {
+                throw 'gateEvidenceChildDiscriminatorAccepted'
+            }
+            $invalidSchema = if (
+                $badProjection.declaredSchemaId -eq 'none') {
+                'none'
+            } else {
+                [string]$badProjection.declaredSchemaId
+            }
+            $invalidObservation = New-ArtifactGateObservation `
+                -GateId ('self-test-child-discriminator-' +
+                    [string]$discriminatorCase.id) `
+                -ArtifactKind 'validation' `
+                -Invocation $badInvocation `
+                -Projection $null -Passed $false `
+                -ParseState $badProjection.state `
+                -SchemaId $invalidSchema `
+                -ParseReason $badProjection.reason `
+                -ProjectionMetadata $badProjection
+            Write-ArtifactGateObservation $invalidObservation | Out-Null
         }
         $canonicalCleanupInvocation = [pscustomobject]@{
             exitCode = 18
@@ -989,6 +1275,8 @@ function Invoke-GateEvidenceSelfTests {
                     'validationArgvV1'; raw = $argvBase },
                 @{ id = 'cleanup-exit-zero'; exit = 0; schema =
                     'validationChildCleanupV1'; raw = $cleanupBase },
+                @{ id = 'child-failure-exit-zero'; exit = 0; schema =
+                    'validationChildFailureV1'; raw = $childFailureBase },
                 @{ id = 'child-policy-exit-eighteen'; exit = 18; schema =
                     'validationChildPolicyV1'; raw = $childBase })) {
             $nativeProjection = ConvertTo-ClosedArtifactProjection `
@@ -1005,6 +1293,7 @@ function Invoke-GateEvidenceSelfTests {
             $nativeTupleValid = if (
                 [string]$nativeCase.schema -in @(
                     'validationChildCleanupV1',
+                    'validationChildFailureV1',
                     'validationChildPolicyV1')) {
                 Test-ArtifactNativeTuple `
                     ([string]$nativeCase.schema) $nativeInvocation
@@ -1820,18 +2109,17 @@ if ($RunArtifactGates) {
     $child = Invoke-FixedArtifactToken `
         -Artifact $ValidationArtifact `
         -Token '--validate-child-policy'
-    if ($child.exitCode -eq 0) {
-        $childSchemaId = 'validationChildPolicyV1'
-        $childParse = ConvertTo-ClosedArtifactProjection `
-            $child.stdout -SchemaId $childSchemaId
+    $childParse = ConvertTo-DiscriminatedChildProjection $child
+    $childSchemaId = [string]$childParse.declaredSchemaId
+    $childNativeTupleValid = if ($childSchemaId -in @(
+            'validationChildPolicyV1',
+            'validationChildFailureV1',
+            'validationChildCleanupV1')) {
+        Test-ArtifactNativeTuple $childSchemaId $child
     }
     else {
-        $childSchemaId = 'validationChildCleanupV1'
-        $childParse = ConvertTo-ClosedArtifactProjection `
-            $child.stderr -SchemaId $childSchemaId
+        $false
     }
-    $childNativeTupleValid = Test-ArtifactNativeTuple `
-        $childSchemaId $child
     $childParse = Close-ArtifactProjectionSemantics `
         $childParse $childNativeTupleValid
     $childResult = $childParse.value
@@ -1847,8 +2135,26 @@ if ($RunArtifactGates) {
                 -SentinelExists (Test-Path -LiteralPath $sentinel) `
                 -ParseState $childParse.state `
                 -SchemaId $childSchemaId `
-                -ParseReason $childParse.reason) `
+                -ParseReason $childParse.reason `
+                -ProjectionMetadata $childParse) `
             -FailureCode 'secureStorePreflightChildPolicyInvalid' |
+            Out-Null
+    }
+    if ($childSchemaId -eq 'validationChildFailureV1') {
+        Complete-ArtifactGate (
+            New-ArtifactGateObservation `
+                -GateId 'validation-child-policy' `
+                -ArtifactKind 'validation' `
+                -Invocation $child `
+                -Projection $childResult `
+                -Passed $false `
+                -CleanupState 'notRequired' `
+                -SentinelExists (Test-Path -LiteralPath $sentinel) `
+                -ParseState $childParse.state `
+                -SchemaId $childSchemaId `
+                -ParseReason $childParse.reason `
+                -ProjectionMetadata $childParse) `
+            -FailureCode 'secureStorePreflightChildPolicyMachineFailure' |
             Out-Null
     }
     $childPidProperty = $childResult.PSObject.Properties['childPid']
@@ -1864,7 +2170,8 @@ if ($RunArtifactGates) {
             -SentinelExists (Test-Path -LiteralPath $sentinel) `
             -ParseState $childParse.state `
             -SchemaId $childSchemaId `
-            -ParseReason $childParse.reason
+            -ParseReason $childParse.reason `
+            -ProjectionMetadata $childParse
         $firstFailureSha = Write-ArtifactGateObservation $firstFailure
         $childCleanupState = if (
             $childResult.childCleanup -eq 'completed' -and
@@ -1916,7 +2223,8 @@ if ($RunArtifactGates) {
             -SentinelExists (Test-Path -LiteralPath $sentinel) `
             -ParseState $childParse.state `
             -SchemaId $childSchemaId `
-            -ParseReason $childParse.reason
+            -ParseReason $childParse.reason `
+            -ProjectionMetadata $childParse
         Write-ArtifactGateCleanupObservation `
             $childCleanupObservation $firstFailureSha |
             Out-Null
@@ -1948,7 +2256,8 @@ if ($RunArtifactGates) {
             -SentinelExists (Test-Path -LiteralPath $sentinel) `
             -ParseState $childParse.state `
             -SchemaId $childSchemaId `
-            -ParseReason $childParse.reason) `
+            -ParseReason $childParse.reason `
+            -ProjectionMetadata $childParse) `
         -FailureCode 'secureStorePreflightChildPolicyInvalid' |
         Out-Null
     $hang = Invoke-FixedArtifactToken `

@@ -49,6 +49,12 @@ internal static class Program
     private const int ProcessChildProcessPolicy = 13;
     private const uint NoChildProcessCreation = 1;
 #if PREFLIGHT_VALIDATION
+    private const string ValidationChildPolicySchema =
+        "validationChildPolicyV1";
+    private const string ValidationChildCleanupSchema =
+        "validationChildCleanupV1";
+    private const string ValidationChildFailureSchema =
+        "validationChildFailureV1";
     private const uint CreateNoWindow = 0x08000000;
     private const uint CreateSuspended = 0x00000004;
     private const uint WaitObject0 = 0;
@@ -380,10 +386,16 @@ internal static class Program
                 _preflightValidationChildCleanup != "notRequired")
             {
                 failureBytes = Encoding.UTF8.GetBytes(
-                    "{\"result\":\"failed\",\"stage\":\"childCleanup\"," +
+                    "{\"schemaId\":\"" +
+                    ValidationChildCleanupSchema +
+                    "\",\"result\":\"failed\",\"stage\":\"childCleanup\"," +
                     "\"childPid\":" + _preflightValidationChildPid + "," +
                     "\"childCleanup\":\"" +
                     _preflightValidationChildCleanup + "\"}");
+            }
+            else if (_preflightValidationAction == ValidationChildPolicy)
+            {
+                failureBytes = SerializeValidationChildFailure();
             }
 #endif
             if (store is not null && !evidenceWriteInProgress)
@@ -580,7 +592,8 @@ internal static class Program
                 nativeCode);
 
         Console.Out.Write(
-            "{\"result\":\"passed\",\"stage\":\"childPolicy\"," +
+            "{\"schemaId\":\"" + ValidationChildPolicySchema +
+            "\",\"result\":\"passed\",\"stage\":\"childPolicy\"," +
             "\"policyActive\":true,\"argumentCount\":1," +
             "\"token\":\"--validate-child-policy\"," +
             "\"childCreationBlocked\":true," +
@@ -588,6 +601,19 @@ internal static class Program
             "\"processHandlesZero\":true," +
             "\"sentinelExists\":false}");
         return 0;
+    }
+
+    private static byte[] SerializeValidationChildFailure()
+    {
+        var json = new StringBuilder(256);
+        json.Append("{\"schemaId\":\"")
+            .Append(ValidationChildFailureSchema)
+            .Append("\",\"result\":\"failed\",")
+            .Append("\"resultCode\":\"secureStorePreflightFailed\"");
+        AppendJsonString(json, "stage", _stage);
+        AppendJsonString(json, "nativeCategory", _nativeCategory);
+        json.Append(",\"nativeCode\":").Append(_nativeCode).Append('}');
+        return Encoding.UTF8.GetBytes(json.ToString());
     }
 
     private static void CompleteValidationChildCleanup()
