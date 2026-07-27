@@ -28,6 +28,15 @@ foreach ($token in @(
         '#if PREFLIGHT_ONLY',
         'RunStandaloneSecureStorePreflight',
         'private static string _stage = "inputValidation"',
+        '_stage = "securityInitialization"',
+        'EnableChildProcessMitigation()',
+        'ProcessChildProcessPolicy = 13',
+        'NoChildProcessCreation = 1',
+        'SetProcessMitigationPolicy(',
+        'GetProcessMitigationPolicy(',
+        'if (readback != NoChildProcessCreation)',
+        '_nativeCode = 20013',
+        '_stage = "inputValidation"',
         'SetStage("inputValidation")',
         'if (args.Length != 0)',
         '? "invalidArguments"',
@@ -90,10 +99,28 @@ $preflightEnd = $program.IndexOf(
 if ($preflightStart -lt 0 -or $preflightEnd -le $preflightStart) {
     throw 'secureStorePreflightMainBoundaryInvalid'
 }
+$ordinaryProgram = $program.Substring(0, $preflightStart)
+if ($ordinaryProgram.IndexOf(
+        '_stage = "securityInitialization"',
+        [StringComparison]::Ordinal) -ge 0 -or
+    $ordinaryProgram.IndexOf(
+        'private static string _stage = "inputValidation"',
+        [StringComparison]::Ordinal) -lt 0 -or
+    $ordinaryProgram.IndexOf(
+        'if (args.Length is < 1 or > 3)',
+        [StringComparison]::Ordinal) -lt 0) {
+    throw 'transactionHelperInitialStageDrifted'
+}
 $preflight = $program.Substring(
     $preflightStart, $preflightEnd - $preflightStart)
+$mitigation = $preflight.IndexOf(
+    'EnableChildProcessMitigation()',
+    [StringComparison]::Ordinal)
+$securityStage = $preflight.IndexOf(
+    '_stage = "securityInitialization"',
+    [StringComparison]::Ordinal)
 $inputStage = $preflight.IndexOf(
-    'SetStage("inputValidation")',
+    '_stage = "inputValidation"',
     [StringComparison]::Ordinal)
 $argumentCheck = $preflight.IndexOf(
     'if (args.Length != 0)',
@@ -101,20 +128,27 @@ $argumentCheck = $preflight.IndexOf(
 $environmentAccess = $preflight.IndexOf(
     'Environment.SetEnvironmentVariable(',
     [StringComparison]::Ordinal)
+$validatedStage = $preflight.IndexOf(
+    'SetStage("inputValidation")',
+    [StringComparison]::Ordinal)
 $programDataAccess = $preflight.IndexOf(
     'Environment.GetFolderPath(',
     [StringComparison]::Ordinal)
 $secureStoreAccess = $preflight.IndexOf(
     'SecureStore.Open(',
     [StringComparison]::Ordinal)
-if ($argumentCheck -lt 0 -or $environmentAccess -le $argumentCheck -or
-    $inputStage -le $environmentAccess -or
-    $programDataAccess -le $inputStage -or
-    $secureStoreAccess -le $inputStage) {
+if ($securityStage -lt 0 -or $mitigation -le $securityStage -or
+    $inputStage -le $mitigation -or
+    $argumentCheck -le $inputStage -or
+    $environmentAccess -le $argumentCheck -or
+    $validatedStage -le $environmentAccess -or
+    $programDataAccess -le $validatedStage -or
+    $secureStoreAccess -le $validatedStage) {
     throw 'secureStorePreflightInputStageOrderInvalid'
 }
 foreach ($forbidden in @(
         'Process.Start',
+        'ProcessStartInfo',
         'powershell',
         'Manage-LigaseInstallation',
         'ligase-install-manifest',

@@ -36,6 +36,17 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(
             program,
             "private static string _stage = \"inputValidation\"");
+        StringAssert.Contains(program, "_stage = \"securityInitialization\"");
+        StringAssert.Contains(program, "EnableChildProcessMitigation()");
+        StringAssert.Contains(program, "ProcessChildProcessPolicy = 13");
+        StringAssert.Contains(program, "NoChildProcessCreation = 1");
+        StringAssert.Contains(program, "SetProcessMitigationPolicy(");
+        StringAssert.Contains(program, "GetProcessMitigationPolicy(");
+        StringAssert.Contains(
+            program,
+            "if (readback != NoChildProcessCreation)");
+        StringAssert.Contains(program, "_nativeCode = 20013");
+        StringAssert.Contains(program, "_stage = \"inputValidation\"");
         StringAssert.Contains(program, "SetStage(\"inputValidation\")");
         StringAssert.Contains(program, "if (args.Length != 0)");
         StringAssert.Contains(program, "? \"invalidArguments\"");
@@ -80,6 +91,7 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(program, "private static void AppendJsonString(");
         StringAssert.Contains(program, "secureStorePreflightEncodingFailed");
         StringAssert.Contains(sourceGate, "secureStorePreflightForbiddenSurface");
+        StringAssert.Contains(sourceGate, "transactionHelperInitialStageDrifted");
         StringAssert.Contains(sourceGate, "executableBuilt = $false");
     }
 

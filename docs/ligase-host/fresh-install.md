@@ -498,6 +498,19 @@ between the hash check and UAC image load. A `PublicRelease` preflight requires
 an allowlisted Authenticode publisher, RFC 3161 timestamp, protected staging
 that prevents replacement before execution, and a new security review.
 
+The self-contained .NET runtime may import general Windows child-process
+functions even though the preflight application contains no
+`Process.Start`, shell execution, or child-process call site. Those runtime
+imports are expected and are not the security authority. At the first managed
+entry point, before argument validation, environment access, ProgramData
+resolution, or secure-store access, the process sets
+`ProcessChildProcessPolicy.NoChildProcessCreation` and immediately reads the
+policy back from its own process. The exact readback must contain only the
+requested no-child flag. Set, readback, or mismatch failure returns a closed
+`securityInitialization` failure and native exit 18 without accessing the
+secure root. This mandatory OS mitigation, plus the source prohibition on
+child-process APIs, is the development preflight's child-process boundary.
+
 The bundled SudoVDA catalog currently uses a self-signed
 `CN=sudovda@su.mk` certificate. A `Valid` result on a machine where that
 certificate was previously inserted into Root/TrustedPublisher is classified

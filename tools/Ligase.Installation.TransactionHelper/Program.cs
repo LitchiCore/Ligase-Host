@@ -46,6 +46,8 @@ internal static class Program
     private const int ErrorInvalidAcl = 1336;
     private const int FileDirectoryInformation = 1;
     private const int FileStreamInfo = 7;
+    private const int ProcessChildProcessPolicy = 13;
+    private const uint NoChildProcessCreation = 1;
     private const int StatusSuccess = 0;
     private const int StatusNoMoreFiles = unchecked((int)0x80000006);
     private const int NtQueryBufferBytes = 64 * 1024;
@@ -276,6 +278,9 @@ internal static class Program
 
         try
         {
+            _stage = "securityInitialization";
+            EnableChildProcessMitigation();
+            _stage = "inputValidation";
             if (args.Length != 0)
                 throw new InvalidOperationException("invalidArguments");
 
@@ -401,6 +406,33 @@ internal static class Program
                 "\"aclMutationOccurred\":false," +
                 "\"aclRollback\":\"unknown\"}");
         return Encoding.UTF8.GetBytes(json.ToString());
+    }
+
+    private static void EnableChildProcessMitigation()
+    {
+        var policy = NoChildProcessCreation;
+        if (!SetProcessMitigationPolicy(
+                ProcessChildProcessPolicy,
+                ref policy,
+                (nuint)sizeof(uint)))
+            throw NativeFailure(
+                "installTransactionUnavailable",
+                Marshal.GetLastWin32Error());
+
+        if (!GetProcessMitigationPolicy(
+                new IntPtr(-1),
+                ProcessChildProcessPolicy,
+                out var readback,
+                (nuint)sizeof(uint)))
+            throw NativeFailure(
+                "installTransactionUnavailable",
+                Marshal.GetLastWin32Error());
+        if (readback != NoChildProcessCreation)
+        {
+            _nativeCategory = "managedFailure";
+            _nativeCode = 20013;
+            throw new InvalidOperationException("installTransactionUnavailable");
+        }
     }
 
     private static void AppendJsonString(
@@ -2002,6 +2034,21 @@ internal static class Program
         IntPtr fileInformation, int length, int fileInformationClass,
         [MarshalAs(UnmanagedType.U1)] bool returnSingleEntry,
         IntPtr fileName, [MarshalAs(UnmanagedType.U1)] bool restartScan);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetProcessMitigationPolicy(
+        int mitigationPolicy,
+        ref uint buffer,
+        nuint length);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetProcessMitigationPolicy(
+        IntPtr process,
+        int mitigationPolicy,
+        out uint buffer,
+        nuint length);
+
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool GetFileInformationByHandleEx(
