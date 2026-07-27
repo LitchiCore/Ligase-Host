@@ -245,6 +245,27 @@ public sealed class FreshInstallPackagingTests
             "gateEvidenceDiagnosticRequiredSchemaAccepted");
         StringAssert.Contains(
             sourceGate,
+            "'launcher', 'launcherValidation'");
+        StringAssert.Contains(
+            sourceGate,
+            "gateEvidenceLauncherProjectionRejected");
+        StringAssert.Contains(
+            sourceGate,
+            "gateEvidenceLauncherReadbackDrift");
+        StringAssert.Contains(
+            sourceGate,
+            "gateEvidenceLauncherInvalidReadbackDrift");
+        StringAssert.Contains(
+            sourceGate,
+            "gateEvidenceLauncherKindSchemaAccepted");
+        StringAssert.Contains(
+            sourceGate,
+            "invalid-production-launcher");
+        StringAssert.Contains(
+            sourceGate,
+            "invalid-launcher-production");
+        StringAssert.Contains(
+            sourceGate,
             "diagnostic-required-wrong-tuple");
         StringAssert.Contains(sourceGate, "launcherFailureV1");
         StringAssert.Contains(sourceGate, "launcherIpcValidationV1");

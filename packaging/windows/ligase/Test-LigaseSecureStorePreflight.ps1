@@ -123,7 +123,9 @@ function New-ArtifactGateObservation {
     param(
         [Parameter(Mandatory = $true)][string] $GateId,
         [Parameter(Mandatory = $true)]
-        [ValidateSet('production', 'validation', 'harness')]
+        [ValidateSet(
+            'production', 'validation', 'harness',
+            'launcher', 'launcherValidation')]
         [string] $ArtifactKind,
         [object] $Invocation,
         [object] $Projection,
@@ -262,8 +264,9 @@ function Test-ClosedArtifactGateObservation {
     }
     if ($Observation.schemaVersion -ne 1 -or
         $Observation.gateId -notmatch '\A[a-z0-9-]+\z' -or
-        $Observation.artifactKind -notin @(
-            'production', 'validation', 'harness') -or
+        @('production', 'validation', 'harness',
+            'launcher', 'launcherValidation') -cnotcontains
+                $Observation.artifactKind -or
         $Observation.stdoutLength -lt 0 -or
         $Observation.stderrLength -lt 0 -or
         $Observation.elapsedMilliseconds -lt 0 -or
@@ -285,13 +288,40 @@ function Test-ClosedArtifactGateObservation {
         'validationArgvV1',
         'validationChildPolicyV1',
         'validationChildFailureV1',
-        'validationChildCleanupV1')
+        'validationChildCleanupV1',
+        'launcherFailureV1',
+        'launcherIpcValidationV1')
+    $closedKindSchema = (
+        ($Observation.artifactKind -ceq 'production' -and
+            @(
+                'productionInvalidArgumentsV1',
+                'productionDiagnosticRequiredV1',
+                'productionPolicySetFailureV1',
+                'productionPolicyReadbackFailureV1') -ccontains
+                    $Observation.schemaId) -or
+        ($Observation.artifactKind -ceq 'validation' -and
+            @(
+                'validationArgvV1',
+                'validationChildPolicyV1',
+                'validationChildFailureV1',
+                'validationChildCleanupV1') -ccontains
+                    $Observation.schemaId) -or
+        ($Observation.artifactKind -ceq 'launcher' -and
+            $Observation.schemaId -ceq 'launcherFailureV1') -or
+        ($Observation.artifactKind -ceq 'launcherValidation' -and
+            @(
+                'launcherFailureV1',
+                'launcherIpcValidationV1') -ccontains
+                    $Observation.schemaId) -or
+        $Observation.artifactKind -ceq 'harness')
     return (
         ($Observation.parseState -eq 'closed' -and
-            $Observation.schemaId -in $knownSchemas -and
+            $knownSchemas -ccontains $Observation.schemaId -and
+            $closedKindSchema -and
             $Observation.parseReason -eq 'none') -or
         ($Observation.parseState -eq 'invalid' -and
-            $Observation.schemaId -in @($knownSchemas + 'none') -and
+            @($knownSchemas + 'none') -ccontains $Observation.schemaId -and
+            ($Observation.schemaId -ceq 'none' -or $closedKindSchema) -and
             $Observation.parseReason -ne 'none') -or
         ($Observation.parseState -eq 'notParsed' -and
             $Observation.schemaId -eq 'none' -and
@@ -1059,6 +1089,138 @@ function Invoke-GateEvidenceSelfTests {
         Write-ArtifactGateCleanupObservation `
             $diagnosticCleanup $diagnosticFirstSha |
             Out-Null
+        foreach ($launcherObservationCase in @(
+                @{ id = 'launcher'; kind = 'launcher';
+                    schema = 'launcherFailureV1';
+                    raw = $launcherFailureBase; exit = 18;
+                    stdout = ''; stderr = $launcherFailureBase },
+                @{ id = 'launcher-validation'; kind = 'launcherValidation';
+                    schema = 'launcherIpcValidationV1';
+                    raw = $launcherIpcBase; exit = 0;
+                    stdout = $launcherIpcBase; stderr = '' })) {
+            $launcherProjection = ConvertTo-ClosedArtifactProjection `
+                ([string]$launcherObservationCase.raw) `
+                -SchemaId ([string]$launcherObservationCase.schema)
+            if ($launcherProjection.state -ne 'closed') {
+                throw 'gateEvidenceLauncherProjectionRejected'
+            }
+            $launcherInvocation = [pscustomobject]@{
+                exitCode = [int]$launcherObservationCase.exit
+                stdout = [string]$launcherObservationCase.stdout
+                stderr = [string]$launcherObservationCase.stderr
+                timedOut = $false
+                elapsedMilliseconds = 1
+            }
+            $launcherFirst = New-ArtifactGateObservation `
+                -GateId ('self-test-' + [string]$launcherObservationCase.id) `
+                -ArtifactKind ([string]$launcherObservationCase.kind) `
+                -Invocation $launcherInvocation `
+                -Projection $launcherProjection.value `
+                -Passed $false `
+                -ParseState $launcherProjection.state `
+                -SchemaId ([string]$launcherObservationCase.schema) `
+                -ParseReason $launcherProjection.reason
+            $launcherFirstSha = Write-ArtifactGateObservation $launcherFirst
+            $launcherFirstPath = Join-Path $Root (
+                'self-test-' + [string]$launcherObservationCase.id +
+                '.first.json')
+            if ((Get-BytesSha256 ([IO.File]::ReadAllBytes(
+                        $launcherFirstPath))) -ne $launcherFirstSha) {
+                throw 'gateEvidenceLauncherReadbackDrift'
+            }
+            $launcherCleanup = New-ArtifactGateObservation `
+                -GateId ('self-test-' + [string]$launcherObservationCase.id) `
+                -ArtifactKind ([string]$launcherObservationCase.kind) `
+                -Invocation $launcherInvocation `
+                -Projection $launcherProjection.value `
+                -Passed $false `
+                -CleanupState 'completed' `
+                -ParseState $launcherProjection.state `
+                -SchemaId ([string]$launcherObservationCase.schema) `
+                -ParseReason $launcherProjection.reason
+            Write-ArtifactGateCleanupObservation `
+                $launcherCleanup $launcherFirstSha |
+                Out-Null
+        }
+        $launcherInvalidSameKind = New-ArtifactGateObservation `
+            -GateId 'self-test-launcher-invalid-same-kind' `
+            -ArtifactKind 'launcher' `
+            -Invocation $diagnosticInvocation `
+            -Projection $diagnosticProjection.value `
+            -Passed $false `
+            -ParseState 'invalid' `
+            -SchemaId 'launcherFailureV1' `
+            -ParseReason 'semanticTupleMismatch'
+        $launcherInvalidSameKindSha =
+            Write-ArtifactGateObservation $launcherInvalidSameKind
+        $launcherInvalidSameKindPath = Join-Path $Root (
+            'self-test-launcher-invalid-same-kind.first.json')
+        if ((Get-BytesSha256 ([IO.File]::ReadAllBytes(
+                    $launcherInvalidSameKindPath))) -ne
+                $launcherInvalidSameKindSha) {
+            throw 'gateEvidenceLauncherInvalidReadbackDrift'
+        }
+        $launcherInvalidSameKind.cleanupState = 'completed'
+        Write-ArtifactGateCleanupObservation `
+            $launcherInvalidSameKind $launcherInvalidSameKindSha |
+            Out-Null
+        foreach ($launcherKindNegative in @(
+                @{ id = 'closed-cross-kind'; state = 'closed';
+                    reason = 'none'; kind = 'launcher';
+                    schema = 'launcherIpcValidationV1' },
+                @{ id = 'invalid-production-launcher'; state = 'invalid';
+                    reason = 'semanticTupleMismatch'; kind = 'production';
+                    schema = 'launcherFailureV1' },
+                @{ id = 'invalid-launcher-production'; state = 'invalid';
+                    reason = 'semanticTupleMismatch'; kind = 'launcher';
+                    schema = 'productionInvalidArgumentsV1' },
+                @{ kind = 'launcherValidation';
+                    id = 'invalid-launcher-validation-cross';
+                    state = 'invalid'; reason = 'semanticTupleMismatch';
+                    schema = 'validationChildFailureV1' },
+                @{ id = 'invalid-kind-case'; state = 'invalid';
+                    reason = 'semanticTupleMismatch'; kind = 'Launcher';
+                    schema = 'launcherFailureV1' },
+                @{ id = 'invalid-schema-case'; state = 'invalid';
+                    reason = 'semanticTupleMismatch'; kind = 'launcher';
+                    schema = 'LauncherFailureV1' },
+                @{ id = 'invalid-unknown-kind'; state = 'invalid';
+                    reason = 'semanticTupleMismatch'; kind = 'unknownLauncher';
+                    schema = 'launcherFailureV1' })) {
+            $negativeObservation = New-ArtifactGateObservation `
+                -GateId ('self-test-launcher-kind-' +
+                    [string]$launcherKindNegative.id) `
+                -ArtifactKind 'harness' `
+                -Invocation $diagnosticInvocation `
+                -Projection $diagnosticProjection.value `
+                -Passed $false `
+                -ParseState 'closed' `
+                -SchemaId 'productionDiagnosticRequiredV1' `
+                -ParseReason 'none'
+            $negativeObservation.artifactKind =
+                [string]$launcherKindNegative.kind
+            $negativeObservation.schemaId =
+                [string]$launcherKindNegative.schema
+            $negativeObservation.parseState =
+                [string]$launcherKindNegative.state
+            $negativeObservation.parseReason =
+                [string]$launcherKindNegative.reason
+            $writerRejected = $false
+            try {
+                Write-ArtifactGateObservation $negativeObservation |
+                    Out-Null
+            }
+            catch {
+                $writerRejected =
+                    $_.Exception.Message -eq 'gateEvidenceUnavailable'
+            }
+            $negativePath = Join-Path $Root (
+                [string]$negativeObservation.gateId + '.first.json')
+            if (-not $writerRejected -or
+                (Test-Path -LiteralPath $negativePath)) {
+                throw 'gateEvidenceLauncherKindSchemaAccepted'
+            }
+        }
         foreach ($invalidObservationSchema in @('none', 'unknownSchemaV1')) {
             $invalidDiagnosticObservation =
                 [pscustomobject](New-ArtifactGateObservation `
