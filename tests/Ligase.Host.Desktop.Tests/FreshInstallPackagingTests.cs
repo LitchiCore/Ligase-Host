@@ -98,6 +98,8 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(
             program, "StreamQueryWithoutNativeCode = 20015");
         StringAssert.Contains(
+            program, "_stage = \"queryEmptyRootStreams\"");
+        StringAssert.Contains(
             program, "SetStage(\"queryEmptyRootStreams\")");
         StringAssert.Contains(
             program, "\"failEmptyRootStreamQueryManaged\"");

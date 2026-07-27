@@ -368,9 +368,10 @@ reason, never a stream name or directory entry.
 The stream query itself is a separate `queryEmptyRootStreams` stage: exact
 `ERROR_HANDLE_EOF` means no stream records exist, another Win32 error is
 captured once and preserved, and a failed query with no native code is the
-closed `managedFailure/20015/streamQueryFailed` tuple. A managed invocation
-failure before a native return uses the same no-native-code tuple rather than
-leaving `none/0`. Metadata parsing begins only after a successful query.
+closed `managedFailure/20015/streamQueryFailed` tuple. A managed query-stage
+setup or invocation failure before a native return uses the same
+no-native-code tuple rather than leaving `none/0`. Metadata parsing begins only
+after a successful query.
 
 Before PowerShell materializes helper failure JSON, a strict recursive raw
 parser rejects duplicate property names at every object depth. This includes

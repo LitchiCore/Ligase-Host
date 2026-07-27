@@ -2434,10 +2434,11 @@ internal static class Program
             }
             else
             {
-                SetStage("queryEmptyRootStreams");
+                _stage = "queryEmptyRootStreams";
                 bool querySucceeded;
                 try
                 {
+                    SetStage("queryEmptyRootStreams");
                     if (validationBehavior ==
                         "failEmptyRootStreamQueryManaged")
                     {

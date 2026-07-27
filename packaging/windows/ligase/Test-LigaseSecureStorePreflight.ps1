@@ -2175,6 +2175,7 @@ foreach ($token in @(
         '0x001200A9',
         '0x00000116',
         'StreamQueryWithoutNativeCode = 20015',
+        '_stage = "queryEmptyRootStreams"',
         'SetStage("queryEmptyRootStreams")',
         '"failEmptyRootStreamQueryManaged"',
         'querySucceeded = GetFileInformationByHandleEx(',
