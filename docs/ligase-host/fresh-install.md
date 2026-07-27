@@ -449,6 +449,55 @@ certificate. SignPath Foundation is the preferred CI signer for this open
 source project; an OV certificate or Microsoft Artifact Signing are fallback
 options.
 
+### Unsigned development secure-store preflight
+
+The standalone `Ligase.SecureStore.Preflight.exe` is a purpose-built,
+self-contained x64 development diagnostic. It accepts no command-line
+arguments. Its compiled entry point calls only the closed secure-store
+recover/probe/readback path: the canonical
+`%ProgramData%\Ligase Host Admin\Transactions` chain, an exact empty-root
+recovery when eligible, and a marker-owned write/read/atomic-replace/delete
+probe. It does not consume an installer manifest or caller-supplied path, invoke
+PowerShell or `Manage-LigaseInstallation.ps1`, start a child process, copy
+product files, or access bootstrap, DataRoot, shortcuts, firewall, ARP,
+registry, driver, certificate, Query User, or product runtime state.
+
+Its closed evidence is a fixed-name, exact-ACL file inside the same verified
+admin-only Transactions chain. It is written through the SecureStore root
+identity, reparse, ACL, same-directory temporary-file, and atomic-replace gates;
+the elevated executable creates no separate public diagnostics path. Evidence
+can be persisted only after that secure chain is established. An earlier
+fail-closed root/open failure returns a closed nonzero outcome without creating
+a weaker evidence path; its closed result is emitted on the native diagnostic
+stream only. An evidence-write failure is never retried through another path
+and cannot turn the original failure into success. After the root is verified,
+the tool removes only its exact-owned prior evidence and writes a closed
+`secureStorePreflightPending` record. Probe and cleanup success are not terminal
+until a final atomic evidence write and its byte, file-identity, ACL, and root
+readback commit `success=true` with
+`resultCode=secureStorePreflightReady`. A final evidence-write failure leaves
+at most the current pending record and returns native exit 18 with no ready
+claim. All byte, ACL, file-identity, and root checks occur on the protected
+same-directory temporary file before commit. The write-through atomic replace
+is the last operation allowed to fail; after it succeeds the tool performs no
+target reopen, console write, or other fallible I/O and returns native zero.
+Native exit and current persistent evidence are the terminal authority;
+console output is advisory and a broken console cannot reverse a committed
+success or create a contradictory failure record. The evidence declares
+`releaseKind=UnsignedDev` and
+`trustBoundary=localManualExactSha`, plus result/stage, ACL, recovery, probe,
+cleanup, and bounded native diagnostics. It never records a raw path, security
+descriptor, nonce, secret, exception, or probe bytes.
+
+This is deliberately a local manual development gate, not a release-safe trust
+anchor. Coordination freezes the source commit and the exact artifact size and
+SHA-256, checks those bytes once immediately before a single `RunAs`, and the
+Windows UAC prompt is expected to show **Unknown publisher**. This boundary
+does not defend against a malicious local standard user replacing the image
+between the hash check and UAC image load. A `PublicRelease` preflight requires
+an allowlisted Authenticode publisher, RFC 3161 timestamp, protected staging
+that prevents replacement before execution, and a new security review.
+
 The bundled SudoVDA catalog currently uses a self-signed
 `CN=sudovda@su.mk` certificate. A `Valid` result on a machine where that
 certificate was previously inserted into Root/TrustedPublisher is classified

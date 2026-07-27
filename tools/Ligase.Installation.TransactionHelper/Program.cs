@@ -3,6 +3,7 @@ using System.Runtime.InteropServices;
 using System.Security.AccessControl;
 using System.Security.Principal;
 using System.Text;
+using System.Text.Json;
 using Microsoft.Win32.SafeHandles;
 
 internal static class Program
@@ -70,6 +71,9 @@ internal static class Program
 
     public static int Main(string[] args)
     {
+#if PREFLIGHT_ONLY
+        return RunStandaloneSecureStorePreflight(args);
+#else
         try
         {
             ApplyValidationHarnessBehavior();
@@ -246,8 +250,151 @@ internal static class Program
             Console.Error.Write(failureJson);
             return 18;
         }
+#endif
     }
 
+#if PREFLIGHT_ONLY
+    private const string PreflightReleaseKind = "UnsignedDev";
+    private const string PreflightTrustBoundary = "localManualExactSha";
+
+    private static int RunStandaloneSecureStorePreflight(string[] args)
+    {
+        SecureStore? store = null;
+        var evidenceWriteInProgress = false;
+        var result = new StandalonePreflightResult
+        {
+            SchemaVersion = 1,
+            ReleaseKind = PreflightReleaseKind,
+            TrustBoundary = PreflightTrustBoundary,
+            Success = false,
+            ResultCode = "secureStorePreflightPending",
+            Stage = "inputValidation",
+            Acl = "notAttempted",
+            Recovery = "notAttempted",
+            Probe = "notAttempted",
+            Cleanup = "notAttempted"
+        };
+
+        try
+        {
+            if (args.Length != 0)
+                throw new InvalidOperationException("invalidArguments");
+
+            Environment.SetEnvironmentVariable(
+                "LIGASE_INSTALL_VALIDATION_HARNESS", null);
+            Environment.SetEnvironmentVariable(
+                "LIGASE_TRANSACTION_TEST_BEHAVIOR", null);
+            Environment.SetEnvironmentVariable(
+                "LIGASE_TRANSACTION_FAILURE_STAGE", null);
+            Environment.SetEnvironmentVariable(
+                "LIGASE_TRANSACTION_TEST_ROOT", null);
+            var programData = Environment.GetFolderPath(
+                Environment.SpecialFolder.CommonApplicationData);
+            var transactionRoot = Path.Combine(
+                programData, "Ligase Host Admin", "Transactions");
+            SetStage("rejectReparse");
+            store = SecureStore.Open(transactionRoot, create: true);
+            result.Acl = "exact";
+            result.Recovery = store.RecoveryAction;
+            evidenceWriteInProgress = true;
+            store.DeleteEvidence();
+            evidenceWriteInProgress = false;
+            result.Stage = "evidencePending";
+            evidenceWriteInProgress = true;
+            store.WriteEvidence(SerializeStandalonePreflightEvidence(result));
+            evidenceWriteInProgress = false;
+            result.Stage = "probe";
+            store.Preflight();
+            result.Probe = "completed";
+            result.Cleanup = "completed";
+            result.Stage = "finalReadback";
+            result.Success = true;
+            result.ResultCode = "secureStorePreflightReady";
+            evidenceWriteInProgress = true;
+            var committingStore = store;
+            store = null;
+            committingStore.WriteEvidence(
+                SerializeStandalonePreflightEvidence(result));
+            return 0;
+        }
+        catch
+        {
+            result.Success = false;
+            result.ResultCode = evidenceWriteInProgress
+                ? "secureStorePreflightEvidenceFailed"
+                : "secureStorePreflightFailed";
+            result.Stage = _stage;
+            result.NativeCategory = _nativeCategory;
+            result.NativeCode = _nativeCode;
+            result.AclMutationOccurred = _aclMutationOccurred;
+            result.AclRollback = _aclRollback;
+            if (result.Probe == "notAttempted" &&
+                _stage is "createTemp" or "atomicReplace" or "read" or "delete")
+                result.Probe = "failed";
+            if (result.Probe == "failed")
+                result.Cleanup = "unknown";
+            var failureBytes = SerializeStandalonePreflightEvidence(result);
+            if (store is not null && !evidenceWriteInProgress)
+            {
+                evidenceWriteInProgress = true;
+                try
+                {
+                    store.WriteEvidence(failureBytes);
+                }
+                catch
+                {
+                    // The original secure operation remains failed. Evidence
+                    // never opens a second storage authority.
+                }
+            }
+            try
+            {
+                Console.Error.Write(Encoding.UTF8.GetString(failureBytes));
+            }
+            catch
+            {
+                // Console is advisory. Native exit and the secure evidence
+                // commit point remain authoritative.
+            }
+            return 18;
+        }
+        finally
+        {
+            store?.Dispose();
+        }
+    }
+
+    private static byte[] SerializeStandalonePreflightEvidence(
+        StandalonePreflightResult result)
+    {
+        return JsonSerializer.SerializeToUtf8Bytes(
+            result,
+            new JsonSerializerOptions
+            {
+                PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+            });
+    }
+
+    private sealed class StandalonePreflightResult
+    {
+        public int SchemaVersion { get; init; }
+        public string ReleaseKind { get; init; } = "";
+        public string TrustBoundary { get; init; } = "";
+        public bool Success { get; set; }
+        public string ResultCode { get; set; } = "";
+        public string Stage { get; set; } = "";
+        public string NativeCategory { get; set; } = "none";
+        public int NativeCode { get; set; }
+        public string Acl { get; set; } = "";
+        public string Recovery { get; set; } = "";
+        public string Probe { get; set; } = "";
+        public string Cleanup { get; set; } = "";
+        public bool AclMutationOccurred { get; set; }
+        public string AclRollback { get; set; } = "notRequired";
+    }
+#endif
+
+#if !PREFLIGHT_ONLY
     private static void ApplyValidationHarnessBehavior()
     {
         if (Environment.GetEnvironmentVariable(
@@ -331,6 +478,7 @@ internal static class Program
                 throw ManagedEmptyRootFailure(20008);
         }
     }
+#endif
 
     private static void SetStage(string stage)
     {
@@ -600,6 +748,8 @@ internal static class Program
         private readonly bool _recoveredEmptyAdminRoot;
         private string TransactionPath => Path.Combine(
             _root, "pending-install-transaction.json");
+        private string PreflightEvidencePath => Path.Combine(
+            _root, "secure-store-preflight-outcome.json");
 
         private SecureStore(
             string root, SafeFileHandle handle, bool recoveredEmptyAdminRoot)
@@ -659,9 +809,35 @@ internal static class Program
 
         public void Write(byte[] bytes)
         {
+            WriteExactFile(
+                bytes, TransactionPath, ".pending-", terminalCommit: false);
+        }
+
+#if PREFLIGHT_ONLY
+        public void WriteEvidence(byte[] bytes)
+        {
+            WriteExactFile(
+                bytes, PreflightEvidencePath, ".preflight-evidence-",
+                terminalCommit: true);
+        }
+
+        public void DeleteEvidence()
+        {
+            DeleteExactFile(PreflightEvidencePath);
+        }
+#endif
+
+        private void WriteExactFile(
+            byte[] bytes,
+            string destination,
+            string temporaryPrefix,
+            bool terminalCommit)
+        {
             ValidateRoot();
-            var temp = Path.Combine(_root, ".pending-" + Guid.NewGuid().ToString("N"));
+            var temp = Path.Combine(
+                _root, temporaryPrefix + Guid.NewGuid().ToString("N"));
             SafeFileHandle? tempHandle = null;
+            var committed = false;
             try
             {
                 SetStage("createTemp");
@@ -686,22 +862,48 @@ internal static class Program
                     AssertAcl(verify, directory: false);
                     if (VerifyHandle(verify, temp, false) != identity)
                         throw new InvalidOperationException("installTransactionInvalid");
+                    if (HasAlternateDataStream(verify))
+                        throw new InvalidOperationException(
+                            "installTransactionInvalid");
+                    using var stream = new FileStream(
+                        verify, FileAccess.Read, 8192, false);
+                    if (!ReadBounded(stream).SequenceEqual(bytes))
+                        throw new InvalidOperationException(
+                            "installTransactionInvalid");
                 }
                 ValidateRoot();
                 SetStage("atomicReplace");
-                if (!MoveFileExW(temp, TransactionPath,
+                if (!MoveFileExW(temp, destination,
                         MoveReplaceExisting | MoveWriteThrough))
                     throw new InvalidOperationException("installTransactionInvalid");
+                committed = true;
+                if (terminalCommit)
+                    return;
                 SetStage("finalReadback");
-                using var final = OpenPath(TransactionPath, false, false);
+                using var final = OpenPath(destination, false, false);
                 AssertAcl(final, false);
-                VerifyHandle(final, TransactionPath, false);
+                var finalIdentity = VerifyHandle(final, destination, false);
+                using (var stream = new FileStream(
+                           final, FileAccess.Read, 8192, false))
+                {
+                    if (!ReadBounded(stream).SequenceEqual(bytes))
+                        throw new InvalidOperationException(
+                            "installTransactionInvalid");
+                }
+                using (var reopened = OpenPath(destination, false, false))
+                {
+                    AssertAcl(reopened, false);
+                    if (VerifyHandle(reopened, destination, false) !=
+                        finalIdentity)
+                        throw new InvalidOperationException(
+                            "installTransactionInvalid");
+                }
                 ValidateRoot();
             }
             finally
             {
                 tempHandle?.Dispose();
-                if (File.Exists(temp))
+                if (!committed && File.Exists(temp))
                     File.Delete(temp);
             }
         }
@@ -729,14 +931,19 @@ internal static class Program
 
         public void Delete()
         {
+            DeleteExactFile(TransactionPath);
+        }
+
+        private void DeleteExactFile(string path)
+        {
             SetStage("delete");
             ValidateRoot();
-            if (!File.Exists(TransactionPath)) return;
-            using var handle = OpenPath(TransactionPath, false, false);
+            if (!File.Exists(path)) return;
+            using var handle = OpenPath(path, false, false);
             AssertAcl(handle, false);
-            VerifyHandle(handle, TransactionPath, false);
+            VerifyHandle(handle, path, false);
             handle.Dispose();
-            File.Delete(TransactionPath);
+            File.Delete(path);
             ValidateRoot();
         }
 

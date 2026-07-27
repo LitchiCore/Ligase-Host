@@ -12,6 +12,62 @@ namespace Ligase.Host.Desktop.Tests;
 public sealed class FreshInstallPackagingTests
 {
     [TestMethod]
+    public void SecureStorePreflightSourceHasClosedUnsignedDevelopmentBoundary()
+    {
+        var root = FindRepositoryRoot();
+        var program = File.ReadAllText(Path.Combine(
+            root,
+            "tools",
+            "Ligase.Installation.TransactionHelper",
+            "Program.cs"));
+        var project = File.ReadAllText(Path.Combine(
+            root,
+            "tools",
+            "Ligase.SecureStore.Preflight",
+            "Ligase.SecureStore.Preflight.csproj"));
+        var sourceGate = File.ReadAllText(Path.Combine(
+            root,
+            "packaging",
+            "windows",
+            "ligase",
+            "Test-LigaseSecureStorePreflight.ps1"));
+
+        StringAssert.Contains(program, "#if PREFLIGHT_ONLY");
+        StringAssert.Contains(program, "if (args.Length != 0)");
+        StringAssert.Contains(program, "localManualExactSha");
+        StringAssert.Contains(program, "\"Ligase Host Admin\", \"Transactions\"");
+        StringAssert.Contains(
+            program,
+            "bytes, PreflightEvidencePath, \".preflight-evidence-\"");
+        StringAssert.Contains(
+            program,
+            "if (store is not null && !evidenceWriteInProgress)");
+        StringAssert.Contains(program, "store.DeleteEvidence()");
+        StringAssert.Contains(program, "Success = true");
+        StringAssert.Contains(
+            program,
+            "ResultCode = \"secureStorePreflightReady\"");
+        StringAssert.Contains(
+            program,
+            "ReadBounded(stream).SequenceEqual(bytes)");
+        StringAssert.Contains(program, "terminalCommit: true");
+        StringAssert.Contains(program, "if (terminalCommit)");
+        StringAssert.Contains(program, "var committingStore = store");
+        StringAssert.Contains(program, "store = null");
+        StringAssert.Contains(program, "HasAlternateDataStream(verify)");
+        Assert.IsFalse(program.Contains("Ligase Host Diagnostics"));
+        StringAssert.Contains(
+            program,
+            "\"LIGASE_INSTALL_VALIDATION_HARNESS\", null");
+        StringAssert.Contains(program, "#if !PREFLIGHT_ONLY");
+        StringAssert.Contains(project, "PREFLIGHT_ONLY");
+        StringAssert.Contains(project, "<PublishTrimmed>true</PublishTrimmed>");
+        StringAssert.Contains(project, "<SelfContained>true</SelfContained>");
+        StringAssert.Contains(sourceGate, "secureStorePreflightForbiddenSurface");
+        StringAssert.Contains(sourceGate, "executableBuilt = $false");
+    }
+
+    [TestMethod]
     public async Task DryRunReturnsTypedReadinessWithoutMutatingBootstrap()
     {
         using var fixture = new InstallFixture();
