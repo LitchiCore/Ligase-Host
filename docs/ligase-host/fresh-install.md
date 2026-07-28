@@ -660,6 +660,48 @@ files, and may remove only certificate-store entries which were absent before
 this exact invocation and have no dependent device. Failure to prove marker,
 temp-file, or certificate rollback is `virtualDisplayRollbackFailed`.
 Pre-existing certificates and markers are not claimed or deleted.
+Candidate construction requires an explicitly supplied official nefcon v1.8.0
+x64 console tool. Before producing the payload, the build verifies its fixed
+size, SHA-256, Authenticode publisher and timestamp, copies only those exact
+bytes, and records the tool identity in the manifest. It never searches
+`PATH` or downloads an installer tool. The batch wrapper emits one bounded
+closed tuple and preserves the exit of each certificate, device-create and
+driver-package step; its final `popd` cannot replace a failed child exit with
+success. The managed owner independently binds that tuple to the process exit
+and distinguishes missing/wrong tools, certificate Root/TrustedPublisher
+failure, device creation, driver package installation, timeout/output failure,
+reboot-required state, and final present-device plus bound-OEM-INF readback.
+The process owner reads stdout and stderr incrementally as raw bytes into
+separate fixed 512-byte buffers and rejects invalid UTF-8. It creates the
+command interpreter suspended, binds it to a kill-on-close Job Object, and
+only then resumes its first thread. A `STARTUPINFOEX` handle list permits only
+the stdout and stderr write handles to cross into the child; unrelated
+inheritable handles from the elevated owner are excluded. Overflow, timeout,
+or pipe failure uses
+that retained Job authority even if the root process has already exited; the
+original typed failure is returned only after root wait, zero active Job
+processes, and bounded closure of both pipe reads. Assignment, resume,
+termination, wait, Job accounting, or pipe-cleanup uncertainty is the distinct
+closed `virtualDisplayInstallerCleanupFailed`. Before Job assignment, the
+native owner retains the root handle until termination and a signaled wait are
+proved. After assignment it additionally requires Job termination and zero
+active Job processes. If its first bounded cleanup cannot prove those facts,
+it retains the handles and exposes only a numeric PID to the D-only caller for
+a second bounded containment pass; it never drops the last termination
+authority while claiming zero residue. This retained authority exists only
+inside the current helper process; it is not persistent across PowerShell
+exit. If the second pass also fails, the closed result reports failed cleanup,
+the retained nonzero PID, and the incomplete secondary state. The validation
+harness then performs a separate bounded accident cleanup and proves PID zero;
+production reports the residual PID/user-action boundary and never calls the
+failed cleanup completed.
+A D-only process seam requires both the validation-harness environment and an
+exact explicit D-root. It exercises exact success, every closed child exit,
+malformed and cross-spliced tuples, both stream overflows, timeout, inherited
+pipe and descendant cleanup, including stdout/stderr overflow after the root
+exits while a descendant retains a pipe, plus assignment/resume/termination/
+wait/Job-accounting/pipe cleanup faults and second-pass containment, without
+opening `Cert:`, PnP or ProgramData.
 The D-only validation seam for this transaction requires both the repository
 validation-harness switch and an exact explicit D-root binding; production
 installer flows cannot select it. It exercises every marker write/replace/

@@ -11,6 +11,7 @@ param(
     "Readback",
     "Uninstall",
     "InstallVirtualDisplay",
+    "ValidateVirtualDisplayInstallerProcess",
     "ValidateVirtualDisplayMarkerTransaction",
     "UninstallVirtualDisplay",
     "CleanupLegacyDriverTrust")]
@@ -360,6 +361,663 @@ public static class LigaseFileIdentity
             if (!GetFileInformationByHandle(stream.SafeFileHandle, out information))
                 throw new IOException("dataRootEnumerationFailed");
             return information.NumberOfLinks;
+        }
+    }
+}
+"@
+
+Add-Type -TypeDefinition @"
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Diagnostics;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Text;
+using Microsoft.Win32.SafeHandles;
+
+public sealed class LigaseJobProcess : IDisposable
+{
+    private const uint CREATE_SUSPENDED = 0x00000004;
+    private const uint CREATE_NO_WINDOW = 0x08000000;
+    private const uint EXTENDED_STARTUPINFO_PRESENT = 0x00080000;
+    private const uint STARTF_USESTDHANDLES = 0x00000100;
+    private const uint HANDLE_FLAG_INHERIT = 0x00000001;
+    private const uint JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000;
+    private const int JobObjectBasicAccountingInformation = 1;
+    private const int JobObjectExtendedLimitInformation = 9;
+    private const uint WAIT_OBJECT_0 = 0;
+    private static readonly IntPtr PROC_THREAD_ATTRIBUTE_HANDLE_LIST =
+        new IntPtr(0x00020002);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct SECURITY_ATTRIBUTES
+    {
+        public int nLength;
+        public IntPtr lpSecurityDescriptor;
+        [MarshalAs(UnmanagedType.Bool)]
+        public bool bInheritHandle;
+    }
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct STARTUPINFO
+    {
+        public int cb;
+        public string lpReserved;
+        public string lpDesktop;
+        public string lpTitle;
+        public uint dwX;
+        public uint dwY;
+        public uint dwXSize;
+        public uint dwYSize;
+        public uint dwXCountChars;
+        public uint dwYCountChars;
+        public uint dwFillAttribute;
+        public uint dwFlags;
+        public short wShowWindow;
+        public short cbReserved2;
+        public IntPtr lpReserved2;
+        public IntPtr hStdInput;
+        public IntPtr hStdOutput;
+        public IntPtr hStdError;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct STARTUPINFOEX
+    {
+        public STARTUPINFO StartupInfo;
+        public IntPtr lpAttributeList;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PROCESS_INFORMATION
+    {
+        public IntPtr hProcess;
+        public IntPtr hThread;
+        public uint dwProcessId;
+        public uint dwThreadId;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct IO_COUNTERS
+    {
+        public ulong ReadOperationCount;
+        public ulong WriteOperationCount;
+        public ulong OtherOperationCount;
+        public ulong ReadTransferCount;
+        public ulong WriteTransferCount;
+        public ulong OtherTransferCount;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct JOBOBJECT_BASIC_LIMIT_INFORMATION
+    {
+        public long PerProcessUserTimeLimit;
+        public long PerJobUserTimeLimit;
+        public uint LimitFlags;
+        public UIntPtr MinimumWorkingSetSize;
+        public UIntPtr MaximumWorkingSetSize;
+        public uint ActiveProcessLimit;
+        public UIntPtr Affinity;
+        public uint PriorityClass;
+        public uint SchedulingClass;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct JOBOBJECT_EXTENDED_LIMIT_INFORMATION
+    {
+        public JOBOBJECT_BASIC_LIMIT_INFORMATION BasicLimitInformation;
+        public IO_COUNTERS IoInfo;
+        public UIntPtr ProcessMemoryLimit;
+        public UIntPtr JobMemoryLimit;
+        public UIntPtr PeakProcessMemoryUsed;
+        public UIntPtr PeakJobMemoryUsed;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct JOBOBJECT_BASIC_ACCOUNTING_INFORMATION
+    {
+        public long TotalUserTime;
+        public long TotalKernelTime;
+        public long ThisPeriodTotalUserTime;
+        public long ThisPeriodTotalKernelTime;
+        public uint TotalPageFaultCount;
+        public uint TotalProcesses;
+        public uint ActiveProcesses;
+        public uint TotalTerminatedProcesses;
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CreatePipe(
+        out IntPtr readPipe, out IntPtr writePipe,
+        ref SECURITY_ATTRIBUTES attributes, uint size);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool SetHandleInformation(
+        IntPtr handle, uint mask, uint flags);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool CreateProcess(
+        string applicationName, StringBuilder commandLine,
+        IntPtr processAttributes, IntPtr threadAttributes,
+        bool inheritHandles, uint creationFlags, IntPtr environment,
+        string currentDirectory, ref STARTUPINFOEX startupInfo,
+        out PROCESS_INFORMATION processInformation);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool InitializeProcThreadAttributeList(
+        IntPtr attributeList, int attributeCount, uint flags,
+        ref UIntPtr size);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool UpdateProcThreadAttribute(
+        IntPtr attributeList, uint flags, IntPtr attribute,
+        IntPtr value, UIntPtr size, IntPtr previousValue,
+        IntPtr returnSize);
+
+    [DllImport("kernel32.dll")]
+    private static extern void DeleteProcThreadAttributeList(
+        IntPtr attributeList);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr CreateJobObject(
+        IntPtr jobAttributes, string name);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool SetInformationJobObject(
+        IntPtr job, int informationClass, IntPtr information,
+        uint informationLength);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool AssignProcessToJobObject(
+        IntPtr job, IntPtr process);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern uint ResumeThread(IntPtr thread);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool TerminateJobObject(
+        IntPtr job, uint exitCode);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool TerminateProcess(
+        IntPtr process, uint exitCode);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern uint WaitForSingleObject(
+        IntPtr handle, uint milliseconds);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetExitCodeProcess(
+        IntPtr process, out uint exitCode);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool QueryInformationJobObject(
+        IntPtr job, int informationClass, IntPtr information,
+        uint informationLength, out uint returnLength);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CloseHandle(IntPtr handle);
+
+    public Process Process { get; private set; }
+    public FileStream StandardOutput { get; private set; }
+    public FileStream StandardError { get; private set; }
+    private IntPtr _job;
+    private IntPtr _processHandle;
+    private static IntPtr _retainedJob;
+    private static IntPtr _retainedProcess;
+    private static IntPtr _retainedThread;
+    public static int LastCleanupPid { get; private set; }
+    public static bool LastCleanupProven { get; private set; }
+    public static bool AuthorityRetained { get; private set; }
+    public static bool SecondaryAttempted { get; private set; }
+    public static bool SecondaryCompleted { get; private set; }
+
+    private LigaseJobProcess() {}
+
+    public static LigaseJobProcess Start(
+        string commandInterpreter, string installerPath, string workingDirectory,
+        string validationFault)
+    {
+        IntPtr stdoutRead = IntPtr.Zero;
+        IntPtr stdoutWrite = IntPtr.Zero;
+        IntPtr stderrRead = IntPtr.Zero;
+        IntPtr stderrWrite = IntPtr.Zero;
+        IntPtr job = IntPtr.Zero;
+        IntPtr attributeList = IntPtr.Zero;
+        IntPtr inheritedHandleList = IntPtr.Zero;
+        PROCESS_INFORMATION pi = new PROCESS_INFORMATION();
+        bool processCreated = false;
+        bool assigned = false;
+        bool resumed = false;
+        Process managedProcess = null;
+        FileStream output = null;
+        FileStream error = null;
+        try
+        {
+            LastCleanupPid = 0;
+            LastCleanupProven = false;
+            AuthorityRetained = false;
+            SecondaryAttempted = false;
+            SecondaryCompleted = false;
+            var attributes = new SECURITY_ATTRIBUTES {
+                nLength = Marshal.SizeOf(typeof(SECURITY_ATTRIBUTES)),
+                bInheritHandle = true
+            };
+            if (!CreatePipe(out stdoutRead, out stdoutWrite, ref attributes, 0) ||
+                !CreatePipe(out stderrRead, out stderrWrite, ref attributes, 0) ||
+                !SetHandleInformation(
+                    stdoutRead, HANDLE_FLAG_INHERIT, 0) ||
+                !SetHandleInformation(
+                    stderrRead, HANDLE_FLAG_INHERIT, 0))
+                throw new Win32Exception(
+                    Marshal.GetLastWin32Error(), "processPipeUnavailable");
+
+            job = CreateJobObject(IntPtr.Zero, null);
+            if (job == IntPtr.Zero)
+                throw new Win32Exception(
+                    Marshal.GetLastWin32Error(), "processJobUnavailable");
+            var limits = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION();
+            limits.BasicLimitInformation.LimitFlags =
+                JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            int limitsSize = Marshal.SizeOf(limits);
+            IntPtr limitsPointer = Marshal.AllocHGlobal(limitsSize);
+            try
+            {
+                Marshal.StructureToPtr(limits, limitsPointer, false);
+                if (!SetInformationJobObject(
+                    job, JobObjectExtendedLimitInformation,
+                    limitsPointer, unchecked((uint)limitsSize)))
+                    throw new Win32Exception(
+                        Marshal.GetLastWin32Error(),
+                        "processJobUnavailable");
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(limitsPointer);
+            }
+
+            UIntPtr attributeBytes = UIntPtr.Zero;
+            InitializeProcThreadAttributeList(
+                IntPtr.Zero, 1, 0, ref attributeBytes);
+            attributeList = Marshal.AllocHGlobal(
+                checked((int)attributeBytes.ToUInt64()));
+            if (!InitializeProcThreadAttributeList(
+                attributeList, 1, 0, ref attributeBytes))
+                throw new Win32Exception(
+                    Marshal.GetLastWin32Error(),
+                    "processAttributeUnavailable");
+            inheritedHandleList = Marshal.AllocHGlobal(IntPtr.Size * 2);
+            Marshal.WriteIntPtr(inheritedHandleList, 0, stdoutWrite);
+            Marshal.WriteIntPtr(
+                inheritedHandleList, IntPtr.Size, stderrWrite);
+            if (!UpdateProcThreadAttribute(
+                attributeList, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+                inheritedHandleList,
+                new UIntPtr(unchecked((uint)(IntPtr.Size * 2))),
+                IntPtr.Zero, IntPtr.Zero))
+                throw new Win32Exception(
+                    Marshal.GetLastWin32Error(),
+                    "processAttributeUnavailable");
+
+            var startup = new STARTUPINFOEX {
+                StartupInfo = new STARTUPINFO {
+                    cb = Marshal.SizeOf(typeof(STARTUPINFOEX)),
+                    dwFlags = STARTF_USESTDHANDLES,
+                    hStdInput = IntPtr.Zero,
+                    hStdOutput = stdoutWrite,
+                    hStdError = stderrWrite
+                },
+                lpAttributeList = attributeList
+            };
+            var commandLine = new StringBuilder(
+                "\"" + commandInterpreter + "\" /d /s /c \"\"" +
+                installerPath + "\"\"");
+            if (!CreateProcess(
+                commandInterpreter, commandLine, IntPtr.Zero, IntPtr.Zero,
+                true, CREATE_SUSPENDED | CREATE_NO_WINDOW |
+                EXTENDED_STARTUPINFO_PRESENT, IntPtr.Zero,
+                workingDirectory, ref startup, out pi))
+                throw new Win32Exception(
+                    Marshal.GetLastWin32Error(), "processCreateUnavailable");
+            processCreated = true;
+            LastCleanupPid = unchecked((int)pi.dwProcessId);
+            DeleteProcThreadAttributeList(attributeList);
+            Marshal.FreeHGlobal(attributeList);
+            attributeList = IntPtr.Zero;
+            Marshal.FreeHGlobal(inheritedHandleList);
+            inheritedHandleList = IntPtr.Zero;
+            if (String.Equals(
+                validationFault, "assign", StringComparison.Ordinal) ||
+                String.Equals(
+                    validationFault, "startTerminate",
+                    StringComparison.Ordinal) ||
+                String.Equals(
+                    validationFault, "startWait",
+                    StringComparison.Ordinal) ||
+                String.Equals(
+                    validationFault, "retain",
+                    StringComparison.Ordinal) ||
+                String.Equals(
+                    validationFault, "secondaryTerminate",
+                    StringComparison.Ordinal) ||
+                String.Equals(
+                    validationFault, "secondaryWait",
+                    StringComparison.Ordinal) ||
+                String.Equals(
+                    validationFault, "secondaryAccounting",
+                    StringComparison.Ordinal) ||
+                !AssignProcessToJobObject(job, pi.hProcess))
+                throw new Win32Exception(
+                    Marshal.GetLastWin32Error(), "processJobAssignFailed");
+            assigned = true;
+            if (String.Equals(
+                validationFault, "resume", StringComparison.Ordinal) ||
+                String.Equals(
+                    validationFault, "jobTerminate",
+                    StringComparison.Ordinal) ||
+                String.Equals(
+                    validationFault, "jobAccounting",
+                    StringComparison.Ordinal) ||
+                ResumeThread(pi.hThread) == UInt32.MaxValue)
+                throw new Win32Exception(
+                    Marshal.GetLastWin32Error(), "processResumeFailed");
+            resumed = true;
+
+            CloseHandle(stdoutWrite);
+            stdoutWrite = IntPtr.Zero;
+            CloseHandle(stderrWrite);
+            stderrWrite = IntPtr.Zero;
+            CloseHandle(pi.hThread);
+            pi.hThread = IntPtr.Zero;
+
+            managedProcess = Process.GetProcessById(
+                unchecked((int)pi.dwProcessId));
+            output = new FileStream(
+                new SafeFileHandle(stdoutRead, true), FileAccess.Read,
+                4096, false);
+            stdoutRead = IntPtr.Zero;
+            error = new FileStream(
+                new SafeFileHandle(stderrRead, true), FileAccess.Read,
+                4096, false);
+            stderrRead = IntPtr.Zero;
+
+            var value = new LigaseJobProcess();
+            value._job = job;
+            job = IntPtr.Zero;
+            value._processHandle = pi.hProcess;
+            pi.hProcess = IntPtr.Zero;
+            value.Process = managedProcess;
+            managedProcess = null;
+            value.StandardOutput = output;
+            output = null;
+            value.StandardError = error;
+            error = null;
+            LastCleanupPid = 0;
+            LastCleanupProven = true;
+            return value;
+        }
+        catch
+        {
+            if (processCreated)
+            {
+                bool proven = false;
+                bool forceRetain =
+                    String.Equals(
+                        validationFault, "retain",
+                        StringComparison.Ordinal) ||
+                    String.Equals(
+                        validationFault, "secondaryTerminate",
+                        StringComparison.Ordinal) ||
+                    String.Equals(
+                        validationFault, "secondaryWait",
+                        StringComparison.Ordinal) ||
+                    String.Equals(
+                        validationFault, "secondaryAccounting",
+                        StringComparison.Ordinal);
+                var cleanupClock = Stopwatch.StartNew();
+                if (!assigned)
+                {
+                    bool terminated = !forceRetain && !String.Equals(
+                        validationFault, "startTerminate",
+                        StringComparison.Ordinal) &&
+                        TerminateProcess(pi.hProcess, 18);
+                    if (!terminated && !forceRetain)
+                        terminated = TerminateProcess(pi.hProcess, 18);
+                    bool signaled = false;
+                    if (terminated)
+                    {
+                        if (!String.Equals(
+                            validationFault, "startWait",
+                            StringComparison.Ordinal))
+                            signaled = WaitForSingleObject(
+                                pi.hProcess, 0) == WAIT_OBJECT_0;
+                        while (!signaled &&
+                            cleanupClock.ElapsedMilliseconds < 5000)
+                        {
+                            signaled = WaitForSingleObject(
+                                pi.hProcess, 20) == WAIT_OBJECT_0;
+                        }
+                    }
+                    proven = terminated && signaled;
+                }
+                else
+                {
+                    bool terminated = !String.Equals(
+                        validationFault, "jobTerminate",
+                        StringComparison.Ordinal) &&
+                        TerminateJobObject(job, 18);
+                    if (!terminated && !forceRetain)
+                        terminated = TerminateJobObject(job, 18);
+                    bool rootSignaled = false;
+                    while (!rootSignaled &&
+                        cleanupClock.ElapsedMilliseconds < 5000)
+                    {
+                        rootSignaled = WaitForSingleObject(
+                            pi.hProcess, 20) == WAIT_OBJECT_0;
+                    }
+                    bool jobEmpty = false;
+                    if (terminated && rootSignaled)
+                    {
+                        if (!String.Equals(
+                            validationFault, "jobAccounting",
+                            StringComparison.Ordinal))
+                            jobEmpty = IsJobEmpty(job);
+                        if (!jobEmpty && !resumed)
+                        {
+                            // The only process is still suspended. Closing the
+                            // kill-on-close Job is the independent fallback.
+                            if (CloseHandle(job))
+                            {
+                                job = IntPtr.Zero;
+                                jobEmpty = true;
+                            }
+                        }
+                    }
+                    proven = terminated && rootSignaled && jobEmpty;
+                }
+                if (!proven)
+                {
+                    _retainedJob = job;
+                    job = IntPtr.Zero;
+                    _retainedProcess = pi.hProcess;
+                    pi.hProcess = IntPtr.Zero;
+                    _retainedThread = pi.hThread;
+                    pi.hThread = IntPtr.Zero;
+                    AuthorityRetained = true;
+                }
+                else
+                {
+                    LastCleanupPid = 0;
+                    LastCleanupProven = true;
+                }
+            }
+            throw;
+        }
+        finally
+        {
+            if (output != null) output.Dispose();
+            if (error != null) error.Dispose();
+            if (managedProcess != null) managedProcess.Dispose();
+            if (pi.hThread != IntPtr.Zero) CloseHandle(pi.hThread);
+            if (pi.hProcess != IntPtr.Zero) CloseHandle(pi.hProcess);
+            if (stdoutRead != IntPtr.Zero) CloseHandle(stdoutRead);
+            if (stdoutWrite != IntPtr.Zero) CloseHandle(stdoutWrite);
+            if (stderrRead != IntPtr.Zero) CloseHandle(stderrRead);
+            if (stderrWrite != IntPtr.Zero) CloseHandle(stderrWrite);
+            if (job != IntPtr.Zero) CloseHandle(job);
+            if (attributeList != IntPtr.Zero)
+            {
+                DeleteProcThreadAttributeList(attributeList);
+                Marshal.FreeHGlobal(attributeList);
+            }
+            if (inheritedHandleList != IntPtr.Zero)
+                Marshal.FreeHGlobal(inheritedHandleList);
+        }
+    }
+
+    public bool Terminate()
+    {
+        return _job != IntPtr.Zero && TerminateJobObject(_job, 18);
+    }
+
+    public bool WaitForRoot(int milliseconds)
+    {
+        return _processHandle != IntPtr.Zero &&
+            WaitForSingleObject(
+                _processHandle, unchecked((uint)milliseconds)) ==
+                WAIT_OBJECT_0;
+    }
+
+    public int ExitCode
+    {
+        get
+        {
+            uint code;
+            if (_processHandle == IntPtr.Zero ||
+                !GetExitCodeProcess(_processHandle, out code))
+                throw new Win32Exception(
+                    Marshal.GetLastWin32Error(), "processExitUnavailable");
+            return unchecked((int)code);
+        }
+    }
+
+    public bool HasNoActiveProcesses()
+    {
+        if (_job == IntPtr.Zero) return false;
+        var accounting = new JOBOBJECT_BASIC_ACCOUNTING_INFORMATION();
+        int size = Marshal.SizeOf(accounting);
+        IntPtr pointer = Marshal.AllocHGlobal(size);
+        try
+        {
+            uint returned;
+            if (!QueryInformationJobObject(
+                _job, JobObjectBasicAccountingInformation,
+                pointer, unchecked((uint)size), out returned))
+                return false;
+            accounting = (JOBOBJECT_BASIC_ACCOUNTING_INFORMATION)
+                Marshal.PtrToStructure(
+                    pointer,
+                    typeof(JOBOBJECT_BASIC_ACCOUNTING_INFORMATION));
+            return accounting.ActiveProcesses == 0;
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(pointer);
+        }
+    }
+
+    public static bool SecondaryContainment(string validationFault)
+    {
+        SecondaryAttempted = true;
+        SecondaryCompleted = false;
+        if (_retainedProcess == IntPtr.Zero)
+            return LastCleanupProven;
+        if (_retainedJob != IntPtr.Zero &&
+            !String.Equals(
+                validationFault, "secondaryTerminate",
+                StringComparison.Ordinal) &&
+            !String.Equals(
+                validationFault, "secondaryAccounting",
+                StringComparison.Ordinal))
+            TerminateJobObject(_retainedJob, 18);
+        if (WaitForSingleObject(_retainedProcess, 0) != WAIT_OBJECT_0 &&
+            !String.Equals(
+                validationFault, "secondaryTerminate",
+                StringComparison.Ordinal) &&
+            !String.Equals(
+                validationFault, "secondaryAccounting",
+                StringComparison.Ordinal))
+            TerminateProcess(_retainedProcess, 18);
+        var clock = Stopwatch.StartNew();
+        bool rootSignaled = false;
+        while (!rootSignaled && clock.ElapsedMilliseconds < 5000)
+            rootSignaled = !String.Equals(
+                validationFault, "secondaryWait",
+                StringComparison.Ordinal) &&
+                WaitForSingleObject(
+                    _retainedProcess, 20) == WAIT_OBJECT_0;
+        bool jobEmpty = _retainedJob == IntPtr.Zero ||
+            (!String.Equals(
+                validationFault, "secondaryAccounting",
+                StringComparison.Ordinal) &&
+            IsJobEmpty(_retainedJob));
+        if (!rootSignaled || !jobEmpty)
+            return false;
+        if (_retainedThread != IntPtr.Zero)
+            CloseHandle(_retainedThread);
+        CloseHandle(_retainedProcess);
+        if (_retainedJob != IntPtr.Zero)
+            CloseHandle(_retainedJob);
+        _retainedThread = IntPtr.Zero;
+        _retainedProcess = IntPtr.Zero;
+        _retainedJob = IntPtr.Zero;
+        LastCleanupPid = 0;
+        LastCleanupProven = true;
+        AuthorityRetained = false;
+        SecondaryCompleted = true;
+        return true;
+    }
+
+    private static bool IsJobEmpty(IntPtr job)
+    {
+        if (job == IntPtr.Zero) return false;
+        var accounting = new JOBOBJECT_BASIC_ACCOUNTING_INFORMATION();
+        int size = Marshal.SizeOf(accounting);
+        IntPtr pointer = Marshal.AllocHGlobal(size);
+        try
+        {
+            uint returned;
+            if (!QueryInformationJobObject(
+                job, JobObjectBasicAccountingInformation,
+                pointer, unchecked((uint)size), out returned))
+                return false;
+            accounting = (JOBOBJECT_BASIC_ACCOUNTING_INFORMATION)
+                Marshal.PtrToStructure(
+                    pointer,
+                    typeof(JOBOBJECT_BASIC_ACCOUNTING_INFORMATION));
+            return accounting.ActiveProcesses == 0;
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(pointer);
+        }
+    }
+
+    public void Dispose()
+    {
+        if (StandardOutput != null) StandardOutput.Dispose();
+        if (StandardError != null) StandardError.Dispose();
+        if (Process != null) Process.Dispose();
+        if (_processHandle != IntPtr.Zero)
+        {
+            CloseHandle(_processHandle);
+            _processHandle = IntPtr.Zero;
+        }
+        if (_job != IntPtr.Zero)
+        {
+            CloseHandle(_job);
+            _job = IntPtr.Zero;
         }
     }
 }
@@ -1085,6 +1743,305 @@ function Set-InstallTransactionReadbackFailure(
   $script:finalFailedField = "installTransaction"
   $script:finalComponents.installTransaction = "failed"
   throw $Code
+}
+
+$script:virtualDisplayInstallStage = "notStarted"
+$script:virtualDisplayChildExit = -1
+$script:virtualDisplayRemoveExit = -1
+$script:virtualDisplayReadbackCode = "notAttempted"
+$script:virtualDisplayStdoutSha256 =
+  "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855"
+$script:virtualDisplayStderrSha256 =
+  "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855"
+$script:virtualDisplayProcessCleanup = "notRequired"
+$script:virtualDisplayCleanupPid = 0
+$script:virtualDisplayFirstCleanupProven = $true
+$script:virtualDisplayAuthorityRetained = $false
+$script:virtualDisplaySecondaryAttempted = $false
+$script:virtualDisplaySecondaryCompleted = $false
+
+function Invoke-VirtualDisplayInstaller(
+    [string]$InstallerPath,
+    [int]$TimeoutMilliseconds = 120000,
+    [ValidateSet(
+      "none", "assign", "resume", "startTerminate", "startWait",
+      "jobTerminate", "jobAccounting", "retain",
+      "secondaryTerminate", "secondaryWait", "secondaryAccounting", "read",
+      "terminate", "wait", "pipe")]
+    [string]$ValidationFault = "none") {
+  if ($TimeoutMilliseconds -lt 1000 -or $TimeoutMilliseconds -gt 120000) {
+    throw "virtualDisplayInstallerUnavailable"
+  }
+  try {
+    $jobProcess = [LigaseJobProcess]::Start(
+      (Join-Path $env:SystemRoot "System32\cmd.exe"),
+      $InstallerPath, (Split-Path -Parent $InstallerPath),
+      $ValidationFault)
+  } catch {
+    $script:virtualDisplayFirstCleanupProven =
+      [bool][LigaseJobProcess]::LastCleanupProven
+    $script:virtualDisplayAuthorityRetained =
+      [bool][LigaseJobProcess]::AuthorityRetained
+    $script:virtualDisplayCleanupPid =
+      [int][LigaseJobProcess]::LastCleanupPid
+    if ($script:virtualDisplayCleanupPid -ne 0) {
+      if ([LigaseJobProcess]::SecondaryContainment($ValidationFault)) {
+        $script:virtualDisplayProcessCleanup = "completed"
+        $script:virtualDisplayCleanupPid = 0
+      } else {
+        $script:virtualDisplayProcessCleanup = "failed"
+      }
+    } elseif ([LigaseJobProcess]::LastCleanupProven) {
+      $script:virtualDisplayProcessCleanup = "completed"
+    }
+    $script:virtualDisplaySecondaryAttempted =
+      [bool][LigaseJobProcess]::SecondaryAttempted
+    $script:virtualDisplaySecondaryCompleted =
+      [bool][LigaseJobProcess]::SecondaryCompleted
+    throw "virtualDisplayInstallerCleanupFailed"
+  }
+  try {
+    $process = $jobProcess.Process
+    $stdoutBuffer = [byte[]]::new(128)
+    $stderrBuffer = [byte[]]::new(128)
+    $stdoutBytes = [byte[]]::new(512)
+    $stderrBytes = [byte[]]::new(512)
+    $stdoutLength = 0
+    $stderrLength = 0
+    try {
+      if ($ValidationFault -ceq "read") {
+        throw [IO.IOException]::new("validationReadFault")
+      }
+      $stdoutTask = $jobProcess.StandardOutput.ReadAsync(
+        $stdoutBuffer, 0, $stdoutBuffer.Length)
+      $stderrTask = $jobProcess.StandardError.ReadAsync(
+        $stderrBuffer, 0, $stderrBuffer.Length)
+    } catch {
+      if (-not $jobProcess.Terminate() -or
+          -not $jobProcess.WaitForRoot(5000) -or
+          -not $jobProcess.HasNoActiveProcesses()) {
+        $script:virtualDisplayProcessCleanup = "failed"
+        throw "virtualDisplayInstallerCleanupFailed"
+      }
+      $script:virtualDisplayProcessCleanup = "completed"
+      throw "virtualDisplayInstallerOutputUnavailable"
+    }
+    $stdoutClosed = $false
+    $stderrClosed = $false
+    $overflow = $false
+    $pipeFault = $false
+    $clock = [Diagnostics.Stopwatch]::StartNew()
+    while (-not (
+        $jobProcess.HasNoActiveProcesses() -and
+        $stdoutClosed -and $stderrClosed)) {
+      if ($stdoutTask.IsCompleted) {
+        try {
+          $count = $stdoutTask.GetAwaiter().GetResult()
+        } catch {
+          $pipeFault = $true
+          break
+        }
+        if ($count -eq 0) {
+          $stdoutClosed = $true
+        } elseif ($stdoutLength + $count -gt 512) {
+          $overflow = $true
+          break
+        } else {
+          [Array]::Copy($stdoutBuffer, 0, $stdoutBytes, $stdoutLength, $count)
+          $stdoutLength += $count
+          $stdoutTask = $jobProcess.StandardOutput.ReadAsync(
+            $stdoutBuffer, 0, $stdoutBuffer.Length)
+        }
+      }
+      if ($stderrTask.IsCompleted) {
+        try {
+          $count = $stderrTask.GetAwaiter().GetResult()
+        } catch {
+          $pipeFault = $true
+          break
+        }
+        if ($count -eq 0) {
+          $stderrClosed = $true
+        } elseif ($stderrLength + $count -gt 512) {
+          $overflow = $true
+          break
+        } else {
+          [Array]::Copy($stderrBuffer, 0, $stderrBytes, $stderrLength, $count)
+          $stderrLength += $count
+          $stderrTask = $jobProcess.StandardError.ReadAsync(
+            $stderrBuffer, 0, $stderrBuffer.Length)
+        }
+      }
+      if ($clock.ElapsedMilliseconds -ge $TimeoutMilliseconds) { break }
+      if (-not (
+          $jobProcess.HasNoActiveProcesses() -and
+          $stdoutClosed -and $stderrClosed)) {
+        Start-Sleep -Milliseconds 10
+      }
+    }
+    $stdoutExact = [byte[]]::new($stdoutLength)
+    $stderrExact = [byte[]]::new($stderrLength)
+    [Array]::Copy($stdoutBytes, $stdoutExact, $stdoutLength)
+    [Array]::Copy($stderrBytes, $stderrExact, $stderrLength)
+    $script:virtualDisplayStdoutSha256 = Get-ByteSha256 $stdoutExact
+    $script:virtualDisplayStderrSha256 = Get-ByteSha256 $stderrExact
+    if ($overflow -or $pipeFault -or -not (
+        $jobProcess.HasNoActiveProcesses() -and
+        $stdoutClosed -and $stderrClosed)) {
+      $terminated = $jobProcess.Terminate()
+      if (-not $terminated) {
+        $script:virtualDisplayProcessCleanup = "failed"
+        throw "virtualDisplayInstallerCleanupFailed"
+      }
+      $cleanupClock = [Diagnostics.Stopwatch]::StartNew()
+      while ($cleanupClock.ElapsedMilliseconds -lt 5000 -and
+          -not ($jobProcess.HasNoActiveProcesses() -and
+            $stdoutClosed -and $stderrClosed)) {
+        if (-not $stdoutClosed -and $stdoutTask.IsCompleted) {
+          try {
+            $count = $stdoutTask.GetAwaiter().GetResult()
+            if ($count -eq 0) {
+              $stdoutClosed = $true
+            } else {
+              $stdoutTask = $jobProcess.StandardOutput.ReadAsync(
+                $stdoutBuffer, 0, $stdoutBuffer.Length)
+            }
+          } catch { throw "virtualDisplayInstallerCleanupFailed" }
+        }
+        if (-not $stderrClosed -and $stderrTask.IsCompleted) {
+          try {
+            $count = $stderrTask.GetAwaiter().GetResult()
+            if ($count -eq 0) {
+              $stderrClosed = $true
+            } else {
+              $stderrTask = $jobProcess.StandardError.ReadAsync(
+                $stderrBuffer, 0, $stderrBuffer.Length)
+            }
+          } catch { throw "virtualDisplayInstallerCleanupFailed" }
+        }
+        if (-not ($jobProcess.HasNoActiveProcesses() -and
+            $stdoutClosed -and $stderrClosed)) {
+          Start-Sleep -Milliseconds 10
+        }
+      }
+      if ($ValidationFault -in @("terminate", "wait", "pipe") -or
+          -not $jobProcess.WaitForRoot(0) -or
+          -not $jobProcess.HasNoActiveProcesses() -or
+          -not $stdoutClosed -or -not $stderrClosed) {
+        $script:virtualDisplayProcessCleanup = "failed"
+        throw "virtualDisplayInstallerCleanupFailed"
+      }
+      $script:virtualDisplayProcessCleanup = "completed"
+      if ($overflow) { throw "virtualDisplayInstallerOutputOverflow" }
+      if ($pipeFault) { throw "virtualDisplayInstallerOutputUnavailable" }
+      throw "virtualDisplayInstallerTimeout"
+    }
+    try {
+      $strictUtf8 = [Text.UTF8Encoding]::new($false, $true)
+      $stdout = $strictUtf8.GetString($stdoutExact)
+      $stderr = $strictUtf8.GetString($stderrExact)
+    } catch {
+      throw "virtualDisplayInstallerOutputInvalid"
+    }
+    return [ordered]@{
+      exitCode = [int]$jobProcess.ExitCode
+      stdout = $stdout
+      stderr = $stderr
+    }
+  } finally {
+    $jobProcess.Dispose()
+  }
+}
+
+function Assert-VirtualDisplayInstallerTuple($Result) {
+  $installerExit = [int]$Result.exitCode
+  $script:virtualDisplayChildExit = $installerExit
+  if (-not [string]::IsNullOrEmpty([string]$Result.stderr)) {
+    throw "virtualDisplayInstallerOutputInvalid"
+  }
+  $closed = ([string]$Result.stdout).Trim()
+  if ($closed.Length -gt 512 -or $closed -notmatch
+      '^LIGASE_VDISPLAY_V1\|stage=([A-Za-z]+)\|nativeExit=([0-9]+)(?:\|removeExit=([0-9]+))?$') {
+    throw "virtualDisplayInstallerOutputInvalid"
+  }
+  $stage = [string]$Matches[1]
+  $nativeExit = [int]$Matches[2]
+  $script:virtualDisplayInstallStage = $stage
+  $script:virtualDisplayRemoveExit = if ($Matches[3]) {
+    [int]$Matches[3]
+  } else { -1 }
+  $expectedStage = switch ($installerExit) {
+    0 { "completed" }
+    20 { "toolValidation" }
+    21 { "certificateRoot" }
+    22 { "certificatePublisher" }
+    23 { "deviceCreate" }
+    24 { "driverPackageInstall" }
+    default { "none" }
+  }
+  if ($expectedStage -ceq "none" -or $stage -cne $expectedStage -or
+      (($installerExit -eq 0) -ne ($nativeExit -eq 0))) {
+    throw "virtualDisplayInstallerOutputInvalid"
+  }
+  if ($installerExit -ne 0) {
+    throw $(switch ($installerExit) {
+      20 { "virtualDisplayInstallerToolUnavailable" }
+      21 { "virtualDisplayCertificateRootFailed" }
+      22 { "virtualDisplayCertificatePublisherFailed" }
+      23 { "virtualDisplayDeviceCreateFailed" }
+      24 { "virtualDisplayDriverPackageInstallFailed" }
+    })
+  }
+}
+
+function Invoke-VirtualDisplayInstallerValidation([string]$Root) {
+  $fullRoot = [IO.Path]::GetFullPath($Root)
+  if ($env:LIGASE_INSTALL_VALIDATION_HARNESS -cne "1" -or
+      [string]$env:LIGASE_VIRTUAL_DISPLAY_PROCESS_VALIDATION_ROOT -cne
+        $fullRoot -or [IO.Path]::GetPathRoot($fullRoot) -cne "D:\") {
+    throw "virtualDisplayValidationUnavailable"
+  }
+  $mock = Join-Path $fullRoot "virtual-display-installer-mock.cmd"
+  if (-not (Test-Path -LiteralPath $mock -PathType Leaf)) {
+    throw "virtualDisplayValidationUnavailable"
+  }
+  $code = "virtualDisplayInstalled"
+  $success = $true
+  try {
+    $timeout = if (
+        $env:LIGASE_VIRTUAL_DISPLAY_PROCESS_TIMEOUT_MS -ceq "1000") {
+      1000
+    } else { 120000 }
+    $fault = if ($env:LIGASE_VIRTUAL_DISPLAY_PROCESS_CLEANUP_FAULT -in @(
+        "assign", "resume", "startTerminate", "startWait",
+        "jobTerminate", "jobAccounting", "retain",
+        "secondaryTerminate", "secondaryWait", "secondaryAccounting", "read",
+        "terminate", "wait", "pipe")) {
+      [string]$env:LIGASE_VIRTUAL_DISPLAY_PROCESS_CLEANUP_FAULT
+    } else { "none" }
+    $result = Invoke-VirtualDisplayInstaller $mock $timeout $fault
+    Assert-VirtualDisplayInstallerTuple $result
+  } catch {
+    $code = [string]$_.Exception.Message
+    $success = $false
+  }
+  return [ordered]@{
+    code = $code
+    success = $success
+    installStage = [string]$script:virtualDisplayInstallStage
+    childExitCode = [int]$script:virtualDisplayChildExit
+    removeExitCode = [int]$script:virtualDisplayRemoveExit
+    stdoutSha256 = [string]$script:virtualDisplayStdoutSha256
+    stderrSha256 = [string]$script:virtualDisplayStderrSha256
+    cleanupState = [string]$script:virtualDisplayProcessCleanup
+    cleanupPid = [int]$script:virtualDisplayCleanupPid
+    firstCleanupProven = [bool]$script:virtualDisplayFirstCleanupProven
+    authorityRetained = [bool]$script:virtualDisplayAuthorityRetained
+    secondaryContainmentAttempted =
+      [bool]$script:virtualDisplaySecondaryAttempted
+    secondaryContainmentCompleted =
+      [bool]$script:virtualDisplaySecondaryCompleted
+  }
 }
 
 function Assert-ClosedProperties(
@@ -3129,6 +4086,11 @@ try {
     [Console]::Out.WriteLine(($validationResult | ConvertTo-Json -Compress))
     exit 0
   }
+  if ($Action -eq "ValidateVirtualDisplayInstallerProcess") {
+    $validationResult = Invoke-VirtualDisplayInstallerValidation $ValidationRoot
+    [Console]::Out.WriteLine(($validationResult | ConvertTo-Json -Compress))
+    exit 0
+  }
   $manifest = Read-Manifest
   $artifacts = Test-Artifacts $manifest
   $script:finalComponents.artifacts = "verified"
@@ -3219,6 +4181,31 @@ try {
 
   if ($Action -eq "InstallVirtualDisplay") {
     $thumbprint = [string]$manifest.virtualDisplay.certificateThumbprint
+    if ([string]$manifest.virtualDisplay.installerTool -cne
+          "Deployment/Drivers/sudovda/nefconc.exe" -or
+        [string]$manifest.virtualDisplay.installerToolSha256 -cne
+          "19a113297eafefd796aa91c1a64d199628d9c58dc53928899d2e5d6a68074efe" -or
+        [string]$manifest.virtualDisplay.installerToolSignerThumbprint -cne
+          "1F431092EC96A80B41AB5317F53AC02EA6F9B89B") {
+      throw "virtualDisplayInstallerToolUnavailable"
+    }
+    $installerToolPath = Join-Path $installRoot (
+      [string]$manifest.virtualDisplay.installerTool)
+    if (-not (Test-Path -LiteralPath $installerToolPath -PathType Leaf) -or
+        (Get-Item -LiteralPath $installerToolPath).Length -ne 586152 -or
+        (Get-FileHash -Algorithm SHA256 -LiteralPath $installerToolPath).Hash -cne
+          "19A113297EAFEFD796AA91C1A64D199628D9C58DC53928899D2E5D6A68074EFE") {
+      throw "virtualDisplayInstallerToolUnavailable"
+    }
+    $installerToolSignature =
+      Get-AuthenticodeSignature -LiteralPath $installerToolPath
+    if ($installerToolSignature.Status -ne "Valid" -or
+        $null -eq $installerToolSignature.SignerCertificate -or
+        $installerToolSignature.SignerCertificate.Thumbprint -cne
+          "1F431092EC96A80B41AB5317F53AC02EA6F9B89B" -or
+        $null -eq $installerToolSignature.TimeStamperCertificate) {
+      throw "virtualDisplayInstallerToolUnavailable"
+    }
     $ownershipPath = Join-Path $installRoot (
       "Deployment/Drivers/sudovda/.ligase-driver-ownership.json")
     $ownershipBytes = if (Test-Path -LiteralPath $ownershipPath -PathType Leaf) {
@@ -3260,13 +4247,15 @@ try {
     $ownedStores = @()
     $failureCode = "virtualDisplayInstallFailed"
     try {
-      & (Join-Path $installRoot $manifest.virtualDisplay.installer) | Out-Null
-      $installerExit = $LASTEXITCODE
+      $installerResult = Invoke-VirtualDisplayInstaller (
+        Join-Path $installRoot $manifest.virtualDisplay.installer)
       $after = @(Get-DriverCertificateLocations $thumbprint)
       $ownedStores = @($after | Where-Object { $before -notcontains $_ })
-      if ($installerExit -ne 0) { throw "virtualDisplayInstallFailed" }
+      Assert-VirtualDisplayInstallerTuple $installerResult
 
       $displayReadback = Get-VirtualDisplay
+      $script:virtualDisplayReadbackCode =
+        [string]$displayReadback.machineCode
       $failureCode = "virtualDisplayReadbackFailed"
       if ($displayReadback.state -notin @("available", "rebootRequired") -or
           -not [bool]$displayReadback.driverBindingVerified) {
@@ -3327,10 +4316,24 @@ try {
     }
     Write-Outcome "virtualDisplayInstalled" $true @{
       trust = $driverTrust
+      installStage = [string]$script:virtualDisplayInstallStage
+      readbackCode = [string]$script:virtualDisplayReadbackCode
+      childExitCode = [int]$script:virtualDisplayChildExit
+      removeExitCode = [int]$script:virtualDisplayRemoveExit
+      stdoutSha256 = [string]$script:virtualDisplayStdoutSha256
+      stderrSha256 = [string]$script:virtualDisplayStderrSha256
+      cleanupState = [string]$script:virtualDisplayProcessCleanup
+      cleanupPid = [int]$script:virtualDisplayCleanupPid
+      firstCleanupProven = [bool]$script:virtualDisplayFirstCleanupProven
+      authorityRetained = [bool]$script:virtualDisplayAuthorityRetained
+      secondaryContainmentAttempted =
+        [bool]$script:virtualDisplaySecondaryAttempted
+      secondaryContainmentCompleted =
+        [bool]$script:virtualDisplaySecondaryCompleted
       certificateStoresAdded = $ownedStores.Count
       deviceCount = [int]$displayReadback.deviceCount
       driverBindingVerified = [bool]$displayReadback.driverBindingVerified
-      restartRequired = $true
+      restartRequired = $displayReadback.state -eq "rebootRequired"
     }
     exit 0
   }
@@ -3679,6 +4682,17 @@ try {
     "firewallReadbackMismatch",
     "firewallRemoveFailed",
     "virtualDisplayInstallFailed",
+    "virtualDisplayInstallerToolUnavailable",
+    "virtualDisplayInstallerOutputInvalid",
+    "virtualDisplayInstallerUnavailable",
+    "virtualDisplayInstallerTimeout",
+    "virtualDisplayInstallerCleanupFailed",
+    "virtualDisplayInstallerOutputUnavailable",
+    "virtualDisplayInstallerOutputOverflow",
+    "virtualDisplayCertificateRootFailed",
+    "virtualDisplayCertificatePublisherFailed",
+    "virtualDisplayDeviceCreateFailed",
+    "virtualDisplayDriverPackageInstallFailed",
     "virtualDisplayReadbackFailed",
     "virtualDisplayMarkerCommitFailed",
     "virtualDisplayRollbackFailed",
@@ -3793,6 +4807,25 @@ try {
         [bool]$script:transactionBindingVolumeMatched
       transactionBindingFileIdentityMatched =
         [bool]$script:transactionBindingFileIdentityMatched
+    }
+    exit 10
+  }
+  if ($Action -eq "InstallVirtualDisplay") {
+    Write-Outcome $code $false @{
+      installStage = [string]$script:virtualDisplayInstallStage
+      readbackCode = [string]$script:virtualDisplayReadbackCode
+      childExitCode = [int]$script:virtualDisplayChildExit
+      removeExitCode = [int]$script:virtualDisplayRemoveExit
+      stdoutSha256 = [string]$script:virtualDisplayStdoutSha256
+      stderrSha256 = [string]$script:virtualDisplayStderrSha256
+      cleanupState = [string]$script:virtualDisplayProcessCleanup
+      cleanupPid = [int]$script:virtualDisplayCleanupPid
+      firstCleanupProven = [bool]$script:virtualDisplayFirstCleanupProven
+      authorityRetained = [bool]$script:virtualDisplayAuthorityRetained
+      secondaryContainmentAttempted =
+        [bool]$script:virtualDisplaySecondaryAttempted
+      secondaryContainmentCompleted =
+        [bool]$script:virtualDisplaySecondaryCompleted
     }
     exit 10
   }

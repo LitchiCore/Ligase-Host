@@ -13,6 +13,8 @@ param(
   [string]$ReleaseKind = "UnsignedDev",
   [string]$SigningTool,
   [string[]]$AllowedPublisher = @(),
+  [Parameter(Mandatory)]
+  [string]$NefconExecutable,
   [switch]$SkipBuild
 )
 
@@ -47,6 +49,28 @@ $output = [IO.Path]::GetFullPath($OutputRoot)
 $head = (& git -C $sourceRoot rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or $head -notmatch '^[0-9a-f]{40}$') {
   throw "sourceHeadUnavailable"
+}
+
+$nefconPath = [IO.Path]::GetFullPath($NefconExecutable)
+if ([IO.Path]::GetPathRoot($nefconPath) -cne "D:\" -or
+    -not (Test-Path -LiteralPath $nefconPath -PathType Leaf)) {
+  throw "virtualDisplayInstallerToolUnavailable"
+}
+if ((Get-Item -LiteralPath $nefconPath).Length -ne 586152) {
+  throw "virtualDisplayInstallerToolSizeMismatch"
+}
+$nefconHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $nefconPath).Hash
+if ($nefconHash -cne
+    "19A113297EAFEFD796AA91C1A64D199628D9C58DC53928899D2E5D6A68074EFE") {
+  throw "virtualDisplayInstallerToolHashMismatch"
+}
+$nefconSignature = Get-AuthenticodeSignature -LiteralPath $nefconPath
+if ($nefconSignature.Status -ne "Valid" -or
+    $null -eq $nefconSignature.SignerCertificate -or
+    $nefconSignature.SignerCertificate.Thumbprint -cne
+      "1F431092EC96A80B41AB5317F53AC02EA6F9B89B" -or
+    $null -eq $nefconSignature.TimeStamperCertificate) {
+  throw "virtualDisplayInstallerToolSignatureInvalid"
 }
 
 $work = Join-Path $output "work-$head-$Configuration-$Platform"
@@ -154,6 +178,8 @@ Copy-Item -LiteralPath $coreAssets -Destination (Join-Path $temporaryStage "Core
 New-Item -ItemType Directory -Path (Join-Path $temporaryStage "Deployment/Drivers") -Force | Out-Null
 Copy-Item -LiteralPath (Join-Path $sourceRoot "src_assets/windows/drivers/sudovda") `
   -Destination (Join-Path $temporaryStage "Deployment/Drivers/sudovda") -Recurse
+Copy-Item -LiteralPath $nefconPath -Destination (
+  Join-Path $temporaryStage "Deployment/Drivers/sudovda/nefconc.exe")
 Copy-Item -LiteralPath (Join-Path $sourceRoot "src_assets/windows/misc/firewall") `
   -Destination (Join-Path $temporaryStage "Deployment/Firewall") -Recurse
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "Manage-LigaseInstallation.ps1") `
@@ -263,6 +289,10 @@ $manifest = [ordered]@{
     required = $false
     installer = "Deployment/Drivers/sudovda/install.bat"
     uninstaller = "Deployment/Drivers/sudovda/uninstall.bat"
+    installerTool = "Deployment/Drivers/sudovda/nefconc.exe"
+    installerToolSha256 = $nefconHash.ToLowerInvariant()
+    installerToolSignerThumbprint =
+      $nefconSignature.SignerCertificate.Thumbprint
     catalogSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath (
       Join-Path $temporaryStage "Deployment/Drivers/sudovda/sudovda.cat")).Hash.ToLowerInvariant()
     signerSubject = if ($driverSignature.SignerCertificate) {

@@ -1613,6 +1613,106 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(management, "\"virtualDisplayMarkerCommitFailed\"");
         StringAssert.Contains(management, "\"virtualDisplayRollbackFailed\"");
         StringAssert.Contains(management, "driverBindingVerified");
+        StringAssert.Contains(management, "Invoke-VirtualDisplayInstaller");
+        StringAssert.Contains(management, "ValidateVirtualDisplayInstallerProcess");
+        StringAssert.Contains(management, "jobProcess.StandardOutput.ReadAsync");
+        StringAssert.Contains(management, "jobProcess.StandardError.ReadAsync");
+        StringAssert.Contains(management, "[byte[]]::new(512)");
+        StringAssert.Contains(management, "CREATE_SUSPENDED");
+        StringAssert.Contains(management, "STARTUPINFOEX");
+        StringAssert.Contains(management, "PROC_THREAD_ATTRIBUTE_HANDLE_LIST");
+        StringAssert.Contains(management, "InitializeProcThreadAttributeList");
+        StringAssert.Contains(management, "UpdateProcThreadAttribute");
+        StringAssert.Contains(management, "DeleteProcThreadAttributeList");
+        StringAssert.Contains(management, "AssignProcessToJobObject");
+        StringAssert.Contains(management, "ResumeThread");
+        StringAssert.Contains(management, "JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE");
+        StringAssert.Contains(management, "TerminateJobObject");
+        StringAssert.Contains(management, "HasNoActiveProcesses");
+        StringAssert.Contains(
+            management,
+            "[Text.UTF8Encoding]::new($false, $true)");
+        var boundedInstallerStart = management.IndexOf(
+            "function Invoke-VirtualDisplayInstaller(",
+            StringComparison.Ordinal);
+        var boundedInstallerEnd = management.IndexOf(
+            "function Assert-VirtualDisplayInstallerTuple",
+            boundedInstallerStart,
+            StringComparison.Ordinal);
+        Assert.IsTrue(boundedInstallerStart >= 0 && boundedInstallerEnd > boundedInstallerStart);
+        var boundedInstaller = management[
+            boundedInstallerStart..boundedInstallerEnd];
+        Assert.IsFalse(boundedInstaller.Contains(
+            "StandardOutput.ReadToEndAsync",
+            StringComparison.Ordinal));
+        Assert.IsFalse(boundedInstaller.Contains(
+            "StandardError.ReadToEndAsync",
+            StringComparison.Ordinal));
+        StringAssert.Contains(management, "\"virtualDisplayInstallerToolUnavailable\"");
+        StringAssert.Contains(management, "\"virtualDisplayCertificateRootFailed\"");
+        StringAssert.Contains(management, "\"virtualDisplayCertificatePublisherFailed\"");
+        StringAssert.Contains(management, "\"virtualDisplayDeviceCreateFailed\"");
+        StringAssert.Contains(management, "\"virtualDisplayDriverPackageInstallFailed\"");
+        StringAssert.Contains(management, "\"virtualDisplayInstallerTimeout\"");
+        StringAssert.Contains(management, "\"virtualDisplayInstallerOutputOverflow\"");
+        StringAssert.Contains(
+            management,
+            "installStage = [string]$script:virtualDisplayInstallStage");
+        foreach (var token in new[]
+                 {
+                     "virtualDisplayInstallerProcessCases",
+                     "\"stdoutOverflow\"", "\"stderrOverflow\"", "\"hang\"",
+                     "\"stdoutOverflowTree\"", "\"stderrOverflowTree\"",
+                     "\"assignFault\"", "\"resumeFault\"", "\"readFault\"",
+                     "\"unassignedTerminateFault\"",
+                     "\"unassignedWaitFault\"",
+                     "\"assignedJobTerminateFault\"",
+                     "\"assignedJobAccountingFault\"",
+                     "\"secondaryContainment\"",
+                     "\"secondaryTerminateFailure\"",
+                     "\"secondaryWaitFailure\"",
+                     "\"secondaryAccountingFailure\"",
+                     "firstCleanupProven", "authorityRetained",
+                     "secondaryContainmentAttempted",
+                     "secondaryContainmentCompleted",
+                     "\"terminateFault\"", "\"waitFault\"", "\"pipeFault\"",
+                     "\"tree\"", "\"cross\"", "\"malformed\"", "\"extra\"",
+                     "\"invalidUtf8\""
+                 })
+        {
+            StringAssert.Contains(runtimeHarness, token);
+        }
+        var driverInstaller = File.ReadAllText(Path.Combine(
+            repo, "src_assets", "windows", "drivers", "sudovda",
+            "install.bat"));
+        foreach (var token in new[]
+                 {
+                     "if not exist \"%NEFCON%\"", "stage=certificateRoot",
+                     "stage=certificatePublisher", "stage=deviceCreate",
+                     "stage=driverPackageInstall", "stage=completed",
+                     "exit /b 20", "exit /b 21", "exit /b 22", "exit /b 23",
+                     "exit /b 24"
+                 })
+        {
+            StringAssert.Contains(driverInstaller, token);
+        }
+        Assert.IsTrue(
+            driverInstaller.LastIndexOf("exit /b 0", StringComparison.Ordinal) >
+            driverInstaller.LastIndexOf("popd", StringComparison.Ordinal));
+        var installerBuild = File.ReadAllText(Path.Combine(
+            repo, "packaging", "windows", "ligase",
+            "Build-LigaseInstaller.ps1"));
+        foreach (var token in new[]
+                 {
+                     "[string]$NefconExecutable", "586152",
+                     "19A113297EAFEFD796AA91C1A64D199628D9C58DC53928899D2E5D6A68074EFE",
+                     "1F431092EC96A80B41AB5317F53AC02EA6F9B89B",
+                     "installerToolSha256",
+                     "Deployment/Drivers/sudovda/nefconc.exe"
+                 })
+        {
+            StringAssert.Contains(installerBuild, token);
+        }
         foreach (var token in new[]
                  {
                      "[IO.File]::Replace($temp, $Path, $null, $true)",

@@ -120,6 +120,80 @@ if ($virtualReadbackIndex -lt 0 -or
       '"virtualDisplayMarkerCommitFailed"', [StringComparison]::Ordinal) -lt 0) {
   throw "virtualDisplaySuccessWithoutDeviceDriverReadback"
 }
+foreach ($token in @(
+    'Invoke-VirtualDisplayInstaller',
+    'ValidateVirtualDisplayInstallerProcess',
+    'jobProcess.StandardOutput.ReadAsync',
+    'jobProcess.StandardError.ReadAsync',
+    '[byte[]]::new(512)',
+    '[Text.UTF8Encoding]::new($false, $true)',
+    'CREATE_SUSPENDED',
+    'STARTUPINFOEX',
+    'PROC_THREAD_ATTRIBUTE_HANDLE_LIST',
+    'InitializeProcThreadAttributeList',
+    'UpdateProcThreadAttribute',
+    'DeleteProcThreadAttributeList',
+    'AssignProcessToJobObject',
+    'ResumeThread',
+    'JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE',
+    'TerminateJobObject',
+    'HasNoActiveProcesses',
+    'SecondaryContainment',
+    'virtualDisplayInstallerToolUnavailable',
+    'virtualDisplayCertificateRootFailed',
+    'virtualDisplayCertificatePublisherFailed',
+    'virtualDisplayDeviceCreateFailed',
+    'virtualDisplayDriverPackageInstallFailed',
+    'virtualDisplayInstallerTimeout',
+    'virtualDisplayInstallerOutputOverflow',
+    'installStage = [string]$script:virtualDisplayInstallStage',
+    'stdoutSha256 = [string]$script:virtualDisplayStdoutSha256')) {
+  if ($managementSource.IndexOf($token, [StringComparison]::Ordinal) -lt 0) {
+    throw "virtualDisplayClosedInstallDiagnosticMissing:$token"
+  }
+}
+$boundedInstallerStart = $managementSource.IndexOf(
+  'function Invoke-VirtualDisplayInstaller(',
+  [StringComparison]::Ordinal)
+$boundedInstallerEnd = $managementSource.IndexOf(
+  'function Assert-VirtualDisplayInstallerTuple',
+  $boundedInstallerStart, [StringComparison]::Ordinal)
+if ($boundedInstallerStart -lt 0 -or
+    $boundedInstallerEnd -le $boundedInstallerStart) {
+  throw "virtualDisplayInstallerBoundedScopeMissing"
+}
+$boundedInstallerSource = $managementSource.Substring(
+  $boundedInstallerStart, $boundedInstallerEnd - $boundedInstallerStart)
+if ($boundedInstallerSource.IndexOf(
+    'StandardOutput.ReadToEndAsync', [StringComparison]::Ordinal) -ge 0 -or
+    $boundedInstallerSource.IndexOf(
+    'StandardError.ReadToEndAsync', [StringComparison]::Ordinal) -ge 0) {
+  throw "virtualDisplayInstallerUnboundedReadPresent"
+}
+$driverInstallerSource = [IO.File]::ReadAllText((Join-Path $sourceRoot (
+  "src_assets/windows/drivers/sudovda/install.bat")))
+foreach ($token in @(
+    'if not exist "%NEFCON%"',
+    'stage=certificateRoot', 'stage=certificatePublisher',
+    'stage=deviceCreate', 'stage=driverPackageInstall', 'stage=completed',
+    'exit /b 20', 'exit /b 21', 'exit /b 22', 'exit /b 23',
+    'exit /b 24', 'popd', 'exit /b 0')) {
+  if ($driverInstallerSource.IndexOf(
+      $token, [StringComparison]::Ordinal) -lt 0) {
+    throw "virtualDisplayInstallerStepContractMissing:$token"
+  }
+}
+$buildSource = [IO.File]::ReadAllText((Join-Path $PSScriptRoot (
+  "Build-LigaseInstaller.ps1")))
+foreach ($token in @(
+    '[string]$NefconExecutable', '586152',
+    '19A113297EAFEFD796AA91C1A64D199628D9C58DC53928899D2E5D6A68074EFE',
+    '1F431092EC96A80B41AB5317F53AC02EA6F9B89B',
+    'installerToolSha256', 'Deployment/Drivers/sudovda/nefconc.exe')) {
+  if ($buildSource.IndexOf($token, [StringComparison]::Ordinal) -lt 0) {
+    throw "virtualDisplayInstallerBuildInputGateMissing:$token"
+  }
+}
 $markerTransactionTokens = @(
   '[IO.File]::Replace($temp, $Path, $null, $true)',
   '[IO.File]::Move($temp, $Path)', '$stream.Flush($true)',
@@ -2749,6 +2823,196 @@ $failureFlowResults = @(
     -ExpectedFailedField "none"
 )
 
+$installerProcessRoot = Join-Path $root "virtual-display-installer-process"
+$installerProcessEvidence = Join-Path $root "virtual-display-installer-evidence"
+New-Item -ItemType Directory -Path $installerProcessRoot | Out-Null
+New-Item -ItemType Directory -Path $installerProcessEvidence | Out-Null
+$installerProcessMock = Join-Path $installerProcessRoot (
+  "virtual-display-installer-mock.cmd")
+@'
+@echo off
+if "%LIGASE_VDISPLAY_PROCESS_BEHAVIOR%"=="success" echo LIGASE_VDISPLAY_V1^|stage=completed^|nativeExit=0^|removeExit=0&exit /b 0
+if "%LIGASE_VDISPLAY_PROCESS_BEHAVIOR%"=="exit20" echo LIGASE_VDISPLAY_V1^|stage=toolValidation^|nativeExit=2&exit /b 20
+if "%LIGASE_VDISPLAY_PROCESS_BEHAVIOR%"=="exit21" echo LIGASE_VDISPLAY_V1^|stage=certificateRoot^|nativeExit=5&exit /b 21
+if "%LIGASE_VDISPLAY_PROCESS_BEHAVIOR%"=="exit22" echo LIGASE_VDISPLAY_V1^|stage=certificatePublisher^|nativeExit=5&exit /b 22
+if "%LIGASE_VDISPLAY_PROCESS_BEHAVIOR%"=="exit23" echo LIGASE_VDISPLAY_V1^|stage=deviceCreate^|nativeExit=87^|removeExit=0&exit /b 23
+if "%LIGASE_VDISPLAY_PROCESS_BEHAVIOR%"=="exit24" echo LIGASE_VDISPLAY_V1^|stage=driverPackageInstall^|nativeExit=5^|removeExit=0&exit /b 24
+if "%LIGASE_VDISPLAY_PROCESS_BEHAVIOR%"=="malformed" echo not-json&exit /b 0
+if "%LIGASE_VDISPLAY_PROCESS_BEHAVIOR%"=="extra" echo LIGASE_VDISPLAY_V1^|stage=completed^|nativeExit=0^|removeExit=0&echo extra&exit /b 0
+if "%LIGASE_VDISPLAY_PROCESS_BEHAVIOR%"=="cross" echo LIGASE_VDISPLAY_V1^|stage=deviceCreate^|nativeExit=5^|removeExit=0&exit /b 24
+if "%LIGASE_VDISPLAY_PROCESS_BEHAVIOR%"=="invalidUtf8" powershell.exe -NoProfile -Command "[Console]::OpenStandardOutput().WriteByte(255)"&exit /b 0
+if "%LIGASE_VDISPLAY_PROCESS_BEHAVIOR%"=="stdoutOverflow" for /L %%i in (1,1,80) do @echo 0123456789
+if "%LIGASE_VDISPLAY_PROCESS_BEHAVIOR%"=="stderrOverflow" for /L %%i in (1,1,80) do @echo 0123456789 1>&2
+if "%LIGASE_VDISPLAY_PROCESS_BEHAVIOR%"=="stdoutOverflowTree" start "" /b powershell.exe -NoProfile -Command "Start-Sleep -Seconds 3; [IO.File]::WriteAllText($env:LIGASE_VDISPLAY_SENTINEL,'late')" & for /L %%i in (1,1,80) do @echo 0123456789
+if "%LIGASE_VDISPLAY_PROCESS_BEHAVIOR%"=="stderrOverflowTree" start "" /b powershell.exe -NoProfile -Command "Start-Sleep -Seconds 3; [IO.File]::WriteAllText($env:LIGASE_VDISPLAY_SENTINEL,'late')" & for /L %%i in (1,1,80) do @echo 0123456789 1>&2
+if "%LIGASE_VDISPLAY_PROCESS_BEHAVIOR%"=="hang" powershell.exe -NoProfile -Command "Start-Sleep -Seconds 30"
+if "%LIGASE_VDISPLAY_PROCESS_BEHAVIOR%"=="tree" start "" /b powershell.exe -NoProfile -Command "Start-Sleep -Seconds 3; [IO.File]::WriteAllText($env:LIGASE_VDISPLAY_SENTINEL,'late')" & powershell.exe -NoProfile -Command "Start-Sleep -Seconds 30"
+exit /b 0
+'@ | Set-Content -LiteralPath $installerProcessMock -Encoding ASCII
+$installerProcessCases = @(
+  @{ name = "success"; code = "virtualDisplayInstalled"; success = $true },
+  @{ name = "exit20"; code = "virtualDisplayInstallerToolUnavailable" },
+  @{ name = "exit21"; code = "virtualDisplayCertificateRootFailed" },
+  @{ name = "exit22"; code = "virtualDisplayCertificatePublisherFailed" },
+  @{ name = "exit23"; code = "virtualDisplayDeviceCreateFailed" },
+  @{ name = "exit24"; code = "virtualDisplayDriverPackageInstallFailed" },
+  @{ name = "malformed"; code = "virtualDisplayInstallerOutputInvalid" },
+  @{ name = "extra"; code = "virtualDisplayInstallerOutputInvalid" },
+  @{ name = "cross"; code = "virtualDisplayInstallerOutputInvalid" },
+  @{ name = "invalidUtf8"; code = "virtualDisplayInstallerOutputInvalid" },
+  @{ name = "stdoutOverflow"; code = "virtualDisplayInstallerOutputOverflow" },
+  @{ name = "stderrOverflow"; code = "virtualDisplayInstallerOutputOverflow" },
+  @{ name = "stdoutOverflowTree"; code = "virtualDisplayInstallerOutputOverflow" },
+  @{ name = "stderrOverflowTree"; code = "virtualDisplayInstallerOutputOverflow" },
+  @{ name = "hang"; code = "virtualDisplayInstallerTimeout" },
+  @{ name = "tree"; code = "virtualDisplayInstallerTimeout" },
+  @{ name = "assignFault"; behavior = "hang"; fault = "assign";
+     code = "virtualDisplayInstallerCleanupFailed" },
+  @{ name = "resumeFault"; behavior = "hang"; fault = "resume";
+     code = "virtualDisplayInstallerCleanupFailed" },
+  @{ name = "unassignedTerminateFault"; behavior = "hang";
+     fault = "startTerminate"; code = "virtualDisplayInstallerCleanupFailed" },
+  @{ name = "unassignedWaitFault"; behavior = "hang";
+     fault = "startWait"; code = "virtualDisplayInstallerCleanupFailed" },
+  @{ name = "assignedJobTerminateFault"; behavior = "hang";
+     fault = "jobTerminate"; code = "virtualDisplayInstallerCleanupFailed" },
+  @{ name = "assignedJobAccountingFault"; behavior = "hang";
+     fault = "jobAccounting"; code = "virtualDisplayInstallerCleanupFailed" },
+  @{ name = "secondaryContainment"; behavior = "hang";
+     fault = "retain"; code = "virtualDisplayInstallerCleanupFailed" },
+  @{ name = "secondaryTerminateFailure"; behavior = "hang";
+     fault = "secondaryTerminate"; externalCleanup = $true;
+     code = "virtualDisplayInstallerCleanupFailed" },
+  @{ name = "secondaryWaitFailure"; behavior = "hang";
+     fault = "secondaryWait"; externalCleanup = $true;
+     code = "virtualDisplayInstallerCleanupFailed" },
+  @{ name = "secondaryAccountingFailure"; behavior = "hang";
+     fault = "secondaryAccounting"; externalCleanup = $true;
+     code = "virtualDisplayInstallerCleanupFailed" },
+  @{ name = "readFault"; behavior = "hang"; fault = "read";
+     code = "virtualDisplayInstallerOutputUnavailable" },
+  @{ name = "terminateFault"; behavior = "hang"; fault = "terminate";
+     code = "virtualDisplayInstallerCleanupFailed" },
+  @{ name = "waitFault"; behavior = "hang"; fault = "wait";
+     code = "virtualDisplayInstallerCleanupFailed" },
+  @{ name = "pipeFault"; behavior = "hang"; fault = "pipe";
+     code = "virtualDisplayInstallerCleanupFailed" })
+$installerProcessResults = @()
+foreach ($case in $installerProcessCases) {
+  $sentinel = Join-Path $installerProcessRoot "$($case.name).sentinel"
+  $clock = [Diagnostics.Stopwatch]::StartNew()
+  try {
+    $env:LIGASE_INSTALL_VALIDATION_HARNESS = "1"
+    $env:LIGASE_VIRTUAL_DISPLAY_PROCESS_VALIDATION_ROOT =
+      $installerProcessRoot
+    $env:LIGASE_VIRTUAL_DISPLAY_PROCESS_TIMEOUT_MS = "1000"
+    $env:LIGASE_VDISPLAY_PROCESS_BEHAVIOR = if ($case.behavior) {
+      [string]$case.behavior
+    } else { [string]$case.name }
+    $env:LIGASE_VIRTUAL_DISPLAY_PROCESS_CLEANUP_FAULT = if ($case.fault) {
+      [string]$case.fault
+    } else { "none" }
+    $env:LIGASE_VDISPLAY_SENTINEL = $sentinel
+    $raw = & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass `
+      -File $managementScript `
+      -Action ValidateVirtualDisplayInstallerProcess `
+      -InstallDirectory $installerProcessRoot `
+      -ValidationRoot $installerProcessRoot
+    $nativeExit = $LASTEXITCODE
+  } finally {
+    Remove-Item Env:\LIGASE_INSTALL_VALIDATION_HARNESS -ErrorAction SilentlyContinue
+    Remove-Item Env:\LIGASE_VIRTUAL_DISPLAY_PROCESS_VALIDATION_ROOT -ErrorAction SilentlyContinue
+    Remove-Item Env:\LIGASE_VIRTUAL_DISPLAY_PROCESS_TIMEOUT_MS -ErrorAction SilentlyContinue
+    Remove-Item Env:\LIGASE_VDISPLAY_PROCESS_BEHAVIOR -ErrorAction SilentlyContinue
+    Remove-Item Env:\LIGASE_VIRTUAL_DISPLAY_PROCESS_CLEANUP_FAULT -ErrorAction SilentlyContinue
+    Remove-Item Env:\LIGASE_VDISPLAY_SENTINEL -ErrorAction SilentlyContinue
+  }
+  $clock.Stop()
+  Start-Sleep -Milliseconds 3500
+  if ($nativeExit -ne 0 -or @($raw).Count -ne 1) {
+    throw "virtualDisplayInstallerProcessFixtureFailed:$($case.name)"
+  }
+  $projection = [string]$raw | ConvertFrom-Json
+  $expectedSuccess = [bool]$case.success
+  $externalCleanupCompleted = $false
+  $observedCleanupPid = [int]$projection.cleanupPid
+  if ([bool]$case.externalCleanup) {
+    if ([string]$projection.cleanupState -cne "failed" -or
+        $observedCleanupPid -le 0 -or
+        [bool]$projection.firstCleanupProven -or
+        -not [bool]$projection.authorityRetained -or
+        -not [bool]$projection.secondaryContainmentAttempted -or
+        [bool]$projection.secondaryContainmentCompleted) {
+      throw "virtualDisplayInstallerRetainedProjectionFailed:$($case.name)"
+    }
+    $retainedProcess = Get-Process -Id $observedCleanupPid -ErrorAction SilentlyContinue
+    if ($null -ne $retainedProcess) {
+      try {
+        $killer = [Diagnostics.Process]::Start(
+          (Join-Path $env:SystemRoot "System32\taskkill.exe"),
+          "/PID $observedCleanupPid /T /F")
+        if ($null -eq $killer -or -not $killer.WaitForExit(5000) -or
+            $killer.ExitCode -ne 0 -or
+            -not $retainedProcess.WaitForExit(5000)) {
+          if ($null -ne $killer) { $killer.Dispose() }
+          throw "virtualDisplayInstallerExternalCleanupWaitFailed"
+        }
+        $killer.Dispose()
+      } finally {
+        $retainedProcess.Dispose()
+      }
+    }
+    $externalCleanupCompleted =
+      $null -eq (Get-Process -Id $observedCleanupPid -ErrorAction SilentlyContinue)
+    if (-not $externalCleanupCompleted) {
+      throw "virtualDisplayInstallerExternalCleanupFailed:$($case.name)"
+    }
+  }
+  if ($case.name -ceq "secondaryContainment" -and (
+      [bool]$projection.firstCleanupProven -or
+      -not [bool]$projection.authorityRetained -or
+      -not [bool]$projection.secondaryContainmentAttempted -or
+      -not [bool]$projection.secondaryContainmentCompleted -or
+      [int]$projection.cleanupPid -ne 0)) {
+    throw "virtualDisplayInstallerSecondaryContainmentNotReached"
+  }
+  if ([string]$projection.code -cne [string]$case.code -or
+      [bool]$projection.success -ne $expectedSuccess -or
+      (-not [bool]$case.externalCleanup -and
+        [int]$projection.cleanupPid -ne 0) -or
+      $clock.ElapsedMilliseconds -gt 7000 -or
+      (Test-Path -LiteralPath $sentinel)) {
+    throw "virtualDisplayInstallerProcessAssertionFailed:$($case.name)"
+  }
+  $evidence = [ordered]@{
+    name = [string]$case.name
+    code = [string]$projection.code
+    installStage = [string]$projection.installStage
+    childExitCode = [int]$projection.childExitCode
+    stdoutSha256 = [string]$projection.stdoutSha256
+    stderrSha256 = [string]$projection.stderrSha256
+    cleanupState = [string]$projection.cleanupState
+    retainedPid = $observedCleanupPid
+    firstCleanupProven = [bool]$projection.firstCleanupProven
+    authorityRetained = [bool]$projection.authorityRetained
+    secondaryContainmentAttempted =
+      [bool]$projection.secondaryContainmentAttempted
+    secondaryContainmentCompleted =
+      [bool]$projection.secondaryContainmentCompleted
+    externalCleanupCompleted = $externalCleanupCompleted
+    finalPidZero = $(if ($observedCleanupPid -eq 0) {
+      $true
+    } else { $externalCleanupCompleted })
+    elapsedMilliseconds = [int64]$clock.ElapsedMilliseconds
+    sentinelExists = $false
+  }
+  $evidencePath = Join-Path $installerProcessEvidence "$($case.name).json"
+  [IO.File]::WriteAllText(
+    $evidencePath, ($evidence | ConvertTo-Json -Compress),
+    [Text.UTF8Encoding]::new($false))
+  $installerProcessResults += $evidence
+}
+
 $markerBehaviorRoot = Join-Path $root "virtual-display-marker-behavior"
 $markerEvidenceRoot = Join-Path $root "virtual-display-marker-evidence"
 New-Item -ItemType Directory -Path $markerBehaviorRoot | Out-Null
@@ -2863,6 +3127,7 @@ $markerBehaviorResults += Invoke-MarkerBehaviorFixture `
   shortcutCases = $shortcutResults
   failureFlows = $failureFlowResults
   virtualDisplayMarkerCases = $markerBehaviorResults
+  virtualDisplayInstallerProcessCases = $installerProcessResults
   sourceContracts = $sourceContractResults
 } | ConvertTo-Json -Depth 4 -Compress
 $global:LASTEXITCODE = 0
