@@ -21,6 +21,7 @@ Var DataRootSource
 Var DataRootInitialMode
 Var TestOperatorLocalAppData
 Var ResolverOrphanDecision
+Var FinalizationMode
 
 !include "InstallDirectoryValidation.nsh"
 
@@ -40,6 +41,8 @@ Function .onInit
   ${GetOptions} $0 "/EvidenceFile=" $EvidenceFile
   StrCpy $0 $6
   ${GetOptions} $0 "/TestOperatorLocalAppData=" $TestOperatorLocalAppData
+  StrCpy $0 $6
+  ${GetOptions} $0 "/FinalizationMode=" $FinalizationMode
   ${If} $TestOperatorLocalAppData != ""
     System::Call 'kernel32::SetEnvironmentVariableW(w "LIGASE_INSTALL_TEST_OPERATOR_LOCAL_APP_DATA", w "$TestOperatorLocalAppData")'
   ${EndIf}
@@ -65,6 +68,26 @@ Function .onInstFailed
 FunctionEnd
 
 Section
+  ${If} $FinalizationMode != ""
+    nsExec::ExecToStack 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${FinalizationStub}" -Mode "$FinalizationMode"'
+    Pop $0
+    Pop $1
+    ${StrTrimNewLines} $1 $1
+    StrCpy $2 "failed"
+    ${If} $0 == 0
+    ${AndIf} $1 == '{"code":"installationFinalized","success":true,"dataRootState":"existing","firewallState":"configured"}'
+      StrCpy $2 "passed"
+    ${EndIf}
+    FileOpen $5 "$HarnessResultFile" w
+    FileWriteUTF16LE $5 "$2$\r$\n$0$\r$\n$1"
+    FileClose $5
+    ${If} $2 == "passed"
+      SetErrorLevel 0
+    ${Else}
+      SetErrorLevel 10
+    ${EndIf}
+    Quit
+  ${EndIf}
   ${If} $FailureMode != ""
     ${If} $EvidenceFile == ""
       SetErrorLevel 19

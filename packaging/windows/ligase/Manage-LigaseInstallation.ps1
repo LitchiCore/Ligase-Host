@@ -2859,10 +2859,13 @@ try {
       $script:shortcutRollback = $null
       Remove-InstallTransaction
       $null = Write-InstallerEvidence
-      Write-Outcome "installationFinalized" $true @{
+      # NSIS intentionally performs a byte-exact final success comparison.
+      # Windows PowerShell does not preserve ordinary hashtable insertion
+      # order, so keep this terminal projection explicitly ordered.
+      Write-Outcome "installationFinalized" $true ([ordered]@{
         dataRootState = "existing"
         firewallState = [string]$final.firewall.state
-      }
+      })
       exit 0
     } catch {
       if ($script:firewallAppliedByTransaction -and

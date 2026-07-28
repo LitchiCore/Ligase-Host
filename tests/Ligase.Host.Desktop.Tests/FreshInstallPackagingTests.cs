@@ -1173,6 +1173,34 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(management, "return \"aclDrift\"");
         StringAssert.Contains(management, "\"RecordEvidence\"");
         StringAssert.Contains(management, "\"FinalizeInstall\"");
+        StringAssert.Contains(
+            management,
+            "Write-Outcome \"installationFinalized\" $true ([ordered]@{");
+        Assert.IsFalse(
+            management.Contains(
+                "Write-Outcome \"installationFinalized\" $true @{",
+                StringComparison.Ordinal));
+        StringAssert.Contains(harness, "nsExec::ExecToStack");
+        StringAssert.Contains(harness, "Pop $0");
+        StringAssert.Contains(harness, "Pop $1");
+        StringAssert.Contains(
+            harness,
+            "${AndIf} $1 == '{\"code\":\"installationFinalized\",\"success\":true,\"dataRootState\":\"existing\",\"firewallState\":\"configured\"}'");
+        StringAssert.Contains(
+            runtimeHarness,
+            "finalizationStackCases = $finalizationStackResults");
+        StringAssert.Contains(
+            runtimeHarness,
+            "-Mode \"success\" -ExpectedVerdict \"passed\"");
+        StringAssert.Contains(
+            runtimeHarness,
+            "-Mode \"extra\" -ExpectedVerdict \"failed\"");
+        StringAssert.Contains(
+            runtimeHarness,
+            "-Mode \"malformed\" -ExpectedVerdict \"failed\"");
+        StringAssert.Contains(
+            runtimeHarness,
+            "-Mode \"nonzero\" -ExpectedVerdict \"failed\"");
         StringAssert.Contains(management, "function Write-InstallerEvidence");
         StringAssert.Contains(
             management,

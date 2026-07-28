@@ -433,7 +433,13 @@ outcome, and both owned firewall rules. Only that final exact readback permits
 the Chinese success result and ordinary Finish page. Helper failure, migration
 failure, contradictory output, selected-component failure, or final readback
 failure instead terminates the shared GUI/silent final section with a Chinese
-failure state on the install-progress page, records a non-success machine
+failure result. The successful helper projection is emitted from an explicitly
+ordered dictionary because the NSIS consumer deliberately compares the
+single-line JSON bytes exactly after trimming terminal newlines. This keeps
+Windows PowerShell hashtable enumeration from turning a semantically successful
+final readback into a UI false negative. Extra output, malformed JSON, reversed
+or unknown fields, and a nonzero helper exit remain fail closed. A failure
+state remains on the install-progress page, records a non-success machine
 outcome, and exits with a nonzero native process code without showing the
 normal success Result or Finish page. Silent `/S` uses the same final section;
 it cannot skip final readback or convert a failed typed outcome into process

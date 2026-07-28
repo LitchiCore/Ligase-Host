@@ -20,10 +20,40 @@ if (Test-Path -LiteralPath $root) {
 $harness = Join-Path $root "LigaseInstallDirectoryHarness.exe"
 $harnessDiagnostic = Join-Path $root "harness-runtime.diagnostic"
 $resolver = Join-Path $PSScriptRoot "Resolve-LigaseInstallDirectory.ps1"
+$finalizationStub = Join-Path $root "finalization-stub.ps1"
+@'
+[CmdletBinding()]
+param([Parameter(Mandatory)][string]$Mode)
+$ErrorActionPreference = "Stop"
+switch ($Mode) {
+  "success" {
+    [Console]::Out.WriteLine(
+      '{"code":"installationFinalized","success":true,"dataRootState":"existing","firewallState":"configured"}')
+    exit 0
+  }
+  "extra" {
+    [Console]::Out.WriteLine(
+      '{"code":"installationFinalized","success":true,"dataRootState":"existing","firewallState":"configured"}')
+    [Console]::Out.WriteLine('unexpected')
+    exit 0
+  }
+  "malformed" {
+    [Console]::Out.WriteLine('{"code":"installationFinalized"')
+    exit 0
+  }
+  "nonzero" {
+    [Console]::Out.WriteLine(
+      '{"code":"installationFinalized","success":true,"dataRootState":"existing","firewallState":"configured"}')
+    exit 18
+  }
+  default { exit 19 }
+}
+'@ | Set-Content -LiteralPath $finalizationStub -Encoding UTF8
 & $MakeNsis `
   "/DOutputFile=$harness" `
   "/DResolverScript=$resolver" `
   "/DHarnessDiagnosticPath=$harnessDiagnostic" `
+  "/DFinalizationStub=$finalizationStub" `
   (Join-Path $PSScriptRoot "LigaseInstallDirectoryHarness.nsi") | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "harnessCompileFailed" }
 
@@ -63,6 +93,48 @@ return process.ExitCode;
 if ($LASTEXITCODE -ne 0) { throw "argumentListRunnerBuildFailed" }
 $argumentListRunner = Join-Path $argumentListRunnerOutput "ArgumentListRunner.dll"
 $managementScript = Join-Path $PSScriptRoot "Manage-LigaseInstallation.ps1"
+
+function Invoke-FinalizationStackFixture(
+  [string]$Mode,
+  [string]$ExpectedVerdict,
+  [int]$ExpectedHelperExit,
+  [int]$ExpectedNativeExit
+) {
+  $resultFile = Join-Path $root "finalization-$Mode.result"
+  & $DotNet $argumentListRunner $harness "/ResultFile=$resultFile" `
+    "/FinalizationMode=$Mode"
+  $nativeExit = $LASTEXITCODE
+  if ($nativeExit -ne $ExpectedNativeExit) {
+    throw "finalizationNativeExitMismatch:$Mode"
+  }
+  $lines = @(Get-Content -LiteralPath $resultFile -Encoding Unicode)
+  if ($lines.Count -lt 3 -or
+      $lines[0] -cne $ExpectedVerdict -or
+      [int]$lines[1] -ne $ExpectedHelperExit) {
+    throw "finalizationStackProjectionMismatch:$Mode"
+  }
+  [ordered]@{
+    name = "finalization-$Mode"
+    passed = $true
+    verdict = [string]$lines[0]
+    helperExit = [int]$lines[1]
+  }
+}
+
+$finalizationStackResults = @(
+  Invoke-FinalizationStackFixture `
+    -Mode "success" -ExpectedVerdict "passed" `
+    -ExpectedHelperExit 0 -ExpectedNativeExit 0
+  Invoke-FinalizationStackFixture `
+    -Mode "extra" -ExpectedVerdict "failed" `
+    -ExpectedHelperExit 0 -ExpectedNativeExit 10
+  Invoke-FinalizationStackFixture `
+    -Mode "malformed" -ExpectedVerdict "failed" `
+    -ExpectedHelperExit 0 -ExpectedNativeExit 10
+  Invoke-FinalizationStackFixture `
+    -Mode "nonzero" -ExpectedVerdict "failed" `
+    -ExpectedHelperExit 18 -ExpectedNativeExit 10
+)
 
 function New-TestShortcut(
   [string]$Path,
@@ -2609,6 +2681,7 @@ $failureFlowResults = @(
 [ordered]@{
   code = "installDirectoryRuntimeHarnessPassed"
   cases = $results
+  finalizationStackCases = $finalizationStackResults
   shortcutCases = $shortcutResults
   failureFlows = $failureFlowResults
 } | ConvertTo-Json -Depth 4 -Compress
