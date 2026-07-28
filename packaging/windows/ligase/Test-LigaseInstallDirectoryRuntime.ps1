@@ -2849,56 +2849,284 @@ if "%LIGASE_VDISPLAY_PROCESS_BEHAVIOR%"=="hang" powershell.exe -NoProfile -Comma
 if "%LIGASE_VDISPLAY_PROCESS_BEHAVIOR%"=="tree" start "" /b powershell.exe -NoProfile -Command "Start-Sleep -Seconds 3; [IO.File]::WriteAllText($env:LIGASE_VDISPLAY_SENTINEL,'late')" & powershell.exe -NoProfile -Command "Start-Sleep -Seconds 30"
 exit /b 0
 '@ | Set-Content -LiteralPath $installerProcessMock -Encoding ASCII
+function Assert-InstallerProcessCase(
+  [Collections.IDictionary]$Case,
+  [string[]]$ObservedKeys
+) {
+  $schema = if ($Case.Contains("schema") -and $Case["schema"] -is [string]) {
+    [string]$Case["schema"]
+  } else { "none" }
+  $expected = switch -CaseSensitive ($schema) {
+    "directV1" { @("schema", "name", "code", "success") }
+    "faultV1" { @("schema", "name", "behavior", "fault", "code", "success") }
+    "retainedV1" {
+      @("schema", "name", "behavior", "fault", "code", "success",
+        "externalCleanup")
+    }
+    default { @() }
+  }
+  $actual = if ($PSBoundParameters.ContainsKey("ObservedKeys")) {
+    @($ObservedKeys)
+  } else {
+    @($Case.Keys | ForEach-Object { [string]$_ })
+  }
+  $actualSet = [Collections.Generic.HashSet[string]]::new(
+    [StringComparer]::Ordinal)
+  $keysUnique = $true
+  foreach ($key in $actual) {
+    if (-not $actualSet.Add($key)) { $keysUnique = $false }
+  }
+  $expectedSet = [Collections.Generic.HashSet[string]]::new(
+    [StringComparer]::Ordinal)
+  foreach ($key in $expected) {
+    if (-not $expectedSet.Add([string]$key)) {
+      throw "virtualDisplayInstallerCaseSchemaDefinitionInvalid"
+    }
+  }
+  $valid = $expected.Count -gt 0 -and
+    $keysUnique -and $actualSet.Count -eq $expectedSet.Count
+  if ($valid) {
+    foreach ($key in $actualSet) {
+      if (-not $expectedSet.Contains($key)) { $valid = $false; break }
+    }
+  }
+  $valid = $valid -and
+    $Case["name"] -is [string] -and $Case["name"].Length -gt 0 -and
+    $Case["code"] -is [string] -and $Case["code"].Length -gt 0 -and
+    $Case["success"] -is [bool]
+  if ($schema -ceq "faultV1" -or $schema -ceq "retainedV1") {
+    $valid = $valid -and $Case["behavior"] -is [string] -and
+      $Case["behavior"].Length -gt 0 -and $Case["fault"] -is [string] -and
+      $Case["fault"].Length -gt 0
+  }
+  if ($schema -ceq "retainedV1") {
+    $valid = $valid -and $Case["externalCleanup"] -is [bool] -and
+      [bool]$Case["externalCleanup"]
+  }
+  if (-not $valid) {
+    $safeName = if ($Case.Contains("name") -and $Case["name"] -is [string] -and
+        [string]$Case["name"] -match '^[A-Za-z0-9]{1,64}$') {
+      [string]$Case["name"]
+    } else { "unknown" }
+    $safeEvidence = [ordered]@{
+      schema = 1
+      result = "failed"
+      code = "virtualDisplayInstallerCaseSchemaInvalid"
+      caseName = $safeName
+      declaredSchema = $(if ($schema -ceq "directV1" -or
+          $schema -ceq "faultV1" -or $schema -ceq "retainedV1") {
+        $schema
+      } else { "unknown" })
+      propertyCount = $actual.Count
+    }
+    [IO.File]::WriteAllText(
+      (Join-Path $installerProcessEvidence "case-schema-$safeName.json"),
+      ($safeEvidence | ConvertTo-Json -Compress),
+      [Text.UTF8Encoding]::new($false))
+    throw "virtualDisplayInstallerCaseSchemaInvalid:$safeName"
+  }
+  return $Case
+}
+
+$installerProcessCaseSchemaResults = @()
+foreach ($invalidCase in @(
+    [ordered]@{
+      name = "missing"
+      value = @{ schema = "directV1"; name = "missing";
+        success = $false }
+    },
+    [ordered]@{
+      name = "unknown"
+      value = @{ schema = "directV1"; name = "unknown";
+        code = "virtualDisplayInstallerOutputInvalid"; success = $false;
+        unexpected = "rejected" }
+    },
+    [ordered]@{
+      name = "type"
+      value = @{ schema = "directV1"; name = "type";
+        code = 18; success = $false }
+    },
+    [ordered]@{
+      name = "duplicateSame"
+      value = @{ schema = "directV1"; name = "duplicateSame";
+        code = "virtualDisplayInstallerOutputInvalid"; success = $false }
+      observedKeys = @("schema", "name", "code", "code", "success")
+    },
+    [ordered]@{
+      name = "duplicateConflict"
+      value = @{ schema = "directV1"; name = "duplicateConflict";
+        code = "virtualDisplayInstallerOutputInvalid"; success = $false }
+      observedKeys = @("schema", "name", "code", "success", "code")
+    },
+    [ordered]@{
+      name = "schemaUpper"
+      value = @{ schema = "DIRECTV1"; name = "schemaUpper";
+        code = "virtualDisplayInstallerOutputInvalid"; success = $false }
+    },
+    [ordered]@{
+      name = "schemaMixed"
+      value = @{ schema = "DirectV1"; name = "schemaMixed";
+        code = "virtualDisplayInstallerOutputInvalid"; success = $false }
+    },
+    [ordered]@{
+      name = "nameCase"
+      value = @{ schema = "directV1"; Name = "nameCase";
+        code = "virtualDisplayInstallerOutputInvalid"; success = $false }
+    },
+    [ordered]@{
+      name = "codeCase"
+      value = @{ schema = "directV1"; name = "codeCase";
+        Code = "virtualDisplayInstallerOutputInvalid"; success = $false }
+    },
+    [ordered]@{
+      name = "externalCleanupCase"
+      value = @{ schema = "retainedV1"; name = "externalCleanupCase";
+        behavior = "hang"; fault = "secondaryWait";
+        code = "virtualDisplayInstallerCleanupFailed"; success = $false;
+        ExternalCleanup = $true }
+    },
+    [ordered]@{
+      name = "unsafeSchema"
+      value = @{ schema = "C:\Users\private\secret-token";
+        name = "unsafeSchema"; code = "virtualDisplayInstallerOutputInvalid";
+        success = $false }
+    })) {
+  $rejected = $false
+  try {
+    if ($invalidCase.Contains("observedKeys")) {
+      Assert-InstallerProcessCase $invalidCase.value $invalidCase.observedKeys |
+        Out-Null
+    } else {
+      Assert-InstallerProcessCase $invalidCase.value | Out-Null
+    }
+  } catch {
+    $rejected =
+      $_.Exception.Message.StartsWith(
+        "virtualDisplayInstallerCaseSchemaInvalid:",
+        [StringComparison]::Ordinal)
+  }
+  $invalidEvidence = Join-Path $installerProcessEvidence (
+    "case-schema-$($invalidCase.name).json")
+  if (-not $rejected -or
+      -not (Test-Path -LiteralPath $invalidEvidence -PathType Leaf)) {
+    throw "virtualDisplayInstallerCaseSchemaNegativeFailed:$($invalidCase.name)"
+  }
+  $invalidReadback = [IO.File]::ReadAllText($invalidEvidence) |
+    ConvertFrom-Json
+  if ([string]$invalidReadback.result -cne "failed" -or
+      [string]$invalidReadback.code -cne
+        "virtualDisplayInstallerCaseSchemaInvalid" -or
+      [string]$invalidReadback.declaredSchema -notin @(
+        "directV1", "faultV1", "retainedV1", "unknown") -or
+      ([string]$invalidReadback.declaredSchema -cne "directV1" -and
+       [string]$invalidReadback.declaredSchema -cne "faultV1" -and
+       [string]$invalidReadback.declaredSchema -cne "retainedV1" -and
+       [string]$invalidReadback.declaredSchema -cne "unknown")) {
+    throw "virtualDisplayInstallerCaseSchemaEvidenceInvalid:$($invalidCase.name)"
+  }
+  $invalidEvidenceBytes = [IO.File]::ReadAllText($invalidEvidence)
+  if ($invalidEvidenceBytes.IndexOf(
+      "C:\Users\", [StringComparison]::OrdinalIgnoreCase) -ge 0 -or
+      $invalidEvidenceBytes.IndexOf(
+      "secret-token", [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+    throw "virtualDisplayInstallerCaseSchemaEvidenceLeak:$($invalidCase.name)"
+  }
+  $installerProcessCaseSchemaResults += [ordered]@{
+    name = [string]$invalidCase.name
+    rejected = $true
+    evidenceCode = [string]$invalidReadback.code
+  }
+}
+
 $installerProcessCases = @(
-  @{ name = "success"; code = "virtualDisplayInstalled"; success = $true },
-  @{ name = "exit20"; code = "virtualDisplayInstallerToolUnavailable" },
-  @{ name = "exit21"; code = "virtualDisplayCertificateRootFailed" },
-  @{ name = "exit22"; code = "virtualDisplayCertificatePublisherFailed" },
-  @{ name = "exit23"; code = "virtualDisplayDeviceCreateFailed" },
-  @{ name = "exit24"; code = "virtualDisplayDriverPackageInstallFailed" },
-  @{ name = "malformed"; code = "virtualDisplayInstallerOutputInvalid" },
-  @{ name = "extra"; code = "virtualDisplayInstallerOutputInvalid" },
-  @{ name = "cross"; code = "virtualDisplayInstallerOutputInvalid" },
-  @{ name = "invalidUtf8"; code = "virtualDisplayInstallerOutputInvalid" },
-  @{ name = "stdoutOverflow"; code = "virtualDisplayInstallerOutputOverflow" },
-  @{ name = "stderrOverflow"; code = "virtualDisplayInstallerOutputOverflow" },
-  @{ name = "stdoutOverflowTree"; code = "virtualDisplayInstallerOutputOverflow" },
-  @{ name = "stderrOverflowTree"; code = "virtualDisplayInstallerOutputOverflow" },
-  @{ name = "hang"; code = "virtualDisplayInstallerTimeout" },
-  @{ name = "tree"; code = "virtualDisplayInstallerTimeout" },
-  @{ name = "assignFault"; behavior = "hang"; fault = "assign";
-     code = "virtualDisplayInstallerCleanupFailed" },
-  @{ name = "resumeFault"; behavior = "hang"; fault = "resume";
-     code = "virtualDisplayInstallerCleanupFailed" },
-  @{ name = "unassignedTerminateFault"; behavior = "hang";
-     fault = "startTerminate"; code = "virtualDisplayInstallerCleanupFailed" },
-  @{ name = "unassignedWaitFault"; behavior = "hang";
-     fault = "startWait"; code = "virtualDisplayInstallerCleanupFailed" },
-  @{ name = "assignedJobTerminateFault"; behavior = "hang";
-     fault = "jobTerminate"; code = "virtualDisplayInstallerCleanupFailed" },
-  @{ name = "assignedJobAccountingFault"; behavior = "hang";
-     fault = "jobAccounting"; code = "virtualDisplayInstallerCleanupFailed" },
-  @{ name = "secondaryContainment"; behavior = "hang";
-     fault = "retain"; code = "virtualDisplayInstallerCleanupFailed" },
-  @{ name = "secondaryTerminateFailure"; behavior = "hang";
-     fault = "secondaryTerminate"; externalCleanup = $true;
-     code = "virtualDisplayInstallerCleanupFailed" },
-  @{ name = "secondaryWaitFailure"; behavior = "hang";
-     fault = "secondaryWait"; externalCleanup = $true;
-     code = "virtualDisplayInstallerCleanupFailed" },
-  @{ name = "secondaryAccountingFailure"; behavior = "hang";
-     fault = "secondaryAccounting"; externalCleanup = $true;
-     code = "virtualDisplayInstallerCleanupFailed" },
-  @{ name = "readFault"; behavior = "hang"; fault = "read";
-     code = "virtualDisplayInstallerOutputUnavailable" },
-  @{ name = "terminateFault"; behavior = "hang"; fault = "terminate";
-     code = "virtualDisplayInstallerCleanupFailed" },
-  @{ name = "waitFault"; behavior = "hang"; fault = "wait";
-     code = "virtualDisplayInstallerCleanupFailed" },
-  @{ name = "pipeFault"; behavior = "hang"; fault = "pipe";
-     code = "virtualDisplayInstallerCleanupFailed" })
+  @{ schema = "directV1"; name = "success";
+     code = "virtualDisplayInstalled"; success = $true },
+  @{ schema = "directV1"; name = "exit20";
+     code = "virtualDisplayInstallerToolUnavailable"; success = $false },
+  @{ schema = "directV1"; name = "exit21";
+     code = "virtualDisplayCertificateRootFailed"; success = $false },
+  @{ schema = "directV1"; name = "exit22";
+     code = "virtualDisplayCertificatePublisherFailed"; success = $false },
+  @{ schema = "directV1"; name = "exit23";
+     code = "virtualDisplayDeviceCreateFailed"; success = $false },
+  @{ schema = "directV1"; name = "exit24";
+     code = "virtualDisplayDriverPackageInstallFailed"; success = $false },
+  @{ schema = "directV1"; name = "malformed";
+     code = "virtualDisplayInstallerOutputInvalid"; success = $false },
+  @{ schema = "directV1"; name = "extra";
+     code = "virtualDisplayInstallerOutputInvalid"; success = $false },
+  @{ schema = "directV1"; name = "cross";
+     code = "virtualDisplayInstallerOutputInvalid"; success = $false },
+  @{ schema = "directV1"; name = "invalidUtf8";
+     code = "virtualDisplayInstallerOutputInvalid"; success = $false },
+  @{ schema = "directV1"; name = "stdoutOverflow";
+     code = "virtualDisplayInstallerOutputOverflow"; success = $false },
+  @{ schema = "directV1"; name = "stderrOverflow";
+     code = "virtualDisplayInstallerOutputOverflow"; success = $false },
+  @{ schema = "directV1"; name = "stdoutOverflowTree";
+     code = "virtualDisplayInstallerOutputOverflow"; success = $false },
+  @{ schema = "directV1"; name = "stderrOverflowTree";
+     code = "virtualDisplayInstallerOutputOverflow"; success = $false },
+  @{ schema = "directV1"; name = "hang";
+     code = "virtualDisplayInstallerTimeout"; success = $false },
+  @{ schema = "directV1"; name = "tree";
+     code = "virtualDisplayInstallerTimeout"; success = $false },
+  @{ schema = "faultV1"; name = "assignFault"; behavior = "hang";
+     fault = "assign"; code = "virtualDisplayInstallerCleanupFailed";
+     success = $false },
+  @{ schema = "faultV1"; name = "resumeFault"; behavior = "hang";
+     fault = "resume"; code = "virtualDisplayInstallerCleanupFailed";
+     success = $false },
+  @{ schema = "faultV1"; name = "unassignedTerminateFault"; behavior = "hang";
+     fault = "startTerminate"; code = "virtualDisplayInstallerCleanupFailed";
+     success = $false },
+  @{ schema = "faultV1"; name = "unassignedWaitFault"; behavior = "hang";
+     fault = "startWait"; code = "virtualDisplayInstallerCleanupFailed";
+     success = $false },
+  @{ schema = "faultV1"; name = "assignedJobTerminateFault"; behavior = "hang";
+     fault = "jobTerminate"; code = "virtualDisplayInstallerCleanupFailed";
+     success = $false },
+  @{ schema = "faultV1"; name = "assignedJobAccountingFault"; behavior = "hang";
+     fault = "jobAccounting"; code = "virtualDisplayInstallerCleanupFailed";
+     success = $false },
+  @{ schema = "faultV1"; name = "secondaryContainment"; behavior = "hang";
+     fault = "retain"; code = "virtualDisplayInstallerCleanupFailed";
+     success = $false },
+  @{ schema = "retainedV1"; name = "secondaryTerminateFailure";
+     behavior = "hang"; fault = "secondaryTerminate";
+     code = "virtualDisplayInstallerCleanupFailed"; success = $false;
+     externalCleanup = $true },
+  @{ schema = "retainedV1"; name = "secondaryWaitFailure";
+     behavior = "hang"; fault = "secondaryWait";
+     code = "virtualDisplayInstallerCleanupFailed"; success = $false;
+     externalCleanup = $true },
+  @{ schema = "retainedV1"; name = "secondaryAccountingFailure";
+     behavior = "hang"; fault = "secondaryAccounting";
+     code = "virtualDisplayInstallerCleanupFailed"; success = $false;
+     externalCleanup = $true },
+  @{ schema = "faultV1"; name = "readFault"; behavior = "hang";
+     fault = "read"; code = "virtualDisplayInstallerOutputUnavailable";
+     success = $false },
+  @{ schema = "faultV1"; name = "terminateFault"; behavior = "hang";
+     fault = "terminate"; code = "virtualDisplayInstallerCleanupFailed";
+     success = $false },
+  @{ schema = "faultV1"; name = "waitFault"; behavior = "hang";
+     fault = "wait"; code = "virtualDisplayInstallerCleanupFailed";
+     success = $false },
+  @{ schema = "faultV1"; name = "pipeFault"; behavior = "hang";
+     fault = "pipe"; code = "virtualDisplayInstallerCleanupFailed";
+     success = $false })
 $installerProcessResults = @()
-foreach ($case in $installerProcessCases) {
+foreach ($untrustedCase in $installerProcessCases) {
+  $case = Assert-InstallerProcessCase $untrustedCase
+  $caseBehavior = if ([string]$case["schema"] -ceq "directV1") {
+    [string]$case["name"]
+  } else { [string]$case["behavior"] }
+  $caseFault = if ([string]$case["schema"] -ceq "directV1") {
+    "none"
+  } else { [string]$case["fault"] }
+  $caseUsesExternalCleanup =
+    [string]$case["schema"] -ceq "retainedV1"
   $sentinel = Join-Path $installerProcessRoot "$($case.name).sentinel"
   $clock = [Diagnostics.Stopwatch]::StartNew()
   try {
@@ -2906,12 +3134,8 @@ foreach ($case in $installerProcessCases) {
     $env:LIGASE_VIRTUAL_DISPLAY_PROCESS_VALIDATION_ROOT =
       $installerProcessRoot
     $env:LIGASE_VIRTUAL_DISPLAY_PROCESS_TIMEOUT_MS = "1000"
-    $env:LIGASE_VDISPLAY_PROCESS_BEHAVIOR = if ($case.behavior) {
-      [string]$case.behavior
-    } else { [string]$case.name }
-    $env:LIGASE_VIRTUAL_DISPLAY_PROCESS_CLEANUP_FAULT = if ($case.fault) {
-      [string]$case.fault
-    } else { "none" }
+    $env:LIGASE_VDISPLAY_PROCESS_BEHAVIOR = $caseBehavior
+    $env:LIGASE_VIRTUAL_DISPLAY_PROCESS_CLEANUP_FAULT = $caseFault
     $env:LIGASE_VDISPLAY_SENTINEL = $sentinel
     $raw = & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass `
       -File $managementScript `
@@ -2936,7 +3160,7 @@ foreach ($case in $installerProcessCases) {
   $expectedSuccess = [bool]$case.success
   $externalCleanupCompleted = $false
   $observedCleanupPid = [int]$projection.cleanupPid
-  if ([bool]$case.externalCleanup) {
+  if ($caseUsesExternalCleanup) {
     if ([string]$projection.cleanupState -cne "failed" -or
         $observedCleanupPid -le 0 -or
         [bool]$projection.firstCleanupProven -or
@@ -2978,7 +3202,7 @@ foreach ($case in $installerProcessCases) {
   }
   if ([string]$projection.code -cne [string]$case.code -or
       [bool]$projection.success -ne $expectedSuccess -or
-      (-not [bool]$case.externalCleanup -and
+      (-not $caseUsesExternalCleanup -and
         [int]$projection.cleanupPid -ne 0) -or
       $clock.ElapsedMilliseconds -gt 7000 -or
       (Test-Path -LiteralPath $sentinel)) {
@@ -3128,6 +3352,7 @@ $markerBehaviorResults += Invoke-MarkerBehaviorFixture `
   failureFlows = $failureFlowResults
   virtualDisplayMarkerCases = $markerBehaviorResults
   virtualDisplayInstallerProcessCases = $installerProcessResults
+  virtualDisplayInstallerCaseSchemaCases = $installerProcessCaseSchemaResults
   sourceContracts = $sourceContractResults
 } | ConvertTo-Json -Depth 4 -Compress
 $global:LASTEXITCODE = 0
