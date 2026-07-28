@@ -1682,8 +1682,119 @@ public sealed class FreshInstallPackagingTests
                       "\"duplicateSame\"", "\"duplicateConflict\"",
                       "\"schemaUpper\"", "\"schemaMixed\"", "\"nameCase\"",
                       "\"codeCase\"", "\"externalCleanupCase\"",
-                      "\"unsafeSchema\"",
-                      "$caseUsesExternalCleanup",
+                     "\"unsafeSchema\"",
+                     "installTransactionJunctionInvocationUnbounded",
+                     "installTransactionJunctionOutputOverflow",
+                     "installTransactionJunctionProjectionInvalid",
+                     "\"--bounded-capture\"",
+                     "class NativeJobProcess",
+                     "CreateProcessW",
+                     "CreateSuspended",
+                     "ExtendedStartupInfoPresent",
+                     "HandleListAttribute",
+                     "InitializeProcThreadAttributeList",
+                     "UpdateProcThreadAttribute",
+                     "AssignProcessToJobObject(job, information.Process)",
+                     "ResumeThread(information.Thread)",
+                     "\"treeInheritedPipe\"",
+                     "boundedHostEarlyChildFixtureFailed",
+                     "\"assignFault\"",
+                     "\"resumeFault\"",
+                     "boundedHostStartFaultFixtureFailed",
+                     "LastCleanupProven",
+                     "LastJobActiveProcesses",
+                     "sealed class NativeStartException",
+                     "startStage = failure.Stage",
+                     "startCode = failure.Code",
+                     "\"executableResolveFault\"",
+                     "GetSystemDirectoryW",
+                     "ResolveTrustedExecutable",
+                     "IsClosedExecutableFile",
+                     "StringComparison.Ordinal",
+                     "Environment.ProcessPath",
+                     "FileAttributes.ReparsePoint",
+                     "CreateProcessW(\n                resolvedExecutable",
+                     "\"pipeFault\"",
+                     "\"jobFault\"",
+                     "\"attributeFault\"",
+                     "\"createFault\"",
+                     "\"managedHandoffFault\"",
+                     "\"processWrapperFault\"",
+                     "\"stdoutSafeHandleFault\"",
+                     "\"stdoutStreamFault\"",
+                     "\"stderrSafeHandleFault\"",
+                     "\"stderrStreamFault\"",
+                     "\"stdoutWriteCloseFault\"",
+                     "\"stderrWriteCloseFault\"",
+                     "\"threadCloseFault\"",
+                     "CloseRawAfterFailure",
+                     "\"powershellCaseDrift\"",
+                     "\"powershellAbsolute\"",
+                     "\"unknownName\"",
+                     "boundedHostExecutableIdentityFixtureFailed",
+                     "AssignProcessToJobObject",
+                     "TerminateJobObject",
+                     "ActiveProcessCount",
+                     "pipeFault",
+                     "jobEmpty",
+                     "cleanupCompleted",
+                     "boundedHostHangFixtureFailed",
+                     "boundedHostOverflowFixtureFailed",
+                     "boundedHostUtf8BoundaryFixtureFailed",
+                     "boundedHostInvalidOverflowFixtureFailed",
+                     "boundedHostInvalidUtf8FixtureFailed",
+                     "boundedHostIncompleteUtf8FixtureFailed",
+                     "boundedHostDualOverflowFixtureFailed",
+                     "stdoutDecoderState",
+                     "stderrDecoderState",
+                     "stdoutPendingTailLength",
+                     "stderrPendingTailLength",
+                     "stdoutRawSha",
+                     "stderrRawSha",
+                     "runTimeoutMs + cleanupReserveMs",
+                     "boundedHostCaseEvidenceV1",
+                     "\"--emit\"",
+                     "\"asciiOverflowStdout\"",
+                     "\"utf8BoundaryStdout\"",
+                     "\"internalInvalidStdout\"",
+                     "\"incompleteUtf8Stdout\"",
+                     "\"dualOverflow\"",
+                     "byteEmitterArgumentValidationFailed",
+                     "argumentListRunnerSourceSha",
+                     "argumentListRunnerBinarySha",
+                     "<TreatWarningsAsErrors>true</TreatWarningsAsErrors>",
+                     "Get-CompatibleSha256",
+                     "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855",
+                     "BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD",
+                     "compatibilityProcessStartCount",
+                     "evidenceCompatibilitySelfTestFailed",
+                     "Write-BoundedHostCaseEvidence",
+                     "Test-BoundedHostCaseEvidence",
+                     "gateEvidenceUnavailable",
+                     "evidenceSha=",
+                     "stdoutRawLength",
+                     "stderrRawLength",
+                     "hardCapMilliseconds",
+                     "environmentRestored",
+                     "boundedHostExtraJsonFixtureFailed",
+                     "boundedHostMalformedJsonFixtureFailed",
+                     "boundedHostCleanupFaultFixtureFailed",
+                     "installTransactionJunctionStateRestoreFailed",
+                     "validationEnvironmentRestored",
+                     "$junctionEnvelopeOutput.Count -ne 1",
+                     "transactionHelperStage -ceq \"rejectReparse\"",
+                     "transactionHelperNativeExit -eq 18",
+                     "helperNativeExit = $junctionNativeExit",
+                     "helperStage = $junctionStage",
+                     "elapsedMilliseconds = $junctionElapsedMilliseconds",
+                     "boundedJunctionEvidenceV1",
+                     "transaction-junction.first.json",
+                     "jobActiveProcesses -ne 0",
+                     "hardCapMilliseconds -ne 20000",
+                     "junctionEnvelope.stdoutOverflow",
+                     "junctionEnvelope.stderrOverflow",
+                     "evidenceSha = $junctionEvidenceSha",
+                     "$caseUsesExternalCleanup",
                       "firstCleanupProven", "authorityRetained",
                      "secondaryContainmentAttempted",
                      "secondaryContainmentCompleted",
@@ -1694,6 +1805,114 @@ public sealed class FreshInstallPackagingTests
         {
             StringAssert.Contains(runtimeHarness, token);
         }
+        var boundedStart = runtimeHarness.IndexOf(
+            "if (args[0] == \"--bounded-capture\")",
+            StringComparison.Ordinal);
+        var ordinaryRunnerStart = runtimeHarness.IndexOf(
+            "var start = new System.Diagnostics.ProcessStartInfo(args[0])",
+            boundedStart, StringComparison.Ordinal);
+        Assert.IsTrue(boundedStart >= 0 && ordinaryRunnerStart > boundedStart);
+        var boundedRunner = runtimeHarness[
+            boundedStart..ordinaryRunnerStart];
+        foreach (var obsoleteManagedToken in new[]
+                 {
+                     "Process.Start(startBounded)",
+                     "processBounded.Kill(true)",
+                     "RedirectStandardOutput",
+                     "RedirectStandardError",
+                     "processBounded.StandardOutput",
+                     "processBounded.StandardError",
+                     "StandardOutput.BaseStream",
+                     "StandardError.BaseStream",
+                     "using var job = new LigaseJob"
+                 })
+        {
+            Assert.IsFalse(boundedRunner.Contains(
+                obsoleteManagedToken, StringComparison.Ordinal));
+        }
+        var nativeStart = runtimeHarness.IndexOf(
+            "sealed class NativeJobProcess", ordinaryRunnerStart,
+            StringComparison.Ordinal);
+        var nativeEnd = runtimeHarness.IndexOf(
+            "sealed class LigaseJob", nativeStart,
+            StringComparison.Ordinal);
+        Assert.IsTrue(nativeStart > ordinaryRunnerStart && nativeEnd > nativeStart);
+        var nativeRunner = runtimeHarness[nativeStart..nativeEnd];
+        Assert.AreEqual(3, System.Text.RegularExpressions.Regex.Matches(
+            nativeRunner, @"\bCreatePipe\(").Count);
+        Assert.AreEqual(3, System.Text.RegularExpressions.Regex.Matches(
+            nativeRunner, @"\bSetHandleInformation\(").Count);
+        StringAssert.Contains(
+            nativeRunner,
+            "Marshal.WriteIntPtr(handleList, 0, stdoutWrite);");
+        StringAssert.Contains(
+            nativeRunner,
+            "Marshal.WriteIntPtr(handleList, IntPtr.Size, stderrWrite);");
+        StringAssert.Contains(
+            nativeRunner,
+            "CreateSuspended | CreateNoWindow | ExtendedStartupInfoPresent");
+        StringAssert.Contains(
+            nativeRunner,
+            "true,\n                CreateSuspended");
+        var createIndex = nativeRunner.IndexOf(
+            "if (!CreateProcessW(", StringComparison.Ordinal);
+        var assignIndex = nativeRunner.IndexOf(
+            "if (!AssignProcessToJobObject(job, information.Process))",
+            StringComparison.Ordinal);
+        var resumeIndex = nativeRunner.IndexOf(
+            "if (ResumeThread(information.Thread)", StringComparison.Ordinal);
+        Assert.IsTrue(
+            createIndex >= 0 && assignIndex > createIndex &&
+            resumeIndex > assignIndex);
+        StringAssert.Contains(nativeRunner, "LastCleanupProven = signaled && empty");
+        StringAssert.Contains(nativeRunner, "WaitForSingleObject");
+        StringAssert.Contains(nativeRunner, "ActiveCount(job)");
+        foreach (var nativeStartStage in new[]
+                 {
+                     "executableResolve", "pipe", "job", "attribute", "create", "assign",
+                     "resume", "managedHandoff"
+                 })
+        {
+            StringAssert.Contains(
+                nativeRunner, $"stage = \"{nativeStartStage}\";");
+        }
+        StringAssert.Contains(
+            nativeRunner, "throw new NativeStartException(");
+        Assert.IsFalse(nativeRunner.Contains(
+            "var value = new NativeJobProcess {",
+            StringComparison.Ordinal));
+        var processWrapperIndex = nativeRunner.IndexOf(
+            "managedProcess = System.Diagnostics.Process.GetProcessById(",
+            StringComparison.Ordinal);
+        var stdoutTransferIndex = nativeRunner.IndexOf(
+            "managedStdoutHandle = new SafeFileHandle(stdoutRead, true);",
+            StringComparison.Ordinal);
+        var stderrTransferIndex = nativeRunner.IndexOf(
+            "managedStderrHandle = new SafeFileHandle(stderrRead, true);",
+            StringComparison.Ordinal);
+        var stdoutRawClearIndex = nativeRunner.IndexOf(
+            "stdoutRead = IntPtr.Zero;", stdoutTransferIndex,
+            StringComparison.Ordinal);
+        var stderrRawClearIndex = nativeRunner.IndexOf(
+            "stderrRead = IntPtr.Zero;", stderrTransferIndex,
+            StringComparison.Ordinal);
+        Assert.IsTrue(
+            processWrapperIndex > assignIndex &&
+            stdoutTransferIndex > processWrapperIndex &&
+            stdoutRawClearIndex > stdoutTransferIndex &&
+            stderrTransferIndex > stdoutRawClearIndex &&
+            stderrRawClearIndex > stderrTransferIndex &&
+            resumeIndex > stderrRawClearIndex);
+        StringAssert.Contains(
+            nativeRunner, "managedStdoutStream?.Dispose();");
+        StringAssert.Contains(
+            nativeRunner, "managedStderrStream?.Dispose();");
+        StringAssert.Contains(
+            nativeRunner, "managedStdoutHandle?.Dispose();");
+        StringAssert.Contains(
+            nativeRunner, "managedStderrHandle?.Dispose();");
+        StringAssert.Contains(
+            nativeRunner, "managedProcess?.Dispose();");
         var driverInstaller = File.ReadAllText(Path.Combine(
             repo, "src_assets", "windows", "drivers", "sudovda",
             "install.bat"));

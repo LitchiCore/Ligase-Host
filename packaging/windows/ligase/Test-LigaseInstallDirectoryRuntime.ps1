@@ -17,6 +17,49 @@ if (Test-Path -LiteralPath $root) {
 } else {
   New-Item -ItemType Directory -Path $root | Out-Null
 }
+$compatibilityProcessStartCount = 0
+function Get-CompatibleSha256([AllowEmptyCollection()][byte[]]$Bytes) {
+  if ($null -eq $Bytes) { throw "shaInputNull" }
+  $sha = [Security.Cryptography.SHA256]::Create()
+  try {
+    $hash = $sha.ComputeHash($Bytes)
+  } finally {
+    $sha.Dispose()
+  }
+  return [BitConverter]::ToString($hash).Replace("-", "")
+}
+$emptyBytes = [byte[]]::new(0)
+if ((Get-CompatibleSha256 $emptyBytes) -cne
+    "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855" -or
+    (Get-CompatibleSha256 (
+      [Text.Encoding]::ASCII.GetBytes("abc"))) -cne
+    "BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD") {
+  throw "shaCompatibilitySelfTestFailed"
+}
+$compatibilityBytes = [Text.UTF8Encoding]::new(
+  $false, $true).GetBytes("bounded-host-evidence-compatibility")
+$compatibilityPath = Join-Path $root "evidence-compatibility.json"
+$compatibilityTemp = Join-Path $root (
+  "." + [guid]::NewGuid().ToString("N") + ".compat.tmp")
+$compatibilityStream = [IO.FileStream]::new(
+  $compatibilityTemp, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write,
+  [IO.FileShare]::None, 4096, [IO.FileOptions]::WriteThrough)
+try {
+  $compatibilityStream.Write(
+    $compatibilityBytes, 0, $compatibilityBytes.Length)
+  $compatibilityStream.Flush($true)
+} finally {
+  $compatibilityStream.Dispose()
+}
+[IO.File]::Move($compatibilityTemp, $compatibilityPath)
+$compatibilityReadback = [IO.File]::ReadAllBytes($compatibilityPath)
+if ([Convert]::ToBase64String($compatibilityReadback) -cne
+      [Convert]::ToBase64String($compatibilityBytes) -or
+    (Get-CompatibleSha256 $compatibilityReadback) -cne
+      (Get-CompatibleSha256 $compatibilityBytes) -or
+    $compatibilityProcessStartCount -ne 0) {
+  throw "evidenceCompatibilitySelfTestFailed"
+}
 $harness = Join-Path $root "LigaseInstallDirectoryHarness.exe"
 $harnessDiagnostic = Join-Path $root "harness-runtime.diagnostic"
 $resolver = Join-Path $PSScriptRoot "Resolve-LigaseInstallDirectory.ps1"
@@ -66,13 +109,337 @@ New-Item -ItemType Directory -Path $argumentListRunnerRoot -Force | Out-Null
     <OutputType>Exe</OutputType>
     <TargetFramework>net8.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
   </PropertyGroup>
 </Project>
 '@ | Set-Content -LiteralPath (
   Join-Path $argumentListRunnerRoot "ArgumentListRunner.csproj") -Encoding UTF8
 @'
+using System.Text.Json;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using System.Text;
+using System.ComponentModel;
+using Microsoft.Win32.SafeHandles;
+
 if (args.Length < 1)
     return 90;
+
+if (args[0] == "--emit")
+{
+    if (args.Length != 2)
+        return 92;
+    var output = Console.OpenStandardOutput();
+    var error = Console.OpenStandardError();
+    static byte[] Repeat(byte value, int count)
+    {
+        var bytes = new byte[count];
+        Array.Fill(bytes, value);
+        return bytes;
+    }
+    static void Write(Stream stream, byte[] bytes)
+    {
+        stream.Write(bytes, 0, bytes.Length);
+        stream.Flush();
+    }
+    switch (args[1])
+    {
+        case "asciiOverflowStdout":
+            Write(output, Repeat(0x78, 4096));
+            Thread.Sleep(60000);
+            return 0;
+        case "asciiOverflowStderr":
+            Write(error, Repeat(0x78, 4096));
+            Thread.Sleep(60000);
+            return 0;
+        case "utf8BoundaryStdout":
+        {
+            var bytes = Repeat(0x61, 513);
+            bytes[511] = 0xC3;
+            bytes[512] = 0xA9;
+            Write(output, bytes);
+            Thread.Sleep(60000);
+            return 0;
+        }
+        case "utf8BoundaryStderr":
+        {
+            var bytes = Repeat(0x61, 513);
+            bytes[511] = 0xC3;
+            bytes[512] = 0xA9;
+            Write(error, bytes);
+            Thread.Sleep(60000);
+            return 0;
+        }
+        case "internalInvalidStdout":
+        {
+            var bytes = Repeat(0x61, 600);
+            bytes[4] = 0xFF;
+            Write(output, bytes);
+            Thread.Sleep(60000);
+            return 0;
+        }
+        case "internalInvalidStderr":
+        {
+            var bytes = Repeat(0x61, 600);
+            bytes[4] = 0xFF;
+            Write(error, bytes);
+            Thread.Sleep(60000);
+            return 0;
+        }
+        case "invalidUtf8Stdout":
+            Write(output, new byte[] { 0xFF });
+            return 0;
+        case "invalidUtf8Stderr":
+            Write(error, new byte[] { 0xFF });
+            return 0;
+        case "incompleteUtf8Stdout":
+            Write(output, new byte[] { 0xC3 });
+            return 0;
+        case "incompleteUtf8Stderr":
+            Write(error, new byte[] { 0xC3 });
+            return 0;
+        case "dualOverflow":
+            Write(output, Repeat(0x78, 4096));
+            Write(error, Repeat(0x78, 4096));
+            Thread.Sleep(60000);
+            return 0;
+        case "jsonExtra":
+            Write(output, Encoding.UTF8.GetBytes(
+                "{\"code\":\"one\"}\n{\"code\":\"two\"}\n"));
+            return 0;
+        case "jsonMalformed":
+            Write(output, Encoding.UTF8.GetBytes("{\n"));
+            return 0;
+        case "hang":
+            Thread.Sleep(60000);
+            return 0;
+        case "delayedSentinel":
+            Thread.Sleep(10000);
+            Write(output, Encoding.ASCII.GetBytes("sentinel"));
+            return 0;
+        case "treeInheritedPipe":
+        {
+            var self = Environment.GetCommandLineArgs()[0];
+            var child = new System.Diagnostics.ProcessStartInfo(
+                Environment.ProcessPath!)
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            child.ArgumentList.Add(self);
+            child.ArgumentList.Add("--emit");
+            child.ArgumentList.Add("delayedSentinel");
+            System.Diagnostics.Process.Start(child)?.Dispose();
+            Thread.Sleep(60000);
+            return 0;
+        }
+        case "exitZero":
+            return 0;
+        default:
+            return 92;
+    }
+}
+
+if (args[0] == "--bounded-capture")
+{
+    if (args.Length < 7 ||
+        !int.TryParse(args[1], out var runTimeoutMs) ||
+        !int.TryParse(args[2], out var cleanupReserveMs) ||
+        !int.TryParse(args[3], out var maxBytes) ||
+        runTimeoutMs < 1 || runTimeoutMs > 115000 ||
+        cleanupReserveMs < 1 || cleanupReserveMs > 5000 ||
+        runTimeoutMs + cleanupReserveMs > 120000 ||
+        maxBytes < 1 || maxBytes > 65536 ||
+        args[4] is not (
+            "none" or "accountingFault" or "executableResolveFault" or
+            "pipeFault" or "jobFault" or "attributeFault" or "createFault" or
+            "assignFault" or "resumeFault" or "managedHandoffFault" or
+            "processWrapperFault" or "stdoutSafeHandleFault" or
+            "stdoutStreamFault" or "stderrSafeHandleFault" or
+            "stderrStreamFault" or "stdoutWriteCloseFault" or
+            "stderrWriteCloseFault" or "threadCloseFault"))
+        return 92;
+    var hardCapMs = runTimeoutMs + cleanupReserveMs;
+    var fault = args[4];
+
+    var deadline = System.Diagnostics.Stopwatch.StartNew();
+    NativeJobProcess nativeStarted;
+    try
+    {
+        nativeStarted = NativeJobProcess.Start(
+            args[5], args.Skip(6).ToArray(), fault);
+    }
+    catch (NativeStartException failure)
+    {
+        var emptySha =
+            "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855";
+        Console.WriteLine(JsonSerializer.Serialize(new
+        {
+            schema = "boundedProcessV1",
+            startStage = failure.Stage,
+            startCode = failure.Code,
+            exitCode = -1,
+            timedOut = false,
+            overflow = false,
+            pipeFault = false,
+            killAttempted = true,
+            cleanupCompleted = failure.CleanupProven,
+            jobEmpty = failure.JobActiveProcesses == 0,
+            jobActiveProcesses = failure.JobActiveProcesses,
+            pid = failure.CleanupProven ? 0 : failure.Pid,
+            elapsedMilliseconds = deadline.ElapsedMilliseconds,
+            hardCapMilliseconds = hardCapMs,
+            stdoutOverflow = false,
+            stderrOverflow = false,
+            stdoutRawLength = 0,
+            stderrRawLength = 0,
+            stdoutRawSha = emptySha,
+            stderrRawSha = emptySha,
+            stdoutDecoderState = "closed",
+            stderrDecoderState = "closed",
+            stdoutPendingTailLength = 0,
+            stderrPendingTailLength = 0,
+            stdoutText = "",
+            stderrText = "",
+        }));
+        return failure.CleanupProven ? 95 : 93;
+    }
+    using var nativeBounded = nativeStarted;
+    var processBounded = nativeBounded.Process;
+    var pid = processBounded.Id;
+    var overflowSignal = new TaskCompletionSource<bool>(
+        TaskCreationOptions.RunContinuationsAsynchronously);
+    async Task<(byte[] Bytes, bool Overflow, long RawLength, string RawSha)> ReadBoundedAsync(
+        Stream stream)
+    {
+        using var stored = new MemoryStream();
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        var buffer = new byte[128];
+        var overflow = false;
+        long rawLength = 0;
+        while (true)
+        {
+            var count = await stream.ReadAsync(buffer);
+            if (count == 0)
+                break;
+            hash.AppendData(buffer, 0, count);
+            rawLength += count;
+            var remaining = maxBytes - (int)stored.Length;
+            if (remaining > 0)
+                stored.Write(buffer, 0, Math.Min(remaining, count));
+            if (count > remaining)
+            {
+                overflow = true;
+                overflowSignal.TrySetResult(true);
+            }
+        }
+        return (
+            stored.ToArray(), overflow, rawLength,
+            BitConverter.ToString(hash.GetHashAndReset()).Replace("-", ""));
+    }
+
+    (string Text, string State, int PendingTailLength) DecodeBounded(
+        byte[] bytes, bool overflow)
+    {
+        var strict = new UTF8Encoding(false, true);
+        try
+        {
+            return (strict.GetString(bytes), "closed", 0);
+        }
+        catch (DecoderFallbackException)
+        {
+            if (overflow)
+            {
+                for (var tail = 1; tail <= Math.Min(3, bytes.Length); tail++)
+                {
+                    try
+                    {
+                        return (
+                            strict.GetString(bytes, 0, bytes.Length - tail),
+                            "pendingTail", tail);
+                    }
+                    catch (DecoderFallbackException) { }
+                }
+            }
+            return ("", "invalid", 0);
+        }
+    }
+
+    var stdoutTask = ReadBoundedAsync(nativeBounded.StandardOutput);
+    var stderrTask = ReadBoundedAsync(nativeBounded.StandardError);
+    var waitTask = processBounded.WaitForExitAsync();
+    var readTask = Task.WhenAll(stdoutTask, stderrTask);
+    var timeoutTask = Task.Delay(runTimeoutMs);
+    var first = await Task.WhenAny(
+        waitTask, timeoutTask, overflowSignal.Task, readTask);
+    var timedOut = first == timeoutTask;
+    var overflowDetected = first == overflowSignal.Task;
+    var pipeFault = first == readTask && readTask.IsFaulted;
+    var killAttempted = false;
+    if (timedOut || overflowDetected || pipeFault)
+    {
+        killAttempted = true;
+        nativeBounded.Terminate();
+    }
+
+    var remaining = Math.Max(
+        0, hardCapMs - (int)deadline.ElapsedMilliseconds);
+    var cleanupDeadline = Task.Delay(remaining);
+    var waitCompleted = await Task.WhenAny(waitTask, cleanupDeadline) == waitTask;
+    var readsCompleted = await Task.WhenAny(
+        readTask, cleanupDeadline) != cleanupDeadline;
+    var exited = false;
+    try { exited = processBounded.HasExited; } catch { }
+    var actualJobEmpty = nativeBounded.ActiveProcessCount() == 0;
+    var jobEmpty = fault == "accountingFault" ? false : actualJobEmpty;
+    var cleanupCompleted =
+        waitCompleted && readsCompleted && exited && jobEmpty;
+    var stdout = stdoutTask.IsCompletedSuccessfully
+        ? stdoutTask.Result
+        : (Bytes: Array.Empty<byte>(), Overflow: false, RawLength: 0L, RawSha: "");
+    var stderr = stderrTask.IsCompletedSuccessfully
+        ? stderrTask.Result
+        : (Bytes: Array.Empty<byte>(), Overflow: false, RawLength: 0L, RawSha: "");
+    var overflow = overflowDetected || stdout.Overflow || stderr.Overflow;
+    var stdoutDecoded = DecodeBounded(stdout.Bytes, stdout.Overflow);
+    var stderrDecoded = DecodeBounded(stderr.Bytes, stderr.Overflow);
+    if (stdoutDecoded.State == "invalid" || stderrDecoded.State == "invalid")
+        pipeFault = true;
+    var exitCode = exited ? processBounded.ExitCode : -1;
+    Console.WriteLine(JsonSerializer.Serialize(new
+    {
+        schema = "boundedProcessV1",
+        startStage = "none",
+        startCode = 0,
+        exitCode,
+        timedOut,
+        overflow,
+        pipeFault,
+        killAttempted,
+        cleanupCompleted,
+        jobEmpty,
+        jobActiveProcesses = actualJobEmpty
+            ? 0 : nativeBounded.ActiveProcessCount(),
+        pid = exited && actualJobEmpty ? 0 : pid,
+        elapsedMilliseconds = deadline.ElapsedMilliseconds,
+        hardCapMilliseconds = hardCapMs,
+        stdoutOverflow = stdout.Overflow,
+        stderrOverflow = stderr.Overflow,
+        stdoutRawLength = stdout.RawLength,
+        stderrRawLength = stderr.RawLength,
+        stdoutRawSha = stdout.RawSha,
+        stderrRawSha = stderr.RawSha,
+        stdoutDecoderState = stdoutDecoded.State,
+        stderrDecoderState = stderrDecoded.State,
+        stdoutPendingTailLength = stdoutDecoded.PendingTailLength,
+        stderrPendingTailLength = stderrDecoded.PendingTailLength,
+        stdoutText = stdoutDecoded.Text,
+        stderrText = stderrDecoded.Text,
+    }));
+    return cleanupCompleted ? 0 : 93;
+}
+
 var start = new System.Diagnostics.ProcessStartInfo(args[0])
 {
     UseShellExecute = false,
@@ -85,6 +452,643 @@ if (process is null)
     return 91;
 await process.WaitForExitAsync();
 return process.ExitCode;
+
+sealed class NativeJobProcess : IDisposable
+{
+    const uint CreateSuspended = 0x00000004;
+    const uint CreateNoWindow = 0x08000000;
+    const uint ExtendedStartupInfoPresent = 0x00080000;
+    const uint StartfUseStdHandles = 0x00000100;
+    const uint HandleFlagInherit = 0x00000001;
+    const uint KillOnClose = 0x00002000;
+    const int ExtendedLimit = 9;
+    const int BasicAccounting = 1;
+    static readonly IntPtr HandleListAttribute = new(0x00020002);
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct SecurityAttributes
+    {
+        public int Length;
+        public IntPtr SecurityDescriptor;
+        [MarshalAs(UnmanagedType.Bool)] public bool InheritHandle;
+    }
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    struct StartupInfo
+    {
+        public int Size;
+        public string? Reserved;
+        public string? Desktop;
+        public string? Title;
+        public uint X, Y, XSize, YSize, XChars, YChars, Fill, Flags;
+        public short ShowWindow, ReservedSize;
+        public IntPtr ReservedPointer, StandardInput, StandardOutput, StandardError;
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    struct StartupInfoEx
+    {
+        public StartupInfo Startup;
+        public IntPtr AttributeList;
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    struct ProcessInformation
+    {
+        public IntPtr Process, Thread;
+        public uint ProcessId, ThreadId;
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    struct BasicLimit
+    {
+        public long ProcessTime, JobTime;
+        public uint LimitFlags;
+        public UIntPtr MinWorkingSet, MaxWorkingSet;
+        public uint ActiveProcessLimit;
+        public UIntPtr Affinity;
+        public uint Priority, Scheduling;
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    struct IoCounters
+    {
+        public ulong ReadOps, WriteOps, OtherOps;
+        public ulong ReadBytes, WriteBytes, OtherBytes;
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    struct ExtendedLimitInfo
+    {
+        public BasicLimit Basic;
+        public IoCounters Io;
+        public UIntPtr ProcessMemory, JobMemory, PeakProcessMemory, PeakJobMemory;
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    struct AccountingInfo
+    {
+        public long UserTime, KernelTime, PeriodUserTime, PeriodKernelTime;
+        public uint PageFaults, TotalProcesses, ActiveProcesses, TerminatedProcesses;
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool CreatePipe(
+        out IntPtr read, out IntPtr write,
+        ref SecurityAttributes attributes, uint size);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool SetHandleInformation(IntPtr handle, uint mask, uint flags);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    static extern uint GetSystemDirectoryW(
+        [Out] StringBuilder buffer, uint size);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    static extern bool CreateProcessW(
+        string application, StringBuilder commandLine,
+        IntPtr processAttributes, IntPtr threadAttributes,
+        bool inheritHandles, uint flags, IntPtr environment,
+        string? currentDirectory, ref StartupInfoEx startup,
+        out ProcessInformation information);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool InitializeProcThreadAttributeList(
+        IntPtr list, int count, uint flags, ref UIntPtr size);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool UpdateProcThreadAttribute(
+        IntPtr list, uint flags, IntPtr attribute, IntPtr value,
+        UIntPtr size, IntPtr previous, IntPtr returnSize);
+    [DllImport("kernel32.dll")]
+    static extern void DeleteProcThreadAttributeList(IntPtr list);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern IntPtr CreateJobObject(IntPtr attributes, string? name);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool SetInformationJobObject(
+        IntPtr job, int informationClass, IntPtr information, uint length);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern uint ResumeThread(IntPtr thread);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool TerminateJobObject(IntPtr job, uint exitCode);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool TerminateProcess(IntPtr process, uint exitCode);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool QueryInformationJobObject(
+        IntPtr job, int informationClass, IntPtr information,
+        uint length, out uint returned);
+    [DllImport("kernel32.dll")]
+    static extern bool CloseHandle(IntPtr handle);
+
+    public System.Diagnostics.Process Process { get; private set; } = null!;
+    public FileStream StandardOutput { get; private set; } = null!;
+    public FileStream StandardError { get; private set; } = null!;
+    public static bool LastCleanupProven { get; private set; }
+    public static int LastCleanupPid { get; private set; }
+    public static uint LastJobActiveProcesses { get; private set; }
+    IntPtr job;
+    IntPtr processHandle;
+
+    static string Quote(string value)
+    {
+        if (value.Length > 0 &&
+            !value.Any(c => char.IsWhiteSpace(c) || c == '"'))
+            return value;
+        var result = new StringBuilder("\"");
+        var slashes = 0;
+        foreach (var character in value)
+        {
+            if (character == '\\') { slashes++; continue; }
+            if (character == '"')
+            {
+                result.Append('\\', slashes * 2 + 1).Append('"');
+                slashes = 0;
+                continue;
+            }
+            result.Append('\\', slashes).Append(character);
+            slashes = 0;
+        }
+        result.Append('\\', slashes * 2).Append('"');
+        return result.ToString();
+    }
+
+    static bool IsClosedExecutableFile(string path)
+    {
+        if (!Path.IsPathFullyQualified(path) ||
+            !string.Equals(
+                Path.GetFullPath(path), path,
+                StringComparison.OrdinalIgnoreCase) ||
+            !File.Exists(path))
+            return false;
+        var attributes = File.GetAttributes(path);
+        return (attributes & (
+            FileAttributes.Directory | FileAttributes.ReparsePoint)) == 0;
+    }
+
+    static string ResolveTrustedExecutable(string executable)
+    {
+        if (string.Equals(
+            executable, "powershell.exe", StringComparison.Ordinal))
+        {
+            var systemDirectory = new StringBuilder(32768);
+            var length = GetSystemDirectoryW(
+                systemDirectory, (uint)systemDirectory.Capacity);
+            if (length == 0 || length >= (uint)systemDirectory.Capacity)
+                throw new Win32Exception(
+                    Marshal.GetLastWin32Error(), "systemDirectoryUnavailable");
+            var candidate = Path.GetFullPath(Path.Combine(
+                systemDirectory.ToString(),
+                "WindowsPowerShell", "v1.0", "powershell.exe"));
+            if (!IsClosedExecutableFile(candidate))
+                throw new InvalidOperationException(
+                    "trustedPowerShellUnavailable");
+            return candidate;
+        }
+        var currentHost = Environment.ProcessPath;
+        if (currentHost is null ||
+            !Path.IsPathFullyQualified(executable) ||
+            !string.Equals(
+                Path.GetFullPath(executable), Path.GetFullPath(currentHost),
+                StringComparison.OrdinalIgnoreCase) ||
+            !IsClosedExecutableFile(executable))
+            throw new InvalidOperationException(
+                "untrustedExecutableIdentity");
+        return executable;
+    }
+
+    static void CloseRawHandle(ref IntPtr handle, string failureName)
+    {
+        if (handle == IntPtr.Zero)
+            return;
+        if (!CloseHandle(handle))
+            throw new Win32Exception(
+                Marshal.GetLastWin32Error(), failureName);
+        handle = IntPtr.Zero;
+    }
+
+    static void CloseRawAfterFailure(
+        ref IntPtr handle, ref string stage, ref int code)
+    {
+        if (handle == IntPtr.Zero)
+            return;
+        if (CloseHandle(handle))
+        {
+            handle = IntPtr.Zero;
+            return;
+        }
+        stage = "managedHandoff";
+        var closeCode = Marshal.GetLastWin32Error();
+        code = closeCode == 0 ? 20018 : closeCode;
+    }
+
+    public static NativeJobProcess Start(
+        string executable, string[] arguments, string fault)
+    {
+        IntPtr stdoutRead = IntPtr.Zero, stdoutWrite = IntPtr.Zero;
+        IntPtr stderrRead = IntPtr.Zero, stderrWrite = IntPtr.Zero;
+        IntPtr job = IntPtr.Zero, attributes = IntPtr.Zero;
+        IntPtr handleList = IntPtr.Zero;
+        var information = new ProcessInformation();
+        var processCreated = false;
+        var assigned = false;
+        System.Diagnostics.Process? managedProcess = null;
+        SafeFileHandle? managedStdoutHandle = null;
+        SafeFileHandle? managedStderrHandle = null;
+        FileStream? managedStdoutStream = null;
+        FileStream? managedStderrStream = null;
+        var stage = "executableResolve";
+        try
+        {
+            LastCleanupProven = false;
+            LastCleanupPid = 0;
+            LastJobActiveProcesses = uint.MaxValue;
+            if (fault == "executableResolveFault")
+                throw new InvalidOperationException(
+                    "validationExecutableResolveFault");
+            var resolvedExecutable = ResolveTrustedExecutable(executable);
+            stage = "pipe";
+            var security = new SecurityAttributes {
+                Length = Marshal.SizeOf<SecurityAttributes>(),
+                InheritHandle = true
+            };
+            if (fault == "pipeFault")
+                throw new InvalidOperationException("validationPipeFault");
+            if (!CreatePipe(out stdoutRead, out stdoutWrite, ref security, 0) ||
+                !CreatePipe(out stderrRead, out stderrWrite, ref security, 0) ||
+                !SetHandleInformation(stdoutRead, HandleFlagInherit, 0) ||
+                !SetHandleInformation(stderrRead, HandleFlagInherit, 0))
+                throw new Win32Exception(
+                    Marshal.GetLastWin32Error(), "nativePipeFailed");
+            stage = "job";
+            if (fault == "jobFault")
+                throw new InvalidOperationException("validationJobFault");
+            job = CreateJobObject(IntPtr.Zero, null);
+            if (job == IntPtr.Zero)
+                throw new Win32Exception(
+                    Marshal.GetLastWin32Error(), "nativeJobFailed");
+            var limits = new ExtendedLimitInfo();
+            limits.Basic.LimitFlags = KillOnClose;
+            var limitsSize = Marshal.SizeOf<ExtendedLimitInfo>();
+            var limitsPointer = Marshal.AllocHGlobal(limitsSize);
+            try
+            {
+                Marshal.StructureToPtr(limits, limitsPointer, false);
+                if (!SetInformationJobObject(
+                    job, ExtendedLimit, limitsPointer, (uint)limitsSize))
+                    throw new Win32Exception(
+                        Marshal.GetLastWin32Error(), "nativeJobLimitFailed");
+            }
+            finally { Marshal.FreeHGlobal(limitsPointer); }
+
+            stage = "attribute";
+            if (fault == "attributeFault")
+                throw new InvalidOperationException("validationAttributeFault");
+            UIntPtr attributeSize = UIntPtr.Zero;
+            InitializeProcThreadAttributeList(
+                IntPtr.Zero, 1, 0, ref attributeSize);
+            attributes = Marshal.AllocHGlobal(
+                checked((int)attributeSize.ToUInt64()));
+            if (!InitializeProcThreadAttributeList(
+                attributes, 1, 0, ref attributeSize))
+                throw new Win32Exception(
+                    Marshal.GetLastWin32Error(), "nativeAttributeFailed");
+            handleList = Marshal.AllocHGlobal(IntPtr.Size * 2);
+            Marshal.WriteIntPtr(handleList, 0, stdoutWrite);
+            Marshal.WriteIntPtr(handleList, IntPtr.Size, stderrWrite);
+            if (!UpdateProcThreadAttribute(
+                attributes, 0, HandleListAttribute, handleList,
+                new UIntPtr((uint)(IntPtr.Size * 2)),
+                IntPtr.Zero, IntPtr.Zero))
+                throw new Win32Exception(
+                    Marshal.GetLastWin32Error(), "nativeHandleListFailed");
+            var startup = new StartupInfoEx {
+                Startup = new StartupInfo {
+                    Size = Marshal.SizeOf<StartupInfoEx>(),
+                    Flags = StartfUseStdHandles,
+                    StandardOutput = stdoutWrite,
+                    StandardError = stderrWrite
+                },
+                AttributeList = attributes
+            };
+            var command = new StringBuilder(Quote(resolvedExecutable));
+            foreach (var argument in arguments)
+                command.Append(' ').Append(Quote(argument));
+            stage = "create";
+            if (fault == "createFault")
+                throw new InvalidOperationException("validationCreateFault");
+            if (!CreateProcessW(
+                resolvedExecutable, command, IntPtr.Zero, IntPtr.Zero, true,
+                CreateSuspended | CreateNoWindow | ExtendedStartupInfoPresent,
+                IntPtr.Zero, null, ref startup, out information))
+                throw new Win32Exception(
+                    Marshal.GetLastWin32Error(), "nativeCreateFailed");
+            processCreated = true;
+            LastCleanupPid = checked((int)information.ProcessId);
+            stage = "assign";
+            if (fault == "assignFault")
+                throw new InvalidOperationException("nativeAssignFault");
+            if (!AssignProcessToJobObject(job, information.Process))
+                throw new Win32Exception(
+                    Marshal.GetLastWin32Error(), "nativeAssignFailed");
+            assigned = true;
+            stage = "managedHandoff";
+            if (fault == "managedHandoffFault")
+                throw new InvalidOperationException(
+                    "validationManagedHandoffFault");
+
+            managedProcess = System.Diagnostics.Process.GetProcessById(
+                checked((int)information.ProcessId));
+            if (fault == "processWrapperFault")
+                throw new InvalidOperationException(
+                    "validationProcessWrapperFault");
+
+            managedStdoutHandle = new SafeFileHandle(stdoutRead, true);
+            stdoutRead = IntPtr.Zero;
+            if (fault == "stdoutSafeHandleFault")
+                throw new InvalidOperationException(
+                    "validationStdoutSafeHandleFault");
+            managedStdoutStream = new FileStream(
+                managedStdoutHandle, FileAccess.Read);
+            managedStdoutHandle = null;
+            if (fault == "stdoutStreamFault")
+                throw new InvalidOperationException(
+                    "validationStdoutStreamFault");
+
+            managedStderrHandle = new SafeFileHandle(stderrRead, true);
+            stderrRead = IntPtr.Zero;
+            if (fault == "stderrSafeHandleFault")
+                throw new InvalidOperationException(
+                    "validationStderrSafeHandleFault");
+            managedStderrStream = new FileStream(
+                managedStderrHandle, FileAccess.Read);
+            managedStderrHandle = null;
+            if (fault == "stderrStreamFault")
+                throw new InvalidOperationException(
+                    "validationStderrStreamFault");
+
+            if (fault == "stdoutWriteCloseFault")
+                throw new InvalidOperationException(
+                    "validationStdoutWriteCloseFault");
+            CloseRawHandle(ref stdoutWrite, "nativeStdoutWriteCloseFailed");
+            if (fault == "stderrWriteCloseFault")
+                throw new InvalidOperationException(
+                    "validationStderrWriteCloseFault");
+            CloseRawHandle(ref stderrWrite, "nativeStderrWriteCloseFailed");
+
+            stage = "resume";
+            if (fault == "resumeFault")
+                throw new InvalidOperationException("nativeResumeFault");
+            if (ResumeThread(information.Thread) == uint.MaxValue)
+                throw new Win32Exception(
+                    Marshal.GetLastWin32Error(), "nativeResumeFailed");
+
+            stage = "managedHandoff";
+            if (fault == "threadCloseFault")
+                throw new InvalidOperationException(
+                    "validationThreadCloseFault");
+            CloseRawHandle(
+                ref information.Thread, "nativeThreadCloseFailed");
+
+            var value = new NativeJobProcess();
+            value.job = job;
+            value.processHandle = information.Process;
+            value.Process = managedProcess;
+            value.StandardOutput = managedStdoutStream;
+            value.StandardError = managedStderrStream;
+            managedProcess = null;
+            managedStdoutStream = null;
+            managedStderrStream = null;
+            job = IntPtr.Zero;
+            information.Process = IntPtr.Zero;
+            LastCleanupProven = true;
+            LastCleanupPid = 0;
+            LastJobActiveProcesses = 0;
+            return value;
+        }
+        catch (Exception failure)
+        {
+            if (!processCreated)
+            {
+                LastCleanupProven = true;
+                LastCleanupPid = 0;
+                LastJobActiveProcesses = 0;
+            }
+            else
+            {
+                if (assigned)
+                    TerminateJobObject(job, 18);
+                else
+                    TerminateProcess(information.Process, 18);
+                var signaled =
+                    WaitForSingleObject(information.Process, 5000) == 0;
+                var active = assigned ? ActiveCount(job) : 0;
+                var empty = !assigned || active == 0;
+                LastJobActiveProcesses = active;
+                LastCleanupProven = signaled && empty;
+                if (LastCleanupProven) LastCleanupPid = 0;
+            }
+            var code = failure is Win32Exception win32
+                ? win32.NativeErrorCode : 20016;
+            try { managedStdoutStream?.Dispose(); }
+            catch { stage = "managedHandoff"; code = 20018; }
+            managedStdoutStream = null;
+            try { managedStderrStream?.Dispose(); }
+            catch { stage = "managedHandoff"; code = 20018; }
+            managedStderrStream = null;
+            try { managedStdoutHandle?.Dispose(); }
+            catch { stage = "managedHandoff"; code = 20018; }
+            managedStdoutHandle = null;
+            try { managedStderrHandle?.Dispose(); }
+            catch { stage = "managedHandoff"; code = 20018; }
+            managedStderrHandle = null;
+            try { managedProcess?.Dispose(); }
+            catch { stage = "managedHandoff"; code = 20018; }
+            managedProcess = null;
+            CloseRawAfterFailure(ref stdoutRead, ref stage, ref code);
+            CloseRawAfterFailure(ref stdoutWrite, ref stage, ref code);
+            CloseRawAfterFailure(ref stderrRead, ref stage, ref code);
+            CloseRawAfterFailure(ref stderrWrite, ref stage, ref code);
+            CloseRawAfterFailure(
+                ref information.Thread, ref stage, ref code);
+            throw new NativeStartException(
+                stage, code, LastCleanupProven, LastCleanupPid,
+                LastJobActiveProcesses);
+        }
+        finally
+        {
+            managedStdoutStream?.Dispose();
+            managedStderrStream?.Dispose();
+            managedStdoutHandle?.Dispose();
+            managedStderrHandle?.Dispose();
+            managedProcess?.Dispose();
+            if (attributes != IntPtr.Zero)
+            {
+                DeleteProcThreadAttributeList(attributes);
+                Marshal.FreeHGlobal(attributes);
+            }
+            if (handleList != IntPtr.Zero) Marshal.FreeHGlobal(handleList);
+            foreach (var handle in new[] {
+                stdoutRead, stdoutWrite, stderrRead, stderrWrite,
+                information.Process, information.Thread, job })
+                if (handle != IntPtr.Zero) CloseHandle(handle);
+        }
+    }
+
+    static uint ActiveCount(IntPtr job)
+    {
+        var size = Marshal.SizeOf<AccountingInfo>();
+        var pointer = Marshal.AllocHGlobal(size);
+        try
+        {
+            if (!QueryInformationJobObject(
+                job, BasicAccounting, pointer, (uint)size, out _))
+                return uint.MaxValue;
+            return Marshal.PtrToStructure<AccountingInfo>(
+                pointer).ActiveProcesses;
+        }
+        finally { Marshal.FreeHGlobal(pointer); }
+    }
+    public uint ActiveProcessCount() => ActiveCount(job);
+    public bool Terminate() => TerminateJobObject(job, 18);
+    public void Dispose()
+    {
+        StandardOutput?.Dispose();
+        StandardError?.Dispose();
+        Process?.Dispose();
+        if (processHandle != IntPtr.Zero) CloseHandle(processHandle);
+        if (job != IntPtr.Zero) CloseHandle(job);
+        processHandle = job = IntPtr.Zero;
+    }
+}
+
+sealed class NativeStartException : Exception
+{
+    public string Stage { get; }
+    public int Code { get; }
+    public bool CleanupProven { get; }
+    public int Pid { get; }
+    public uint JobActiveProcesses { get; }
+
+    public NativeStartException(
+        string stage, int code, bool cleanupProven, int pid,
+        uint jobActiveProcesses) : base("nativeStartFailed")
+    {
+        Stage = stage;
+        Code = code;
+        CleanupProven = cleanupProven;
+        Pid = pid;
+        JobActiveProcesses = jobActiveProcesses;
+    }
+}
+
+sealed class LigaseJob : IDisposable
+{
+    const uint KillOnClose = 0x00002000;
+    const int ExtendedLimit = 9;
+    const int BasicAccounting = 1;
+    IntPtr handle;
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct BasicLimit
+    {
+        public long PerProcessUserTimeLimit;
+        public long PerJobUserTimeLimit;
+        public uint LimitFlags;
+        public UIntPtr MinimumWorkingSetSize;
+        public UIntPtr MaximumWorkingSetSize;
+        public uint ActiveProcessLimit;
+        public UIntPtr Affinity;
+        public uint PriorityClass;
+        public uint SchedulingClass;
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    struct IoCounters
+    {
+        public ulong ReadOperationCount;
+        public ulong WriteOperationCount;
+        public ulong OtherOperationCount;
+        public ulong ReadTransferCount;
+        public ulong WriteTransferCount;
+        public ulong OtherTransferCount;
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    struct ExtendedLimitInfo
+    {
+        public BasicLimit BasicLimitInformation;
+        public IoCounters IoInfo;
+        public UIntPtr ProcessMemoryLimit;
+        public UIntPtr JobMemoryLimit;
+        public UIntPtr PeakProcessMemoryUsed;
+        public UIntPtr PeakJobMemoryUsed;
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    struct BasicAccountingInfo
+    {
+        public long TotalUserTime;
+        public long TotalKernelTime;
+        public long ThisPeriodTotalUserTime;
+        public long ThisPeriodTotalKernelTime;
+        public uint TotalPageFaultCount;
+        public uint TotalProcesses;
+        public uint ActiveProcesses;
+        public uint TotalTerminatedProcesses;
+    }
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern IntPtr CreateJobObject(IntPtr attributes, string? name);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool SetInformationJobObject(
+        IntPtr job, int informationClass, IntPtr information, uint length);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool TerminateJobObject(IntPtr job, uint exitCode);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool QueryInformationJobObject(
+        IntPtr job, int informationClass, IntPtr information,
+        uint length, out uint returned);
+    [DllImport("kernel32.dll")]
+    static extern bool CloseHandle(IntPtr value);
+
+    public LigaseJob()
+    {
+        handle = CreateJobObject(IntPtr.Zero, null);
+        if (handle == IntPtr.Zero)
+            throw new InvalidOperationException("jobCreateFailed");
+        var info = new ExtendedLimitInfo();
+        info.BasicLimitInformation.LimitFlags = KillOnClose;
+        var size = Marshal.SizeOf<ExtendedLimitInfo>();
+        var pointer = Marshal.AllocHGlobal(size);
+        try
+        {
+            Marshal.StructureToPtr(info, pointer, false);
+            if (!SetInformationJobObject(
+                    handle, ExtendedLimit, pointer, (uint)size))
+            {
+                CloseHandle(handle);
+                handle = IntPtr.Zero;
+                throw new InvalidOperationException("jobLimitFailed");
+            }
+        }
+        finally { Marshal.FreeHGlobal(pointer); }
+    }
+    public bool Assign(System.Diagnostics.Process process) =>
+        AssignProcessToJobObject(handle, process.Handle);
+    public bool Terminate() => TerminateJobObject(handle, 18);
+    public uint ActiveProcessCount()
+    {
+        var size = Marshal.SizeOf<BasicAccountingInfo>();
+        var pointer = Marshal.AllocHGlobal(size);
+        try
+        {
+            if (!QueryInformationJobObject(
+                    handle, BasicAccounting, pointer, (uint)size, out _))
+                return uint.MaxValue;
+            return Marshal.PtrToStructure<BasicAccountingInfo>(
+                pointer).ActiveProcesses;
+        }
+        finally { Marshal.FreeHGlobal(pointer); }
+    }
+    public void Dispose()
+    {
+        if (handle != IntPtr.Zero)
+        {
+            CloseHandle(handle);
+            handle = IntPtr.Zero;
+        }
+    }
+}
 '@ | Set-Content -LiteralPath (
   Join-Path $argumentListRunnerRoot "Program.cs") -Encoding UTF8
 & $DotNet build (
@@ -92,6 +1096,462 @@ return process.ExitCode;
   -c Release -o $argumentListRunnerOutput --nologo | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "argumentListRunnerBuildFailed" }
 $argumentListRunner = Join-Path $argumentListRunnerOutput "ArgumentListRunner.dll"
+$argumentListRunnerSourceSha = Get-CompatibleSha256 (
+  [IO.File]::ReadAllBytes((Join-Path $argumentListRunnerRoot "Program.cs")))
+$argumentListRunnerBinarySha = Get-CompatibleSha256 (
+  [IO.File]::ReadAllBytes($argumentListRunner))
+$emitterSelfTests = @(
+  @("--emit", "unknown"),
+  @("--emit", "hang", "extra"),
+  @("--emit"))
+foreach ($emitterArgs in $emitterSelfTests) {
+  $savedEmitterErrorAction = $ErrorActionPreference
+  try {
+    $ErrorActionPreference = "Continue"
+    $emitterOutput = @(& $DotNet $argumentListRunner @emitterArgs)
+    $emitterExit = $LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $savedEmitterErrorAction
+  }
+  if ($emitterExit -ne 92 -or $emitterOutput.Count -ne 0) {
+    throw "byteEmitterArgumentValidationFailed"
+  }
+}
+$boundedHostCases = @()
+$boundedHostEvidenceRoot = Join-Path $OutputRoot "bounded-host-evidence"
+New-Item -ItemType Directory -Path $boundedHostEvidenceRoot | Out-Null
+function Test-BoundedHostCaseEvidence([string]$Raw) {
+  $expected = @(
+    "schema", "caseId", "nativeExit", "result", "stage",
+    "startStage", "startCode",
+    "stdoutRawLength", "stdoutRawSha", "stdoutOverflow",
+    "stdoutDecoderState", "stdoutPendingTailLength",
+    "stderrRawLength", "stderrRawSha", "stderrOverflow",
+    "stderrDecoderState", "stderrPendingTailLength",
+    "timedOut", "cleanupState", "rootPidZero", "descendantPidZero",
+    "jobActiveProcesses", "elapsedMilliseconds", "hardCapMilliseconds",
+    "environmentRestored")
+  $names = @([regex]::Matches(
+    $Raw, '"(?<name>[A-Za-z][A-Za-z0-9]*)"\s*:') |
+    ForEach-Object { $_.Groups["name"].Value })
+  if ($names.Count -ne $expected.Count -or
+      @($names | Sort-Object -Unique).Count -ne $expected.Count -or
+      @($names | Where-Object { $expected -cnotcontains $_ }).Count -ne 0) {
+    return $false
+  }
+  try { $value = $Raw | ConvertFrom-Json } catch { return $false }
+  return [string]$value.schema -ceq "boundedHostCaseEvidenceV1" -and
+    [string]$value.caseId -cmatch "^[A-Za-z][A-Za-z0-9]{0,63}$" -and
+    [int]$value.nativeExit -in @(0, 93, 95) -and
+    [string]$value.result -cin @("observed") -and
+    [string]$value.stage -cin @("boundedHostProcess") -and
+    [string]$value.startStage -cin @(
+      "none","executableResolve","pipe","job","attribute","create","assign","resume",
+      "managedHandoff") -and
+    [int]$value.startCode -ge 0 -and
+    [int64]$value.stdoutRawLength -ge 0 -and
+    [int64]$value.stderrRawLength -ge 0 -and
+    [string]$value.stdoutRawSha -cmatch "^[A-F0-9]{64}$" -and
+    [string]$value.stderrRawSha -cmatch "^[A-F0-9]{64}$" -and
+    [string]$value.stdoutDecoderState -cin @("closed","pendingTail","invalid") -and
+    [string]$value.stderrDecoderState -cin @("closed","pendingTail","invalid") -and
+    [int]$value.stdoutPendingTailLength -ge 0 -and
+    [int]$value.stdoutPendingTailLength -le 3 -and
+    [int]$value.stderrPendingTailLength -ge 0 -and
+    [int]$value.stderrPendingTailLength -le 3 -and
+    [string]$value.cleanupState -cin @("completed","failed") -and
+    [uint64]$value.jobActiveProcesses -le [uint32]::MaxValue -and
+    [int64]$value.elapsedMilliseconds -ge 0 -and
+    [int64]$value.hardCapMilliseconds -ge 2
+}
+function Write-BoundedHostCaseEvidence(
+  [Parameter(Mandatory)][System.Collections.IDictionary]$Case
+) {
+  $path = Join-Path $boundedHostEvidenceRoot (
+    ([string]$Case.name) + ".first.json")
+  if (Test-Path -LiteralPath $path) { throw "gateEvidenceUnavailable" }
+  $observation = [ordered]@{
+    schema = "boundedHostCaseEvidenceV1"
+    caseId = [string]$Case.name
+    nativeExit = [int]$Case.runnerExit
+    result = "observed"
+    stage = "boundedHostProcess"
+    startStage = [string]$Case.startStage
+    startCode = [int]$Case.startCode
+    stdoutRawLength = [int64]$Case.stdoutRawLength
+    stdoutRawSha = [string]$Case.stdoutRawSha
+    stdoutOverflow = [bool]$Case.stdoutOverflow
+    stdoutDecoderState = [string]$Case.stdoutDecoderState
+    stdoutPendingTailLength = [int]$Case.stdoutPendingTailLength
+    stderrRawLength = [int64]$Case.stderrRawLength
+    stderrRawSha = [string]$Case.stderrRawSha
+    stderrOverflow = [bool]$Case.stderrOverflow
+    stderrDecoderState = [string]$Case.stderrDecoderState
+    stderrPendingTailLength = [int]$Case.stderrPendingTailLength
+    timedOut = [bool]$Case.timedOut
+    cleanupState = if ($Case.cleanupCompleted) { "completed" } else { "failed" }
+    rootPidZero = [bool]($Case.pid -eq 0)
+    descendantPidZero = [bool]($Case.pid -eq 0 -and $Case.jobActiveProcesses -eq 0)
+    jobActiveProcesses = [uint64]$Case.jobActiveProcesses
+    elapsedMilliseconds = [int64]$Case.elapsedMilliseconds
+    hardCapMilliseconds = [int64]$Case.hardCapMilliseconds
+    environmentRestored = [bool]$Case.environmentRestored
+  }
+  $raw = $observation | ConvertTo-Json -Compress
+  if (-not (Test-BoundedHostCaseEvidence $raw)) {
+    throw "gateEvidenceUnavailable"
+  }
+  $temp = Join-Path $boundedHostEvidenceRoot (
+    "." + [guid]::NewGuid().ToString("N") + ".tmp")
+  try {
+    $bytes = [Text.UTF8Encoding]::new($false, $true).GetBytes($raw)
+    $stream = [IO.FileStream]::new(
+      $temp, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write,
+      [IO.FileShare]::None, 4096, [IO.FileOptions]::WriteThrough)
+    try {
+      $stream.Write($bytes, 0, $bytes.Length)
+      $stream.Flush($true)
+    } finally { $stream.Dispose() }
+    [IO.File]::Move($temp, $path)
+    $readback = [IO.File]::ReadAllBytes($path)
+    $readbackRaw = [Text.UTF8Encoding]::new(
+      $false, $true).GetString($readback)
+    if (-not (Test-BoundedHostCaseEvidence $readbackRaw) -or
+        -not [Linq.Enumerable]::SequenceEqual(
+          [byte[]]$bytes, [byte[]]$readback)) {
+      throw "gateEvidenceUnavailable"
+    }
+    return Get-CompatibleSha256 $readback
+  } catch {
+    if (Test-Path -LiteralPath $temp) {
+      Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue
+    }
+    throw "gateEvidenceUnavailable"
+  }
+}
+function Throw-BoundedHostCaseFailure(
+  [System.Collections.IDictionary]$Case, [string]$Reason) {
+  throw "$Reason caseId=$($Case.name) evidenceSha=$($Case.evidenceSha)"
+}
+function Invoke-BoundedHostFixture(
+  [Parameter(Mandatory)][string]$Name,
+  [ValidateSet(
+    "asciiOverflowStdout", "asciiOverflowStderr",
+    "utf8BoundaryStdout", "utf8BoundaryStderr",
+    "internalInvalidStdout", "internalInvalidStderr",
+    "invalidUtf8Stdout", "invalidUtf8Stderr",
+    "incompleteUtf8Stdout", "incompleteUtf8Stderr",
+    "dualOverflow", "jsonExtra", "jsonMalformed", "hang",
+    "treeInheritedPipe", "exitZero")]
+  [string]$Mode = "exitZero",
+  [int]$TimeoutMilliseconds = 2000,
+  [int]$CleanupReserveMilliseconds = 2000,
+  [int]$MaxBytes = 512,
+  [ValidateSet(
+    "runnerHost", "powershellCaseDrift", "powershellAbsolute",
+    "unknownName")]
+  [string]$ExecutableIdentity = "runnerHost",
+  [ValidateSet(
+    "none", "accountingFault", "executableResolveFault", "pipeFault", "jobFault",
+    "attributeFault", "createFault", "assignFault", "resumeFault",
+    "managedHandoffFault", "processWrapperFault",
+    "stdoutSafeHandleFault", "stdoutStreamFault",
+    "stderrSafeHandleFault", "stderrStreamFault",
+    "stdoutWriteCloseFault", "stderrWriteCloseFault", "threadCloseFault")]
+  [string]$Fault = "none"
+) {
+  $saved = $ErrorActionPreference
+  try {
+    $ErrorActionPreference = "Continue"
+    $fixtureExecutable = switch -CaseSensitive ($ExecutableIdentity) {
+      "runnerHost" { $DotNet }
+      "powershellCaseDrift" { "POWERSHELL.EXE" }
+      "powershellAbsolute" {
+        Join-Path ([Environment]::SystemDirectory) (
+          "WindowsPowerShell\v1.0\powershell.exe")
+      }
+      "unknownName" { "cmd.exe" }
+    }
+    $fixtureArguments = if ($ExecutableIdentity -ceq "runnerHost") {
+      @($argumentListRunner, "--emit", $Mode)
+    } else { @("--closed-validation-argument") }
+    $output = @(
+      & $DotNet $argumentListRunner --bounded-capture `
+        $TimeoutMilliseconds $CleanupReserveMilliseconds $MaxBytes $Fault `
+        $fixtureExecutable @fixtureArguments)
+    $exit = $LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $saved
+  }
+  if ($output.Count -ne 1) {
+    throw "boundedHostFixtureEnvelopeInvalid:$Name"
+  }
+  $envelopeRaw = [string]$output[0]
+  $envelopeExpectedNames = @(
+    "schema","startStage","startCode","exitCode","timedOut","overflow",
+    "pipeFault","killAttempted","cleanupCompleted","jobEmpty",
+    "jobActiveProcesses","pid","elapsedMilliseconds","hardCapMilliseconds",
+    "stdoutOverflow","stderrOverflow","stdoutRawLength","stderrRawLength",
+    "stdoutRawSha","stderrRawSha","stdoutDecoderState","stderrDecoderState",
+    "stdoutPendingTailLength","stderrPendingTailLength","stdoutText",
+    "stderrText")
+  $envelopeNames = @([regex]::Matches(
+    $envelopeRaw, '"(?<name>[A-Za-z][A-Za-z0-9]*)"\s*:') |
+    ForEach-Object { $_.Groups["name"].Value })
+  if ($envelopeNames.Count -ne $envelopeExpectedNames.Count -or
+      @($envelopeNames | Sort-Object -Unique).Count -ne
+        $envelopeExpectedNames.Count -or
+      @($envelopeNames | Where-Object {
+        $envelopeExpectedNames -cnotcontains $_
+      }).Count -ne 0) {
+    throw "boundedHostFixtureEnvelopeInvalid:$Name"
+  }
+  try {
+    $envelope = $envelopeRaw | ConvertFrom-Json
+  } catch {
+    throw "boundedHostFixtureEnvelopeInvalid:$Name"
+  }
+  if ([string]$envelope.schema -cne "boundedProcessV1" -or
+      [string]$envelope.startStage -cnotin @(
+        "none","executableResolve","pipe","job","attribute","create","assign","resume",
+        "managedHandoff") -or
+      $envelope.startCode.GetType() -ne [int] -or
+      [int]$envelope.startCode -lt 0) {
+    throw "boundedHostFixtureEnvelopeInvalid:$Name"
+  }
+  $case = [ordered]@{
+    name = $Name
+    runnerExit = $exit
+    startStage = [string]$envelope.startStage
+    startCode = [int]$envelope.startCode
+    timedOut = [bool]$envelope.timedOut
+    overflow = [bool]$envelope.overflow
+    cleanupCompleted = [bool]$envelope.cleanupCompleted
+    jobEmpty = [bool]$envelope.jobEmpty
+    pid = [int]$envelope.pid
+    jobActiveProcesses = [uint64]$envelope.jobActiveProcesses
+    elapsedMilliseconds = [int64]$envelope.elapsedMilliseconds
+    hardCapMilliseconds = [int64]$envelope.hardCapMilliseconds
+    pipeFault = [bool]$envelope.pipeFault
+    stdoutOverflow = [bool]$envelope.stdoutOverflow
+    stderrOverflow = [bool]$envelope.stderrOverflow
+    stdoutRawLength = [int64]$envelope.stdoutRawLength
+    stderrRawLength = [int64]$envelope.stderrRawLength
+    stdoutRawSha = [string]$envelope.stdoutRawSha
+    stderrRawSha = [string]$envelope.stderrRawSha
+    stdoutDecoderState = [string]$envelope.stdoutDecoderState
+    stderrDecoderState = [string]$envelope.stderrDecoderState
+    stdoutPendingTailLength = [int]$envelope.stdoutPendingTailLength
+    stderrPendingTailLength = [int]$envelope.stderrPendingTailLength
+    stdout = [string]$envelope.stdoutText
+    stderr = [string]$envelope.stderrText
+    rejected = $false
+    environmentRestored = [bool]($ErrorActionPreference -ceq $saved)
+  }
+  $case["evidenceSha"] = Write-BoundedHostCaseEvidence -Case $case
+  return $case
+}
+
+$hostHang = Invoke-BoundedHostFixture -Name "hostHang" `
+  -TimeoutMilliseconds 500 `
+  -Mode "hang"
+if ($hostHang.runnerExit -ne 0 -or -not $hostHang.timedOut -or
+    -not $hostHang.cleanupCompleted -or -not $hostHang.jobEmpty -or
+    $hostHang.pid -ne 0 -or $hostHang.elapsedMilliseconds -gt 2500) {
+  Throw-BoundedHostCaseFailure $hostHang "boundedHostHangFixtureFailed"
+}
+$boundedHostCases += $hostHang
+
+$hostEarlyChild = Invoke-BoundedHostFixture -Name "hostEarlyChild" `
+  -TimeoutMilliseconds 500 -Mode "treeInheritedPipe"
+if ($hostEarlyChild.runnerExit -ne 0 -or
+    -not $hostEarlyChild.timedOut -or
+    -not $hostEarlyChild.cleanupCompleted -or
+    -not $hostEarlyChild.jobEmpty -or
+    $hostEarlyChild.jobActiveProcesses -ne 0 -or
+    $hostEarlyChild.pid -ne 0 -or
+    $hostEarlyChild.stdoutRawLength -ne 0 -or
+    -not [string]::IsNullOrEmpty($hostEarlyChild.stdout) -or
+    $hostEarlyChild.elapsedMilliseconds -gt 2500) {
+  Throw-BoundedHostCaseFailure $hostEarlyChild `
+    "boundedHostEarlyChildFixtureFailed"
+}
+$boundedHostCases += $hostEarlyChild
+
+$hostOverflow = Invoke-BoundedHostFixture -Name "hostOverflow" `
+  -TimeoutMilliseconds 2000 -MaxBytes 512 `
+  -Mode "asciiOverflowStdout"
+if ($hostOverflow.runnerExit -ne 0 -or -not $hostOverflow.overflow -or
+    -not $hostOverflow.cleanupCompleted -or -not $hostOverflow.jobEmpty -or
+    $hostOverflow.pid -ne 0 -or $hostOverflow.elapsedMilliseconds -gt 4000 -or
+    $hostOverflow.stdoutRawLength -ne 4096 -or
+    $hostOverflow.stdoutRawSha -cne
+      "A2E659DACB4691E887AC0139F8893D04764EE197D70FB73D3190D56113D18E3E" -or
+    $hostOverflow.stdoutDecoderState -cne "closed" -or
+    [Text.Encoding]::UTF8.GetByteCount($hostOverflow.stdout) -ne 512) {
+  Throw-BoundedHostCaseFailure $hostOverflow "boundedHostOverflowFixtureFailed"
+}
+$boundedHostCases += $hostOverflow
+
+$hostUtf8Boundary = Invoke-BoundedHostFixture -Name "hostUtf8Boundary" `
+  -TimeoutMilliseconds 2000 -MaxBytes 512 `
+  -Mode "utf8BoundaryStdout"
+if ($hostUtf8Boundary.runnerExit -ne 0 -or
+    -not $hostUtf8Boundary.overflow -or $hostUtf8Boundary.pipeFault -or
+    $hostUtf8Boundary.stdoutDecoderState -cne "pendingTail" -or
+    $hostUtf8Boundary.stdoutPendingTailLength -ne 1 -or
+    [Text.Encoding]::UTF8.GetByteCount($hostUtf8Boundary.stdout) -ne 511 -or
+    $hostUtf8Boundary.stdoutRawLength -ne 513 -or
+    $hostUtf8Boundary.stdoutRawSha -cne
+      "702817C4CEAADAB11365B98FD054EE71190C8F0D1F4DC6FAB047A357BEF1A828" -or
+    -not $hostUtf8Boundary.cleanupCompleted -or
+    $hostUtf8Boundary.pid -ne 0 -or
+    $hostUtf8Boundary.elapsedMilliseconds -gt 4000) {
+  Throw-BoundedHostCaseFailure $hostUtf8Boundary "boundedHostUtf8BoundaryFixtureFailed"
+}
+$boundedHostCases += $hostUtf8Boundary
+
+$hostInvalidOverflow = Invoke-BoundedHostFixture -Name "hostInvalidOverflow" `
+  -TimeoutMilliseconds 2000 -MaxBytes 512 `
+  -Mode "internalInvalidStdout"
+if ($hostInvalidOverflow.runnerExit -ne 0 -or
+    -not $hostInvalidOverflow.overflow -or
+    -not $hostInvalidOverflow.pipeFault -or
+    $hostInvalidOverflow.stdoutRawLength -ne 600 -or
+    $hostInvalidOverflow.stdoutRawSha -cne
+      "FF0B0CB6C5A35AC9D0B59A718D0979ABAF3FE6612EB178C918A37AFCCDA4BBD1" -or
+    $hostInvalidOverflow.stdoutDecoderState -cne "invalid" -or
+    -not $hostInvalidOverflow.cleanupCompleted -or
+    $hostInvalidOverflow.pid -ne 0 -or
+    $hostInvalidOverflow.elapsedMilliseconds -gt 4000) {
+  Throw-BoundedHostCaseFailure $hostInvalidOverflow "boundedHostInvalidOverflowFixtureFailed"
+}
+$boundedHostCases += $hostInvalidOverflow
+
+$hostInvalidUtf8 = Invoke-BoundedHostFixture -Name "hostInvalidUtf8" `
+  -Mode "invalidUtf8Stdout"
+if ($hostInvalidUtf8.runnerExit -ne 0 -or $hostInvalidUtf8.overflow -or
+    -not $hostInvalidUtf8.pipeFault -or
+    $hostInvalidUtf8.stdoutDecoderState -cne "invalid" -or
+    -not $hostInvalidUtf8.cleanupCompleted -or $hostInvalidUtf8.pid -ne 0) {
+  Throw-BoundedHostCaseFailure $hostInvalidUtf8 "boundedHostInvalidUtf8FixtureFailed"
+}
+$boundedHostCases += $hostInvalidUtf8
+
+$hostIncompleteUtf8 = Invoke-BoundedHostFixture -Name "hostIncompleteUtf8" `
+  -Mode "incompleteUtf8Stdout"
+if ($hostIncompleteUtf8.runnerExit -ne 0 -or $hostIncompleteUtf8.overflow -or
+    -not $hostIncompleteUtf8.pipeFault -or
+    $hostIncompleteUtf8.stdoutDecoderState -cne "invalid" -or
+    -not $hostIncompleteUtf8.cleanupCompleted -or
+    $hostIncompleteUtf8.pid -ne 0) {
+  Throw-BoundedHostCaseFailure $hostIncompleteUtf8 "boundedHostIncompleteUtf8FixtureFailed"
+}
+$boundedHostCases += $hostIncompleteUtf8
+
+$hostDualOverflow = Invoke-BoundedHostFixture -Name "hostDualOverflow" `
+  -TimeoutMilliseconds 2000 -MaxBytes 512 `
+  -Mode "dualOverflow"
+if ($hostDualOverflow.runnerExit -ne 0 -or
+    -not $hostDualOverflow.overflow -or $hostDualOverflow.pipeFault -or
+    $hostDualOverflow.stdoutRawLength -lt 512 -or
+    $hostDualOverflow.stderrRawLength -lt 512 -or
+    $hostDualOverflow.stdoutDecoderState -cne "closed" -or
+    $hostDualOverflow.stderrDecoderState -cne "closed" -or
+    -not $hostDualOverflow.cleanupCompleted -or
+    $hostDualOverflow.pid -ne 0 -or
+    $hostDualOverflow.elapsedMilliseconds -gt 4000) {
+  Throw-BoundedHostCaseFailure $hostDualOverflow "boundedHostDualOverflowFixtureFailed"
+}
+$boundedHostCases += $hostDualOverflow
+
+$hostExtra = Invoke-BoundedHostFixture -Name "hostExtraJson" `
+  -Mode "jsonExtra"
+$extraRecords = @($hostExtra.stdout -split "\r?\n" | Where-Object {
+  -not [string]::IsNullOrWhiteSpace($_)
+})
+if ($hostExtra.runnerExit -ne 0 -or
+    -not $hostExtra.cleanupCompleted -or $hostExtra.pid -ne 0 -or
+    $hostExtra.elapsedMilliseconds -gt 4000 -or
+    $extraRecords.Count -ne 2) {
+  Throw-BoundedHostCaseFailure $hostExtra "boundedHostExtraJsonFixtureFailed"
+}
+$hostExtra["rejected"] = $true
+$boundedHostCases += $hostExtra
+
+$hostMalformed = Invoke-BoundedHostFixture -Name "hostMalformedJson" `
+  -Mode "jsonMalformed"
+$malformedRejected = $false
+try {
+  $null = $hostMalformed.stdout.Trim() | ConvertFrom-Json
+} catch {
+  $malformedRejected = $true
+}
+if ($hostMalformed.runnerExit -ne 0 -or
+    -not $hostMalformed.cleanupCompleted -or $hostMalformed.pid -ne 0 -or
+    $hostMalformed.elapsedMilliseconds -gt 4000 -or
+    -not $malformedRejected) {
+  Throw-BoundedHostCaseFailure $hostMalformed "boundedHostMalformedJsonFixtureFailed"
+}
+$hostMalformed["rejected"] = $true
+$boundedHostCases += $hostMalformed
+
+$hostCleanupFault = Invoke-BoundedHostFixture -Name "hostCleanupFault" `
+  -Fault "accountingFault" -Mode "exitZero"
+if ($hostCleanupFault.runnerExit -ne 93 -or
+    $hostCleanupFault.cleanupCompleted -or $hostCleanupFault.jobEmpty -or
+    $hostCleanupFault.pid -ne 0 -or
+    $hostCleanupFault.elapsedMilliseconds -gt 4000) {
+  Throw-BoundedHostCaseFailure $hostCleanupFault "boundedHostCleanupFaultFixtureFailed"
+}
+$boundedHostCases += $hostCleanupFault
+
+foreach ($startFault in @(
+  "executableResolveFault", "pipeFault", "jobFault", "attributeFault", "createFault",
+  "assignFault", "resumeFault", "managedHandoffFault",
+  "processWrapperFault", "stdoutSafeHandleFault", "stdoutStreamFault",
+  "stderrSafeHandleFault", "stderrStreamFault", "stdoutWriteCloseFault",
+  "stderrWriteCloseFault", "threadCloseFault")) {
+  $hostStartFault = Invoke-BoundedHostFixture `
+    -Name ("host" + $startFault) -Fault $startFault -Mode "exitZero"
+  if ($hostStartFault.runnerExit -ne 95 -or
+      -not $hostStartFault.cleanupCompleted -or
+      -not $hostStartFault.jobEmpty -or
+      $hostStartFault.jobActiveProcesses -ne 0 -or
+      $hostStartFault.pid -ne 0 -or
+      $hostStartFault.startStage -cne $(if ($startFault -cin @(
+        "managedHandoffFault", "processWrapperFault",
+        "stdoutSafeHandleFault", "stdoutStreamFault",
+        "stderrSafeHandleFault", "stderrStreamFault",
+        "stdoutWriteCloseFault", "stderrWriteCloseFault",
+        "threadCloseFault")) { "managedHandoff" } else {
+          $startFault.Substring(0, $startFault.Length - "Fault".Length)
+        }) -or
+      $hostStartFault.startCode -ne 20016 -or
+      $hostStartFault.elapsedMilliseconds -gt 4000) {
+    Throw-BoundedHostCaseFailure $hostStartFault `
+      "boundedHostStartFaultFixtureFailed"
+  }
+  $boundedHostCases += $hostStartFault
+}
+foreach ($identityCase in @(
+  "powershellCaseDrift", "powershellAbsolute", "unknownName")) {
+  $hostIdentityFailure = Invoke-BoundedHostFixture `
+    -Name ("host" + $identityCase) -ExecutableIdentity $identityCase
+  if ($hostIdentityFailure.runnerExit -ne 95 -or
+      $hostIdentityFailure.startStage -cne "executableResolve" -or
+      $hostIdentityFailure.startCode -ne 20016 -or
+      -not $hostIdentityFailure.cleanupCompleted -or
+      -not $hostIdentityFailure.jobEmpty -or
+      $hostIdentityFailure.jobActiveProcesses -ne 0 -or
+      $hostIdentityFailure.pid -ne 0) {
+    Throw-BoundedHostCaseFailure $hostIdentityFailure `
+      "boundedHostExecutableIdentityFixtureFailed"
+  }
+  $boundedHostCases += $hostIdentityFailure
+}
+
+$sourceRoot = (Resolve-Path (Join-Path $PSScriptRoot "../../..")).Path
 $managementScript = Join-Path $PSScriptRoot "Manage-LigaseInstallation.ps1"
 $installerScript = Join-Path $PSScriptRoot "LigaseHost.nsi"
 $managementSource = [IO.File]::ReadAllText($managementScript)
@@ -1606,7 +3066,6 @@ if ($readbackFailure.exitCode -eq 0 -or
   throw "shortcutReadbackFailureRollbackFixtureFailed"
 }
 
-$sourceRoot = (Resolve-Path (Join-Path $PSScriptRoot "../../..")).Path
 $transactionPublish = Join-Path $OutputRoot "transaction-helper"
 & $DotNet publish (Join-Path $sourceRoot (
     "tools/Ligase.Installation.TransactionHelper/" +
@@ -2734,15 +4193,304 @@ try {
   $junctionCreated = $true
 } catch {}
 $junctionRejected = $false
+$junctionExit = -1
+$junctionElapsedMilliseconds = 0
+$junctionStage = "none"
+$junctionNativeExit = -1
+$junctionErrorActionRestored = $false
+$junctionValidationEnvironmentRestored = $false
+$junctionEvidenceSha = ""
 if ($junctionCreated) {
+  $junctionPriorValidation = [Environment]::GetEnvironmentVariable(
+    "LIGASE_INSTALL_VALIDATION_HARNESS")
   $env:LIGASE_INSTALL_VALIDATION_HARNESS = "1"
-  "{}" | & $transactionHelper write --test-root $junctionRoot | Out-Null
-  $junctionRejected = $LASTEXITCODE -ne 0 -and
+  $junctionClock = [Diagnostics.Stopwatch]::StartNew()
+  $junctionSavedErrorAction = $ErrorActionPreference
+  try {
+    $ErrorActionPreference = "Continue"
+    $junctionEnvelopeOutput = @(
+      & $DotNet $argumentListRunner --bounded-capture 15000 5000 4096 `
+        none powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+        -File $managementScript `
+        -Action PreflightInstallTransaction `
+        -InstallDirectory $boundedInstallRoot `
+        -InstallTransactionRoot $junctionRoot)
+    $junctionRunnerExit = $LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $junctionSavedErrorAction
+    if ($null -eq $junctionPriorValidation) {
+      Remove-Item Env:\LIGASE_INSTALL_VALIDATION_HARNESS `
+        -ErrorAction SilentlyContinue
+    } else {
+      $env:LIGASE_INSTALL_VALIDATION_HARNESS =
+        $junctionPriorValidation
+    }
+    $junctionClock.Stop()
+    $junctionElapsedMilliseconds = [int]$junctionClock.ElapsedMilliseconds
+  }
+  $junctionErrorActionRestored =
+    $ErrorActionPreference -ceq $junctionSavedErrorAction
+  $junctionValidationEnvironmentRestored =
+    [Environment]::GetEnvironmentVariable(
+      "LIGASE_INSTALL_VALIDATION_HARNESS") -ceq
+        $junctionPriorValidation
+  if (-not $junctionErrorActionRestored -or
+      -not $junctionValidationEnvironmentRestored) {
+    throw "installTransactionJunctionStateRestoreFailed"
+  }
+  $junctionEvidenceRoot = Join-Path $OutputRoot "junction-evidence"
+  New-Item -ItemType Directory -Path $junctionEvidenceRoot | Out-Null
+  $junctionEvidencePath = Join-Path $junctionEvidenceRoot (
+    "transaction-junction.first.json")
+  if (Test-Path -LiteralPath $junctionEvidencePath) {
+    throw "gateEvidenceUnavailable"
+  }
+  $junctionObserved = $null
+  $junctionObservedRaw = if ($junctionEnvelopeOutput.Count -eq 1) {
+    [string]$junctionEnvelopeOutput[0]
+  } else { "" }
+  try {
+    if (-not [string]::IsNullOrEmpty($junctionObservedRaw)) {
+      $junctionObserved = $junctionObservedRaw | ConvertFrom-Json
+    }
+  } catch { $junctionObserved = $null }
+  function Get-JunctionObservedProperty(
+    $Value, [string]$Name, $DefaultValue) {
+    if ($null -eq $Value) { return $DefaultValue }
+    $properties = @($Value.PSObject.Properties | Where-Object {
+      $_.Name -ceq $Name
+    })
+    if ($properties.Count -ne 1) { return $DefaultValue }
+    return $properties[0].Value
+  }
+  $emptySha = Get-CompatibleSha256 ([byte[]]::new(0))
+  $junctionObservation = [ordered]@{
+    schema = "boundedJunctionEvidenceV1"
+    caseId = "transactionJunction"
+    nativeExit = [int]$junctionRunnerExit
+    result = "observed"
+    stage = "boundedHostProcess"
+    startStage = [string](Get-JunctionObservedProperty `
+      $junctionObserved "startStage" "none")
+    startCode = [int](Get-JunctionObservedProperty `
+      $junctionObserved "startCode" 0)
+    outputRecordCount = [int]$junctionEnvelopeOutput.Count
+    stdoutRawLength = [int64](Get-JunctionObservedProperty `
+      $junctionObserved "stdoutRawLength" 0)
+    stdoutRawSha = [string](Get-JunctionObservedProperty `
+      $junctionObserved "stdoutRawSha" $emptySha)
+    stdoutOverflow = [bool](Get-JunctionObservedProperty `
+      $junctionObserved "stdoutOverflow" $false)
+    stdoutDecoderState = [string](Get-JunctionObservedProperty `
+      $junctionObserved "stdoutDecoderState" "invalid")
+    stdoutPendingTailLength = [int](Get-JunctionObservedProperty `
+      $junctionObserved "stdoutPendingTailLength" 0)
+    stderrRawLength = [int64](Get-JunctionObservedProperty `
+      $junctionObserved "stderrRawLength" 0)
+    stderrRawSha = [string](Get-JunctionObservedProperty `
+      $junctionObserved "stderrRawSha" $emptySha)
+    stderrOverflow = [bool](Get-JunctionObservedProperty `
+      $junctionObserved "stderrOverflow" $false)
+    stderrDecoderState = [string](Get-JunctionObservedProperty `
+      $junctionObserved "stderrDecoderState" "invalid")
+    stderrPendingTailLength = [int](Get-JunctionObservedProperty `
+      $junctionObserved "stderrPendingTailLength" 0)
+    timedOut = [bool](Get-JunctionObservedProperty `
+      $junctionObserved "timedOut" $false)
+    cleanupState = if ([bool](Get-JunctionObservedProperty `
+      $junctionObserved "cleanupCompleted" $false)) {
+      "completed"
+    } else { "failed" }
+    rootPidZero = [bool]([int](Get-JunctionObservedProperty `
+      $junctionObserved "pid" -1) -eq 0)
+    descendantPidZero = [bool](
+      [int](Get-JunctionObservedProperty $junctionObserved "pid" -1) -eq 0 -and
+      [uint64](Get-JunctionObservedProperty `
+        $junctionObserved "jobActiveProcesses" ([uint32]::MaxValue)) -eq 0)
+    jobActiveProcesses = [uint64](Get-JunctionObservedProperty `
+      $junctionObserved "jobActiveProcesses" ([uint32]::MaxValue))
+    elapsedMilliseconds = [int]$junctionElapsedMilliseconds
+    runBudgetMilliseconds = 15000
+    cleanupReserveMilliseconds = 5000
+    hardCapMilliseconds = 20000
+    environmentRestored = [bool](
+      $junctionErrorActionRestored -and
+      $junctionValidationEnvironmentRestored)
+  }
+  $junctionEvidenceRaw = $junctionObservation | ConvertTo-Json -Compress
+  $junctionEvidenceExpectedNames = @(
+    "schema","caseId","nativeExit","result","stage","startStage","startCode",
+    "outputRecordCount",
+    "stdoutRawLength","stdoutRawSha","stdoutOverflow","stdoutDecoderState",
+    "stdoutPendingTailLength","stderrRawLength","stderrRawSha",
+    "stderrOverflow","stderrDecoderState","stderrPendingTailLength",
+    "timedOut","cleanupState","rootPidZero","descendantPidZero",
+    "jobActiveProcesses","elapsedMilliseconds","runBudgetMilliseconds",
+    "cleanupReserveMilliseconds","hardCapMilliseconds",
+    "environmentRestored")
+  $junctionEvidenceNames = @([regex]::Matches(
+    $junctionEvidenceRaw, '"(?<name>[A-Za-z][A-Za-z0-9]*)"\s*:') |
+    ForEach-Object { $_.Groups["name"].Value })
+  if ($junctionEvidenceNames.Count -ne $junctionEvidenceExpectedNames.Count -or
+      @($junctionEvidenceNames | Sort-Object -Unique).Count -ne
+        $junctionEvidenceExpectedNames.Count -or
+      @($junctionEvidenceNames | Where-Object {
+        $junctionEvidenceExpectedNames -cnotcontains $_
+      }).Count -ne 0 -or
+      [string]$junctionObservation.startStage -cnotin @(
+        "none","executableResolve","pipe","job","attribute","create","assign","resume",
+        "managedHandoff") -or
+      [int]$junctionObservation.startCode -lt 0) {
+    throw "gateEvidenceUnavailable"
+  }
+  $junctionEvidenceTemp = Join-Path $junctionEvidenceRoot (
+    "." + [guid]::NewGuid().ToString("N") + ".tmp")
+  try {
+    $junctionEvidenceBytes = [Text.UTF8Encoding]::new(
+      $false, $true).GetBytes($junctionEvidenceRaw)
+    $junctionEvidenceStream = [IO.FileStream]::new(
+      $junctionEvidenceTemp, [IO.FileMode]::CreateNew,
+      [IO.FileAccess]::Write, [IO.FileShare]::None, 4096,
+      [IO.FileOptions]::WriteThrough)
+    try {
+      $junctionEvidenceStream.Write(
+        $junctionEvidenceBytes, 0, $junctionEvidenceBytes.Length)
+      $junctionEvidenceStream.Flush($true)
+    } finally { $junctionEvidenceStream.Dispose() }
+    [IO.File]::Move($junctionEvidenceTemp, $junctionEvidencePath)
+    $junctionEvidenceReadback = [IO.File]::ReadAllBytes(
+      $junctionEvidencePath)
+    if ([Convert]::ToBase64String($junctionEvidenceReadback) -cne
+        [Convert]::ToBase64String($junctionEvidenceBytes)) {
+      throw "gateEvidenceUnavailable"
+    }
+    $junctionEvidenceSha = Get-CompatibleSha256 $junctionEvidenceReadback
+  } catch {
+    if (Test-Path -LiteralPath $junctionEvidenceTemp) {
+      Remove-Item -LiteralPath $junctionEvidenceTemp -Force `
+        -ErrorAction SilentlyContinue
+    }
+    throw "gateEvidenceUnavailable"
+  }
+  if ($junctionRunnerExit -ne 0 -or
+      $junctionEnvelopeOutput.Count -ne 1 -or
+      $junctionClock.Elapsed.TotalSeconds -gt 26) {
+    throw "installTransactionJunctionInvocationUnbounded"
+  }
+  $junctionEnvelopeRaw = [string]$junctionEnvelopeOutput[0]
+  $junctionEnvelopeNames = @(
+    [regex]::Matches(
+      $junctionEnvelopeRaw,
+      '"(?<name>[A-Za-z][A-Za-z0-9]*)"\s*:') |
+      ForEach-Object { $_.Groups["name"].Value })
+  $junctionExpectedEnvelopeNames = @(
+    "schema", "startStage", "startCode", "exitCode",
+    "timedOut", "overflow", "pipeFault",
+    "killAttempted", "cleanupCompleted", "jobEmpty",
+    "jobActiveProcesses", "pid",
+    "elapsedMilliseconds", "stdoutRawLength", "stderrRawLength",
+    "hardCapMilliseconds", "stdoutOverflow", "stderrOverflow",
+    "stdoutRawSha", "stderrRawSha", "stdoutDecoderState",
+    "stderrDecoderState", "stdoutPendingTailLength",
+    "stderrPendingTailLength", "stdoutText", "stderrText")
+  if ($junctionEnvelopeNames.Count -ne
+      $junctionExpectedEnvelopeNames.Count -or
+      @($junctionEnvelopeNames | Sort-Object -Unique).Count -ne
+        $junctionExpectedEnvelopeNames.Count -or
+      @($junctionEnvelopeNames | Where-Object {
+        $junctionExpectedEnvelopeNames -cnotcontains $_
+      }).Count -ne 0 -or
+      $junctionEnvelopeRaw -cnotmatch
+        '"jobActiveProcesses":0(?:,|})' -or
+      $junctionEnvelopeRaw -cnotmatch
+        '"hardCapMilliseconds":20000(?:,|})' -or
+      $junctionEnvelopeRaw -cnotmatch
+        '"stdoutOverflow":false(?:,|})' -or
+      $junctionEnvelopeRaw -cnotmatch
+        '"stderrOverflow":false(?:,|})') {
+    throw "installTransactionJunctionInvocationUnbounded"
+  }
+  try {
+    $junctionEnvelope = $junctionEnvelopeRaw | ConvertFrom-Json
+  } catch {
+    throw "installTransactionJunctionInvocationUnbounded"
+  }
+  if ([string]$junctionEnvelope.schema -cne "boundedProcessV1" -or
+      [string]$junctionEnvelope.startStage -cne "none" -or
+      [int]$junctionEnvelope.startCode -ne 0 -or
+      [bool]$junctionEnvelope.timedOut -or
+      [bool]$junctionEnvelope.overflow -or
+      [bool]$junctionEnvelope.pipeFault -or
+      [bool]$junctionEnvelope.stdoutOverflow -or
+      [bool]$junctionEnvelope.stderrOverflow -or
+      -not [bool]$junctionEnvelope.cleanupCompleted -or
+      -not [bool]$junctionEnvelope.jobEmpty -or
+      [uint64]$junctionEnvelope.jobActiveProcesses -ne 0 -or
+      [int64]$junctionEnvelope.hardCapMilliseconds -ne 20000 -or
+      [int]$junctionEnvelope.pid -ne 0) {
+    throw "installTransactionJunctionInvocationUnbounded"
+  }
+  $junctionExit = [int]$junctionEnvelope.exitCode
+  if ([string]$junctionEnvelope.stdoutDecoderState -cne "closed" -or
+      [string]$junctionEnvelope.stderrDecoderState -cne "closed" -or
+      [int]$junctionEnvelope.stdoutPendingTailLength -ne 0 -or
+      [int]$junctionEnvelope.stderrPendingTailLength -ne 0) {
+    throw "installTransactionJunctionProjectionInvalid"
+  }
+  $junctionStdout = [string]$junctionEnvelope.stdoutText
+  $junctionStderr = [string]$junctionEnvelope.stderrText
+  if (-not [string]::IsNullOrEmpty($junctionStderr)) {
+    throw "installTransactionJunctionProjectionInvalid"
+  }
+  $junctionRecords = @($junctionStdout -split "\r?\n" | Where-Object {
+    -not [string]::IsNullOrWhiteSpace($_)
+  })
+  if ($junctionRecords.Count -ne 1) {
+    throw "installTransactionJunctionProjectionInvalid"
+  }
+  $junctionRaw = [string]$junctionRecords[0]
+  if ([Text.Encoding]::UTF8.GetByteCount($junctionRaw) -gt 4096) {
+    throw "installTransactionJunctionOutputOverflow"
+  }
+  $junctionNames = @(
+    [regex]::Matches(
+      $junctionRaw,
+      '"(?<name>[A-Za-z][A-Za-z0-9]*)"\s*:') |
+      ForEach-Object { $_.Groups["name"].Value })
+  $junctionExpectedNames = @(
+    "code", "success", "failedField", "transactionHelperNativeExit",
+    "transactionHelperStage", "transactionHelperNativeCategory",
+    "transactionHelperNativeCode", "transactionBindingReason",
+    "transactionBindingRootKind", "transactionBindingSegmentCount",
+    "transactionBindingPrefixMatched", "transactionBindingVolumeMatched",
+    "transactionBindingFileIdentityMatched")
+  if ($junctionNames.Count -ne $junctionExpectedNames.Count -or
+      @($junctionNames | Sort-Object -Unique).Count -ne
+        $junctionExpectedNames.Count -or
+      @($junctionNames | Where-Object {
+        $junctionExpectedNames -cnotcontains $_
+      }).Count -ne 0) {
+    throw "installTransactionJunctionProjectionInvalid"
+  }
+  try {
+    $junctionProjection = $junctionRaw | ConvertFrom-Json
+  } catch {
+    throw "installTransactionJunctionProjectionInvalid"
+  }
+  $junctionStage = [string]$junctionProjection.transactionHelperStage
+  $junctionNativeExit =
+    [int]$junctionProjection.transactionHelperNativeExit
+  $junctionRejected = $junctionExit -eq 10 -and
+    [string]$junctionProjection.code -ceq "installTransactionInvalid" -and
+    -not [bool]$junctionProjection.success -and
+    [string]$junctionProjection.failedField -ceq "installTransaction" -and
+    [int]$junctionProjection.transactionHelperNativeExit -eq 18 -and
+    [string]$junctionProjection.transactionHelperStage -ceq "rejectReparse" -and
+    [string]$junctionProjection.transactionHelperNativeCategory -ceq "none" -and
+    [int]$junctionProjection.transactionHelperNativeCode -eq 0 -and
     [IO.File]::ReadAllText($sentinel) -ceq "unchanged" -and
     -not (Test-Path -LiteralPath (
       Join-Path $junctionTarget "pending-install-transaction.json"))
-  Remove-Item Env:\LIGASE_INSTALL_VALIDATION_HARNESS `
-    -ErrorAction SilentlyContinue
 }
 if ($junctionCreated -and -not $junctionRejected) {
   throw "installTransactionJunctionFollowed"
@@ -2773,6 +4521,14 @@ $shortcutResults = @(
     name = "transaction-junction-rejected-zero-external-mutation"
     passed = $junctionRejected
     inconclusive = -not $junctionCreated
+    exitCode = $junctionExit
+    helperNativeExit = $junctionNativeExit
+    helperStage = $junctionStage
+    elapsedMilliseconds = $junctionElapsedMilliseconds
+    evidenceSha = $junctionEvidenceSha
+    errorActionRestored = $junctionErrorActionRestored
+    validationEnvironmentRestored =
+      $junctionValidationEnvironmentRestored
   },
   [ordered]@{
     name = "transaction-empty-admin-root-recovered-by-file-identity"
@@ -3353,6 +5109,12 @@ $markerBehaviorResults += Invoke-MarkerBehaviorFixture `
   virtualDisplayMarkerCases = $markerBehaviorResults
   virtualDisplayInstallerProcessCases = $installerProcessResults
   virtualDisplayInstallerCaseSchemaCases = $installerProcessCaseSchemaResults
+  boundedHostProcessCases = $boundedHostCases
+  boundedHostRunner = [ordered]@{
+    sourceSha = $argumentListRunnerSourceSha
+    binarySha = $argumentListRunnerBinarySha
+    byteEmitterArgumentValidation = "passed"
+  }
   sourceContracts = $sourceContractResults
 } | ConvertTo-Json -Depth 4 -Compress
 $global:LASTEXITCODE = 0
