@@ -93,6 +93,77 @@ return process.ExitCode;
 if ($LASTEXITCODE -ne 0) { throw "argumentListRunnerBuildFailed" }
 $argumentListRunner = Join-Path $argumentListRunnerOutput "ArgumentListRunner.dll"
 $managementScript = Join-Path $PSScriptRoot "Manage-LigaseInstallation.ps1"
+$installerScript = Join-Path $PSScriptRoot "LigaseHost.nsi"
+$managementSource = [IO.File]::ReadAllText($managementScript)
+$installerSource = [IO.File]::ReadAllText($installerScript)
+$installCalls = [regex]::Matches(
+  $installerSource,
+  '-Action Install -InstallDirectory .*?-ConfigureFirewall \$3 \$4')
+if ($installCalls.Count -ne 3 -or
+    [regex]::Matches(
+      $installerSource,
+      'SectionGetFlags \$\{LIGASE_SECTION_VIRTUAL_DISPLAY\} \$2').Count -ne 2) {
+  throw "virtualDisplaySelectionTransactionIdentityNotFrozen"
+}
+$virtualReadbackIndex = $managementSource.IndexOf(
+  '$displayReadback = Get-VirtualDisplay', [StringComparison]::Ordinal)
+$virtualMarkerIndex = $managementSource.IndexOf(
+  'Write-VirtualDisplayOwnershipMarkerAtomic $ownershipPath',
+  $virtualReadbackIndex, [StringComparison]::Ordinal)
+if ($virtualReadbackIndex -lt 0 -or
+    $virtualMarkerIndex -le $virtualReadbackIndex -or
+    $managementSource.IndexOf(
+      '"virtualDisplayReadbackFailed"', [StringComparison]::Ordinal) -lt 0 -or
+    $managementSource.IndexOf(
+      '"virtualDisplayRollbackFailed"', [StringComparison]::Ordinal) -lt 0 -or
+    $managementSource.IndexOf(
+      '"virtualDisplayMarkerCommitFailed"', [StringComparison]::Ordinal) -lt 0) {
+  throw "virtualDisplaySuccessWithoutDeviceDriverReadback"
+}
+$markerTransactionTokens = @(
+  '[IO.File]::Replace($temp, $Path, $null, $true)',
+  '[IO.File]::Move($temp, $Path)', '$stream.Flush($true)',
+  'Test-ExactBytes $Bytes ([IO.File]::ReadAllBytes($Path))',
+  '$ownershipPath $ownershipBytes $false',
+  '".ligase-driver-ownership-*.tmp"',
+  '"createTemp"', '"writeTemp"', '"tempReadback"', '"atomicReplace"',
+  '"finalReadback"')
+foreach ($token in $markerTransactionTokens) {
+  if ($managementSource.IndexOf(
+      $token, [StringComparison]::Ordinal) -lt 0) {
+    throw "virtualDisplayMarkerTransactionTokenMissing:$token"
+  }
+}
+$transactionReadbackTokens = @(
+  '"rawRead"', '"rawShape"', '"jsonParse"', '"schemaValidation"',
+  '"freshnessValidation"', '"identityValidation"', '"shortcutValidation"',
+  '"cleanup"', '"missing"', '"duplicateProperty"', '"malformedJson"',
+  '"missingProperty"', '"unknownProperty"', '"wrongType"', '"stale"',
+  '"helperFailure"', '"identityMismatch"',
+  '"shortcutSnapshotInvalid"', '"cleanupFailed"')
+foreach ($token in $transactionReadbackTokens) {
+  if ($managementSource.IndexOf(
+      $token, [StringComparison]::Ordinal) -lt 0) {
+    throw "transactionReadbackDiagnosticTokenMissing:$token"
+  }
+}
+$sourceContractResults = @(
+  [ordered]@{
+    name = "virtual-display-selection-transaction-identity"
+    passed = $true
+  },
+  [ordered]@{
+    name = "virtual-display-device-driver-readback-before-marker"
+    passed = $true
+  },
+  [ordered]@{
+    name = "virtual-display-marker-atomic-commit-compensation"
+    passed = $true
+  },
+  [ordered]@{
+    name = "transaction-readback-closed-stage-reason"
+    passed = $true
+  })
 
 function Invoke-FinalizationStackFixture(
   [string]$Mode,
@@ -2678,11 +2749,120 @@ $failureFlowResults = @(
     -ExpectedFailedField "none"
 )
 
+$markerBehaviorRoot = Join-Path $root "virtual-display-marker-behavior"
+$markerEvidenceRoot = Join-Path $root "virtual-display-marker-evidence"
+New-Item -ItemType Directory -Path $markerBehaviorRoot | Out-Null
+New-Item -ItemType Directory -Path $markerEvidenceRoot | Out-Null
+function Invoke-MarkerBehaviorFixture(
+    [string]$Name,
+    [string]$FailureStage,
+    [bool]$PriorMarker,
+    [bool]$DependentDevice = $false,
+    [string]$CompensationFailure = "",
+    [string]$ExpectedCode = "virtualDisplayMarkerCommitFailed") {
+  $caseRoot = Join-Path $markerBehaviorRoot $Name
+  New-Item -ItemType Directory -Path $caseRoot | Out-Null
+  $marker = Join-Path $caseRoot ".ligase-driver-ownership.json"
+  $sentinel = Join-Path $caseRoot "owned-cert.sentinel"
+  $oldBytes = [Text.UTF8Encoding]::new($false).GetBytes(
+    '{"schemaVersion":1,"certificateThumbprint":"OLD","certificateStores":[]}')
+  if ($PriorMarker) { [IO.File]::WriteAllBytes($marker, $oldBytes) }
+  [IO.File]::WriteAllText($sentinel, "owned", [Text.UTF8Encoding]::new($false))
+  try {
+    $env:LIGASE_INSTALL_VALIDATION_HARNESS = "1"
+    $env:LIGASE_VIRTUAL_DISPLAY_VALIDATION_ROOT = $caseRoot
+    $env:LIGASE_VIRTUAL_DISPLAY_MARKER_FAILURE_STAGE = $FailureStage
+    $env:LIGASE_VIRTUAL_DISPLAY_DEPENDENT_DEVICE =
+      $(if ($DependentDevice) { "1" } else { "0" })
+    $env:LIGASE_VIRTUAL_DISPLAY_COMPENSATION_FAILURE = $CompensationFailure
+    $raw = & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass `
+      -File $managementScript `
+      -Action ValidateVirtualDisplayMarkerTransaction `
+      -InstallDirectory $caseRoot `
+      -ValidationRoot $caseRoot
+    $nativeExit = $LASTEXITCODE
+  } finally {
+    Remove-Item Env:\LIGASE_INSTALL_VALIDATION_HARNESS -ErrorAction SilentlyContinue
+    Remove-Item Env:\LIGASE_VIRTUAL_DISPLAY_VALIDATION_ROOT -ErrorAction SilentlyContinue
+    Remove-Item Env:\LIGASE_VIRTUAL_DISPLAY_MARKER_FAILURE_STAGE -ErrorAction SilentlyContinue
+    Remove-Item Env:\LIGASE_VIRTUAL_DISPLAY_DEPENDENT_DEVICE -ErrorAction SilentlyContinue
+    Remove-Item Env:\LIGASE_VIRTUAL_DISPLAY_COMPENSATION_FAILURE -ErrorAction SilentlyContinue
+  }
+  if ($nativeExit -ne 0 -or @($raw).Count -ne 1) {
+    throw "virtualDisplayMarkerFixtureProcessFailed:$Name"
+  }
+  $projection = [string]$raw | ConvertFrom-Json
+  $markerPresent = Test-Path -LiteralPath $marker -PathType Leaf
+  $markerExact = if ($PriorMarker -and $markerPresent) {
+    [Convert]::ToBase64String($oldBytes) -ceq [Convert]::ToBase64String(
+      [IO.File]::ReadAllBytes($marker))
+  } else {
+    -not $markerPresent
+  }
+  $tempCount = @(Get-ChildItem -LiteralPath $caseRoot -Force -Filter (
+      ".ligase-driver-ownership-*.tmp")).Count
+  $sentinelPresent = Test-Path -LiteralPath $sentinel
+  $expectedSentinel = $DependentDevice -or $CompensationFailure -ceq "removeCert"
+  if ([string]$projection.code -cne $ExpectedCode -or
+      [int]$projection.tempResidueCount -ne 0 -or $tempCount -ne 0 -or
+      (-not $markerExact -and $CompensationFailure -cne "restoreMarker") -or
+      $sentinelPresent -ne $expectedSentinel) {
+    throw "virtualDisplayMarkerFixtureAssertionFailed:$Name"
+  }
+  $evidence = [ordered]@{
+    name = $Name
+    failureStage = $FailureStage
+    priorMarker = $PriorMarker
+    dependentDevice = $DependentDevice
+    compensationFailure = $(if ($CompensationFailure) {
+      $CompensationFailure
+    } else { "none" })
+    code = [string]$projection.code
+    markerExact = $markerExact
+    tempResidueCount = $tempCount
+    certSentinelPresent = $sentinelPresent
+  }
+  $evidencePath = Join-Path $markerEvidenceRoot "$Name.json"
+  [IO.File]::WriteAllText(
+    $evidencePath, ($evidence | ConvertTo-Json -Compress),
+    [Text.UTF8Encoding]::new($false))
+  $readback = [IO.File]::ReadAllText($evidencePath) | ConvertFrom-Json
+  if ([string]$readback.name -cne $Name -or
+      [string]$readback.code -cne $ExpectedCode) {
+    throw "virtualDisplayMarkerEvidenceReadbackFailed:$Name"
+  }
+  return $evidence
+}
+
+$markerBehaviorResults = @()
+foreach ($stage in @(
+    "createTemp", "writeTemp", "tempReadback", "atomicReplace",
+    "finalReadback")) {
+  $markerBehaviorResults += Invoke-MarkerBehaviorFixture `
+    -Name "marker-$stage-existing" -FailureStage $stage -PriorMarker $true
+  $markerBehaviorResults += Invoke-MarkerBehaviorFixture `
+    -Name "marker-$stage-absent" -FailureStage $stage -PriorMarker $false
+}
+$markerBehaviorResults += Invoke-MarkerBehaviorFixture `
+  -Name "marker-dependent-device" -FailureStage "writeTemp" `
+  -PriorMarker $true -DependentDevice $true `
+  -ExpectedCode "virtualDisplayRollbackFailed"
+$markerBehaviorResults += Invoke-MarkerBehaviorFixture `
+  -Name "marker-cert-compensation-failure" -FailureStage "writeTemp" `
+  -PriorMarker $true -CompensationFailure "removeCert" `
+  -ExpectedCode "virtualDisplayRollbackFailed"
+$markerBehaviorResults += Invoke-MarkerBehaviorFixture `
+  -Name "marker-restore-failure" -FailureStage "finalReadback" `
+  -PriorMarker $true -CompensationFailure "restoreMarker" `
+  -ExpectedCode "virtualDisplayRollbackFailed"
+
 [ordered]@{
   code = "installDirectoryRuntimeHarnessPassed"
   cases = $results
   finalizationStackCases = $finalizationStackResults
   shortcutCases = $shortcutResults
   failureFlows = $failureFlowResults
+  virtualDisplayMarkerCases = $markerBehaviorResults
+  sourceContracts = $sourceContractResults
 } | ConvertTo-Json -Depth 4 -Compress
 $global:LASTEXITCODE = 0

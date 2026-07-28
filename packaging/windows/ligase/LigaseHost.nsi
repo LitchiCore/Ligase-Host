@@ -565,12 +565,22 @@ Section "Ligase Host（必需）" SEC_MAIN
   ${Else}
     StrCpy $3 ""
   ${EndIf}
-  ${If} $DataRootMode == "migration"
-    nsExec::ExecToStack 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\Deployment\Manage-LigaseInstallation.ps1" -Action Install -InstallDirectory "$INSTDIR" -DataRoot "$DataRoot" -MigrateDataRoot -ConfigureFirewall $3'
-  ${ElseIf} $DataRootMode == "orphanLegacyRecovery"
-    nsExec::ExecToStack 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\Deployment\Manage-LigaseInstallation.ps1" -Action Install -InstallDirectory "$INSTDIR" -DataRoot "$DataRoot" -RecoverOrphanDataRoot -RecoveryDataRootSource "$DataRootSource" -ConfigureFirewall $3'
+  ; The virtual-display selection is also transaction identity. Freeze it
+  ; before the required section writes the install journal so final readback
+  ; compares the same selection that the optional section will consume.
+  SectionGetFlags ${LIGASE_SECTION_VIRTUAL_DISPLAY} $2
+  IntOp $2 $2 & ${SF_SELECTED}
+  ${If} $2 != 0
+    StrCpy $4 "-VirtualDisplaySelected"
   ${Else}
-    nsExec::ExecToStack 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\Deployment\Manage-LigaseInstallation.ps1" -Action Install -InstallDirectory "$INSTDIR" -DataRoot "$DataRoot" -ConfigureFirewall $3'
+    StrCpy $4 ""
+  ${EndIf}
+  ${If} $DataRootMode == "migration"
+    nsExec::ExecToStack 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\Deployment\Manage-LigaseInstallation.ps1" -Action Install -InstallDirectory "$INSTDIR" -DataRoot "$DataRoot" -MigrateDataRoot -ConfigureFirewall $3 $4'
+  ${ElseIf} $DataRootMode == "orphanLegacyRecovery"
+    nsExec::ExecToStack 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\Deployment\Manage-LigaseInstallation.ps1" -Action Install -InstallDirectory "$INSTDIR" -DataRoot "$DataRoot" -RecoverOrphanDataRoot -RecoveryDataRootSource "$DataRootSource" -ConfigureFirewall $3 $4'
+  ${Else}
+    nsExec::ExecToStack 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\Deployment\Manage-LigaseInstallation.ps1" -Action Install -InstallDirectory "$INSTDIR" -DataRoot "$DataRoot" -ConfigureFirewall $3 $4'
   ${EndIf}
   Pop $0
   Pop $1

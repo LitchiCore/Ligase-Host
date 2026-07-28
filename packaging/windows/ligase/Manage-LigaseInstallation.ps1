@@ -11,6 +11,7 @@ param(
     "Readback",
     "Uninstall",
     "InstallVirtualDisplay",
+    "ValidateVirtualDisplayMarkerTransaction",
     "UninstallVirtualDisplay",
     "CleanupLegacyDriverTrust")]
   [string]$Action = "DryRun",
@@ -44,6 +45,7 @@ param(
     "recoverOrphanLegacyDataRoot")]
   [string]$EvidenceDataRootAction = "none",
   [string]$EvidenceDataRootSource,
+  [string]$ValidationRoot,
   [int]$EvidenceHelperExit = -1,
   [ValidateSet("notRequired", "completed", "failed", "unknown")]
   [string]$EvidenceRollback = "notRequired",
@@ -173,6 +175,8 @@ $script:rollbackResult = "notRequired"
 $script:shortcutRollbackResult = "notRequired"
 $script:firewallRollbackResult = "notRequired"
 $script:transactionCleanupResult = "notCreated"
+$script:transactionReadbackStage = "none"
+$script:transactionReadbackReason = "none"
 $script:transactionHelperNativeExit = -1
 $script:transactionHelperStage = "none"
 $script:transactionHelperNativeCategory = "none"
@@ -1071,13 +1075,31 @@ function Get-ExpectedShortcutEntries {
     })
 }
 
-function Assert-ClosedProperties($Object, [string[]]$Expected) {
+function Set-InstallTransactionReadbackFailure(
+  [string]$Stage,
+  [string]$Reason,
+  [string]$Code = "installTransactionInvalid"
+) {
+  $script:transactionReadbackStage = $Stage
+  $script:transactionReadbackReason = $Reason
+  $script:finalFailedField = "installTransaction"
+  $script:finalComponents.installTransaction = "failed"
+  throw $Code
+}
+
+function Assert-ClosedProperties(
+  $Object,
+  [string[]]$Expected,
+  [string]$Stage = "schemaValidation"
+) {
   $actual = @($Object.PSObject.Properties.Name)
-  if ($actual.Count -ne $Expected.Count) {
-    throw "installTransactionInvalid"
-  }
   foreach ($name in $Expected) {
-    if ($actual -cnotcontains $name) { throw "installTransactionInvalid" }
+    if ($actual -cnotcontains $name) {
+      Set-InstallTransactionReadbackFailure $Stage "missingProperty"
+    }
+  }
+  if ($actual.Count -ne $Expected.Count) {
+    Set-InstallTransactionReadbackFailure $Stage "unknownProperty"
   }
 }
 
@@ -1088,14 +1110,22 @@ function Assert-TransactionRawShape([string]$Raw) {
     "desktopSelected", "virtualDisplaySelected", "configureFirewall",
     "shortcuts", "firewallApplied", "firewallWasConfigured")
   foreach ($name in $top) {
-    if ([regex]::Matches($Raw, '"' + [regex]::Escape($name) + '"\s*:').Count -ne
-        1) {
-      throw "installTransactionInvalid"
+    $count = [regex]::Matches(
+      $Raw, '"' + [regex]::Escape($name) + '"\s*:').Count
+    if ($count -eq 0) {
+      Set-InstallTransactionReadbackFailure "rawShape" "missingProperty"
+    }
+    if ($count -ne 1) {
+      Set-InstallTransactionReadbackFailure "rawShape" "duplicateProperty"
     }
   }
   foreach ($name in @("field", "path", "existed", "bytes")) {
-    if ([regex]::Matches($Raw, '"' + $name + '"\s*:').Count -ne 4) {
-      throw "installTransactionInvalid"
+    $count = [regex]::Matches($Raw, '"' + $name + '"\s*:').Count
+    if ($count -lt 4) {
+      Set-InstallTransactionReadbackFailure "rawShape" "missingProperty"
+    }
+    if ($count -ne 4) {
+      Set-InstallTransactionReadbackFailure "rawShape" "duplicateProperty"
     }
   }
 }
@@ -1138,14 +1168,50 @@ function Save-InstallTransaction {
 }
 
 function Load-InstallTransaction {
-  $raw = Invoke-InstallTransactionHelper "read"
+  $script:transactionReadbackStage = "rawRead"
+  try {
+    $raw = Invoke-InstallTransactionHelper "read"
+  } catch {
+    $reason = if (
+      $script:transactionHelperStage -eq "read" -and
+      $script:transactionHelperNativeCategory -in @(
+        "fileNotFound", "pathNotFound")) {
+      "missing"
+    } else {
+      "helperFailure"
+    }
+    Set-InstallTransactionReadbackFailure "rawRead" $reason (
+      [string]$_.Exception.Message)
+  }
   Assert-TransactionRawShape $raw
-  $document = $raw | ConvertFrom-Json
+  $script:transactionReadbackStage = "jsonParse"
+  try {
+    $document = $raw | ConvertFrom-Json
+  } catch {
+    Set-InstallTransactionReadbackFailure "jsonParse" "malformedJson"
+  }
   Assert-ClosedProperties $document @(
     "schemaVersion", "transactionId", "createdUtc", "manifestSourceHead",
     "manifestSha256", "installLayout", "installDirectory", "launcher",
     "desktopSelected", "virtualDisplaySelected", "configureFirewall",
-    "shortcuts", "firewallApplied", "firewallWasConfigured")
+    "shortcuts", "firewallApplied", "firewallWasConfigured") "schemaValidation"
+  if ($document.schemaVersion -isnot [int] -or
+      $document.transactionId -isnot [string] -or
+      $document.createdUtc -isnot [string] -or
+      $document.manifestSourceHead -isnot [string] -or
+      $document.manifestSha256 -isnot [string] -or
+      $document.installLayout -isnot [string] -or
+      $document.installDirectory -isnot [string] -or
+      $document.launcher -isnot [string] -or
+      $document.desktopSelected -isnot [bool] -or
+      $document.virtualDisplaySelected -isnot [bool] -or
+      $document.configureFirewall -isnot [bool] -or
+      $document.firewallApplied -isnot [bool] -or
+      $document.firewallWasConfigured -isnot [bool] -or
+      $document.shortcuts -isnot [array]) {
+    Set-InstallTransactionReadbackFailure "schemaValidation" "wrongType"
+  }
+  $script:transactionReadbackStage = "freshnessValidation"
   $created = [DateTime]::MinValue
   if (-not [DateTime]::TryParseExact(
       [string]$document.createdUtc,
@@ -1156,12 +1222,14 @@ function Load-InstallTransaction {
       $created.Kind -ne [DateTimeKind]::Utc -or
       $created -gt [DateTime]::UtcNow.AddMinutes(5) -or
       $created -lt [DateTime]::UtcNow.AddHours(-2)) {
-    throw "installTransactionStale"
+    Set-InstallTransactionReadbackFailure (
+      "freshnessValidation") "stale" "installTransactionStale"
   }
+  $script:transactionReadbackStage = "identityValidation"
   $transactionBytes = [byte[]]$null
   try { $transactionBytes = [Convert]::FromBase64String(
       [string]$document.transactionId) } catch {
-    throw "installTransactionInvalid"
+    Set-InstallTransactionReadbackFailure "identityValidation" "wrongType"
   }
   $expectedLauncher = [IO.Path]::GetFullPath(
     (Join-Path $installRoot "Ligase Host.exe"))
@@ -1184,29 +1252,49 @@ function Load-InstallTransaction {
       $document.firewallApplied -isnot [bool] -or
       $document.firewallWasConfigured -isnot [bool] -or
       $actualEntries.Count -ne 4) {
-    throw "installTransactionInvalid"
+    $reason = if (
+      $document.desktopSelected -isnot [bool] -or
+      $document.virtualDisplaySelected -isnot [bool] -or
+      $document.configureFirewall -isnot [bool] -or
+      $document.firewallApplied -isnot [bool] -or
+      $document.firewallWasConfigured -isnot [bool]) {
+      "wrongType"
+    } else {
+      "identityMismatch"
+    }
+    Set-InstallTransactionReadbackFailure "identityValidation" $reason
   }
+  $script:transactionReadbackStage = "shortcutValidation"
   $validated = @()
   $totalBytes = 0
   for ($index = 0; $index -lt 4; $index++) {
     $entry = $actualEntries[$index]
     $expected = $expectedEntries[$index]
-    Assert-ClosedProperties $entry @("field", "path", "existed", "bytes")
+    Assert-ClosedProperties $entry @(
+      "field", "path", "existed", "bytes") "shortcutValidation"
     if ([string]$entry.field -cne [string]$expected.field -or
         [string]$entry.path -cne [IO.Path]::GetFullPath([string]$expected.path) -or
         $entry.existed -isnot [bool]) {
-      throw "installTransactionInvalid"
+      Set-InstallTransactionReadbackFailure (
+        "shortcutValidation") "shortcutSnapshotInvalid"
     }
     $bytes = $null
     if ([bool]$entry.existed) {
-      if ($entry.bytes -isnot [string]) { throw "installTransactionInvalid" }
-      try { $bytes = [Convert]::FromBase64String([string]$entry.bytes) } catch {
-        throw "installTransactionInvalid"
+      if ($entry.bytes -isnot [string]) {
+        Set-InstallTransactionReadbackFailure "shortcutValidation" "wrongType"
       }
-      if ($bytes.Count -gt 1048576) { throw "installTransactionInvalid" }
+      try { $bytes = [Convert]::FromBase64String([string]$entry.bytes) } catch {
+        Set-InstallTransactionReadbackFailure (
+          "shortcutValidation") "shortcutSnapshotInvalid"
+      }
+      if ($bytes.Count -gt 1048576) {
+        Set-InstallTransactionReadbackFailure (
+          "shortcutValidation") "shortcutSnapshotInvalid"
+      }
       $totalBytes += $bytes.Count
     } elseif ($null -ne $entry.bytes) {
-      throw "installTransactionInvalid"
+      Set-InstallTransactionReadbackFailure (
+        "shortcutValidation") "shortcutSnapshotInvalid"
     }
     $validated += [ordered]@{
       field = [string]$expected.field
@@ -1219,7 +1307,10 @@ function Load-InstallTransaction {
       }
     }
   }
-  if ($totalBytes -gt 4194304) { throw "installTransactionInvalid" }
+  if ($totalBytes -gt 4194304) {
+    Set-InstallTransactionReadbackFailure (
+      "shortcutValidation") "shortcutSnapshotInvalid"
+  }
   $script:shortcutRollback = [ordered]@{
     launcher = $expectedLauncher
     snapshot = $validated
@@ -1229,6 +1320,8 @@ function Load-InstallTransaction {
   $script:transactionCreated = $true
   $script:transactionCleanupResult = "pending"
   $script:finalComponents.installTransaction = "verified"
+  $script:transactionReadbackStage = "completed"
+  $script:transactionReadbackReason = "none"
   return $true
 }
 
@@ -1237,13 +1330,21 @@ function Remove-InstallTransaction {
     $script:transactionCleanupResult = "notCreated"
     return
   }
-  $result = Invoke-InstallTransactionHelper "delete"
+  $script:transactionReadbackStage = "cleanup"
+  try {
+    $result = Invoke-InstallTransactionHelper "delete"
+  } catch {
+    Set-InstallTransactionReadbackFailure (
+      "cleanup") "cleanupFailed" ([string]$_.Exception.Message)
+  }
   if ($result -cne
       '{"code":"installTransactionDeleted","success":true}') {
-    throw "installTransactionInvalid"
+    Set-InstallTransactionReadbackFailure "cleanup" "cleanupFailed"
   }
   $script:transactionCreated = $false
   $script:transactionCleanupResult = "completed"
+  $script:transactionReadbackStage = "completed"
+  $script:transactionReadbackReason = "none"
 }
 
 function Write-InstallerEvidence {
@@ -1324,6 +1425,8 @@ function Write-InstallerEvidence {
       recoveryAction = if ($script:transactionRecoveryAction -ne "none") {
         $script:transactionRecoveryAction
       } else { $EvidenceTransactionRecoveryAction }
+      readbackStage = $script:transactionReadbackStage
+      readbackReason = $script:transactionReadbackReason
     }
     failedField = if ($EvidenceFailedField -eq "none") {
       $null
@@ -2267,6 +2370,29 @@ function Get-VirtualDisplay {
       return [ordered]@{
         state = "notInstalled"
         machineCode = "virtualDisplayNotInstalled"
+        deviceCount = 0
+        driverBindingVerified = $false
+        physicalDesktopAvailable = $true
+      }
+    }
+    $driverBindings = @($devices | ForEach-Object {
+      Get-PnpDeviceProperty `
+        -InstanceId $_.InstanceId `
+        -KeyName "DEVPKEY_Device_DriverInfPath" `
+        -ErrorAction Stop
+    })
+    $driverBindingVerified = (
+      $driverBindings.Count -eq $devices.Count -and
+      @($driverBindings | Where-Object {
+        [string]::IsNullOrWhiteSpace([string]$_.Data) -or
+        [string]$_.Data -notmatch '^oem[0-9]+\.inf$'
+      }).Count -eq 0)
+    if (-not $driverBindingVerified) {
+      return [ordered]@{
+        state = "failed"
+        machineCode = "virtualDisplayDriverBindingMissing"
+        deviceCount = $devices.Count
+        driverBindingVerified = $false
         physicalDesktopAvailable = $true
       }
     }
@@ -2274,12 +2400,16 @@ function Get-VirtualDisplay {
     return [ordered]@{
       state = if ($reboot) { "rebootRequired" } else { "available" }
       machineCode = if ($reboot) { "virtualDisplayRebootRequired" } else { "available" }
+      deviceCount = $devices.Count
+      driverBindingVerified = $true
       physicalDesktopAvailable = $true
     }
   } catch {
     return [ordered]@{
       state = "failed"
       machineCode = "virtualDisplayReadbackFailed"
+      deviceCount = 0
+      driverBindingVerified = $false
       physicalDesktopAvailable = $true
     }
   }
@@ -2658,6 +2788,173 @@ function Test-DependentVirtualDisplay {
   }
 }
 
+function Test-ExactBytes([byte[]]$Expected, [byte[]]$Actual) {
+  if ($null -eq $Expected -or $null -eq $Actual -or
+      $Expected.Length -ne $Actual.Length) {
+    return $false
+  }
+  $different = 0
+  for ($index = 0; $index -lt $Expected.Length; $index++) {
+    $different = $different -bor ($Expected[$index] -bxor $Actual[$index])
+  }
+  return $different -eq 0
+}
+
+function Write-VirtualDisplayOwnershipMarkerAtomic(
+    [string]$Path,
+    [byte[]]$Bytes,
+    [bool]$EnableValidationFaults = $true) {
+  $directory = Split-Path -Parent $Path
+  $directoryItem = Get-Item -LiteralPath $directory -Force
+  if (($directoryItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw "virtualDisplayMarkerCommitFailed"
+  }
+  if (Test-Path -LiteralPath $Path) {
+    $markerItem = Get-Item -LiteralPath $Path -Force
+    if ($markerItem.PSIsContainer -or
+        ($markerItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+      throw "virtualDisplayMarkerCommitFailed"
+    }
+  }
+
+  $temp = Join-Path $directory (
+    ".ligase-driver-ownership-{0}.tmp" -f [Guid]::NewGuid().ToString("N"))
+  $fault = if ($EnableValidationFaults -and
+      $env:LIGASE_INSTALL_VALIDATION_HARNESS -ceq "1") {
+    [string]$env:LIGASE_VIRTUAL_DISPLAY_MARKER_FAILURE_STAGE
+  } else {
+    ""
+  }
+  try {
+    if ($fault -ceq "createTemp") { throw "virtualDisplayMarkerCommitFailed" }
+    $stream = [IO.FileStream]::new(
+      $temp, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write,
+      [IO.FileShare]::None, 4096,
+      [IO.FileOptions]::WriteThrough)
+    try {
+      if ($fault -ceq "writeTemp") { throw "virtualDisplayMarkerCommitFailed" }
+      $stream.Write($Bytes, 0, $Bytes.Length)
+      $stream.Flush($true)
+    } finally {
+      $stream.Dispose()
+    }
+    $tempItem = Get-Item -LiteralPath $temp -Force
+    if (($tempItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+      throw "virtualDisplayMarkerCommitFailed"
+    }
+    $null = Get-Acl -LiteralPath $temp
+    if ($fault -ceq "tempReadback" -or
+        -not (Test-ExactBytes $Bytes ([IO.File]::ReadAllBytes($temp)))) {
+      throw "virtualDisplayMarkerCommitFailed"
+    }
+    if ($fault -ceq "atomicReplace") { throw "virtualDisplayMarkerCommitFailed" }
+    if (Test-Path -LiteralPath $Path -PathType Leaf) {
+      [IO.File]::Replace($temp, $Path, $null, $true)
+    } else {
+      [IO.File]::Move($temp, $Path)
+    }
+    if ($fault -ceq "finalReadback") {
+      throw "virtualDisplayMarkerCommitFailed"
+    }
+    $finalItem = Get-Item -LiteralPath $Path -Force
+    if (($finalItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+      throw "virtualDisplayMarkerCommitFailed"
+    }
+    $null = Get-Acl -LiteralPath $Path
+    if (-not (Test-ExactBytes $Bytes ([IO.File]::ReadAllBytes($Path)))) {
+      throw "virtualDisplayMarkerCommitFailed"
+    }
+  } finally {
+    if (Test-Path -LiteralPath $temp) {
+      Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue
+    }
+  }
+}
+
+function Invoke-VirtualDisplayMarkerValidation([string]$Root) {
+  $fullRoot = [IO.Path]::GetFullPath($Root)
+  if ($env:LIGASE_INSTALL_VALIDATION_HARNESS -cne "1" -or
+      [string]$env:LIGASE_VIRTUAL_DISPLAY_VALIDATION_ROOT -cne $fullRoot -or
+      [IO.Path]::GetPathRoot($fullRoot) -cne "D:\") {
+    throw "virtualDisplayValidationUnavailable"
+  }
+  $marker = Join-Path $fullRoot ".ligase-driver-ownership.json"
+  $sentinel = Join-Path $fullRoot "owned-cert.sentinel"
+  $original = if (Test-Path -LiteralPath $marker -PathType Leaf) {
+    [IO.File]::ReadAllBytes($marker)
+  } else {
+    $null
+  }
+  $newBytes = [Text.UTF8Encoding]::new($false).GetBytes(
+    '{"schemaVersion":1,"certificateThumbprint":"VALIDATION","certificateStores":["D_ONLY_SENTINEL"]}')
+  $dependent = $env:LIGASE_VIRTUAL_DISPLAY_DEPENDENT_DEVICE -ceq "1"
+  $rollbackFailed = $false
+  $resultCode = "virtualDisplayMarkerCommitFailed"
+  try {
+    Write-VirtualDisplayOwnershipMarkerAtomic $marker $newBytes
+    throw "virtualDisplayMarkerCommitFailed"
+  } catch {
+    try {
+      if ($env:LIGASE_VIRTUAL_DISPLAY_COMPENSATION_FAILURE -ceq
+          "restoreMarker") {
+        throw "validationRestoreFailure"
+      }
+      if ($null -eq $original) {
+        if (Test-Path -LiteralPath $marker) {
+          Remove-Item -LiteralPath $marker -Force
+        }
+      } else {
+        $liveExact = (Test-Path -LiteralPath $marker -PathType Leaf) -and
+          (Test-ExactBytes $original ([IO.File]::ReadAllBytes($marker)))
+        if (-not $liveExact) {
+          Write-VirtualDisplayOwnershipMarkerAtomic $marker $original $false
+        }
+      }
+    } catch {
+      $rollbackFailed = $true
+    }
+    if (Test-Path -LiteralPath $sentinel) {
+      if ($dependent) {
+        $rollbackFailed = $true
+      } else {
+        try {
+          if ($env:LIGASE_VIRTUAL_DISPLAY_COMPENSATION_FAILURE -ceq
+              "removeCert") {
+            throw "validationCertificateRemovalFailure"
+          }
+          Remove-Item -LiteralPath $sentinel -Force
+        } catch {
+          $rollbackFailed = $true
+        }
+      }
+    }
+    $current = if (Test-Path -LiteralPath $marker -PathType Leaf) {
+      [IO.File]::ReadAllBytes($marker)
+    } else {
+      $null
+    }
+    if (($null -eq $original) -ne ($null -eq $current) -or
+        ($null -ne $original -and -not (Test-ExactBytes $original $current)) -or
+        @(Get-ChildItem -LiteralPath $fullRoot -Force -Filter (
+            ".ligase-driver-ownership-*.tmp")).Count -ne 0 -or
+        (-not $dependent -and (Test-Path -LiteralPath $sentinel))) {
+      $rollbackFailed = $true
+    }
+    if ($rollbackFailed) { $resultCode = "virtualDisplayRollbackFailed" }
+  }
+  return [ordered]@{
+    code = $resultCode
+    success = $false
+    markerRestored = -not $rollbackFailed
+    markerWasPresent = $null -ne $original
+    tempResidueCount = @(
+      Get-ChildItem -LiteralPath $fullRoot -Force -Filter (
+        ".ligase-driver-ownership-*.tmp")).Count
+    certSentinelPresent = Test-Path -LiteralPath $sentinel
+    dependentDevice = $dependent
+  }
+}
+
 function Fail-FinalInstallReadback([string]$Field) {
   if (-not $script:finalComponents.Contains($Field)) {
     $Field = "artifacts"
@@ -2827,6 +3124,11 @@ try {
     }
     exit 0
   }
+  if ($Action -eq "ValidateVirtualDisplayMarkerTransaction") {
+    $validationResult = Invoke-VirtualDisplayMarkerValidation $ValidationRoot
+    [Console]::Out.WriteLine(($validationResult | ConvertTo-Json -Compress))
+    exit 0
+  }
   $manifest = Read-Manifest
   $artifacts = Test-Artifacts $manifest
   $script:finalComponents.artifacts = "verified"
@@ -2917,22 +3219,117 @@ try {
 
   if ($Action -eq "InstallVirtualDisplay") {
     $thumbprint = [string]$manifest.virtualDisplay.certificateThumbprint
+    $ownershipPath = Join-Path $installRoot (
+      "Deployment/Drivers/sudovda/.ligase-driver-ownership.json")
+    $ownershipBytes = if (Test-Path -LiteralPath $ownershipPath -PathType Leaf) {
+      [IO.File]::ReadAllBytes($ownershipPath)
+    } else {
+      $null
+    }
+    $priorOwnedStores = @()
+    if ($null -ne $ownershipBytes) {
+      $ownershipRaw = [Text.Encoding]::UTF8.GetString($ownershipBytes)
+      try {
+        if (-not [LigaseStrictJson]::HasUniqueProperties($ownershipRaw)) {
+          throw "virtualDisplayOwnershipInvalid"
+        }
+        $ownership = $ownershipRaw | ConvertFrom-Json
+        $ownershipProperties = @($ownership.PSObject.Properties.Name)
+        if ($ownershipProperties.Count -ne 3 -or
+            $ownershipProperties -cnotcontains "schemaVersion" -or
+            $ownershipProperties -cnotcontains "certificateThumbprint" -or
+            $ownershipProperties -cnotcontains "certificateStores" -or
+            $ownership.schemaVersion -ne 1 -or
+            [string]$ownership.certificateThumbprint -cne $thumbprint) {
+          throw "virtualDisplayOwnershipInvalid"
+        }
+        $priorOwnedStores = @($ownership.certificateStores)
+        foreach ($store in $priorOwnedStores) {
+          if ($store -isnot [string] -or
+              $store -notin @(
+                "LocalMachine\Root", "LocalMachine\TrustedPublisher",
+                "CurrentUser\Root", "CurrentUser\TrustedPublisher")) {
+            throw "virtualDisplayOwnershipInvalid"
+          }
+        }
+      } catch {
+        throw "virtualDisplayOwnershipInvalid"
+      }
+    }
     $before = @(Get-DriverCertificateLocations $thumbprint)
-    & (Join-Path $installRoot $manifest.virtualDisplay.installer) | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "virtualDisplayInstallFailed" }
-    $after = @(Get-DriverCertificateLocations $thumbprint)
-    $ownedStores = @($after | Where-Object { $before -notcontains $_ })
-    [IO.File]::WriteAllText(
-      (Join-Path $installRoot "Deployment/Drivers/sudovda/.ligase-driver-ownership.json"),
-      (@{
+    $ownedStores = @()
+    $failureCode = "virtualDisplayInstallFailed"
+    try {
+      & (Join-Path $installRoot $manifest.virtualDisplay.installer) | Out-Null
+      $installerExit = $LASTEXITCODE
+      $after = @(Get-DriverCertificateLocations $thumbprint)
+      $ownedStores = @($after | Where-Object { $before -notcontains $_ })
+      if ($installerExit -ne 0) { throw "virtualDisplayInstallFailed" }
+
+      $displayReadback = Get-VirtualDisplay
+      $failureCode = "virtualDisplayReadbackFailed"
+      if ($displayReadback.state -notin @("available", "rebootRequired") -or
+          -not [bool]$displayReadback.driverBindingVerified) {
+        throw "virtualDisplayReadbackFailed"
+      }
+      $markerJson = [ordered]@{
         schemaVersion = 1
         certificateThumbprint = $thumbprint
-        certificateStores = $ownedStores
-      } | ConvertTo-Json -Compress),
-      [Text.UTF8Encoding]::new($false))
+        certificateStores = @(
+          $priorOwnedStores + $ownedStores | Sort-Object -Unique)
+      } | ConvertTo-Json -Compress
+      $markerBytes = [Text.UTF8Encoding]::new($false).GetBytes($markerJson)
+      $failureCode = "virtualDisplayMarkerCommitFailed"
+      Write-VirtualDisplayOwnershipMarkerAtomic $ownershipPath $markerBytes
+    } catch {
+      $rollbackFailed = $false
+      try {
+        if ($null -eq $ownershipBytes) {
+          if (Test-Path -LiteralPath $ownershipPath) {
+            Remove-Item -LiteralPath $ownershipPath -Force
+          }
+          if (Test-Path -LiteralPath $ownershipPath) {
+            $rollbackFailed = $true
+          }
+        } else {
+          Write-VirtualDisplayOwnershipMarkerAtomic `
+            $ownershipPath $ownershipBytes $false
+          if (-not (Test-ExactBytes $ownershipBytes (
+                [IO.File]::ReadAllBytes($ownershipPath)))) {
+            $rollbackFailed = $true
+          }
+        }
+      } catch {
+        $rollbackFailed = $true
+      }
+      if (Test-DependentVirtualDisplay) {
+        if ($ownedStores.Count -gt 0) { $rollbackFailed = $true }
+      } else {
+        foreach ($store in $ownedStores) {
+          try {
+            Remove-Item -LiteralPath "Cert:\$store\$thumbprint" -Force
+          } catch {
+            $rollbackFailed = $true
+          }
+        }
+      }
+      foreach ($store in $ownedStores) {
+        if (Test-Path -LiteralPath "Cert:\$store\$thumbprint") {
+          $rollbackFailed = $true
+        }
+      }
+      $tempResidue = @(Get-ChildItem -LiteralPath (
+          Split-Path -Parent $ownershipPath) -Force -Filter (
+          ".ligase-driver-ownership-*.tmp"))
+      if ($tempResidue.Count -ne 0) { $rollbackFailed = $true }
+      if ($rollbackFailed) { throw "virtualDisplayRollbackFailed" }
+      throw $failureCode
+    }
     Write-Outcome "virtualDisplayInstalled" $true @{
       trust = $driverTrust
       certificateStoresAdded = $ownedStores.Count
+      deviceCount = [int]$displayReadback.deviceCount
+      driverBindingVerified = [bool]$displayReadback.driverBindingVerified
       restartRequired = $true
     }
     exit 0
@@ -3282,6 +3679,10 @@ try {
     "firewallReadbackMismatch",
     "firewallRemoveFailed",
     "virtualDisplayInstallFailed",
+    "virtualDisplayReadbackFailed",
+    "virtualDisplayMarkerCommitFailed",
+    "virtualDisplayRollbackFailed",
+    "virtualDisplayOwnershipInvalid",
     "virtualDisplayUninstallFailed",
     "shortcutLocationUnavailable",
     "shortcutWriteFailed",

@@ -1570,6 +1570,66 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(management, "$actualEntries.Count -ne 4");
         StringAssert.Contains(nsis, "-Action FinalizeInstall");
         StringAssert.Contains(nsis, "-ConfigureFirewall $3 $4");
+        Assert.AreEqual(
+            3,
+            System.Text.RegularExpressions.Regex.Matches(
+                nsis,
+                @"-Action Install -InstallDirectory .*?-ConfigureFirewall \$3 \$4").Count,
+            "Every Install mode must freeze desktop and virtual-display selection in the transaction.");
+        Assert.AreEqual(
+            2,
+            System.Text.RegularExpressions.Regex.Matches(
+                nsis,
+                @"SectionGetFlags \$\{LIGASE_SECTION_VIRTUAL_DISPLAY\} \$2").Count,
+            "Install and Finalize must independently read the same section selection.");
+        StringAssert.Contains(management, "readbackStage = $script:transactionReadbackStage");
+        StringAssert.Contains(management, "readbackReason = $script:transactionReadbackReason");
+        foreach (var token in new[]
+                 {
+                     "\"rawRead\"", "\"rawShape\"", "\"jsonParse\"",
+                     "\"schemaValidation\"", "\"freshnessValidation\"",
+                     "\"identityValidation\"", "\"shortcutValidation\"",
+                     "\"cleanup\"", "\"missing\"", "\"duplicateProperty\"",
+                     "\"missingProperty\"", "\"malformedJson\"",
+                     "\"unknownProperty\"", "\"wrongType\"", "\"stale\"",
+                     "\"helperFailure\"", "\"identityMismatch\"",
+                     "\"shortcutSnapshotInvalid\"", "\"cleanupFailed\""
+                 })
+        {
+            StringAssert.Contains(management, token);
+        }
+        var virtualReadbackIndex = management.IndexOf(
+            "$displayReadback = Get-VirtualDisplay",
+            StringComparison.Ordinal);
+        var virtualMarkerIndex = management.IndexOf(
+            "Write-VirtualDisplayOwnershipMarkerAtomic $ownershipPath",
+            virtualReadbackIndex,
+            StringComparison.Ordinal);
+        Assert.IsTrue(virtualReadbackIndex >= 0);
+        Assert.IsTrue(
+            virtualMarkerIndex > virtualReadbackIndex,
+            "Virtual-display device and driver binding must be verified before ownership marker commit.");
+        StringAssert.Contains(management, "\"virtualDisplayReadbackFailed\"");
+        StringAssert.Contains(management, "\"virtualDisplayMarkerCommitFailed\"");
+        StringAssert.Contains(management, "\"virtualDisplayRollbackFailed\"");
+        StringAssert.Contains(management, "driverBindingVerified");
+        foreach (var token in new[]
+                 {
+                     "[IO.File]::Replace($temp, $Path, $null, $true)",
+                     "[IO.File]::Move($temp, $Path)",
+                     "$stream.Flush($true)",
+                     "Test-ExactBytes $Bytes ([IO.File]::ReadAllBytes($Path))",
+                     "$ownershipPath $ownershipBytes $false",
+                     "\".ligase-driver-ownership-*.tmp\"",
+                     "\"createTemp\"", "\"writeTemp\"", "\"tempReadback\"",
+                     "\"atomicReplace\"", "\"finalReadback\"",
+                     "\"ValidateVirtualDisplayMarkerTransaction\"",
+                     "LIGASE_VIRTUAL_DISPLAY_VALIDATION_ROOT",
+                     "LIGASE_VIRTUAL_DISPLAY_COMPENSATION_FAILURE"
+                 })
+        {
+            StringAssert.Contains(management, token);
+        }
         StringAssert.Contains(management, "shortcutRollbackFailed");
         StringAssert.Contains(management, "firewallAppliedByTransaction");
         StringAssert.Contains(management, "failedField");

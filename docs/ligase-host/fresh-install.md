@@ -313,6 +313,17 @@ records the native helper exit, stage, safe category/code, and the closed
 recovery action without recording a raw path, exception, journal bytes,
 nonce, or secret. The `installTransaction` component and `failedField`
 distinguish this boundary from firewall and shortcut failures.
+Final transaction loading additionally records a closed `readbackStage` and
+`readbackReason`. The stages are `rawRead`, `rawShape`, `jsonParse`,
+`schemaValidation`, `freshnessValidation`, `identityValidation`,
+`shortcutValidation`, `cleanup`, and `completed`. Reasons distinguish a
+missing journal, duplicate or missing property, malformed JSON, unknown
+property, wrong scalar type, stale journal, invocation-identity mismatch,
+invalid shortcut snapshot, helper failure, and cleanup failure. These values
+never include raw journal bytes, paths, nonces, shortcut bytes, or exception
+text. Installer section identity includes both desktop and virtual-display
+selection; the same two flags are frozen when the journal is written and when
+final readback loads it.
 
 `resolveFinalPath` does not compare a DOS path supplied by the caller with a
 device or volume path returned by Windows. The helper first opens the trusted
@@ -450,8 +461,8 @@ is classified in the evidence rather than being presented as a successful
 empty installation.
 
 Final-readback evidence also records a closed `failedField` and component
-states for `artifacts`, `bootstrap`, `dataRoot`, `arp`, `startMenu`, `desktop`,
-`firewall`, and `virtualDisplay`. Components already verified remain marked
+states for `artifacts`, `bootstrap`, `dataRoot`, `installTransaction`, `arp`,
+`startMenu`, `desktop`, `firewall`, and `virtualDisplay`. Components already verified remain marked
 `verified`; unselected optional display support is `notSelected`; the first
 failed component is `failed`; later components remain `pending`. The catch
 path must not label an earlier shortcut or ARP failure as a firewall failure,
@@ -635,6 +646,25 @@ LocalMachine or CurrentUser stores are read back as residue; they are never
 silently removed. Certificate removal is permitted only for stores recorded
 as owned by that installer execution and after confirming that no dependent
 driver remains.
+An `install.bat` exit code of zero is provisional rather than success
+authority. Before writing the ownership marker or returning
+`virtualDisplayInstalled`, the helper must find a present SudoVDA device and
+read back a bound Windows driver INF for every matched device. Device absence,
+missing driver binding, or readback failure is closed
+`virtualDisplayReadbackFailed`. The ownership marker then uses a same-directory
+write-through temporary file, byte and ACL readback, and an atomic replace or
+move. A write, replace, or final marker readback failure is closed
+`virtualDisplayMarkerCommitFailed`. On either path, the helper restores the
+exact pre-existing marker bytes or its prior absence, removes transaction temp
+files, and may remove only certificate-store entries which were absent before
+this exact invocation and have no dependent device. Failure to prove marker,
+temp-file, or certificate rollback is `virtualDisplayRollbackFailed`.
+Pre-existing certificates and markers are not claimed or deleted.
+The D-only validation seam for this transaction requires both the repository
+validation-harness switch and an exact explicit D-root binding; production
+installer flows cannot select it. It exercises every marker write/replace/
+readback failure and certificate-compensation branch without opening
+`Cert:`, PnP, or ProgramData.
 
 Firewall installation uses only the Ligase-owned manifest and
 `Manage-LigaseFirewall.ps1`: Private profile, LocalSubnet, the managed
