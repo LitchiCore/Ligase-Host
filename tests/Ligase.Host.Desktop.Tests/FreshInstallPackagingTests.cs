@@ -1719,12 +1719,20 @@ public sealed class FreshInstallPackagingTests
                      "[string]$NefconExecutable", "586152",
                      "19A113297EAFEFD796AA91C1A64D199628D9C58DC53928899D2E5D6A68074EFE",
                      "1F431092EC96A80B41AB5317F53AC02EA6F9B89B",
+                     "[ValidateRange(1, 64)]",
+                     "[int]$CoreBuildParallelism = 1",
+                     "--parallel $CoreBuildParallelism",
                      "installerToolSha256",
                      "Deployment/Drivers/sudovda/nefconc.exe"
                  })
         {
             StringAssert.Contains(installerBuild, token);
         }
+        Assert.IsFalse(
+            System.Text.RegularExpressions.Regex.IsMatch(
+                installerBuild,
+                @"--parallel\s*(?:\r?\n|$)"),
+            "The core build must never use an unbounded bare --parallel switch.");
         foreach (var token in new[]
                  {
                      "[IO.File]::Replace($temp, $Path, $null, $true)",

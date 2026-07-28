@@ -9,6 +9,8 @@ param(
   [string]$DotNet = "dotnet.exe",
   [string]$CMake = "cmake.exe",
   [string]$MakeNsis = "makensis.exe",
+  [ValidateRange(1, 64)]
+  [int]$CoreBuildParallelism = 1,
   [ValidateSet("UnsignedDev", "PublicRelease")]
   [string]$ReleaseKind = "UnsignedDev",
   [string]$SigningTool,
@@ -91,7 +93,8 @@ if ($ReleaseKind -eq "PublicRelease" -and (
 }
 
 if (-not $SkipBuild) {
-  & $CMake --build $cppRoot --config $Configuration --target sunshine --parallel
+  & $CMake --build $cppRoot --config $Configuration --target sunshine `
+    --parallel $CoreBuildParallelism
   if ($LASTEXITCODE -ne 0) { throw "coreBuildFailed" }
   & $DotNet build-server shutdown
   if ($LASTEXITCODE -ne 0) { throw "desktopBuildServerShutdownFailed" }
