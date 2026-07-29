@@ -1676,7 +1676,17 @@ public sealed class FreshInstallPackagingTests
                       "\"directV1\"", "\"faultV1\"", "\"retainedV1\"",
                       "virtualDisplayInstallerCaseSchemaInvalid",
                       "virtualDisplayInstallerCaseSchemaCases",
+                      "$expected = @(switch -CaseSensitive ($schema)",
                       "switch -CaseSensitive ($schema)",
+                      "Test-SecondaryContainmentCaseEvidence",
+                      "Write-SecondaryContainmentCaseEvidence",
+                      "secondaryContainmentCaseEvidenceV1",
+                      "InstallerProcessCaseFilter",
+                      "StopAfterInstallerProcessCases",
+                      "virtualDisplayInstallerProcessFocusedPassed",
+                      "externalCleanupAttempted",
+                      "outerHardCapMilliseconds",
+                      "environmentRestored",
                       "[StringComparer]::Ordinal",
                       "\"missing\"", "\"unknown\"", "\"type\"",
                       "\"duplicateSame\"", "\"duplicateConflict\"",
@@ -1779,6 +1789,12 @@ public sealed class FreshInstallPackagingTests
                      "boundedHostExtraJsonFixtureFailed",
                      "boundedHostMalformedJsonFixtureFailed",
                      "boundedHostCleanupFaultFixtureFailed",
+                     "boundedHostNoRecordFixtureFailed",
+                     "installTransactionBoundedWriteEnvelopeInvalid",
+                     "installTransactionBoundedWriteOutputInvalid",
+                     "$writeEnvelope.jobActiveProcesses",
+                     "$writeEnvelope.hardCapMilliseconds -ne 25000",
+                     "$DotNet $argumentListRunner --bounded-capture",
                      "installTransactionJunctionStateRestoreFailed",
                      "validationEnvironmentRestored",
                      "$junctionEnvelopeOutput.Count -ne 1",
@@ -1805,6 +1821,130 @@ public sealed class FreshInstallPackagingTests
         {
             StringAssert.Contains(runtimeHarness, token);
         }
+        var secondaryEvidenceStart = runtimeHarness.IndexOf(
+            "$secondaryEvidence = [ordered]@{", StringComparison.Ordinal);
+        var secondaryEvidenceEnd = runtimeHarness.IndexOf(
+            "$secondaryEvidenceSha =", secondaryEvidenceStart,
+            StringComparison.Ordinal);
+        Assert.IsTrue(
+            secondaryEvidenceStart >= 0 &&
+            secondaryEvidenceEnd > secondaryEvidenceStart);
+        var secondaryEvidence = runtimeHarness[
+            secondaryEvidenceStart..secondaryEvidenceEnd];
+        var secondaryEvidenceNames =
+            System.Text.RegularExpressions.Regex.Matches(
+                secondaryEvidence,
+                @"(?m)^\s{6}(?<name>[A-Za-z][A-Za-z0-9]*)\s*=")
+            .Select(match => match.Groups["name"].Value)
+            .ToArray();
+        CollectionAssert.AreEqual(
+            new[]
+            {
+                "schema", "caseId", "declaredSchema", "behavior", "fault",
+                "runnerExit", "startStage", "startCode", "childExitCode",
+                "parseState", "outputRecordCount", "stdoutRawLength",
+                "stdoutRawSha", "stdoutOverflow", "stdoutDecoderState",
+                "stdoutPendingTailLength", "stderrRawLength",
+                "stderrRawSha", "stderrOverflow", "stderrDecoderState",
+                "stderrPendingTailLength", "timedOut",
+                "runnerCleanupState", "rootPidZero", "descendantPidZero",
+                "jobActiveProcesses", "runnerElapsedMilliseconds",
+                "runBudgetMilliseconds", "cleanupReserveMilliseconds",
+                "outerElapsedMilliseconds", "outerHardCapMilliseconds",
+                "code", "success",
+                "firstCleanupProven", "authorityRetained", "retainedPid",
+                "secondaryContainmentAttempted",
+                "secondaryContainmentCompleted", "cleanupState",
+                "externalCleanupAttempted", "externalCleanupCompleted",
+                "finalPidZero", "sentinelExists", "residueCount",
+                "environmentRestored"
+            },
+            secondaryEvidenceNames);
+        var secondaryInvocationStart = runtimeHarness.IndexOf(
+            "if ($caseIsSecondary) {", StringComparison.Ordinal);
+        var secondaryInvocationEnd = runtimeHarness.IndexOf(
+            "} else {", secondaryInvocationStart, StringComparison.Ordinal);
+        Assert.IsTrue(
+            secondaryInvocationStart >= 0 &&
+            secondaryInvocationEnd > secondaryInvocationStart);
+        var secondaryInvocation = runtimeHarness[
+            secondaryInvocationStart..secondaryInvocationEnd];
+        StringAssert.Contains(
+            secondaryInvocation,
+            "$DotNet $argumentListRunner --bounded-capture");
+        StringAssert.Contains(secondaryInvocation, "7000 3500 8192");
+        Assert.IsFalse(
+            secondaryInvocation.Contains(
+                "& powershell.exe", StringComparison.Ordinal));
+        var runnerRawScanIndex = runtimeHarness.IndexOf(
+            "Get-SecondaryRunnerRawParseState $runnerRaw",
+            secondaryInvocationEnd, StringComparison.Ordinal);
+        var runnerConvertIndex = runtimeHarness.IndexOf(
+            "$runnerEnvelope = $runnerRaw | ConvertFrom-Json",
+            runnerRawScanIndex, StringComparison.Ordinal);
+        Assert.IsTrue(
+            runnerRawScanIndex > secondaryInvocationEnd &&
+            runnerConvertIndex > runnerRawScanIndex);
+        foreach (var rawParserToken in new[]
+                 {
+                     "return \"duplicate\"",
+                     "return \"trailing\"",
+                     "return \"missing\"",
+                     "return \"unknownProperty\"",
+                     "$parseState = \"typeInvalid\"",
+                     "$trimmed.EndsWith(",
+                     "$ExpectedNames -cnotcontains $_",
+                     "$rawNames -cnotcontains $_",
+                     "$secondaryRunnerParserDuplicateSame",
+                     "$secondaryRunnerParserDuplicateConflict",
+                     "secondaryRunnerRawParserSelfTestFailed"
+                 })
+        {
+            StringAssert.Contains(runtimeHarness, rawParserToken);
+        }
+        var secondaryWriteIndex = runtimeHarness.IndexOf(
+            "Write-SecondaryContainmentCaseEvidence $secondaryEvidence",
+            secondaryEvidenceEnd, StringComparison.Ordinal);
+        var secondaryAssertionsStart = runtimeHarness.IndexOf(
+            "# SECONDARY_ASSERTIONS_BEGIN", secondaryWriteIndex,
+            StringComparison.Ordinal);
+        var secondaryAssertionsEnd = runtimeHarness.IndexOf(
+            "# SECONDARY_ASSERTIONS_END", secondaryAssertionsStart,
+            StringComparison.Ordinal);
+        Assert.IsTrue(
+            secondaryWriteIndex > secondaryEvidenceEnd &&
+            secondaryAssertionsStart > secondaryWriteIndex &&
+            secondaryAssertionsEnd > secondaryAssertionsStart);
+        var secondaryAssertions = runtimeHarness[
+            secondaryAssertionsStart..secondaryAssertionsEnd];
+        Assert.AreEqual(
+            1,
+            System.Text.RegularExpressions.Regex.Matches(
+                secondaryAssertions, @"(?m)^\s*throw\s").Count);
+        StringAssert.Contains(
+            secondaryAssertions,
+            "virtualDisplayInstallerSecondaryCaseFailed caseId=");
+        StringAssert.Contains(secondaryAssertions, "evidenceSha=");
+        foreach (var secondaryAuthorityToken in new[]
+                 {
+                     "\"runnerStart\"", "\"runnerOutput\"", "\"runBudget\"",
+                     "\"runnerCleanup\"", "\"hardCap\"", "\"environment\"",
+                     "\"semanticTuple\"", "\"primaryContainmentAuthority\"",
+                     "\"externalCleanup\"", "\"residue\"",
+                     "[int]$projection.cleanupPid -ne 0",
+                     "[bool]$projection.firstCleanupProven"
+                 })
+        {
+            StringAssert.Contains(secondaryAssertions, secondaryAuthorityToken);
+        }
+        var genericAssertions = runtimeHarness[
+            secondaryAssertionsEnd..runtimeHarness.IndexOf(
+                "$evidence = [ordered]@{", secondaryAssertionsEnd,
+                StringComparison.Ordinal)];
+        Assert.AreEqual(
+            4,
+            System.Text.RegularExpressions.Regex.Matches(
+                genericAssertions, @"if \(-not \$caseIsSecondary").Count);
         var boundedStart = runtimeHarness.IndexOf(
             "if (args[0] == \"--bounded-capture\")",
             StringComparison.Ordinal);

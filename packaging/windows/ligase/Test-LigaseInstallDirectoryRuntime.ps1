@@ -4,7 +4,10 @@ param(
   [string] $MakeNsis,
   [Parameter(Mandatory)]
   [string] $OutputRoot,
-  [string] $DotNet = "dotnet.exe"
+  [string] $DotNet = "dotnet.exe",
+  [ValidateSet("all","secondaryWaitFailure")]
+  [string] $InstallerProcessCaseFilter = "all",
+  [switch] $StopAfterInstallerProcessCases
 )
 
 $ErrorActionPreference = "Stop"
@@ -1464,6 +1467,20 @@ if ($hostDualOverflow.runnerExit -ne 0 -or
   Throw-BoundedHostCaseFailure $hostDualOverflow "boundedHostDualOverflowFixtureFailed"
 }
 $boundedHostCases += $hostDualOverflow
+
+$hostNoRecord = Invoke-BoundedHostFixture -Name "hostNoRecord" `
+  -Mode "exitZero"
+if ($hostNoRecord.runnerExit -ne 0 -or
+    -not $hostNoRecord.cleanupCompleted -or
+    -not $hostNoRecord.jobEmpty -or
+    $hostNoRecord.jobActiveProcesses -ne 0 -or
+    $hostNoRecord.pid -ne 0 -or
+    $hostNoRecord.stdoutRawLength -ne 0 -or
+    -not [string]::IsNullOrEmpty($hostNoRecord.stdout)) {
+  Throw-BoundedHostCaseFailure $hostNoRecord "boundedHostNoRecordFixtureFailed"
+}
+$hostNoRecord["rejected"] = $true
+$boundedHostCases += $hostNoRecord
 
 $hostExtra = Invoke-BoundedHostFixture -Name "hostExtraJson" `
   -Mode "jsonExtra"
@@ -3150,46 +3167,88 @@ foreach ($writeCase in @(
       behavior = "hangBeforeStdinRead"
       expectedExit = 10
       expectedStage = "processTimeout"
-      maxSeconds = 20
       rootMayExist = $false
     },
     [ordered]@{
       behavior = "delayedStdinRead"
       expectedExit = 0
       expectedStage = "delete"
-      maxSeconds = 5
       rootMayExist = $true
     },
     [ordered]@{
       behavior = "oversizeInput"
       expectedExit = 10
       expectedStage = "inputValidation"
-      maxSeconds = 2
       rootMayExist = $false
     })) {
   $writeRoot = Join-Path $combinationRoot (
     "bounded-" + [string]$writeCase.behavior)
-  $env:LIGASE_INSTALL_VALIDATION_HARNESS = "1"
-  $env:LIGASE_TRANSACTION_TEST_BEHAVIOR = [string]$writeCase.behavior
-  $clock = [Diagnostics.Stopwatch]::StartNew()
-  $ErrorActionPreference = "Continue"
-  $writeOutput = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass `
-    -File $managementScript `
-    -Action PreflightInstallTransaction `
-    -InstallDirectory $boundedInstallRoot `
-    -InstallTransactionRoot $writeRoot 2>&1)
-  $writeExit = $LASTEXITCODE
-  $ErrorActionPreference = $boundedSavedErrorAction
-  $clock.Stop()
-  Remove-Item Env:\LIGASE_TRANSACTION_TEST_BEHAVIOR -ErrorAction SilentlyContinue
-  Remove-Item Env:\LIGASE_INSTALL_VALIDATION_HARNESS -ErrorAction SilentlyContinue
-  if ($writeExit -ne [int]$writeCase.expectedExit -or
-      $clock.Elapsed.TotalSeconds -gt [int]$writeCase.maxSeconds) {
+  $savedWriteHarness = [Environment]::GetEnvironmentVariable(
+    "LIGASE_INSTALL_VALIDATION_HARNESS",
+    [EnvironmentVariableTarget]::Process)
+  $savedWriteBehavior = [Environment]::GetEnvironmentVariable(
+    "LIGASE_TRANSACTION_TEST_BEHAVIOR",
+    [EnvironmentVariableTarget]::Process)
+  try {
+    $env:LIGASE_INSTALL_VALIDATION_HARNESS = "1"
+    $env:LIGASE_TRANSACTION_TEST_BEHAVIOR =
+      [string]$writeCase.behavior
+    $ErrorActionPreference = "Continue"
+    $writeInvocation = @(
+      & $DotNet $argumentListRunner --bounded-capture `
+        20000 5000 8192 none powershell.exe `
+        -NoProfile -ExecutionPolicy Bypass `
+        -File $managementScript `
+        -Action PreflightInstallTransaction `
+        -InstallDirectory $boundedInstallRoot `
+        -InstallTransactionRoot $writeRoot)
+    $writeRunnerExit = $LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $boundedSavedErrorAction
+    [Environment]::SetEnvironmentVariable(
+      "LIGASE_INSTALL_VALIDATION_HARNESS", $savedWriteHarness,
+      [EnvironmentVariableTarget]::Process)
+    [Environment]::SetEnvironmentVariable(
+      "LIGASE_TRANSACTION_TEST_BEHAVIOR", $savedWriteBehavior,
+      [EnvironmentVariableTarget]::Process)
+  }
+  if ($writeInvocation.Count -ne 1) {
+    throw "installTransactionBoundedWriteEnvelopeInvalid"
+  }
+  try {
+    $writeEnvelope = [string]$writeInvocation[0] | ConvertFrom-Json
+  } catch {
+    throw "installTransactionBoundedWriteEnvelopeInvalid"
+  }
+  $writeExit = [int]$writeEnvelope.exitCode
+  $writeElapsedMilliseconds = [int64]$writeEnvelope.elapsedMilliseconds
+  if ($writeRunnerExit -ne 0 -or
+      [string]$writeEnvelope.schema -cne "boundedProcessV1" -or
+      [string]$writeEnvelope.startStage -cne "none" -or
+      [int]$writeEnvelope.startCode -ne 0 -or
+      [bool]$writeEnvelope.timedOut -or
+      [bool]$writeEnvelope.overflow -or
+      [bool]$writeEnvelope.pipeFault -or
+      -not [bool]$writeEnvelope.cleanupCompleted -or
+      -not [bool]$writeEnvelope.jobEmpty -or
+      [uint64]$writeEnvelope.jobActiveProcesses -ne 0 -or
+      [int]$writeEnvelope.pid -ne 0 -or
+      [int64]$writeEnvelope.hardCapMilliseconds -ne 25000 -or
+      $writeExit -ne [int]$writeCase.expectedExit -or
+      $writeElapsedMilliseconds -gt 25000) {
     throw ("installTransactionBoundedWriteInvocationFailed:" +
       [string]$writeCase.behavior + ":exit=" + $writeExit +
-      ":seconds=" + [Math]::Round($clock.Elapsed.TotalSeconds, 2))
+      ":milliseconds=" + $writeElapsedMilliseconds)
   }
-  $writeResult = ($writeOutput[-1] | Out-String).Trim() | ConvertFrom-Json
+  $writeRaw = ([string]$writeEnvelope.stdoutText).TrimEnd("`r","`n")
+  if ([string]::IsNullOrWhiteSpace($writeRaw) -or
+      $writeRaw.IndexOf("`n", [StringComparison]::Ordinal) -ge 0 -or
+      $writeRaw.IndexOf("`r", [StringComparison]::Ordinal) -ge 0) {
+    throw "installTransactionBoundedWriteOutputInvalid"
+  }
+  try { $writeResult = $writeRaw | ConvertFrom-Json } catch {
+    throw "installTransactionBoundedWriteOutputInvalid"
+  }
   if ($writeExit -eq 0) {
     if (-not [bool]$writeResult.success -or
         [string]$writeResult.code -cne
@@ -4612,7 +4671,7 @@ function Assert-InstallerProcessCase(
   $schema = if ($Case.Contains("schema") -and $Case["schema"] -is [string]) {
     [string]$Case["schema"]
   } else { "none" }
-  $expected = switch -CaseSensitive ($schema) {
+  $expected = @(switch -CaseSensitive ($schema) {
     "directV1" { @("schema", "name", "code", "success") }
     "faultV1" { @("schema", "name", "behavior", "fault", "code", "success") }
     "retainedV1" {
@@ -4620,7 +4679,7 @@ function Assert-InstallerProcessCase(
         "externalCleanup")
     }
     default { @() }
-  }
+  })
   $actual = if ($PSBoundParameters.ContainsKey("ObservedKeys")) {
     @($ObservedKeys)
   } else {
@@ -4872,6 +4931,196 @@ $installerProcessCases = @(
   @{ schema = "faultV1"; name = "pipeFault"; behavior = "hang";
      fault = "pipe"; code = "virtualDisplayInstallerCleanupFailed";
      success = $false })
+if ($InstallerProcessCaseFilter -cne "all") {
+  $installerProcessCases = @($installerProcessCases | Where-Object {
+    [string]$_["name"] -ceq $InstallerProcessCaseFilter
+  })
+  if ($installerProcessCases.Count -ne 1) {
+    throw "virtualDisplayInstallerProcessCaseFilterInvalid"
+  }
+}
+function Get-SecondaryRunnerRawParseState(
+  [Parameter(Mandatory)][string]$Raw,
+  [Parameter(Mandatory)][string[]]$ExpectedNames
+) {
+  $trimmed = $Raw.Trim()
+  $rawNames = @([regex]::Matches(
+    $trimmed, '(?<!\\)"(?<name>[A-Za-z][A-Za-z0-9]*)"\s*:') |
+    ForEach-Object { $_.Groups["name"].Value })
+  if (-not $trimmed.StartsWith("{", [StringComparison]::Ordinal) -or
+      -not $trimmed.EndsWith("}", [StringComparison]::Ordinal)) {
+    return "trailing"
+  }
+  if (@($rawNames | Sort-Object -Unique).Count -ne $rawNames.Count) {
+    return "duplicate"
+  }
+  if (@($rawNames | Where-Object {
+        $ExpectedNames -cnotcontains $_
+      }).Count -ne 0) {
+    return "unknownProperty"
+  }
+  if ($rawNames.Count -ne $ExpectedNames.Count -or
+      @($ExpectedNames | Where-Object {
+        $rawNames -cnotcontains $_
+      }).Count -ne 0) {
+    return "missing"
+  }
+  return "convert"
+}
+$secondaryRunnerParserExpectedNames = @(
+  "schema","startStage","startCode","exitCode","timedOut","overflow",
+  "pipeFault","killAttempted","cleanupCompleted","jobEmpty",
+  "jobActiveProcesses","pid","elapsedMilliseconds",
+  "hardCapMilliseconds","stdoutOverflow","stderrOverflow",
+  "stdoutRawLength","stderrRawLength","stdoutRawSha","stderrRawSha",
+  "stdoutDecoderState","stderrDecoderState",
+  "stdoutPendingTailLength","stderrPendingTailLength",
+  "stdoutText","stderrText")
+$secondaryRunnerParserProbe = [ordered]@{}
+foreach ($parserName in $secondaryRunnerParserExpectedNames) {
+  $secondaryRunnerParserProbe[$parserName] = if ($parserName -ceq "schema") {
+    "boundedProcessV1"
+  } else { 0 }
+}
+$secondaryRunnerParserProbeRaw =
+  $secondaryRunnerParserProbe | ConvertTo-Json -Compress
+$secondaryRunnerParserPrefix = '"schema":"boundedProcessV1"'
+$secondaryRunnerParserDuplicateSame =
+  $secondaryRunnerParserProbeRaw.Replace(
+    $secondaryRunnerParserPrefix,
+    $secondaryRunnerParserPrefix + "," + $secondaryRunnerParserPrefix)
+$secondaryRunnerParserDuplicateConflict =
+  $secondaryRunnerParserProbeRaw.Replace(
+    $secondaryRunnerParserPrefix,
+    '"schema":"boundedProcessV1","schema":"conflict"')
+$secondaryRunnerParserSameState = Get-SecondaryRunnerRawParseState `
+  $secondaryRunnerParserDuplicateSame $secondaryRunnerParserExpectedNames
+$secondaryRunnerParserConflictState = Get-SecondaryRunnerRawParseState `
+  $secondaryRunnerParserDuplicateConflict $secondaryRunnerParserExpectedNames
+$secondaryRunnerParserTrailingState = Get-SecondaryRunnerRawParseState `
+  ($secondaryRunnerParserProbeRaw + " trailing") `
+  $secondaryRunnerParserExpectedNames
+if ($secondaryRunnerParserSameState -cne "duplicate" -or
+    $secondaryRunnerParserConflictState -cne "duplicate" -or
+    $secondaryRunnerParserTrailingState -cne "trailing") {
+  throw "secondaryRunnerRawParserSelfTestFailed"
+}
+function Test-SecondaryContainmentCaseEvidence([string]$Raw) {
+  try { $value = $Raw | ConvertFrom-Json } catch { return $false }
+  $expected = @(
+    "schema","caseId","declaredSchema","behavior","fault",
+    "runnerExit","startStage","startCode","childExitCode",
+    "parseState","outputRecordCount",
+    "stdoutRawLength","stdoutRawSha","stdoutOverflow",
+    "stdoutDecoderState","stdoutPendingTailLength",
+    "stderrRawLength","stderrRawSha","stderrOverflow",
+    "stderrDecoderState","stderrPendingTailLength",
+    "timedOut","runnerCleanupState","rootPidZero","descendantPidZero",
+    "jobActiveProcesses","runnerElapsedMilliseconds",
+    "runBudgetMilliseconds","cleanupReserveMilliseconds",
+    "outerElapsedMilliseconds","outerHardCapMilliseconds","code","success",
+    "firstCleanupProven","authorityRetained","retainedPid",
+    "secondaryContainmentAttempted","secondaryContainmentCompleted",
+    "cleanupState",
+    "externalCleanupAttempted","externalCleanupCompleted",
+    "finalPidZero","sentinelExists","residueCount","environmentRestored")
+  $actual = @($value.PSObject.Properties.Name)
+  return (
+    $actual.Count -eq $expected.Count -and
+    @($actual | Sort-Object -Unique).Count -eq $expected.Count -and
+    @($actual | Where-Object { $expected -cnotcontains $_ }).Count -eq 0 -and
+    [string]$value.schema -ceq "secondaryContainmentCaseEvidenceV1" -and
+    [string]$value.caseId -cin @(
+      "secondaryContainment","secondaryTerminateFailure",
+      "secondaryWaitFailure","secondaryAccountingFailure") -and
+    [string]$value.declaredSchema -cin @("faultV1","retainedV1") -and
+    [string]$value.behavior -ceq "hang" -and
+    [string]$value.fault -cin @(
+      "retain","secondaryTerminate","secondaryWait","secondaryAccounting") -and
+    $value.runnerExit -is [int] -and
+    [string]$value.startStage -cin @(
+      "none","executableResolve","pipe","job","attribute","create","assign",
+      "resume","managedHandoff") -and
+    $value.startCode -is [int] -and
+    $value.childExitCode -is [int] -and
+    [string]$value.parseState -cin @(
+      "valid","absent","multiple","malformed","typeInvalid",
+      "unknownProperty","missing","duplicate","trailing") -and
+    $value.outputRecordCount -is [int] -and
+    [int64]$value.stdoutRawLength -ge 0 -and
+    [string]$value.stdoutRawSha -cmatch '^[0-9A-F]{64}$' -and
+    $value.stdoutOverflow -is [bool] -and
+    [string]$value.stdoutDecoderState -cin @(
+      "closed","pendingTail","invalid") -and
+    [int]$value.stdoutPendingTailLength -ge 0 -and
+    [int64]$value.stderrRawLength -ge 0 -and
+    [string]$value.stderrRawSha -cmatch '^[0-9A-F]{64}$' -and
+    $value.stderrOverflow -is [bool] -and
+    [string]$value.stderrDecoderState -cin @(
+      "closed","pendingTail","invalid") -and
+    [int]$value.stderrPendingTailLength -ge 0 -and
+    $value.timedOut -is [bool] -and
+    [string]$value.runnerCleanupState -cin @("completed","failed") -and
+    $value.rootPidZero -is [bool] -and
+    $value.descendantPidZero -is [bool] -and
+    [int64]$value.jobActiveProcesses -ge 0 -and
+    [int64]$value.runnerElapsedMilliseconds -ge 0 -and
+    [int64]$value.runBudgetMilliseconds -eq 7000 -and
+    [int64]$value.cleanupReserveMilliseconds -eq 3500 -and
+    [int64]$value.outerElapsedMilliseconds -ge 0 -and
+    [int64]$value.outerHardCapMilliseconds -eq 10500 -and
+    $value.success -is [bool] -and
+    $value.firstCleanupProven -is [bool] -and
+    $value.authorityRetained -is [bool] -and
+    $value.retainedPid -is [int] -and
+    $value.secondaryContainmentAttempted -is [bool] -and
+    $value.secondaryContainmentCompleted -is [bool] -and
+    [string]$value.cleanupState -cin @("completed","failed","unavailable") -and
+    $value.externalCleanupAttempted -is [bool] -and
+    $value.externalCleanupCompleted -is [bool] -and
+    $value.finalPidZero -is [bool] -and
+    $value.sentinelExists -is [bool] -and
+    [int]$value.residueCount -ge 0 -and
+    $value.environmentRestored -is [bool])
+}
+function Write-SecondaryContainmentCaseEvidence(
+  [Parameter(Mandatory)][Collections.IDictionary]$Observation
+) {
+  $path = Join-Path $installerProcessEvidence (
+    "secondary-$([string]$Observation.caseId).first.json")
+  if (Test-Path -LiteralPath $path) { throw "gateEvidenceUnavailable" }
+  $raw = $Observation | ConvertTo-Json -Compress
+  if (-not (Test-SecondaryContainmentCaseEvidence $raw)) {
+    throw "gateEvidenceUnavailable"
+  }
+  $temp = Join-Path $installerProcessEvidence (
+    "." + [guid]::NewGuid().ToString("N") + ".tmp")
+  try {
+    $bytes = [Text.UTF8Encoding]::new($false, $true).GetBytes($raw)
+    $stream = [IO.FileStream]::new(
+      $temp, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write,
+      [IO.FileShare]::None, 4096, [IO.FileOptions]::WriteThrough)
+    try {
+      $stream.Write($bytes, 0, $bytes.Length)
+      $stream.Flush($true)
+    } finally { $stream.Dispose() }
+    [IO.File]::Move($temp, $path)
+    $readback = [IO.File]::ReadAllBytes($path)
+    $readbackRaw = [Text.UTF8Encoding]::new(
+      $false, $true).GetString($readback)
+    if (-not (Test-SecondaryContainmentCaseEvidence $readbackRaw) -or
+        -not [Linq.Enumerable]::SequenceEqual(
+          [byte[]]$bytes, [byte[]]$readback)) {
+      throw "gateEvidenceUnavailable"
+    }
+    return Get-CompatibleSha256 $readback
+  } catch {
+    if (Test-Path -LiteralPath $temp) {
+      Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue
+    }
+    throw "gateEvidenceUnavailable"
+  }
+}
 $installerProcessResults = @()
 foreach ($untrustedCase in $installerProcessCases) {
   $case = Assert-InstallerProcessCase $untrustedCase
@@ -4883,8 +5132,26 @@ foreach ($untrustedCase in $installerProcessCases) {
   } else { [string]$case["fault"] }
   $caseUsesExternalCleanup =
     [string]$case["schema"] -ceq "retainedV1"
+  $caseIsSecondary =
+    [string]$case["name"] -cin @(
+      "secondaryContainment","secondaryTerminateFailure",
+      "secondaryWaitFailure","secondaryAccountingFailure")
   $sentinel = Join-Path $installerProcessRoot "$($case.name).sentinel"
   $clock = [Diagnostics.Stopwatch]::StartNew()
+  $outerClock = [Diagnostics.Stopwatch]::StartNew()
+  $validationEnvironmentNames = @(
+    "LIGASE_INSTALL_VALIDATION_HARNESS",
+    "LIGASE_VIRTUAL_DISPLAY_PROCESS_VALIDATION_ROOT",
+    "LIGASE_VIRTUAL_DISPLAY_PROCESS_TIMEOUT_MS",
+    "LIGASE_VDISPLAY_PROCESS_BEHAVIOR",
+    "LIGASE_VIRTUAL_DISPLAY_PROCESS_CLEANUP_FAULT",
+    "LIGASE_VDISPLAY_SENTINEL")
+  $savedValidationEnvironment = @{}
+  foreach ($environmentName in $validationEnvironmentNames) {
+    $savedValidationEnvironment[$environmentName] =
+      [Environment]::GetEnvironmentVariable(
+        $environmentName, [EnvironmentVariableTarget]::Process)
+  }
   try {
     $env:LIGASE_INSTALL_VALIDATION_HARNESS = "1"
     $env:LIGASE_VIRTUAL_DISPLAY_PROCESS_VALIDATION_ROOT =
@@ -4893,62 +5160,356 @@ foreach ($untrustedCase in $installerProcessCases) {
     $env:LIGASE_VDISPLAY_PROCESS_BEHAVIOR = $caseBehavior
     $env:LIGASE_VIRTUAL_DISPLAY_PROCESS_CLEANUP_FAULT = $caseFault
     $env:LIGASE_VDISPLAY_SENTINEL = $sentinel
-    $raw = & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass `
-      -File $managementScript `
-      -Action ValidateVirtualDisplayInstallerProcess `
-      -InstallDirectory $installerProcessRoot `
-      -ValidationRoot $installerProcessRoot
-    $nativeExit = $LASTEXITCODE
+    if ($caseIsSecondary) {
+      $raw = @(& $DotNet $argumentListRunner --bounded-capture `
+        7000 3500 8192 none powershell.exe `
+        -NoLogo -NoProfile -ExecutionPolicy Bypass `
+        -File $managementScript `
+        -Action ValidateVirtualDisplayInstallerProcess `
+        -InstallDirectory $installerProcessRoot `
+        -ValidationRoot $installerProcessRoot)
+      $nativeExit = $LASTEXITCODE
+    } else {
+      $raw = & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass `
+        -File $managementScript `
+        -Action ValidateVirtualDisplayInstallerProcess `
+        -InstallDirectory $installerProcessRoot `
+        -ValidationRoot $installerProcessRoot
+      $nativeExit = $LASTEXITCODE
+    }
   } finally {
-    Remove-Item Env:\LIGASE_INSTALL_VALIDATION_HARNESS -ErrorAction SilentlyContinue
-    Remove-Item Env:\LIGASE_VIRTUAL_DISPLAY_PROCESS_VALIDATION_ROOT -ErrorAction SilentlyContinue
-    Remove-Item Env:\LIGASE_VIRTUAL_DISPLAY_PROCESS_TIMEOUT_MS -ErrorAction SilentlyContinue
-    Remove-Item Env:\LIGASE_VDISPLAY_PROCESS_BEHAVIOR -ErrorAction SilentlyContinue
-    Remove-Item Env:\LIGASE_VIRTUAL_DISPLAY_PROCESS_CLEANUP_FAULT -ErrorAction SilentlyContinue
-    Remove-Item Env:\LIGASE_VDISPLAY_SENTINEL -ErrorAction SilentlyContinue
+    foreach ($environmentName in $validationEnvironmentNames) {
+      [Environment]::SetEnvironmentVariable(
+        $environmentName, $savedValidationEnvironment[$environmentName],
+        [EnvironmentVariableTarget]::Process)
+    }
   }
   $clock.Stop()
-  Start-Sleep -Milliseconds 3500
-  if ($nativeExit -ne 0 -or @($raw).Count -ne 1) {
-    throw "virtualDisplayInstallerProcessFixtureFailed:$($case.name)"
+  $environmentRestored = @($validationEnvironmentNames | Where-Object {
+    [Environment]::GetEnvironmentVariable(
+      $_, [EnvironmentVariableTarget]::Process) -cne
+      $savedValidationEnvironment[$_]
+  }).Count -eq 0
+  if (-not $caseIsSecondary) { Start-Sleep -Milliseconds 3500 }
+  $projection = [ordered]@{
+    code = "virtualDisplayInstallerOutputInvalid"
+    success = $false
+    installStage = "notStarted"
+    childExitCode = -1
+    stdoutSha256 =
+      "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855"
+    stderrSha256 =
+      "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855"
+    cleanupState = "unavailable"
+    cleanupPid = 0
+    firstCleanupProven = $false
+    authorityRetained = $false
+    secondaryContainmentAttempted = $false
+    secondaryContainmentCompleted = $false
   }
-  $projection = [string]$raw | ConvertFrom-Json
-  $expectedSuccess = [bool]$case.success
-  $externalCleanupCompleted = $false
-  $observedCleanupPid = [int]$projection.cleanupPid
-  if ($caseUsesExternalCleanup) {
-    if ([string]$projection.cleanupState -cne "failed" -or
-        $observedCleanupPid -le 0 -or
-        [bool]$projection.firstCleanupProven -or
-        -not [bool]$projection.authorityRetained -or
-        -not [bool]$projection.secondaryContainmentAttempted -or
-        [bool]$projection.secondaryContainmentCompleted) {
-      throw "virtualDisplayInstallerRetainedProjectionFailed:$($case.name)"
-    }
-    $retainedProcess = Get-Process -Id $observedCleanupPid -ErrorAction SilentlyContinue
-    if ($null -ne $retainedProcess) {
-      try {
-        $killer = [Diagnostics.Process]::Start(
-          (Join-Path $env:SystemRoot "System32\taskkill.exe"),
-          "/PID $observedCleanupPid /T /F")
-        if ($null -eq $killer -or -not $killer.WaitForExit(5000) -or
-            $killer.ExitCode -ne 0 -or
-            -not $retainedProcess.WaitForExit(5000)) {
-          if ($null -ne $killer) { $killer.Dispose() }
-          throw "virtualDisplayInstallerExternalCleanupWaitFailed"
+  $parseState = "absent"
+  $outputRecordCount = 0
+  $runnerEnvelope = $null
+  if ($caseIsSecondary) {
+    if (@($raw).Count -eq 0) {
+      $parseState = "absent"
+    } elseif (@($raw).Count -ne 1) {
+      $parseState = "multiple"
+      $outputRecordCount = @($raw).Count
+    } else {
+      $runnerRaw = ([string]$raw[0]).Trim()
+      $runnerExpectedNames = $secondaryRunnerParserExpectedNames
+      # The runner envelope is a generated flat object. Scan its raw authority
+      # before ConvertFrom-Json so PowerShell's last-wins duplicate folding can
+      # never become schema authority. Escaped property-like text belongs only
+      # to stdoutText/stderrText and is excluded by the negative lookbehind.
+      $runnerRawParseState =
+        Get-SecondaryRunnerRawParseState $runnerRaw $runnerExpectedNames
+      if ($runnerRawParseState -cne "convert") {
+        $parseState = $runnerRawParseState
+      } else {
+        try { $runnerEnvelope = $runnerRaw | ConvertFrom-Json } catch {
+          $parseState = "malformed"
         }
-        $killer.Dispose()
-      } finally {
-        $retainedProcess.Dispose()
+      }
+      if ($null -ne $runnerEnvelope) {
+        $runnerNames = @($runnerEnvelope.PSObject.Properties.Name)
+        if ($runnerNames.Count -ne $runnerExpectedNames.Count -or
+            @($runnerNames | Where-Object {
+              $runnerExpectedNames -cnotcontains $_
+            }).Count -ne 0) {
+          $parseState = "typeInvalid"
+        } elseif ([string]$runnerEnvelope.schema -cne "boundedProcessV1" -or
+            $runnerEnvelope.startCode -isnot [int] -or
+            $runnerEnvelope.exitCode -isnot [int] -or
+            $runnerEnvelope.timedOut -isnot [bool] -or
+            $runnerEnvelope.cleanupCompleted -isnot [bool] -or
+            $runnerEnvelope.pid -isnot [int]) {
+          $parseState = "typeInvalid"
+        } else {
+          $outputRaw = ([string]$runnerEnvelope.stdoutText).TrimEnd("`r","`n")
+          if ([string]::IsNullOrEmpty($outputRaw)) {
+            $parseState = "absent"
+          } elseif ($outputRaw.IndexOf(
+              "`n", [StringComparison]::Ordinal) -ge 0 -or
+              $outputRaw.IndexOf(
+              "`r", [StringComparison]::Ordinal) -ge 0) {
+            $parseState = "multiple"
+            $outputRecordCount = @($outputRaw -split '\r?\n').Count
+          } else {
+            $outputNames = @([regex]::Matches(
+              $outputRaw, '"(?<name>[A-Za-z][A-Za-z0-9]*)"\s*:') |
+              ForEach-Object { $_.Groups["name"].Value })
+            $outputExpectedNames = @(
+              "code","success","installStage","childExitCode","removeExitCode",
+              "stdoutSha256","stderrSha256","cleanupState","cleanupPid",
+              "firstCleanupProven","authorityRetained",
+              "secondaryContainmentAttempted",
+              "secondaryContainmentCompleted")
+            if (@($outputNames | Sort-Object -Unique).Count -ne
+                $outputNames.Count) {
+              $parseState = "duplicate"
+            } elseif ($outputNames.Count -ne $outputExpectedNames.Count -or
+                @($outputNames | Where-Object {
+                  $outputExpectedNames -cnotcontains $_
+                }).Count -ne 0) {
+              $parseState = "unknownProperty"
+            } else {
+              try { $candidateProjection = $outputRaw | ConvertFrom-Json }
+              catch { $parseState = "malformed" }
+              if ($null -ne $candidateProjection) {
+                if ($candidateProjection.code -isnot [string] -or
+                    $candidateProjection.success -isnot [bool] -or
+                    $candidateProjection.cleanupPid -isnot [int] -or
+                    $candidateProjection.firstCleanupProven -isnot [bool] -or
+                    $candidateProjection.authorityRetained -isnot [bool] -or
+                    $candidateProjection.secondaryContainmentAttempted -isnot [bool] -or
+                    $candidateProjection.secondaryContainmentCompleted -isnot [bool]) {
+                  $parseState = "typeInvalid"
+                } else {
+                  $projection = $candidateProjection
+                  $parseState = "valid"
+                  $outputRecordCount = 1
+                }
+              }
+            }
+          }
+        }
       }
     }
-    $externalCleanupCompleted =
-      $null -eq (Get-Process -Id $observedCleanupPid -ErrorAction SilentlyContinue)
-    if (-not $externalCleanupCompleted) {
-      throw "virtualDisplayInstallerExternalCleanupFailed:$($case.name)"
+  } else {
+    if ($nativeExit -ne 0 -or @($raw).Count -ne 1) {
+      throw "virtualDisplayInstallerProcessFixtureFailed:$($case.name)"
+    }
+    $projection = [string]$raw | ConvertFrom-Json
+    $parseState = "valid"
+    $outputRecordCount = 1
+  }
+  $expectedSuccess = [bool]$case.success
+  $externalCleanupAttempted = $false
+  $externalCleanupCompleted = $false
+  $externalCleanupFailed = $false
+  $observedCleanupPid = [int]$projection.cleanupPid
+  $runnerElapsedMilliseconds = if ($null -ne $runnerEnvelope) {
+    [int64]$runnerEnvelope.elapsedMilliseconds
+  } else { [int64]$clock.ElapsedMilliseconds }
+  $remainingCleanupMilliseconds = [Math]::Max(
+    0, 10500 - [int]$outerClock.ElapsedMilliseconds)
+  if ($caseUsesExternalCleanup) {
+    $retainedProjectionValid =
+      [string]$projection.cleanupState -ceq "failed" -and
+      $observedCleanupPid -gt 0 -and
+      -not [bool]$projection.firstCleanupProven -and
+      [bool]$projection.authorityRetained -and
+      [bool]$projection.secondaryContainmentAttempted -and
+      -not [bool]$projection.secondaryContainmentCompleted
+    if ($retainedProjectionValid) {
+      $externalCleanupAttempted = $true
+      $retainedProcess =
+        Get-Process -Id $observedCleanupPid -ErrorAction SilentlyContinue
+      if ($null -ne $retainedProcess) {
+        $externalCleanupClock = [Diagnostics.Stopwatch]::StartNew()
+        try {
+          $killer = [Diagnostics.Process]::Start(
+            (Join-Path $env:SystemRoot "System32\taskkill.exe"),
+            "/PID $observedCleanupPid /T /F")
+          if ($remainingCleanupMilliseconds -le 0 -or
+              $null -eq $killer -or
+              -not $killer.WaitForExit($remainingCleanupMilliseconds) -or
+              $killer.ExitCode -ne 0 -or
+              -not $retainedProcess.WaitForExit(
+                [Math]::Max(0,
+                  10500 - [int]$outerClock.ElapsedMilliseconds))) {
+            $externalCleanupFailed = $true
+          }
+          if ($null -ne $killer) { $killer.Dispose() }
+        } catch {
+          $externalCleanupFailed = $true
+        } finally {
+          $retainedProcess.Dispose()
+        }
+      }
+      $externalCleanupCompleted =
+        $null -eq (Get-Process -Id $observedCleanupPid -ErrorAction SilentlyContinue)
+      if (-not $externalCleanupCompleted) { $externalCleanupFailed = $true }
     }
   }
-  if ($case.name -ceq "secondaryContainment" -and (
+  $sentinelExists = Test-Path -LiteralPath $sentinel
+  $finalPidZero = if ($observedCleanupPid -eq 0) {
+    $true
+  } else { $externalCleanupCompleted }
+  $outerClock.Stop()
+  if ($caseIsSecondary) {
+    $runnerCleanupCompleted =
+      $null -ne $runnerEnvelope -and
+      [bool]$runnerEnvelope.cleanupCompleted
+    $runnerRootPidZero =
+      $null -ne $runnerEnvelope -and [int]$runnerEnvelope.pid -eq 0
+    $runnerJobActiveProcesses = if ($null -ne $runnerEnvelope) {
+      [uint64]$runnerEnvelope.jobActiveProcesses
+    } else { [uint64][uint32]::MaxValue }
+    $secondaryEvidence = [ordered]@{
+      schema = "secondaryContainmentCaseEvidenceV1"
+      caseId = [string]$case.name
+      declaredSchema = [string]$case.schema
+      behavior = $caseBehavior
+      fault = $caseFault
+      runnerExit = [int]$nativeExit
+      startStage = if ($null -ne $runnerEnvelope) {
+        [string]$runnerEnvelope.startStage
+      } else { "none" }
+      startCode = if ($null -ne $runnerEnvelope) {
+        [int]$runnerEnvelope.startCode
+      } else { 0 }
+      childExitCode = if ($null -ne $runnerEnvelope) {
+        [int]$runnerEnvelope.exitCode
+      } else { -1 }
+      parseState = $parseState
+      outputRecordCount = [int]$outputRecordCount
+      stdoutRawLength = if ($null -ne $runnerEnvelope) {
+        [int64]$runnerEnvelope.stdoutRawLength
+      } else { 0 }
+      stdoutRawSha = if ($null -ne $runnerEnvelope) {
+        [string]$runnerEnvelope.stdoutRawSha
+      } else {
+        "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855"
+      }
+      stdoutOverflow = if ($null -ne $runnerEnvelope) {
+        [bool]$runnerEnvelope.stdoutOverflow
+      } else { $false }
+      stdoutDecoderState = if ($null -ne $runnerEnvelope) {
+        [string]$runnerEnvelope.stdoutDecoderState
+      } else { "closed" }
+      stdoutPendingTailLength = if ($null -ne $runnerEnvelope) {
+        [int]$runnerEnvelope.stdoutPendingTailLength
+      } else { 0 }
+      stderrRawLength = if ($null -ne $runnerEnvelope) {
+        [int64]$runnerEnvelope.stderrRawLength
+      } else { 0 }
+      stderrRawSha = if ($null -ne $runnerEnvelope) {
+        [string]$runnerEnvelope.stderrRawSha
+      } else {
+        "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855"
+      }
+      stderrOverflow = if ($null -ne $runnerEnvelope) {
+        [bool]$runnerEnvelope.stderrOverflow
+      } else { $false }
+      stderrDecoderState = if ($null -ne $runnerEnvelope) {
+        [string]$runnerEnvelope.stderrDecoderState
+      } else { "closed" }
+      stderrPendingTailLength = if ($null -ne $runnerEnvelope) {
+        [int]$runnerEnvelope.stderrPendingTailLength
+      } else { 0 }
+      timedOut = if ($null -ne $runnerEnvelope) {
+        [bool]$runnerEnvelope.timedOut
+      } else { $false }
+      runnerCleanupState = if ($runnerCleanupCompleted) {
+        "completed"
+      } else { "failed" }
+      rootPidZero = $runnerRootPidZero
+      descendantPidZero =
+        $runnerRootPidZero -and $runnerJobActiveProcesses -eq 0
+      jobActiveProcesses = $runnerJobActiveProcesses
+      runnerElapsedMilliseconds = $runnerElapsedMilliseconds
+      runBudgetMilliseconds = [int64]7000
+      cleanupReserveMilliseconds = [int64]3500
+      outerElapsedMilliseconds = [int64]$outerClock.ElapsedMilliseconds
+      outerHardCapMilliseconds = [int64]10500
+      code = [string]$projection.code
+      success = [bool]$projection.success
+      firstCleanupProven = [bool]$projection.firstCleanupProven
+      authorityRetained = [bool]$projection.authorityRetained
+      retainedPid = $observedCleanupPid
+      secondaryContainmentAttempted =
+        [bool]$projection.secondaryContainmentAttempted
+      secondaryContainmentCompleted =
+        [bool]$projection.secondaryContainmentCompleted
+      cleanupState = [string]$projection.cleanupState
+      externalCleanupAttempted = $externalCleanupAttempted
+      externalCleanupCompleted = $externalCleanupCompleted
+      finalPidZero = $finalPidZero
+      sentinelExists = $sentinelExists
+      residueCount = [int]$(if ($sentinelExists) { 1 } else { 0 })
+      environmentRestored = $environmentRestored
+    }
+    $secondaryEvidenceSha =
+      Write-SecondaryContainmentCaseEvidence $secondaryEvidence
+    # SECONDARY_ASSERTIONS_BEGIN
+    $secondaryFailure = if (
+        (-not $caseUsesExternalCleanup -and $nativeExit -ne 0) -or
+        ($caseUsesExternalCleanup -and $nativeExit -notin @(0,93))) {
+        "runnerExit"
+      }
+      elseif ($parseState -cne "valid") { "parseState" }
+      elseif ($outputRecordCount -ne 1) { "recordCount" }
+      elseif ($null -eq $runnerEnvelope -or
+          [string]$runnerEnvelope.startStage -cne "none" -or
+          [int]$runnerEnvelope.startCode -ne 0) { "runnerStart" }
+      elseif ([bool]$runnerEnvelope.timedOut -or
+          [bool]$runnerEnvelope.overflow -or
+          [bool]$runnerEnvelope.pipeFault) { "runnerOutput" }
+      elseif ([int64]$runnerEnvelope.hardCapMilliseconds -ne 10500 -or
+          $runnerElapsedMilliseconds -gt 10500) { "runBudget" }
+      elseif (-not $caseUsesExternalCleanup -and (
+          -not $runnerCleanupCompleted -or
+          -not $runnerRootPidZero -or
+          $runnerJobActiveProcesses -ne 0)) { "runnerCleanup" }
+      elseif ($outerClock.ElapsedMilliseconds -gt 10500) { "hardCap" }
+      elseif (-not $environmentRestored) { "environment" }
+      elseif ([string]$projection.code -cne [string]$case.code -or
+          [bool]$projection.success -ne $expectedSuccess) { "semanticTuple" }
+      elseif (-not $caseUsesExternalCleanup -and (
+          [string]$projection.cleanupState -cne "completed" -or
+          [int]$projection.cleanupPid -ne 0 -or
+          [bool]$projection.firstCleanupProven -or
+          -not [bool]$projection.authorityRetained -or
+          -not [bool]$projection.secondaryContainmentAttempted -or
+          -not [bool]$projection.secondaryContainmentCompleted)) {
+        "primaryContainmentAuthority"
+      }
+      elseif ($caseUsesExternalCleanup -and
+          (-not $retainedProjectionValid -or
+           -not $externalCleanupAttempted -or
+           -not $externalCleanupCompleted -or
+           $externalCleanupFailed)) { "externalCleanup" }
+      elseif ($sentinelExists -or -not $finalPidZero) { "residue" }
+      else { "" }
+    if (-not [string]::IsNullOrEmpty($secondaryFailure)) {
+      throw ("virtualDisplayInstallerSecondaryCaseFailed caseId=" +
+        [string]$case.name + " evidenceSha=" + $secondaryEvidenceSha)
+    }
+    # SECONDARY_ASSERTIONS_END
+  }
+  if (-not $caseIsSecondary -and
+      $caseUsesExternalCleanup -and -not $retainedProjectionValid) {
+    throw "virtualDisplayInstallerRetainedProjectionFailed:$($case.name)"
+  }
+  if (-not $caseIsSecondary -and
+      $caseUsesExternalCleanup -and $externalCleanupFailed) {
+    throw "virtualDisplayInstallerExternalCleanupFailed:$($case.name)"
+  }
+  if (-not $caseIsSecondary -and
+      $case.name -ceq "secondaryContainment" -and (
       [bool]$projection.firstCleanupProven -or
       -not [bool]$projection.authorityRetained -or
       -not [bool]$projection.secondaryContainmentAttempted -or
@@ -4956,12 +5517,14 @@ foreach ($untrustedCase in $installerProcessCases) {
       [int]$projection.cleanupPid -ne 0)) {
     throw "virtualDisplayInstallerSecondaryContainmentNotReached"
   }
-  if ([string]$projection.code -cne [string]$case.code -or
+  if (-not $caseIsSecondary -and (
+      [string]$projection.code -cne [string]$case.code -or
       [bool]$projection.success -ne $expectedSuccess -or
       (-not $caseUsesExternalCleanup -and
         [int]$projection.cleanupPid -ne 0) -or
       $clock.ElapsedMilliseconds -gt 7000 -or
-      (Test-Path -LiteralPath $sentinel)) {
+      $sentinelExists -or
+      -not $environmentRestored)) {
     throw "virtualDisplayInstallerProcessAssertionFailed:$($case.name)"
   }
   $evidence = [ordered]@{
@@ -4979,18 +5542,25 @@ foreach ($untrustedCase in $installerProcessCases) {
       [bool]$projection.secondaryContainmentAttempted
     secondaryContainmentCompleted =
       [bool]$projection.secondaryContainmentCompleted
+    externalCleanupAttempted = $externalCleanupAttempted
     externalCleanupCompleted = $externalCleanupCompleted
-    finalPidZero = $(if ($observedCleanupPid -eq 0) {
-      $true
-    } else { $externalCleanupCompleted })
+    finalPidZero = $finalPidZero
     elapsedMilliseconds = [int64]$clock.ElapsedMilliseconds
-    sentinelExists = $false
+    sentinelExists = $sentinelExists
   }
   $evidencePath = Join-Path $installerProcessEvidence "$($case.name).json"
   [IO.File]::WriteAllText(
     $evidencePath, ($evidence | ConvertTo-Json -Compress),
     [Text.UTF8Encoding]::new($false))
   $installerProcessResults += $evidence
+}
+if ($StopAfterInstallerProcessCases) {
+  [ordered]@{
+    code = "virtualDisplayInstallerProcessFocusedPassed"
+    caseCount = $installerProcessResults.Count
+    cases = $installerProcessResults
+  } | ConvertTo-Json -Depth 5 -Compress
+  exit 0
 }
 
 $markerBehaviorRoot = Join-Path $root "virtual-display-marker-behavior"
