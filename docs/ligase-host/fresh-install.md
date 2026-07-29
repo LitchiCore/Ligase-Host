@@ -647,11 +647,29 @@ silently removed. Certificate removal is permitted only for stores recorded
 as owned by that installer execution and after confirming that no dependent
 driver remains.
 An `install.bat` exit code of zero is provisional rather than success
-authority. Before writing the ownership marker or returning
-`virtualDisplayInstalled`, the helper must find a present SudoVDA device and
-read back a bound Windows driver INF for every matched device. Device absence,
-missing driver binding, or readback failure is closed
-`virtualDisplayReadbackFailed`. The ownership marker then uses a same-directory
+authority. Repair removes matching device nodes with a bounded loop before
+creating a replacement; exhausting that bound is closed
+`virtualDisplayDeviceRemoveFailed`. Before writing the ownership marker or
+returning `virtualDisplayInstalled`, the helper requires exactly one present
+device with the complete SudoVDA hardware ID, compared using Windows'
+ordinal-ignore-case identity semantics without prefix, suffix, or substring
+matching, and a bound Windows OEM INF. Zero or duplicate matching devices,
+missing driver binding, or readback failure is closed. The readback projects
+only the count and a SHA-256 of the sorted unique instance identities, never the
+raw identities.
+
+The child action atomically persists a strict, safe virtual-display diagnostic
+containing the install stage, readback code, child/remove exits, removal count,
+process cleanup state, marker stage, observed count, identity-set hash, and
+binding result. A new child action first removes any previous diagnostic; the
+strict readback binds the replacement to the current manifest source and a
+bounded UTC freshness window. It contains no stdout, stderr, path, device identity, or
+exception text. NSIS accepts success only when the child exit is zero and its
+entire stdout is the exact terminal success JSON. `FinalizeInstall` strictly
+reads that diagnostic and includes it in `last-outcome.json`, so a failed UI
+retains the first closed virtual-display authority for later readback.
+
+The ownership marker then uses a same-directory
 write-through temporary file, byte and ACL readback, and an atomic replace or
 move. A write, replace, or final marker readback failure is closed
 `virtualDisplayMarkerCommitFailed`. On either path, the helper restores the

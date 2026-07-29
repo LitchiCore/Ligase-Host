@@ -1619,6 +1619,7 @@ foreach ($token in @(
     'virtualDisplayInstallerToolUnavailable',
     'virtualDisplayCertificateRootFailed',
     'virtualDisplayCertificatePublisherFailed',
+    'virtualDisplayDeviceRemoveFailed',
     'virtualDisplayDeviceCreateFailed',
     'virtualDisplayDriverPackageInstallFailed',
     'virtualDisplayInstallerTimeout',
@@ -4669,15 +4670,16 @@ $installerProcessMock = Join-Path $installerProcessRoot (
   "virtual-display-installer-mock.cmd")
 @'
 @echo off
-if "%LIGASE_VDISPLAY_PROCESS_BEHAVIOR%"=="success" echo LIGASE_VDISPLAY_V1^|stage=completed^|nativeExit=0^|removeExit=0&exit /b 0
+if "%LIGASE_VDISPLAY_PROCESS_BEHAVIOR%"=="success" echo LIGASE_VDISPLAY_V1^|stage=completed^|nativeExit=0^|removeExit=1^|removeCount=2&exit /b 0
 if "%LIGASE_VDISPLAY_PROCESS_BEHAVIOR%"=="exit20" echo LIGASE_VDISPLAY_V1^|stage=toolValidation^|nativeExit=2&exit /b 20
 if "%LIGASE_VDISPLAY_PROCESS_BEHAVIOR%"=="exit21" echo LIGASE_VDISPLAY_V1^|stage=certificateRoot^|nativeExit=5&exit /b 21
 if "%LIGASE_VDISPLAY_PROCESS_BEHAVIOR%"=="exit22" echo LIGASE_VDISPLAY_V1^|stage=certificatePublisher^|nativeExit=5&exit /b 22
-if "%LIGASE_VDISPLAY_PROCESS_BEHAVIOR%"=="exit23" echo LIGASE_VDISPLAY_V1^|stage=deviceCreate^|nativeExit=87^|removeExit=0&exit /b 23
-if "%LIGASE_VDISPLAY_PROCESS_BEHAVIOR%"=="exit24" echo LIGASE_VDISPLAY_V1^|stage=driverPackageInstall^|nativeExit=5^|removeExit=0&exit /b 24
+if "%LIGASE_VDISPLAY_PROCESS_BEHAVIOR%"=="exit23" echo LIGASE_VDISPLAY_V1^|stage=deviceCreate^|nativeExit=87^|removeExit=1^|removeCount=2&exit /b 23
+if "%LIGASE_VDISPLAY_PROCESS_BEHAVIOR%"=="exit24" echo LIGASE_VDISPLAY_V1^|stage=driverPackageInstall^|nativeExit=5^|removeExit=1^|removeCount=2&exit /b 24
+if "%LIGASE_VDISPLAY_PROCESS_BEHAVIOR%"=="exit25" echo LIGASE_VDISPLAY_V1^|stage=deviceRemove^|nativeExit=16^|removeExit=0^|removeCount=16&exit /b 25
 if "%LIGASE_VDISPLAY_PROCESS_BEHAVIOR%"=="malformed" echo not-json&exit /b 0
-if "%LIGASE_VDISPLAY_PROCESS_BEHAVIOR%"=="extra" echo LIGASE_VDISPLAY_V1^|stage=completed^|nativeExit=0^|removeExit=0&echo extra&exit /b 0
-if "%LIGASE_VDISPLAY_PROCESS_BEHAVIOR%"=="cross" echo LIGASE_VDISPLAY_V1^|stage=deviceCreate^|nativeExit=5^|removeExit=0&exit /b 24
+if "%LIGASE_VDISPLAY_PROCESS_BEHAVIOR%"=="extra" echo LIGASE_VDISPLAY_V1^|stage=completed^|nativeExit=0^|removeExit=1^|removeCount=2&echo extra&exit /b 0
+if "%LIGASE_VDISPLAY_PROCESS_BEHAVIOR%"=="cross" echo LIGASE_VDISPLAY_V1^|stage=deviceCreate^|nativeExit=5^|removeExit=1^|removeCount=2&exit /b 24
 if "%LIGASE_VDISPLAY_PROCESS_BEHAVIOR%"=="invalidUtf8" powershell.exe -NoProfile -Command "[Console]::OpenStandardOutput().WriteByte(255)"&exit /b 0
 if "%LIGASE_VDISPLAY_PROCESS_BEHAVIOR%"=="stdoutOverflow" for /L %%i in (1,1,80) do @echo 0123456789
 if "%LIGASE_VDISPLAY_PROCESS_BEHAVIOR%"=="stderrOverflow" for /L %%i in (1,1,80) do @echo 0123456789 1>&2
@@ -4889,6 +4891,8 @@ $installerProcessCases = @(
      code = "virtualDisplayDeviceCreateFailed"; success = $false },
   @{ schema = "directV1"; name = "exit24";
      code = "virtualDisplayDriverPackageInstallFailed"; success = $false },
+  @{ schema = "directV1"; name = "exit25";
+     code = "virtualDisplayDeviceRemoveFailed"; success = $false },
   @{ schema = "directV1"; name = "malformed";
      code = "virtualDisplayInstallerOutputInvalid"; success = $false },
   @{ schema = "directV1"; name = "extra";
@@ -5285,6 +5289,7 @@ foreach ($untrustedCase in $installerProcessCases) {
               ForEach-Object { $_.Groups["name"].Value })
             $outputExpectedNames = @(
               "code","success","installStage","childExitCode","removeExitCode",
+              "removeCount",
               "stdoutSha256","stderrSha256","cleanupState","cleanupPid",
               "firstCleanupProven","authorityRetained",
               "secondaryContainmentAttempted",
@@ -5303,6 +5308,9 @@ foreach ($untrustedCase in $installerProcessCases) {
               if ($null -ne $candidateProjection) {
                 if ($candidateProjection.code -isnot [string] -or
                     $candidateProjection.success -isnot [bool] -or
+                    $candidateProjection.childExitCode -isnot [int] -or
+                    $candidateProjection.removeExitCode -isnot [int] -or
+                    $candidateProjection.removeCount -isnot [int] -or
                     $candidateProjection.cleanupPid -isnot [int] -or
                     $candidateProjection.firstCleanupProven -isnot [bool] -or
                     $candidateProjection.authorityRetained -isnot [bool] -or
@@ -5693,6 +5701,97 @@ $markerBehaviorResults += Invoke-MarkerBehaviorFixture `
   -PriorMarker $true -CompensationFailure "restoreMarker" `
   -ExpectedCode "virtualDisplayRollbackFailed"
 
+$virtualDisplayReadbackResults = @()
+$readbackPowerShell = Join-Path ([Environment]::SystemDirectory) (
+  "WindowsPowerShell\v1.0\powershell.exe")
+if (-not (Test-Path -LiteralPath $readbackPowerShell -PathType Leaf)) {
+  throw "virtualDisplayReadbackFixtureHostUnavailable"
+}
+$readbackCases = @(
+  @{ name = "absent"; devices = @(); state = "notInstalled"; count = 0 },
+  @{ name = "exactOne"; devices = @([ordered]@{
+      instanceId = "ROOT\DISPLAY\1000"
+      hardwareIds = @("root\sudomaker\sudovda")
+      status = "OK"
+      driverInf = "oem32.inf"
+    }); state = "available"; count = 1 },
+  @{ name = "exactOneUppercase"; devices = @([ordered]@{
+      instanceId = "ROOT\DISPLAY\1002"
+      hardwareIds = @("ROOT\SUDOMAKER\SUDOVDA")
+      status = "OK"
+      driverInf = "oem32.inf"
+    }); state = "available"; count = 1 },
+  @{ name = "exactOneMixedCase"; devices = @([ordered]@{
+      instanceId = "ROOT\DISPLAY\1003"
+      hardwareIds = @("Root\SudoMaker\SudoVDA")
+      status = "OK"
+      driverInf = "oem32.inf"
+    }); state = "available"; count = 1 },
+  @{ name = "duplicate"; devices = @(
+      [ordered]@{
+        instanceId = "ROOT\DISPLAY\1000"
+        hardwareIds = @("root\sudomaker\sudovda")
+        status = "OK"
+        driverInf = "oem32.inf"
+      },
+      [ordered]@{
+        instanceId = "ROOT\DISPLAY\1001"
+        hardwareIds = @("root\sudomaker\sudovda")
+        status = "OK"
+        driverInf = "oem32.inf"
+      }); state = "failed"; count = 2 },
+  @{ name = "bindingMissing"; devices = @([ordered]@{
+      instanceId = "ROOT\DISPLAY\1000"
+      hardwareIds = @("root\sudomaker\sudovda")
+      status = "OK"
+      driverInf = ""
+    }); state = "failed"; count = 1 }
+)
+foreach ($case in $readbackCases) {
+  $caseRoot = Join-Path $root ("virtual-display-readback-" + $case.name)
+  New-Item -ItemType Directory -Path $caseRoot | Out-Null
+  [IO.File]::WriteAllText(
+    (Join-Path $caseRoot "virtual-display-snapshot.json"),
+    ([ordered]@{ schemaVersion = 1; devices = @($case.devices) } |
+      ConvertTo-Json -Depth 5 -Compress),
+    [Text.UTF8Encoding]::new($false))
+  $previousHarness = $env:LIGASE_INSTALL_VALIDATION_HARNESS
+  $previousRoot = $env:LIGASE_VIRTUAL_DISPLAY_READBACK_VALIDATION_ROOT
+  try {
+    $env:LIGASE_INSTALL_VALIDATION_HARNESS = "1"
+    $env:LIGASE_VIRTUAL_DISPLAY_READBACK_VALIDATION_ROOT = $caseRoot
+    $raw = @(& $readbackPowerShell -NoProfile -NonInteractive `
+      -ExecutionPolicy Bypass -File $managementScript `
+      -Action ValidateVirtualDisplayReadback `
+      -InstallDirectory $caseRoot -ValidationRoot $caseRoot)
+  } finally {
+    if ($null -eq $previousHarness) {
+      Remove-Item Env:LIGASE_INSTALL_VALIDATION_HARNESS -ErrorAction SilentlyContinue
+    } else { $env:LIGASE_INSTALL_VALIDATION_HARNESS = $previousHarness }
+    if ($null -eq $previousRoot) {
+      Remove-Item Env:LIGASE_VIRTUAL_DISPLAY_READBACK_VALIDATION_ROOT `
+        -ErrorAction SilentlyContinue
+    } else {
+      $env:LIGASE_VIRTUAL_DISPLAY_READBACK_VALIDATION_ROOT = $previousRoot
+    }
+  }
+  if ($LASTEXITCODE -ne 0 -or @($raw).Count -ne 1) {
+    throw "virtualDisplayReadbackFixtureFailed:$($case.name)"
+  }
+  $projection = [string]$raw | ConvertFrom-Json
+  if ([string]$projection.state -cne [string]$case.state -or
+      [int]$projection.deviceCount -ne [int]$case.count -or
+      [string]$projection.uniqueDeviceIdsSha256 -cnotmatch '^[0-9a-f]{64}$') {
+    throw "virtualDisplayReadbackFixtureAssertionFailed:$($case.name)"
+  }
+  $virtualDisplayReadbackResults += [ordered]@{
+    name = [string]$case.name
+    state = [string]$projection.state
+    deviceCount = [int]$projection.deviceCount
+    identitySha = [string]$projection.uniqueDeviceIdsSha256
+  }
+}
+
 [ordered]@{
   code = "installDirectoryRuntimeHarnessPassed"
   cases = $results
@@ -5702,6 +5801,7 @@ $markerBehaviorResults += Invoke-MarkerBehaviorFixture `
   virtualDisplayMarkerCases = $markerBehaviorResults
   virtualDisplayInstallerProcessCases = $installerProcessResults
   virtualDisplayInstallerCaseSchemaCases = $installerProcessCaseSchemaResults
+  virtualDisplayReadbackCases = $virtualDisplayReadbackResults
   boundedHostProcessCases = $boundedHostCases
   boundedHostRunner = [ordered]@{
     sourceSha = $argumentListRunnerSourceSha

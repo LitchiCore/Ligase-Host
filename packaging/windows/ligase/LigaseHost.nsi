@@ -662,10 +662,15 @@ Section /o "Ligase 虚拟显示（可选）" SEC_VDISPLAY
   nsExec::ExecToStack 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\Deployment\Manage-LigaseInstallation.ps1" -Action InstallVirtualDisplay -InstallDirectory "$INSTDIR"'
   Pop $0
   Pop $1
+  ${StrTrimNewLines} $1 $1
   ${If} $0 != 0
     StrCpy $VirtualDisplaySummary "失败（物理桌面串流仍可用）"
     StrCpy $VirtualDisplayOutcome "failed"
     DetailPrint "虚拟显示未安装；物理桌面串流仍可用。"
+  ${ElseIf} $1 != '{"code":"virtualDisplayInstalled","success":true}'
+    StrCpy $VirtualDisplaySummary "失败（物理桌面串流仍可用）"
+    StrCpy $VirtualDisplayOutcome "failed"
+    DetailPrint "虚拟显示安装结果无法严格验证；物理桌面串流仍可用。"
   ${Else}
     StrCpy $VirtualDisplaySummary "已安装"
     StrCpy $VirtualDisplayOutcome "installed"

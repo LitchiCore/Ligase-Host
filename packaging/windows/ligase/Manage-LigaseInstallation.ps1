@@ -11,6 +11,7 @@ param(
     "Readback",
     "Uninstall",
     "InstallVirtualDisplay",
+    "ValidateVirtualDisplayReadback",
     "ValidateVirtualDisplayInstallerProcess",
     "ValidateVirtualDisplayMarkerTransaction",
     "UninstallVirtualDisplay",
@@ -195,6 +196,7 @@ $script:transactionAclRollback = "notRequired"
 $script:transactionRecoveryAction = "none"
 $script:transactionCreated = $false
 $script:finalFailedField = "none"
+$script:virtualDisplayDiagnostic = $null
 $script:finalComponents = [ordered]@{
   artifacts = "pending"
   bootstrap = "pending"
@@ -1745,10 +1747,144 @@ function Set-InstallTransactionReadbackFailure(
   throw $Code
 }
 
+function Get-VirtualDisplayDiagnosticPath {
+  return Join-Path (Split-Path -Parent (Get-InstallerEvidencePath)) (
+    "virtual-display-outcome.json")
+}
+
+function New-VirtualDisplayDiagnostic([string]$ResultCode, [bool]$Success) {
+  return [ordered]@{
+    schemaVersion = 1
+    candidateSourceHead = Get-EvidenceSourceHead
+    writtenUtc = [DateTime]::UtcNow.ToString(
+      "O", [Globalization.CultureInfo]::InvariantCulture)
+    resultCode = $ResultCode
+    success = $Success
+    installStage = [string]$script:virtualDisplayInstallStage
+    readbackCode = [string]$script:virtualDisplayReadbackCode
+    childExitCode = [int]$script:virtualDisplayChildExit
+    removeExitCode = [int]$script:virtualDisplayRemoveExit
+    removeCount = [int]$script:virtualDisplayRemoveCount
+    cleanupState = [string]$script:virtualDisplayProcessCleanup
+    markerStage = [string]$script:virtualDisplayMarkerStage
+    observedDeviceCount = [int]$script:virtualDisplayObservedDeviceCount
+    uniqueDeviceIdsSha256 =
+      [string]$script:virtualDisplayUniqueDeviceIdsSha256
+    driverBindingVerified =
+      [bool]$script:virtualDisplayDriverBindingVerified
+  }
+}
+
+function Write-VirtualDisplayDiagnostic($Document) {
+  $path = Get-VirtualDisplayDiagnosticPath
+  $directory = Split-Path -Parent $path
+  if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
+    New-Item -ItemType Directory -Path $directory -Force | Out-Null
+  }
+  Set-SecureDataRootAcl $directory
+  $raw = $Document | ConvertTo-Json -Compress
+  $bytes = [Text.UTF8Encoding]::new($false).GetBytes($raw)
+  $temporary = Join-Path $directory (
+    ".virtual-display-outcome-" + [Guid]::NewGuid().ToString("N") + ".tmp")
+  $stream = [IO.File]::Open(
+    $temporary, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write,
+    [IO.FileShare]::None, 4096, [IO.FileOptions]::WriteThrough)
+  try {
+    $stream.Write($bytes, 0, $bytes.Length)
+    $stream.Flush($true)
+  } finally {
+    $stream.Dispose()
+  }
+  try {
+    if (Test-Path -LiteralPath $path -PathType Leaf) {
+      [IO.File]::Replace($temporary, $path, $null, $true)
+    } else {
+      [IO.File]::Move($temporary, $path)
+    }
+    $readback = [IO.File]::ReadAllBytes($path)
+    if (-not (Test-ExactBytes $bytes $readback)) {
+      throw "virtualDisplayDiagnosticUnavailable"
+    }
+  } finally {
+    Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
+  }
+}
+
+function Read-VirtualDisplayDiagnostic {
+  $path = Get-VirtualDisplayDiagnosticPath
+  if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+    throw "virtualDisplayDiagnosticUnavailable"
+  }
+  $raw = [IO.File]::ReadAllText($path, [Text.UTF8Encoding]::new($false, $true))
+  if (-not [LigaseStrictJson]::HasUniqueProperties($raw)) {
+    throw "virtualDisplayDiagnosticInvalid"
+  }
+  try { $document = $raw | ConvertFrom-Json } catch {
+    throw "virtualDisplayDiagnosticInvalid"
+  }
+  Assert-ClosedProperties $document @(
+    "schemaVersion", "candidateSourceHead", "writtenUtc", "resultCode",
+    "success", "installStage", "readbackCode",
+    "childExitCode", "removeExitCode", "removeCount", "cleanupState",
+    "markerStage", "observedDeviceCount", "uniqueDeviceIdsSha256",
+    "driverBindingVerified") "virtualDisplayDiagnostic"
+  $written = [DateTime]::MinValue
+  if (-not [DateTime]::TryParseExact(
+      [string]$document.writtenUtc, "O",
+      [Globalization.CultureInfo]::InvariantCulture,
+      [Globalization.DateTimeStyles]::RoundtripKind, [ref]$written)) {
+    throw "virtualDisplayDiagnosticInvalid"
+  }
+  if ($document.schemaVersion -ne 1 -or
+      $document.candidateSourceHead -isnot [string] -or
+      [string]$document.candidateSourceHead -cne (Get-EvidenceSourceHead) -or
+      $written.Kind -ne [DateTimeKind]::Utc -or
+      $written -gt [DateTime]::UtcNow.AddMinutes(5) -or
+      $written -lt [DateTime]::UtcNow.AddHours(-2) -or
+      $document.resultCode -isnot [string] -or
+      [string]$document.resultCode -cnotmatch '^[a-z][A-Za-z0-9]{0,63}$' -or
+      $document.success -isnot [bool] -or
+      $document.installStage -isnot [string] -or
+      @("notStarted", "toolValidation", "certificateRoot",
+        "certificatePublisher", "deviceRemove", "deviceCreate",
+        "driverPackageInstall", "completed") -cnotcontains
+          [string]$document.installStage -or
+      $document.readbackCode -isnot [string] -or
+      @("notAttempted", "available", "virtualDisplayNotInstalled",
+        "virtualDisplayDeviceCountInvalid", "virtualDisplayDriverBindingMissing",
+        "virtualDisplayRebootRequired", "virtualDisplayReadbackFailed") -cnotcontains
+          [string]$document.readbackCode -or
+      $document.childExitCode -isnot [int] -or
+      $document.removeExitCode -isnot [int] -or
+      $document.removeCount -isnot [int] -or
+      $document.cleanupState -isnot [string] -or
+      @("notRequired", "completed", "failed") -cnotcontains
+        [string]$document.cleanupState -or
+      $document.markerStage -isnot [string] -or
+      @("notAttempted", "commit", "completed") -cnotcontains
+        [string]$document.markerStage -or
+      $document.removeCount -lt 0 -or $document.removeCount -gt 16 -or
+      $document.observedDeviceCount -lt 0 -or
+      $document.observedDeviceCount -gt 16 -or
+      $document.observedDeviceCount -isnot [int] -or
+      $document.uniqueDeviceIdsSha256 -isnot [string] -or
+      [string]$document.uniqueDeviceIdsSha256 -cnotmatch '^[0-9a-f]{64}$' -or
+      $document.driverBindingVerified -isnot [bool]) {
+    throw "virtualDisplayDiagnosticInvalid"
+  }
+  return $document
+}
+
 $script:virtualDisplayInstallStage = "notStarted"
 $script:virtualDisplayChildExit = -1
 $script:virtualDisplayRemoveExit = -1
+$script:virtualDisplayRemoveCount = 0
 $script:virtualDisplayReadbackCode = "notAttempted"
+$script:virtualDisplayMarkerStage = "notAttempted"
+$script:virtualDisplayObservedDeviceCount = 0
+$script:virtualDisplayUniqueDeviceIdsSha256 =
+  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+$script:virtualDisplayDriverBindingVerified = $false
 $script:virtualDisplayStdoutSha256 =
   "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855"
 $script:virtualDisplayStderrSha256 =
@@ -1961,7 +2097,7 @@ function Assert-VirtualDisplayInstallerTuple($Result) {
   }
   $closed = ([string]$Result.stdout).Trim()
   if ($closed.Length -gt 512 -or $closed -notmatch
-      '^LIGASE_VDISPLAY_V1\|stage=([A-Za-z]+)\|nativeExit=([0-9]+)(?:\|removeExit=([0-9]+))?$') {
+      '^LIGASE_VDISPLAY_V1\|stage=([A-Za-z]+)\|nativeExit=([0-9]+)(?:\|removeExit=([0-9]+)\|removeCount=([0-9]+))?$') {
     throw "virtualDisplayInstallerOutputInvalid"
   }
   $stage = [string]$Matches[1]
@@ -1970,6 +2106,9 @@ function Assert-VirtualDisplayInstallerTuple($Result) {
   $script:virtualDisplayRemoveExit = if ($Matches[3]) {
     [int]$Matches[3]
   } else { -1 }
+  $script:virtualDisplayRemoveCount = if ($Matches[4]) {
+    [int]$Matches[4]
+  } else { 0 }
   $expectedStage = switch ($installerExit) {
     0 { "completed" }
     20 { "toolValidation" }
@@ -1977,10 +2116,22 @@ function Assert-VirtualDisplayInstallerTuple($Result) {
     22 { "certificatePublisher" }
     23 { "deviceCreate" }
     24 { "driverPackageInstall" }
+    25 { "deviceRemove" }
     default { "none" }
   }
   if ($expectedStage -ceq "none" -or $stage -cne $expectedStage -or
       (($installerExit -eq 0) -ne ($nativeExit -eq 0))) {
+    throw "virtualDisplayInstallerOutputInvalid"
+  }
+  $hasRemovalTuple = $installerExit -in @(0, 23, 24, 25)
+  if ($hasRemovalTuple -and (
+      $script:virtualDisplayRemoveCount -lt 0 -or
+      $script:virtualDisplayRemoveCount -gt 16 -or
+      ($installerExit -eq 25 -and (
+        $script:virtualDisplayRemoveCount -ne 16 -or
+        $script:virtualDisplayRemoveExit -ne 0)) -or
+      ($installerExit -ne 25 -and
+        $script:virtualDisplayRemoveExit -eq 0))) {
     throw "virtualDisplayInstallerOutputInvalid"
   }
   if ($installerExit -ne 0) {
@@ -1990,6 +2141,7 @@ function Assert-VirtualDisplayInstallerTuple($Result) {
       22 { "virtualDisplayCertificatePublisherFailed" }
       23 { "virtualDisplayDeviceCreateFailed" }
       24 { "virtualDisplayDriverPackageInstallFailed" }
+      25 { "virtualDisplayDeviceRemoveFailed" }
     })
   }
 }
@@ -2031,6 +2183,7 @@ function Invoke-VirtualDisplayInstallerValidation([string]$Root) {
     installStage = [string]$script:virtualDisplayInstallStage
     childExitCode = [int]$script:virtualDisplayChildExit
     removeExitCode = [int]$script:virtualDisplayRemoveExit
+    removeCount = [int]$script:virtualDisplayRemoveCount
     stdoutSha256 = [string]$script:virtualDisplayStdoutSha256
     stderrSha256 = [string]$script:virtualDisplayStderrSha256
     cleanupState = [string]$script:virtualDisplayProcessCleanup
@@ -2391,6 +2544,11 @@ function Write-InstallerEvidence {
       $EvidenceFailedField
     }
     components = $script:finalComponents
+    virtualDisplay = if ($null -eq $script:virtualDisplayDiagnostic) {
+      $null
+    } else {
+      $script:virtualDisplayDiagnostic
+    }
     rollback = [ordered]@{
       state = $EvidenceRollback
       shortcut = $script:shortcutRollbackResult
@@ -3316,48 +3474,105 @@ function Get-FirewallReadback($Manifest) {
   }
 }
 
+function Get-VirtualDisplaySnapshot {
+  if ($env:LIGASE_INSTALL_VALIDATION_HARNESS -ceq "1" -and
+      -not [string]::IsNullOrWhiteSpace(
+        [string]$env:LIGASE_VIRTUAL_DISPLAY_READBACK_VALIDATION_ROOT)) {
+    $validationRoot = [IO.Path]::GetFullPath(
+      [string]$env:LIGASE_VIRTUAL_DISPLAY_READBACK_VALIDATION_ROOT)
+    if ([IO.Path]::GetPathRoot($validationRoot) -cne "D:\") {
+      throw "virtualDisplayValidationUnavailable"
+    }
+    $fixturePath = Join-Path $validationRoot "virtual-display-snapshot.json"
+    $raw = [IO.File]::ReadAllText(
+      $fixturePath, [Text.UTF8Encoding]::new($false, $true))
+    if (-not [LigaseStrictJson]::HasUniqueProperties($raw)) {
+      throw "virtualDisplayValidationUnavailable"
+    }
+    $fixture = $raw | ConvertFrom-Json
+    Assert-ClosedProperties $fixture @("schemaVersion", "devices") (
+      "virtualDisplayValidation")
+    if ($fixture.schemaVersion -ne 1 -or $fixture.devices -isnot [array]) {
+      throw "virtualDisplayValidationUnavailable"
+    }
+    return @($fixture.devices)
+  }
+  return @(Get-PnpDevice -PresentOnly -ErrorAction Stop |
+    Where-Object {
+      $_.FriendlyName -match "SudoVDA|Virtual Display" -or
+      $_.InstanceId -match "SUDOVDA"
+    } | ForEach-Object {
+      [ordered]@{
+        instanceId = [string]$_.InstanceId
+        hardwareIds = @((Get-PnpDeviceProperty `
+          -InstanceId $_.InstanceId `
+          -KeyName "DEVPKEY_Device_HardwareIds" `
+          -ErrorAction Stop).Data)
+        status = [string]$_.Status
+        driverInf = [string](Get-PnpDeviceProperty `
+          -InstanceId $_.InstanceId `
+          -KeyName "DEVPKEY_Device_DriverInfPath" `
+          -ErrorAction Stop).Data
+      }
+    })
+}
+
 function Get-VirtualDisplay {
   try {
-    $devices = @(Get-PnpDevice -PresentOnly -ErrorAction Stop |
-      Where-Object {
-        $_.FriendlyName -match "SudoVDA|Virtual Display" -or
-        $_.InstanceId -match "SUDOVDA"
-      })
+    $candidates = @(Get-VirtualDisplaySnapshot)
+    $devices = @($candidates | Where-Object {
+      $hardwareIds = @($_.hardwareIds)
+      @($hardwareIds | Where-Object {
+        [StringComparer]::OrdinalIgnoreCase.Equals(
+          [string]$_, "root\sudomaker\sudovda")
+      }).Count -eq 1
+    })
+    $identityBytes = [Text.UTF8Encoding]::new($false).GetBytes(
+      (@($devices.instanceId | Sort-Object -CaseSensitive) -join "`n"))
+    $identitySha256 = Get-ByteSha256 $identityBytes
     if ($devices.Count -eq 0) {
       return [ordered]@{
         state = "notInstalled"
         machineCode = "virtualDisplayNotInstalled"
         deviceCount = 0
+        uniqueDeviceIdsSha256 = $identitySha256
         driverBindingVerified = $false
         physicalDesktopAvailable = $true
       }
     }
-    $driverBindings = @($devices | ForEach-Object {
-      Get-PnpDeviceProperty `
-        -InstanceId $_.InstanceId `
-        -KeyName "DEVPKEY_Device_DriverInfPath" `
-        -ErrorAction Stop
-    })
+    if ($devices.Count -ne 1) {
+      return [ordered]@{
+        state = "failed"
+        machineCode = "virtualDisplayDeviceCountInvalid"
+        deviceCount = $devices.Count
+        uniqueDeviceIdsSha256 = $identitySha256
+        driverBindingVerified = $false
+        physicalDesktopAvailable = $true
+      }
+    }
+    $driverBindings = @($devices.driverInf)
     $driverBindingVerified = (
       $driverBindings.Count -eq $devices.Count -and
       @($driverBindings | Where-Object {
-        [string]::IsNullOrWhiteSpace([string]$_.Data) -or
-        [string]$_.Data -notmatch '^oem[0-9]+\.inf$'
+        [string]::IsNullOrWhiteSpace([string]$_) -or
+        [string]$_ -notmatch '^oem[0-9]+\.inf$'
       }).Count -eq 0)
     if (-not $driverBindingVerified) {
       return [ordered]@{
         state = "failed"
         machineCode = "virtualDisplayDriverBindingMissing"
         deviceCount = $devices.Count
+        uniqueDeviceIdsSha256 = $identitySha256
         driverBindingVerified = $false
         physicalDesktopAvailable = $true
       }
     }
-    $reboot = @($devices | Where-Object { $_.Status -ne "OK" }).Count -gt 0
+    $reboot = @($devices | Where-Object { $_.status -cne "OK" }).Count -gt 0
     return [ordered]@{
       state = if ($reboot) { "rebootRequired" } else { "available" }
       machineCode = if ($reboot) { "virtualDisplayRebootRequired" } else { "available" }
       deviceCount = $devices.Count
+      uniqueDeviceIdsSha256 = $identitySha256
       driverBindingVerified = $true
       physicalDesktopAvailable = $true
     }
@@ -3366,6 +3581,8 @@ function Get-VirtualDisplay {
       state = "failed"
       machineCode = "virtualDisplayReadbackFailed"
       deviceCount = 0
+      uniqueDeviceIdsSha256 =
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
       driverBindingVerified = $false
       physicalDesktopAvailable = $true
     }
@@ -4091,6 +4308,18 @@ try {
     [Console]::Out.WriteLine(($validationResult | ConvertTo-Json -Compress))
     exit 0
   }
+  if ($Action -eq "ValidateVirtualDisplayReadback") {
+    $fullValidationRoot = [IO.Path]::GetFullPath($ValidationRoot)
+    if ($env:LIGASE_INSTALL_VALIDATION_HARNESS -cne "1" -or
+        [string]$env:LIGASE_VIRTUAL_DISPLAY_READBACK_VALIDATION_ROOT -cne
+          $fullValidationRoot -or
+        [IO.Path]::GetPathRoot($fullValidationRoot) -cne "D:\") {
+      throw "virtualDisplayValidationUnavailable"
+    }
+    [Console]::Out.WriteLine((
+      (Get-VirtualDisplay) | ConvertTo-Json -Compress))
+    exit 0
+  }
   $manifest = Read-Manifest
   $artifacts = Test-Artifacts $manifest
   $script:finalComponents.artifacts = "verified"
@@ -4112,6 +4341,14 @@ try {
     try {
       if (-not (Load-InstallTransaction)) {
         throw "installTransactionInvalid"
+      }
+      if ($VirtualDisplaySelected) {
+        $script:virtualDisplayDiagnostic = Read-VirtualDisplayDiagnostic
+        if ([bool]$script:virtualDisplayDiagnostic.success -ne
+              ($VirtualDisplayOutcome -ceq "installed")) {
+          $script:finalFailedField = "virtualDisplay"
+          throw "virtualDisplayDiagnosticInvalid"
+        }
       }
       $final = Assert-FinalInstallReadback $manifest
       $EvidencePhase = "succeeded"
@@ -4180,6 +4417,13 @@ try {
   }
 
   if ($Action -eq "InstallVirtualDisplay") {
+    $priorDiagnosticPath = Get-VirtualDisplayDiagnosticPath
+    if (Test-Path -LiteralPath $priorDiagnosticPath) {
+      Remove-Item -LiteralPath $priorDiagnosticPath -Force
+    }
+    if (Test-Path -LiteralPath $priorDiagnosticPath) {
+      throw "virtualDisplayDiagnosticUnavailable"
+    }
     $thumbprint = [string]$manifest.virtualDisplay.certificateThumbprint
     if ([string]$manifest.virtualDisplay.installerTool -cne
           "Deployment/Drivers/sudovda/nefconc.exe" -or
@@ -4256,6 +4500,12 @@ try {
       $displayReadback = Get-VirtualDisplay
       $script:virtualDisplayReadbackCode =
         [string]$displayReadback.machineCode
+      $script:virtualDisplayObservedDeviceCount =
+        [int]$displayReadback.deviceCount
+      $script:virtualDisplayUniqueDeviceIdsSha256 =
+        [string]$displayReadback.uniqueDeviceIdsSha256
+      $script:virtualDisplayDriverBindingVerified =
+        [bool]$displayReadback.driverBindingVerified
       $failureCode = "virtualDisplayReadbackFailed"
       if ($displayReadback.state -notin @("available", "rebootRequired") -or
           -not [bool]$displayReadback.driverBindingVerified) {
@@ -4269,7 +4519,9 @@ try {
       } | ConvertTo-Json -Compress
       $markerBytes = [Text.UTF8Encoding]::new($false).GetBytes($markerJson)
       $failureCode = "virtualDisplayMarkerCommitFailed"
+      $script:virtualDisplayMarkerStage = "commit"
       Write-VirtualDisplayOwnershipMarkerAtomic $ownershipPath $markerBytes
+      $script:virtualDisplayMarkerStage = "completed"
     } catch {
       $rollbackFailed = $false
       try {
@@ -4314,27 +4566,10 @@ try {
       if ($rollbackFailed) { throw "virtualDisplayRollbackFailed" }
       throw $failureCode
     }
-    Write-Outcome "virtualDisplayInstalled" $true @{
-      trust = $driverTrust
-      installStage = [string]$script:virtualDisplayInstallStage
-      readbackCode = [string]$script:virtualDisplayReadbackCode
-      childExitCode = [int]$script:virtualDisplayChildExit
-      removeExitCode = [int]$script:virtualDisplayRemoveExit
-      stdoutSha256 = [string]$script:virtualDisplayStdoutSha256
-      stderrSha256 = [string]$script:virtualDisplayStderrSha256
-      cleanupState = [string]$script:virtualDisplayProcessCleanup
-      cleanupPid = [int]$script:virtualDisplayCleanupPid
-      firstCleanupProven = [bool]$script:virtualDisplayFirstCleanupProven
-      authorityRetained = [bool]$script:virtualDisplayAuthorityRetained
-      secondaryContainmentAttempted =
-        [bool]$script:virtualDisplaySecondaryAttempted
-      secondaryContainmentCompleted =
-        [bool]$script:virtualDisplaySecondaryCompleted
-      certificateStoresAdded = $ownedStores.Count
-      deviceCount = [int]$displayReadback.deviceCount
-      driverBindingVerified = [bool]$displayReadback.driverBindingVerified
-      restartRequired = $displayReadback.state -eq "rebootRequired"
-    }
+    $script:virtualDisplayDiagnostic =
+      New-VirtualDisplayDiagnostic "virtualDisplayInstalled" $true
+    Write-VirtualDisplayDiagnostic $script:virtualDisplayDiagnostic
+    Write-Outcome "virtualDisplayInstalled" $true
     exit 0
   }
 
@@ -4811,11 +5046,23 @@ try {
     exit 10
   }
   if ($Action -eq "InstallVirtualDisplay") {
+    $script:virtualDisplayDiagnostic =
+      New-VirtualDisplayDiagnostic $code $false
+    try {
+      Write-VirtualDisplayDiagnostic $script:virtualDisplayDiagnostic
+    } catch {
+      $code = "virtualDisplayDiagnosticUnavailable"
+    }
     Write-Outcome $code $false @{
       installStage = [string]$script:virtualDisplayInstallStage
       readbackCode = [string]$script:virtualDisplayReadbackCode
       childExitCode = [int]$script:virtualDisplayChildExit
       removeExitCode = [int]$script:virtualDisplayRemoveExit
+      removeCount = [int]$script:virtualDisplayRemoveCount
+      markerStage = [string]$script:virtualDisplayMarkerStage
+      observedDeviceCount = [int]$script:virtualDisplayObservedDeviceCount
+      uniqueDeviceIdsSha256 =
+        [string]$script:virtualDisplayUniqueDeviceIdsSha256
       stdoutSha256 = [string]$script:virtualDisplayStdoutSha256
       stderrSha256 = [string]$script:virtualDisplayStderrSha256
       cleanupState = [string]$script:virtualDisplayProcessCleanup

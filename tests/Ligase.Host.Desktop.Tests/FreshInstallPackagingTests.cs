@@ -1612,6 +1612,28 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(management, "\"virtualDisplayReadbackFailed\"");
         StringAssert.Contains(management, "\"virtualDisplayMarkerCommitFailed\"");
         StringAssert.Contains(management, "\"virtualDisplayRollbackFailed\"");
+        StringAssert.Contains(management, "\"virtualDisplayDeviceCountInvalid\"");
+        StringAssert.Contains(management, "uniqueDeviceIdsSha256");
+        StringAssert.Contains(management, "Write-VirtualDisplayDiagnostic");
+        StringAssert.Contains(management, "Read-VirtualDisplayDiagnostic");
+        StringAssert.Contains(management, "candidateSourceHead = Get-EvidenceSourceHead");
+        StringAssert.Contains(management, "virtualDisplayDiagnosticInvalid");
+        StringAssert.Contains(management, "\"ValidateVirtualDisplayReadback\"");
+        StringAssert.Contains(runtimeHarness, "virtualDisplayReadbackCases");
+        StringAssert.Contains(management, "[StringComparer]::OrdinalIgnoreCase.Equals(");
+        Assert.IsFalse(
+            management.Contains(
+                "[string]$_ -ceq \"root\\sudomaker\\sudovda\"",
+                StringComparison.Ordinal),
+            "Windows PnP hardware identity must use case-insensitive exact comparison.");
+        StringAssert.Contains(runtimeHarness, "\"exactOneUppercase\"");
+        StringAssert.Contains(runtimeHarness, "\"ROOT\\SUDOMAKER\\SUDOVDA\"");
+        StringAssert.Contains(runtimeHarness, "\"exactOneMixedCase\"");
+        StringAssert.Contains(runtimeHarness, "\"Root\\SudoMaker\\SudoVDA\"");
+        StringAssert.Contains(runtimeHarness, "\"duplicate\"");
+        StringAssert.Contains(runtimeHarness, "\"bindingMissing\"");
+        StringAssert.Contains(nsis,
+            "{\"code\":\"virtualDisplayInstalled\",\"success\":true}");
         StringAssert.Contains(management, "driverBindingVerified");
         StringAssert.Contains(management, "Invoke-VirtualDisplayInstaller");
         StringAssert.Contains(management, "ValidateVirtualDisplayInstallerProcess");
@@ -1651,6 +1673,7 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(management, "\"virtualDisplayInstallerToolUnavailable\"");
         StringAssert.Contains(management, "\"virtualDisplayCertificateRootFailed\"");
         StringAssert.Contains(management, "\"virtualDisplayCertificatePublisherFailed\"");
+        StringAssert.Contains(management, "\"virtualDisplayDeviceRemoveFailed\"");
         StringAssert.Contains(management, "\"virtualDisplayDeviceCreateFailed\"");
         StringAssert.Contains(management, "\"virtualDisplayDriverPackageInstallFailed\"");
         StringAssert.Contains(management, "\"virtualDisplayInstallerTimeout\"");
