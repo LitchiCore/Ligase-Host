@@ -665,9 +665,16 @@ binding result. A new child action first removes any previous diagnostic; the
 strict readback binds the replacement to the current manifest source and a
 bounded UTC freshness window. It contains no stdout, stderr, path, device identity, or
 exception text. NSIS accepts success only when the child exit is zero and its
-entire stdout is the exact terminal success JSON. `FinalizeInstall` strictly
-reads that diagnostic and includes it in `last-outcome.json`, so a failed UI
-retains the first closed virtual-display authority for later readback.
+entire stdout is the exact terminal success JSON. On failure, the child also
+returns the same closed diagnostic as a bounded ASCII, SHA-bound token. NSIS
+passes that token without interpreting its contents; `FinalizeInstall` accepts
+it only after strict base64url, hash, unique-property, schema, source-head, and
+freshness validation. This secondary transport preserves the original failure
+tuple when the primary diagnostic ACL or atomic file write is unavailable.
+`FinalizeInstall` includes the validated tuple in `last-outcome.json`, so a
+duplicate-device count or other failed UI retains the first closed
+virtual-display authority for later readback. A secondary persistence failure
+never replaces that original result code.
 
 The ownership marker then uses a same-directory
 write-through temporary file, byte and ACL readback, and an atomic replace or

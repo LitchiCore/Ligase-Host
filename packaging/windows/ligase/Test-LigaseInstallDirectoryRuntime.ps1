@@ -5833,6 +5833,81 @@ foreach ($case in $readbackCases) {
   }
 }
 
+$diagnosticProjectionRoot = Join-Path $root (
+  "virtual-display-diagnostic-projection")
+New-Item -ItemType Directory -Path $diagnosticProjectionRoot | Out-Null
+[IO.File]::WriteAllText(
+  (Join-Path $diagnosticProjectionRoot "ligase-install-manifest.json"),
+  ([ordered]@{
+    schemaVersion = 1
+    sourceHead = "0000000000000000000000000000000000000000"
+  } | ConvertTo-Json -Compress),
+  [Text.UTF8Encoding]::new($false))
+$previousHarness = $env:LIGASE_INSTALL_VALIDATION_HARNESS
+$previousDiagnosticRoot =
+  $env:LIGASE_VIRTUAL_DISPLAY_DIAGNOSTIC_VALIDATION_ROOT
+$previousDiagnosticFault =
+  $env:LIGASE_VIRTUAL_DISPLAY_DIAGNOSTIC_WRITE_FAULT
+try {
+  $env:LIGASE_INSTALL_VALIDATION_HARNESS = "1"
+  $env:LIGASE_VIRTUAL_DISPLAY_DIAGNOSTIC_VALIDATION_ROOT =
+    $diagnosticProjectionRoot
+  $env:LIGASE_VIRTUAL_DISPLAY_DIAGNOSTIC_WRITE_FAULT = "1"
+  $diagnosticRaw = @(& $readbackPowerShell -NoProfile -NonInteractive `
+    -ExecutionPolicy Bypass -File $managementScript `
+    -Action ValidateVirtualDisplayDiagnosticProjection `
+    -InstallDirectory $diagnosticProjectionRoot `
+    -ValidationRoot $diagnosticProjectionRoot)
+} finally {
+  if ($null -eq $previousHarness) {
+    Remove-Item Env:LIGASE_INSTALL_VALIDATION_HARNESS -ErrorAction SilentlyContinue
+  } else { $env:LIGASE_INSTALL_VALIDATION_HARNESS = $previousHarness }
+  if ($null -eq $previousDiagnosticRoot) {
+    Remove-Item Env:LIGASE_VIRTUAL_DISPLAY_DIAGNOSTIC_VALIDATION_ROOT `
+      -ErrorAction SilentlyContinue
+  } else {
+    $env:LIGASE_VIRTUAL_DISPLAY_DIAGNOSTIC_VALIDATION_ROOT =
+      $previousDiagnosticRoot
+  }
+  if ($null -eq $previousDiagnosticFault) {
+    Remove-Item Env:LIGASE_VIRTUAL_DISPLAY_DIAGNOSTIC_WRITE_FAULT `
+      -ErrorAction SilentlyContinue
+  } else {
+    $env:LIGASE_VIRTUAL_DISPLAY_DIAGNOSTIC_WRITE_FAULT =
+      $previousDiagnosticFault
+  }
+}
+if ($LASTEXITCODE -ne 0 -or @($diagnosticRaw).Count -ne 1) {
+  throw "virtualDisplayDiagnosticProjectionFixtureFailed"
+}
+$diagnosticProjection = [string]$diagnosticRaw | ConvertFrom-Json
+if ([string]$diagnosticProjection.code -cne
+      "virtualDisplayDiagnosticProjectionValidated" -or
+    -not [bool]$diagnosticProjection.success -or
+    -not [bool]$diagnosticProjection.primaryWriteFailed -or
+    [string]$diagnosticProjection.resultCode -cne
+      "virtualDisplayReadbackFailed" -or
+    [string]$diagnosticProjection.readbackCode -cne
+      "virtualDisplayDeviceCountInvalid" -or
+    [int]$diagnosticProjection.observedDeviceCount -ne 2 -or
+    [int]$diagnosticProjection.tokenLength -lt 1 -or
+    [int]$diagnosticProjection.tokenLength -gt 970 -or
+    [string]$diagnosticProjection.tokenSha256 -cnotmatch '^[0-9a-f]{64}$' -or
+    [string]$diagnosticProjection.lastOutcomeSha256 -cnotmatch
+      '^[0-9a-f]{64}$' -or
+    [string]$diagnosticProjection.removeResultCode -cne
+      "virtualDisplayDeviceRemoveFailed" -or
+    [string]$diagnosticProjection.removeInstallStage -cne "deviceRemove" -or
+    [int]$diagnosticProjection.removeExitCode -ne 0 -or
+    [int]$diagnosticProjection.removeCount -ne 16 -or
+    -not [bool]$diagnosticProjection.removePrimaryWriteFailed -or
+    [int]$diagnosticProjection.removeTokenLength -lt 1 -or
+    [int]$diagnosticProjection.removeTokenLength -gt 970 -or
+    [string]$diagnosticProjection.removeLastOutcomeSha256 -cnotmatch
+      '^[0-9a-f]{64}$') {
+  throw "virtualDisplayDiagnosticProjectionFixtureAssertionFailed"
+}
+
 [ordered]@{
   code = "installDirectoryRuntimeHarnessPassed"
   cases = $results
@@ -5843,6 +5918,7 @@ foreach ($case in $readbackCases) {
   virtualDisplayInstallerProcessCases = $installerProcessResults
   virtualDisplayInstallerCaseSchemaCases = $installerProcessCaseSchemaResults
   virtualDisplayReadbackCases = $virtualDisplayReadbackResults
+  virtualDisplayDiagnosticProjection = $diagnosticProjection
   boundedHostProcessCases = $boundedHostCases
   boundedHostRunner = [ordered]@{
     sourceSha = $argumentListRunnerSourceSha

@@ -63,6 +63,7 @@ Var InstallFirewall
 Var InstallResidue
 Var DataRootResidue
 Var VirtualDisplayOutcome
+Var VirtualDisplayDiagnosticToken
 !define LIGASE_SECTION_DESKTOP_SHORTCUT 1
 !define LIGASE_SECTION_VIRTUAL_DISPLAY 2
 
@@ -101,6 +102,7 @@ Function .onInit
   StrCpy $InstallResidue "unknown"
   StrCpy $DataRootResidue "unknown"
   StrCpy $VirtualDisplayOutcome "notSelected"
+  StrCpy $VirtualDisplayDiagnosticToken ""
   SetShellVarContext all
   StrCpy $ProgramDataRoot "$APPDATA"
   SetShellVarContext current
@@ -432,7 +434,7 @@ Function FinalizeInstallTerminal
     ${Else}
       StrCpy $4 ""
     ${EndIf}
-    nsExec::ExecToStack 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\Deployment\Manage-LigaseInstallation.ps1" -Action FinalizeInstall -InstallDirectory "$INSTDIR" -DataRoot "$DataRoot" -EvidenceDataRootSource "$DataRootSource" -EvidenceDataRootAction $5 -EvidenceHelperExit $InstallHelperExit -EvidenceRollback $InstallRollback -EvidenceFirewall configured -EvidenceInstallResidue nonEmpty -EvidenceDataRootResidue nonEmpty -ConfigureFirewall $3 $4 -VirtualDisplayOutcome $VirtualDisplayOutcome'
+    nsExec::ExecToStack 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\Deployment\Manage-LigaseInstallation.ps1" -Action FinalizeInstall -InstallDirectory "$INSTDIR" -DataRoot "$DataRoot" -EvidenceDataRootSource "$DataRootSource" -EvidenceDataRootAction $5 -EvidenceHelperExit $InstallHelperExit -EvidenceRollback $InstallRollback -EvidenceFirewall configured -EvidenceInstallResidue nonEmpty -EvidenceDataRootResidue nonEmpty -ConfigureFirewall $3 $4 -VirtualDisplayOutcome $VirtualDisplayOutcome -VirtualDisplayDiagnosticToken "$VirtualDisplayDiagnosticToken"'
     Pop $0
     Pop $1
     ${StrTrimNewLines} $1 $1
@@ -664,6 +666,7 @@ Section /o "Ligase 虚拟显示（可选）" SEC_VDISPLAY
   Pop $1
   ${StrTrimNewLines} $1 $1
   ${If} $0 != 0
+    StrCpy $VirtualDisplayDiagnosticToken $1
     StrCpy $VirtualDisplaySummary "失败（物理桌面串流仍可用）"
     StrCpy $VirtualDisplayOutcome "failed"
     DetailPrint "虚拟显示未安装；物理桌面串流仍可用。"

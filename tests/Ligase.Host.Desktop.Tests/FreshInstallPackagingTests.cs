@@ -1613,9 +1613,17 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(management, "\"virtualDisplayMarkerCommitFailed\"");
         StringAssert.Contains(management, "\"virtualDisplayRollbackFailed\"");
         StringAssert.Contains(management, "\"virtualDisplayDeviceCountInvalid\"");
+        StringAssert.Contains(management, "\"virtualDisplayDeviceRemoveFailed\"");
         StringAssert.Contains(management, "uniqueDeviceIdsSha256");
         StringAssert.Contains(management, "Write-VirtualDisplayDiagnostic");
         StringAssert.Contains(management, "Read-VirtualDisplayDiagnostic");
+        StringAssert.Contains(management, "ConvertTo-VirtualDisplayDiagnosticToken");
+        StringAssert.Contains(management, "ConvertFrom-VirtualDisplayDiagnosticToken");
+        StringAssert.Contains(management, "\"vd1.$payload.");
+        StringAssert.Contains(nsis,
+            "-VirtualDisplayDiagnosticToken \"$VirtualDisplayDiagnosticToken\"");
+        StringAssert.Contains(management,
+            "LIGASE_VIRTUAL_DISPLAY_DIAGNOSTIC_WRITE_FAULT");
         StringAssert.Contains(management, "candidateSourceHead = Get-EvidenceSourceHead");
         StringAssert.Contains(management, "virtualDisplayDiagnosticInvalid");
         StringAssert.Contains(management, "\"ValidateVirtualDisplayReadback\"");
@@ -1635,6 +1643,19 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(runtimeHarness, "\"Root\\SudoMaker\\SudoVDA\"");
         StringAssert.Contains(runtimeHarness, "\"duplicate\"");
         StringAssert.Contains(runtimeHarness, "\"bindingMissing\"");
+        StringAssert.Contains(runtimeHarness,
+            "\"virtual-display-diagnostic-projection\"");
+        StringAssert.Contains(runtimeHarness,
+            "\"virtualDisplayDiagnosticProjectionValidated\"");
+        StringAssert.Contains(runtimeHarness,
+            "\"virtualDisplayDeviceCountInvalid\"");
+        StringAssert.Contains(runtimeHarness,
+            "\"virtualDisplayDeviceRemoveFailed\"");
+        StringAssert.Contains(runtimeHarness, "\"deviceRemove\"");
+        StringAssert.Contains(runtimeHarness, "removeCount -ne 16");
+        StringAssert.Contains(nsis, "Var VirtualDisplayDiagnosticToken");
+        StringAssert.Contains(nsis,
+            "-VirtualDisplayDiagnosticToken \"$VirtualDisplayDiagnosticToken\"");
         StringAssert.Contains(nsis,
             "{\"code\":\"virtualDisplayInstalled\",\"success\":true}");
         StringAssert.Contains(management, "driverBindingVerified");
