@@ -1851,6 +1851,44 @@ function Invoke-ShortcutFixture(
   }
 }
 
+function Resolve-TransactionFixturePhysicalPath([string]$Path) {
+  $fullPath = [IO.Path]::GetFullPath($Path)
+  $cursor = $fullPath
+  while (-not (Test-Path -LiteralPath $cursor)) {
+    $parent = [IO.Path]::GetDirectoryName($cursor)
+    if ([string]::IsNullOrWhiteSpace($parent) -or $parent -ceq $cursor) {
+      throw "transactionFixturePhysicalRootUnavailable"
+    }
+    $cursor = $parent
+  }
+  while (-not [string]::IsNullOrWhiteSpace($cursor)) {
+    $item = Get-Item -LiteralPath $cursor -Force
+    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+      $targets = @($item.Target)
+      if ($targets.Count -ne 1 -or
+          -not [IO.Path]::IsPathRooted([string]$targets[0])) {
+        throw "transactionFixturePhysicalRootInvalid"
+      }
+      $target = [IO.Path]::GetFullPath([string]$targets[0]).TrimEnd('\')
+      if (-not (Test-Path -LiteralPath $target -PathType Container)) {
+        throw "transactionFixturePhysicalRootUnavailable"
+      }
+      $sourcePrefix = $item.FullName.TrimEnd('\')
+      if (-not $fullPath.StartsWith(
+          $sourcePrefix + '\', [StringComparison]::OrdinalIgnoreCase)) {
+        throw "transactionFixturePhysicalRootInvalid"
+      }
+      return Join-Path $target $fullPath.Substring($sourcePrefix.Length + 1)
+    }
+    $parent = [IO.Path]::GetDirectoryName($cursor)
+    if ([string]::IsNullOrWhiteSpace($parent) -or $parent -ceq $cursor) {
+      break
+    }
+    $cursor = $parent
+  }
+  return $fullPath
+}
+
 function Get-ShortcutFixtureSnapshot([string[]]$Paths) {
   $result = [ordered]@{}
   foreach ($path in $Paths) {
@@ -3310,7 +3348,10 @@ $boundedAfter = @(Get-ChildItem -LiteralPath $boundedInstallRoot -Recurse -File 
 if ($boundedAfter -cne $boundedBefore) {
   throw "installTransactionBoundedInvocationMutatedInstallRoot"
 }
-$transactionRoot = Join-Path $combinationRoot "admin-transaction"
+$transactionFixtureRoot = Resolve-TransactionFixturePhysicalPath (
+  Join-Path $combinationRoot "transaction-fixtures")
+New-Item -ItemType Directory -Path $transactionFixtureRoot -Force | Out-Null
+$transactionRoot = Join-Path $transactionFixtureRoot "admin-transaction"
 $env:LIGASE_INSTALL_VALIDATION_HARNESS = "1"
 $savedErrorAction = $ErrorActionPreference
 $ErrorActionPreference = "Continue"
@@ -3324,7 +3365,7 @@ $transactionElevatedAvailable = $transactionProbeExit -eq 0 -and
     '"recoveryAction":"none"}') -and
   -not (Test-Path -LiteralPath (
     Join-Path $transactionRoot "pending-install-transaction.json"))
-$emptyRecoveryRoot = Join-Path $combinationRoot "empty-admin-residue"
+$emptyRecoveryRoot = Join-Path $transactionFixtureRoot "empty-admin-residue"
 $emptyRecoveryTransactionRoot = Join-Path $emptyRecoveryRoot "Transactions"
 New-Item -ItemType Directory -Path $emptyRecoveryRoot | Out-Null
 $emptyRecoveryAcl = Get-Acl -LiteralPath $emptyRecoveryRoot
@@ -3381,7 +3422,7 @@ if ($emptyRecoveryAvailable) {
 }
 $concurrentRecoveryResults = @()
 if ($emptyRecoveryAvailable) {
-  $busyRoot = Join-Path $combinationRoot "race-open-handle"
+  $busyRoot = Join-Path $transactionFixtureRoot "race-open-handle"
   New-Item -ItemType Directory -Path $busyRoot | Out-Null
   $busyAcl = Get-Acl -LiteralPath $busyRoot
   $busyAcl.SetOwner(
@@ -3422,7 +3463,7 @@ if ($emptyRecoveryAvailable) {
     passed = $true
   }
   foreach ($behavior in @("injectResidueChild", "injectResidueAds")) {
-    $raceRoot = Join-Path $combinationRoot ("race-" + $behavior)
+    $raceRoot = Join-Path $transactionFixtureRoot ("race-" + $behavior)
     New-Item -ItemType Directory -Path $raceRoot | Out-Null
     $raceAcl = Get-Acl -LiteralPath $raceRoot
     $raceAcl.SetOwner(
@@ -3464,7 +3505,7 @@ if ($emptyRecoveryAvailable) {
     }
   }
 }
-$nonEmptyRecoveryRoot = Join-Path $combinationRoot "nonempty-admin-residue"
+$nonEmptyRecoveryRoot = Join-Path $transactionFixtureRoot "nonempty-admin-residue"
 New-Item -ItemType Directory -Path $nonEmptyRecoveryRoot | Out-Null
 $nonEmptyAcl = Get-Acl -LiteralPath $nonEmptyRecoveryRoot
 $nonEmptyAcl.SetOwner(
@@ -3491,7 +3532,7 @@ if ($emptyRecoveryAvailable) {
     throw "installTransactionNonemptyAdminRootAccepted"
   }
 }
-$wrongOwnerRoot = Join-Path $combinationRoot "wrong-owner-admin-residue"
+$wrongOwnerRoot = Join-Path $transactionFixtureRoot "wrong-owner-admin-residue"
 New-Item -ItemType Directory -Path $wrongOwnerRoot | Out-Null
 $env:LIGASE_INSTALL_VALIDATION_HARNESS = "1"
 $ErrorActionPreference = "Continue"
@@ -3503,7 +3544,7 @@ if ($wrongOwnerExit -ne 18 -or
     @(Get-ChildItem -LiteralPath $wrongOwnerRoot -Force).Count -ne 0) {
   throw "installTransactionWrongOwnerAdminRootAccepted"
 }
-$adsRecoveryRoot = Join-Path $combinationRoot "ads-admin-residue"
+$adsRecoveryRoot = Join-Path $transactionFixtureRoot "ads-admin-residue"
 New-Item -ItemType Directory -Path $adsRecoveryRoot | Out-Null
 $adsAcl = Get-Acl -LiteralPath $adsRecoveryRoot
 $adsAcl.SetOwner(
@@ -3542,7 +3583,7 @@ foreach ($stage in @(
     "inspectEmptyRootStreams", "inspectEmptyRootStreamMetadata",
     "createTemp", "atomicReplace",
     "finalReadback", "read", "delete")) {
-  $stageRoot = Join-Path $combinationRoot ("stage-" + $stage)
+  $stageRoot = Join-Path $transactionFixtureRoot ("stage-" + $stage)
   $env:LIGASE_INSTALL_VALIDATION_HARNESS = "1"
   $env:LIGASE_TRANSACTION_FAILURE_STAGE = $stage
   $ErrorActionPreference = "Continue"
@@ -3610,7 +3651,7 @@ foreach ($nativeCase in @(
       category = "invalidParameter"
       code = 87
     })) {
-  $nativeRoot = Join-Path $combinationRoot (
+  $nativeRoot = Join-Path $transactionFixtureRoot (
     "native-" + [string]$nativeCase.stage)
   New-Item -ItemType Directory -Path $nativeRoot | Out-Null
   $nativeAclBefore = (Get-Acl -LiteralPath $nativeRoot).
@@ -3692,7 +3733,7 @@ foreach ($aclCase in @(
       reason = "descriptorCompareFailed"
       code = 20007
     })) {
-  $aclRoot = Join-Path $combinationRoot (
+  $aclRoot = Join-Path $transactionFixtureRoot (
     "acl-inspection-" + [string]$aclCase.stage)
   New-Item -ItemType Directory -Path $aclRoot | Out-Null
   $aclBefore = (Get-Acl -LiteralPath $aclRoot).
@@ -3784,7 +3825,7 @@ foreach ($emptyRootCase in @(
       reason = "streamMetadataInvalid"
       code = 20011
     })) {
-  $inspectionRoot = Join-Path $combinationRoot (
+  $inspectionRoot = Join-Path $transactionFixtureRoot (
     "empty-root-" + [string]$emptyRootCase.behavior)
   New-Item -ItemType Directory -Path $inspectionRoot | Out-Null
   $aclBefore = (Get-Acl -LiteralPath $inspectionRoot).
@@ -3824,7 +3865,7 @@ foreach ($emptyRootCase in @(
     passed = $true
   }
 }
-$realStreamRoot = Join-Path $combinationRoot "real-directory-streams"
+$realStreamRoot = Join-Path $transactionFixtureRoot "real-directory-streams"
 New-Item -ItemType Directory -Path $realStreamRoot | Out-Null
 $streamAclBefore = (Get-Acl -LiteralPath $realStreamRoot).
   GetSecurityDescriptorSddlForm(
@@ -3896,7 +3937,7 @@ foreach ($bindingCase in @(
       prefix = $true
       file = $false
     })) {
-  $bindingRoot = Join-Path $combinationRoot (
+  $bindingRoot = Join-Path $transactionFixtureRoot (
     "binding-" + [string]$bindingCase.reason)
   New-Item -ItemType Directory -Path $bindingRoot | Out-Null
   $bindingAclBefore = (Get-Acl -LiteralPath $bindingRoot).
@@ -3943,7 +3984,7 @@ foreach ($bindingCase in @(
     name = "transaction-binding-" + [string]$bindingCase.reason
     passed = $true
   }
-  $bindingManageRoot = Join-Path $combinationRoot (
+  $bindingManageRoot = Join-Path $transactionFixtureRoot (
     "binding-manage-" + [string]$bindingCase.reason)
   New-Item -ItemType Directory -Path $bindingManageRoot | Out-Null
   $bindingManageAclBefore = (Get-Acl -LiteralPath $bindingManageRoot).
@@ -4114,7 +4155,7 @@ foreach ($sequenceCase in @(
       prefix = $true
       file = $false
     })) {
-  $sequenceParent = Join-Path $combinationRoot (
+  $sequenceParent = Join-Path $transactionFixtureRoot (
     "binding-sequence-" + [string]$sequenceCase.reason)
   $sequenceFirst = Join-Path $sequenceParent "binding-first"
   $sequenceSecond = Join-Path $sequenceParent "binding-second"
@@ -4172,7 +4213,7 @@ foreach ($duplicateBehavior in @(
     "emitDuplicateBindingFileIdentityMatched",
     "emitDuplicateAclInspectionReason",
     "emitDuplicateEmptyRootInspectionReason")) {
-  $duplicateRoot = Join-Path $combinationRoot (
+  $duplicateRoot = Join-Path $transactionFixtureRoot (
     "duplicate-" + $duplicateBehavior)
   $env:LIGASE_INSTALL_VALIDATION_HARNESS = "1"
   $env:LIGASE_TRANSACTION_TEST_BEHAVIOR = $duplicateBehavior
@@ -4215,7 +4256,7 @@ foreach ($tupleBehavior in @(
     "emitEmptyRootTupleWrongCode",
     "emitEmptyRootTupleWrongReason",
     "emitEmptyRootTupleCrossSplice")) {
-  $tupleRoot = Join-Path $combinationRoot (
+  $tupleRoot = Join-Path $transactionFixtureRoot (
     "acl-tuple-" + $tupleBehavior)
   $installBefore = @(
     Get-ChildItem -LiteralPath $boundedInstallRoot -Recurse -File |
@@ -4263,8 +4304,8 @@ foreach ($tupleBehavior in @(
     passed = $true
   }
 }
-$junctionRoot = Join-Path $combinationRoot "transaction-junction"
-$junctionTarget = Join-Path $combinationRoot "outside-target"
+$junctionRoot = Join-Path $transactionFixtureRoot "transaction-junction"
+$junctionTarget = Join-Path $transactionFixtureRoot "outside-target"
 New-Item -ItemType Directory -Path $junctionTarget -Force | Out-Null
 $sentinel = Join-Path $junctionTarget "sentinel.txt"
 [IO.File]::WriteAllText(

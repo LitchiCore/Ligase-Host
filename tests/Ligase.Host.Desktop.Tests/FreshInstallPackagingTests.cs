@@ -1620,6 +1620,9 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(management, "virtualDisplayDiagnosticInvalid");
         StringAssert.Contains(management, "\"ValidateVirtualDisplayReadback\"");
         StringAssert.Contains(runtimeHarness, "virtualDisplayReadbackCases");
+        StringAssert.Contains(runtimeHarness, "Resolve-TransactionFixturePhysicalPath");
+        StringAssert.Contains(runtimeHarness, "\"transaction-fixtures\"");
+        StringAssert.Contains(runtimeHarness, "$transactionFixtureRoot");
         StringAssert.Contains(management, "[StringComparer]::OrdinalIgnoreCase.Equals(");
         Assert.IsFalse(
             management.Contains(
