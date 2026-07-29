@@ -648,8 +648,14 @@ as owned by that installer execution and after confirming that no dependent
 driver remains.
 An `install.bat` exit code of zero is provisional rather than success
 authority. Repair removes matching device nodes with a bounded loop before
-creating a replacement; exhausting that bound is closed
-`virtualDisplayDeviceRemoveFailed`. Before writing the ownership marker or
+creating a replacement. Each removal is followed by a bounded enumeration
+readback, and creation is permitted only after that readback proves the
+matching device count is zero. A nefcon removal exit of 6, or any other
+nonzero exit, is a typed removal failure and is never interpreted as “no
+devices remain.” Failure to read the count is closed
+`virtualDisplayDeviceRemoveReadbackFailed`; failure to observe monotonic
+progress within the settle or total deadline is
+`virtualDisplayDeviceRemoveSettleFailed`. Before writing the ownership marker or
 returning `virtualDisplayInstalled`, the helper requires exactly one present
 device with the complete SudoVDA hardware ID, compared using Windows'
 ordinal-ignore-case identity semantics without prefix, suffix, or substring

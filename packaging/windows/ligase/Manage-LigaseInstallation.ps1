@@ -12,6 +12,7 @@ param(
     "Uninstall",
     "InstallVirtualDisplay",
     "ValidateVirtualDisplayReadback",
+    "ValidateVirtualDisplayRemovalReconciliation",
     "ValidateVirtualDisplayDiagnosticProjection",
     "ValidateVirtualDisplayInstallerProcess",
     "ValidateVirtualDisplayMarkerTransaction",
@@ -2186,7 +2187,10 @@ function Invoke-VirtualDisplayInstaller(
   }
 }
 
-function Assert-VirtualDisplayInstallerTuple($Result) {
+function Assert-VirtualDisplayInstallerTuple(
+    $Result,
+    [ValidateSet("install", "removeOne")]
+    [string]$Mode = "install") {
   $installerExit = [int]$Result.exitCode
   $script:virtualDisplayChildExit = $installerExit
   if (-not [string]::IsNullOrEmpty([string]$Result.stderr)) {
@@ -2207,7 +2211,7 @@ function Assert-VirtualDisplayInstallerTuple($Result) {
     [int]$Matches[4]
   } else { 0 }
   $expectedStage = switch ($installerExit) {
-    0 { "completed" }
+    0 { if ($Mode -ceq "removeOne") { "deviceRemove" } else { "completed" } }
     20 { "toolValidation" }
     21 { "certificateRoot" }
     22 { "certificatePublisher" }
@@ -2220,15 +2224,20 @@ function Assert-VirtualDisplayInstallerTuple($Result) {
       (($installerExit -eq 0) -ne ($nativeExit -eq 0))) {
     throw "virtualDisplayInstallerOutputInvalid"
   }
-  $hasRemovalTuple = $installerExit -in @(0, 23, 24, 25)
-  if ($hasRemovalTuple -and (
-      $script:virtualDisplayRemoveCount -lt 0 -or
-      $script:virtualDisplayRemoveCount -gt 16 -or
+  if ($Mode -ceq "removeOne" -and (
+      ($installerExit -eq 0 -and (
+        $nativeExit -ne 0 -or $script:virtualDisplayRemoveExit -ne 0 -or
+        $script:virtualDisplayRemoveCount -ne 1)) -or
       ($installerExit -eq 25 -and (
-        $script:virtualDisplayRemoveCount -ne 16 -or
-        $script:virtualDisplayRemoveExit -ne 0)) -or
-      ($installerExit -ne 25 -and
-        $script:virtualDisplayRemoveExit -eq 0))) {
+        $nativeExit -eq 0 -or
+        $script:virtualDisplayRemoveExit -ne $nativeExit -or
+        $script:virtualDisplayRemoveCount -ne 0)) -or
+      $installerExit -notin @(0, 25))) {
+    throw "virtualDisplayInstallerOutputInvalid"
+  }
+  if ($Mode -ceq "install" -and $installerExit -in @(0, 23, 24) -and (
+      $script:virtualDisplayRemoveExit -ne 0 -or
+      $script:virtualDisplayRemoveCount -ne 0)) {
     throw "virtualDisplayInstallerOutputInvalid"
   }
   if ($installerExit -ne 0) {
@@ -2240,6 +2249,187 @@ function Assert-VirtualDisplayInstallerTuple($Result) {
       24 { "virtualDisplayDriverPackageInstallFailed" }
       25 { "virtualDisplayDeviceRemoveFailed" }
     })
+  }
+}
+
+function Invoke-VirtualDisplayRemovalReconciliation(
+    [string]$InstallerPath,
+    [scriptblock]$SnapshotProvider,
+    [scriptblock]$RemoveInvoker,
+    [int]$SettleMilliseconds = 5000,
+    [int]$TotalMilliseconds = 30000) {
+  if ($null -eq $SnapshotProvider -or $null -eq $RemoveInvoker -or
+      $SettleMilliseconds -lt 100 -or $SettleMilliseconds -gt 5000 -or
+      $TotalMilliseconds -lt $SettleMilliseconds -or
+      $TotalMilliseconds -gt 30000) {
+    throw "virtualDisplayDeviceRemoveFailed"
+  }
+  $totalClock = [Diagnostics.Stopwatch]::StartNew()
+  $removed = 0
+  while ($true) {
+    $before = & $SnapshotProvider
+    $beforeCount = [int]$before.deviceCount
+    if ($beforeCount -lt 0 -or $beforeCount -gt 16 -or
+        ([string]$before.state -ceq "failed" -and
+          [string]$before.machineCode -notin @(
+            "virtualDisplayDeviceCountInvalid",
+            "virtualDisplayDriverBindingMissing"))) {
+      throw "virtualDisplayDeviceRemoveReadbackFailed"
+    }
+    $script:virtualDisplayObservedDeviceCount = $beforeCount
+    $script:virtualDisplayUniqueDeviceIdsSha256 =
+      [string]$before.uniqueDeviceIdsSha256
+    if ($beforeCount -eq 0) {
+      $script:virtualDisplayRemoveExit = 0
+      $script:virtualDisplayRemoveCount = $removed
+      return $removed
+    }
+    if ($removed -ge 16 -or
+        $totalClock.ElapsedMilliseconds -ge $TotalMilliseconds) {
+      throw "virtualDisplayDeviceRemoveSettleFailed"
+    }
+    $script:virtualDisplayInstallStage = "deviceRemove"
+    $removeResult = & $RemoveInvoker $InstallerPath
+    Assert-VirtualDisplayInstallerTuple $removeResult "removeOne"
+    $removed++
+    $settleClock = [Diagnostics.Stopwatch]::StartNew()
+    $progress = $false
+    while ($totalClock.ElapsedMilliseconds -lt $TotalMilliseconds -and
+        $settleClock.ElapsedMilliseconds -lt $SettleMilliseconds) {
+      $after = & $SnapshotProvider
+      $afterCount = [int]$after.deviceCount
+      if ($afterCount -lt 0 -or $afterCount -gt 16 -or
+          ([string]$after.state -ceq "failed" -and
+            [string]$after.machineCode -notin @(
+              "virtualDisplayDeviceCountInvalid",
+              "virtualDisplayDriverBindingMissing"))) {
+        throw "virtualDisplayDeviceRemoveReadbackFailed"
+      }
+      $script:virtualDisplayObservedDeviceCount = $afterCount
+      $script:virtualDisplayUniqueDeviceIdsSha256 =
+        [string]$after.uniqueDeviceIdsSha256
+      if ($afterCount -lt $beforeCount) {
+        $progress = $true
+        break
+      }
+      Start-Sleep -Milliseconds 50
+    }
+    if (-not $progress) {
+      $script:virtualDisplayRemoveCount = $removed - 1
+      throw "virtualDisplayDeviceRemoveSettleFailed"
+    }
+    $script:virtualDisplayRemoveCount = $removed
+  }
+}
+
+function Invoke-VirtualDisplayRemovalValidation([string]$Root) {
+  $fullRoot = [IO.Path]::GetFullPath($Root)
+  if ($env:LIGASE_INSTALL_VALIDATION_HARNESS -cne "1" -or
+      [string]$env:LIGASE_VIRTUAL_DISPLAY_REMOVAL_VALIDATION_ROOT -cne
+        $fullRoot -or [IO.Path]::GetPathRoot($fullRoot) -cne "D:\") {
+    throw "virtualDisplayValidationUnavailable"
+  }
+  $casePath = Join-Path $fullRoot "virtual-display-removal-case.json"
+  $raw = [IO.File]::ReadAllText(
+    $casePath, [Text.UTF8Encoding]::new($false, $true))
+  if (-not [LigaseStrictJson]::HasUniqueProperties($raw)) {
+    throw "virtualDisplayValidationUnavailable"
+  }
+  $case = $raw | ConvertFrom-Json
+  Assert-ClosedProperties $case @(
+    "schemaVersion", "counts", "removeExits", "settleMilliseconds",
+    "totalMilliseconds") "virtualDisplayRemovalValidation"
+  if ($case.schemaVersion -ne 1 -or $case.counts -isnot [array] -or
+      $case.removeExits -isnot [array] -or
+      $case.counts.Count -lt 1 -or $case.counts.Count -gt 18 -or
+      $case.removeExits.Count -gt 16) {
+    throw "virtualDisplayValidationUnavailable"
+  }
+  foreach ($count in @($case.counts)) {
+    if ($count -isnot [int] -or $count -lt 0 -or $count -gt 16) {
+      throw "virtualDisplayValidationUnavailable"
+    }
+  }
+  foreach ($removeExit in @($case.removeExits)) {
+    if ($removeExit -isnot [int] -or
+        $removeExit -lt 0 -or $removeExit -gt 65535) {
+      throw "virtualDisplayValidationUnavailable"
+    }
+  }
+  $validationState = @{
+    snapshotIndex = 0
+    removeIndex = 0
+  }
+  $snapshotProvider = {
+    $count = [int]$case.counts[
+      [Math]::Min(
+        [int]$validationState.snapshotIndex, $case.counts.Count - 1)]
+    $validationState.snapshotIndex =
+      [int]$validationState.snapshotIndex + 1
+    [ordered]@{
+      state = if ($count -eq 0) {
+        "notInstalled"
+      } elseif ($count -eq 1) {
+        "available"
+      } else {
+        "failed"
+      }
+      machineCode = if ($count -eq 0) {
+        "virtualDisplayNotInstalled"
+      } elseif ($count -eq 1) {
+        "available"
+      } else {
+        "virtualDisplayDeviceCountInvalid"
+      }
+      deviceCount = $count
+      uniqueDeviceIdsSha256 =
+        ("{0:x64}" -f ([long]$count + 1))
+      driverBindingVerified = $count -eq 1
+    }
+  }.GetNewClosure()
+  $removeInvoker = {
+    param([string]$UnusedPath)
+    if ([int]$validationState.removeIndex -ge $case.removeExits.Count) {
+      return [ordered]@{
+        exitCode = 25
+        stdout = "LIGASE_VDISPLAY_V1|stage=deviceRemove|nativeExit=1460|removeExit=1460|removeCount=0"
+        stderr = ""
+      }
+    }
+    $exit = [int]$case.removeExits[[int]$validationState.removeIndex]
+    $validationState.removeIndex = [int]$validationState.removeIndex + 1
+    if ($exit -eq 0) {
+      return [ordered]@{
+        exitCode = 0
+        stdout = "LIGASE_VDISPLAY_V1|stage=deviceRemove|nativeExit=0|removeExit=0|removeCount=1"
+        stderr = ""
+      }
+    }
+    [ordered]@{
+      exitCode = 25
+      stdout = "LIGASE_VDISPLAY_V1|stage=deviceRemove|nativeExit=$exit|removeExit=$exit|removeCount=0"
+      stderr = ""
+    }
+  }.GetNewClosure()
+  $code = "virtualDisplayRemoved"
+  $success = $true
+  try {
+    $removed = Invoke-VirtualDisplayRemovalReconciliation "validation.cmd" `
+      $snapshotProvider $removeInvoker ([int]$case.settleMilliseconds) `
+      ([int]$case.totalMilliseconds)
+  } catch {
+    $code = [string]$_.Exception.Message
+    $success = $false
+    $removed = [int]$script:virtualDisplayRemoveCount
+  }
+  return [ordered]@{
+    code = $code
+    success = $success
+    removeCalls = [int]$validationState.removeIndex
+    removeCount = $removed
+    removeExitCode = [int]$script:virtualDisplayRemoveExit
+    observedDeviceCount = [int]$script:virtualDisplayObservedDeviceCount
+    snapshotReads = [int]$validationState.snapshotIndex
   }
 }
 
@@ -4419,6 +4609,12 @@ try {
       (Get-VirtualDisplay) | ConvertTo-Json -Compress))
     exit 0
   }
+  if ($Action -eq "ValidateVirtualDisplayRemovalReconciliation") {
+    $validationResult =
+      Invoke-VirtualDisplayRemovalValidation $ValidationRoot
+    [Console]::Out.WriteLine(($validationResult | ConvertTo-Json -Compress))
+    exit 0
+  }
   if ($Action -eq "ValidateVirtualDisplayDiagnosticProjection") {
     $fullValidationRoot = [IO.Path]::GetFullPath($ValidationRoot)
     if ($env:LIGASE_INSTALL_VALIDATION_HARNESS -cne "1" -or
@@ -4692,11 +4888,59 @@ try {
     $ownedStores = @()
     $failureCode = "virtualDisplayInstallFailed"
     try {
-      $installerResult = Invoke-VirtualDisplayInstaller (
-        Join-Path $installRoot $manifest.virtualDisplay.installer)
+      $virtualDisplayInstallerPath = Join-Path $installRoot (
+        [string]$manifest.virtualDisplay.installer)
+      $snapshotProvider = { Get-VirtualDisplay }
+      $removeInvoker = {
+        param([string]$Path)
+        $priorAction = $env:LIGASE_VDISPLAY_ACTION
+        try {
+          $env:LIGASE_VDISPLAY_ACTION = "removeOne"
+          Invoke-VirtualDisplayInstaller $Path
+        } finally {
+          if ($null -eq $priorAction) {
+            Remove-Item Env:\LIGASE_VDISPLAY_ACTION -ErrorAction SilentlyContinue
+          } else {
+            $env:LIGASE_VDISPLAY_ACTION = $priorAction
+          }
+        }
+      }
+      $failureCode = "virtualDisplayDeviceRemoveFailed"
+      try {
+        $removedDeviceCount = Invoke-VirtualDisplayRemovalReconciliation `
+          $virtualDisplayInstallerPath $snapshotProvider $removeInvoker
+      } catch {
+        if ([string]$_.Exception.Message -in @(
+            "virtualDisplayDeviceRemoveFailed",
+            "virtualDisplayDeviceRemoveReadbackFailed",
+            "virtualDisplayDeviceRemoveSettleFailed",
+            "virtualDisplayInstallerCleanupFailed",
+            "virtualDisplayInstallerOutputInvalid",
+            "virtualDisplayInstallerOutputOverflow",
+            "virtualDisplayInstallerOutputUnavailable",
+            "virtualDisplayInstallerTimeout")) {
+          $failureCode = [string]$_.Exception.Message
+        }
+        throw
+      }
+      $failureCode = "virtualDisplayInstallFailed"
+      $priorAction = $env:LIGASE_VDISPLAY_ACTION
+      try {
+        $env:LIGASE_VDISPLAY_ACTION = "install"
+        $installerResult =
+          Invoke-VirtualDisplayInstaller $virtualDisplayInstallerPath
+      } finally {
+        if ($null -eq $priorAction) {
+          Remove-Item Env:\LIGASE_VDISPLAY_ACTION -ErrorAction SilentlyContinue
+        } else {
+          $env:LIGASE_VDISPLAY_ACTION = $priorAction
+        }
+      }
       $after = @(Get-DriverCertificateLocations $thumbprint)
       $ownedStores = @($after | Where-Object { $before -notcontains $_ })
-      Assert-VirtualDisplayInstallerTuple $installerResult
+      Assert-VirtualDisplayInstallerTuple $installerResult "install"
+      $script:virtualDisplayRemoveExit = 0
+      $script:virtualDisplayRemoveCount = $removedDeviceCount
 
       $displayReadback = Get-VirtualDisplay
       $script:virtualDisplayReadbackCode =
@@ -5128,6 +5372,8 @@ try {
     "virtualDisplayCertificateRootFailed",
     "virtualDisplayCertificatePublisherFailed",
     "virtualDisplayDeviceRemoveFailed",
+    "virtualDisplayDeviceRemoveReadbackFailed",
+    "virtualDisplayDeviceRemoveSettleFailed",
     "virtualDisplayDeviceCreateFailed",
     "virtualDisplayDriverPackageInstallFailed",
     "virtualDisplayReadbackFailed",

@@ -4711,16 +4711,16 @@ $installerProcessMock = Join-Path $installerProcessRoot (
   "virtual-display-installer-mock.cmd")
 @'
 @echo off
-if "%LIGASE_VDISPLAY_PROCESS_BEHAVIOR%"=="success" echo LIGASE_VDISPLAY_V1^|stage=completed^|nativeExit=0^|removeExit=1^|removeCount=2&exit /b 0
+if "%LIGASE_VDISPLAY_PROCESS_BEHAVIOR%"=="success" echo LIGASE_VDISPLAY_V1^|stage=completed^|nativeExit=0^|removeExit=0^|removeCount=0&exit /b 0
 if "%LIGASE_VDISPLAY_PROCESS_BEHAVIOR%"=="exit20" echo LIGASE_VDISPLAY_V1^|stage=toolValidation^|nativeExit=2&exit /b 20
 if "%LIGASE_VDISPLAY_PROCESS_BEHAVIOR%"=="exit21" echo LIGASE_VDISPLAY_V1^|stage=certificateRoot^|nativeExit=5&exit /b 21
 if "%LIGASE_VDISPLAY_PROCESS_BEHAVIOR%"=="exit22" echo LIGASE_VDISPLAY_V1^|stage=certificatePublisher^|nativeExit=5&exit /b 22
-if "%LIGASE_VDISPLAY_PROCESS_BEHAVIOR%"=="exit23" echo LIGASE_VDISPLAY_V1^|stage=deviceCreate^|nativeExit=87^|removeExit=1^|removeCount=2&exit /b 23
-if "%LIGASE_VDISPLAY_PROCESS_BEHAVIOR%"=="exit24" echo LIGASE_VDISPLAY_V1^|stage=driverPackageInstall^|nativeExit=5^|removeExit=1^|removeCount=2&exit /b 24
+if "%LIGASE_VDISPLAY_PROCESS_BEHAVIOR%"=="exit23" echo LIGASE_VDISPLAY_V1^|stage=deviceCreate^|nativeExit=87^|removeExit=0^|removeCount=0&exit /b 23
+if "%LIGASE_VDISPLAY_PROCESS_BEHAVIOR%"=="exit24" echo LIGASE_VDISPLAY_V1^|stage=driverPackageInstall^|nativeExit=5^|removeExit=0^|removeCount=0&exit /b 24
 if "%LIGASE_VDISPLAY_PROCESS_BEHAVIOR%"=="exit25" echo LIGASE_VDISPLAY_V1^|stage=deviceRemove^|nativeExit=16^|removeExit=0^|removeCount=16&exit /b 25
 if "%LIGASE_VDISPLAY_PROCESS_BEHAVIOR%"=="malformed" echo not-json&exit /b 0
-if "%LIGASE_VDISPLAY_PROCESS_BEHAVIOR%"=="extra" echo LIGASE_VDISPLAY_V1^|stage=completed^|nativeExit=0^|removeExit=1^|removeCount=2&echo extra&exit /b 0
-if "%LIGASE_VDISPLAY_PROCESS_BEHAVIOR%"=="cross" echo LIGASE_VDISPLAY_V1^|stage=deviceCreate^|nativeExit=5^|removeExit=1^|removeCount=2&exit /b 24
+if "%LIGASE_VDISPLAY_PROCESS_BEHAVIOR%"=="extra" echo LIGASE_VDISPLAY_V1^|stage=completed^|nativeExit=0^|removeExit=0^|removeCount=0&echo extra&exit /b 0
+if "%LIGASE_VDISPLAY_PROCESS_BEHAVIOR%"=="cross" echo LIGASE_VDISPLAY_V1^|stage=deviceCreate^|nativeExit=5^|removeExit=0^|removeCount=0&exit /b 24
 if "%LIGASE_VDISPLAY_PROCESS_BEHAVIOR%"=="invalidUtf8" powershell.exe -NoProfile -Command "[Console]::OpenStandardOutput().WriteByte(255)"&exit /b 0
 if "%LIGASE_VDISPLAY_PROCESS_BEHAVIOR%"=="stdoutOverflow" for /L %%i in (1,1,80) do @echo 0123456789
 if "%LIGASE_VDISPLAY_PROCESS_BEHAVIOR%"=="stderrOverflow" for /L %%i in (1,1,80) do @echo 0123456789 1>&2
@@ -5833,6 +5833,78 @@ foreach ($case in $readbackCases) {
   }
 }
 
+$virtualDisplayRemovalResults = @()
+$removalCases = @(
+  @{ name = "zero"; counts = @(0); exits = @(); success = $true
+    code = "virtualDisplayRemoved"; removed = 0; final = 0 },
+  @{ name = "one"; counts = @(1, 0); exits = @(0); success = $true
+    code = "virtualDisplayRemoved"; removed = 1; final = 0 },
+  @{ name = "two"; counts = @(2, 1, 1, 0); exits = @(0, 0); success = $true
+    code = "virtualDisplayRemoved"; removed = 2; final = 0 },
+  @{ name = "exit6Count2"; counts = @(2); exits = @(6); success = $false
+    code = "virtualDisplayDeviceRemoveFailed"; removed = 0; final = 2 },
+  @{ name = "settleProgress"; counts = @(1, 1, 0); exits = @(0)
+    success = $true; code = "virtualDisplayRemoved"; removed = 1; final = 0 },
+  @{ name = "settleTimeout"; counts = @(1); exits = @(0); success = $false
+    code = "virtualDisplayDeviceRemoveSettleFailed"; removed = 0; final = 1 }
+)
+foreach ($case in $removalCases) {
+  $caseRoot = Join-Path $root ("virtual-display-removal-" + $case.name)
+  New-Item -ItemType Directory -Path $caseRoot | Out-Null
+  [IO.File]::WriteAllText(
+    (Join-Path $caseRoot "virtual-display-removal-case.json"),
+    ([ordered]@{
+      schemaVersion = 1
+      counts = @($case.counts)
+      removeExits = @($case.exits)
+      settleMilliseconds = 200
+      totalMilliseconds = 1000
+    } | ConvertTo-Json -Compress),
+    [Text.UTF8Encoding]::new($false))
+  $previousHarness = $env:LIGASE_INSTALL_VALIDATION_HARNESS
+  $previousRemovalRoot =
+    $env:LIGASE_VIRTUAL_DISPLAY_REMOVAL_VALIDATION_ROOT
+  try {
+    $env:LIGASE_INSTALL_VALIDATION_HARNESS = "1"
+    $env:LIGASE_VIRTUAL_DISPLAY_REMOVAL_VALIDATION_ROOT = $caseRoot
+    $raw = @(& $readbackPowerShell -NoProfile -NonInteractive `
+      -ExecutionPolicy Bypass -File $managementScript `
+      -Action ValidateVirtualDisplayRemovalReconciliation `
+      -InstallDirectory $caseRoot -ValidationRoot $caseRoot)
+  } finally {
+    if ($null -eq $previousHarness) {
+      Remove-Item Env:LIGASE_INSTALL_VALIDATION_HARNESS `
+        -ErrorAction SilentlyContinue
+    } else { $env:LIGASE_INSTALL_VALIDATION_HARNESS = $previousHarness }
+    if ($null -eq $previousRemovalRoot) {
+      Remove-Item Env:LIGASE_VIRTUAL_DISPLAY_REMOVAL_VALIDATION_ROOT `
+        -ErrorAction SilentlyContinue
+    } else {
+      $env:LIGASE_VIRTUAL_DISPLAY_REMOVAL_VALIDATION_ROOT =
+        $previousRemovalRoot
+    }
+  }
+  if ($LASTEXITCODE -ne 0 -or @($raw).Count -ne 1) {
+    throw "virtualDisplayRemovalFixtureFailed:$($case.name)"
+  }
+  $projection = [string]$raw | ConvertFrom-Json
+  if ([string]$projection.code -cne [string]$case.code -or
+      [bool]$projection.success -ne [bool]$case.success -or
+      [int]$projection.removeCount -ne [int]$case.removed -or
+      [int]$projection.observedDeviceCount -ne [int]$case.final) {
+    throw "virtualDisplayRemovalFixtureAssertionFailed:$($case.name)"
+  }
+  $virtualDisplayRemovalResults += [ordered]@{
+    name = [string]$case.name
+    code = [string]$projection.code
+    success = [bool]$projection.success
+    removeCalls = [int]$projection.removeCalls
+    removeCount = [int]$projection.removeCount
+    observedDeviceCount = [int]$projection.observedDeviceCount
+    snapshotReads = [int]$projection.snapshotReads
+  }
+}
+
 $diagnosticProjectionRoot = Join-Path $root (
   "virtual-display-diagnostic-projection")
 New-Item -ItemType Directory -Path $diagnosticProjectionRoot | Out-Null
@@ -5918,6 +5990,7 @@ if ([string]$diagnosticProjection.code -cne
   virtualDisplayInstallerProcessCases = $installerProcessResults
   virtualDisplayInstallerCaseSchemaCases = $installerProcessCaseSchemaResults
   virtualDisplayReadbackCases = $virtualDisplayReadbackResults
+  virtualDisplayRemovalCases = $virtualDisplayRemovalResults
   virtualDisplayDiagnosticProjection = $diagnosticProjection
   boundedHostProcessCases = $boundedHostCases
   boundedHostRunner = [ordered]@{

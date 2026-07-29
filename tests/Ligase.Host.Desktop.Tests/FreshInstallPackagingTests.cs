@@ -1614,6 +1614,19 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(management, "\"virtualDisplayRollbackFailed\"");
         StringAssert.Contains(management, "\"virtualDisplayDeviceCountInvalid\"");
         StringAssert.Contains(management, "\"virtualDisplayDeviceRemoveFailed\"");
+        StringAssert.Contains(management, "\"virtualDisplayDeviceRemoveReadbackFailed\"");
+        StringAssert.Contains(management, "\"virtualDisplayDeviceRemoveSettleFailed\"");
+        StringAssert.Contains(management, "Invoke-VirtualDisplayRemovalReconciliation");
+        StringAssert.Contains(management,
+            "$beforeCount = [int]$before.deviceCount");
+        StringAssert.Contains(management,
+            "if ($beforeCount -eq 0)");
+        StringAssert.Contains(management,
+            "if ($afterCount -lt $beforeCount)");
+        StringAssert.Contains(management,
+            "$env:LIGASE_VDISPLAY_ACTION = \"removeOne\"");
+        StringAssert.Contains(management,
+            "$env:LIGASE_VDISPLAY_ACTION = \"install\"");
         StringAssert.Contains(management, "uniqueDeviceIdsSha256");
         StringAssert.Contains(management, "Write-VirtualDisplayDiagnostic");
         StringAssert.Contains(management, "Read-VirtualDisplayDiagnostic");
@@ -1652,6 +1665,10 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(runtimeHarness,
             "\"virtualDisplayDeviceRemoveFailed\"");
         StringAssert.Contains(runtimeHarness, "\"deviceRemove\"");
+        StringAssert.Contains(runtimeHarness, "virtualDisplayRemovalCases");
+        StringAssert.Contains(runtimeHarness, "\"exit6Count2\"");
+        StringAssert.Contains(runtimeHarness, "\"settleProgress\"");
+        StringAssert.Contains(runtimeHarness, "\"settleTimeout\"");
         StringAssert.Contains(runtimeHarness, "removeCount -ne 16");
         StringAssert.Contains(nsis, "Var VirtualDisplayDiagnosticToken");
         StringAssert.Contains(nsis,
@@ -2145,6 +2162,9 @@ public sealed class FreshInstallPackagingTests
         foreach (var token in new[]
                  {
                      "if not exist \"%NEFCON%\"", "stage=certificateRoot",
+                     "if \"%ACTION%\"==\"removeOne\" goto remove_one_device",
+                     "if not \"%ACTION%\"==\"install\"",
+                     "stage=deviceRemove", "removeExit=%REMOVE_EXIT%",
                      "stage=certificatePublisher", "stage=deviceCreate",
                      "stage=driverPackageInstall", "stage=completed",
                      "exit /b 20", "exit /b 21", "exit /b 22", "exit /b 23",
@@ -2153,6 +2173,9 @@ public sealed class FreshInstallPackagingTests
         {
             StringAssert.Contains(driverInstaller, token);
         }
+        Assert.IsFalse(driverInstaller.Contains(
+            "if not \"%REMOVE_EXIT%\"==\"0\" goto removed_all_devices",
+            StringComparison.Ordinal));
         Assert.IsTrue(
             driverInstaller.LastIndexOf("exit /b 0", StringComparison.Ordinal) >
             driverInstaller.LastIndexOf("popd", StringComparison.Ordinal));
