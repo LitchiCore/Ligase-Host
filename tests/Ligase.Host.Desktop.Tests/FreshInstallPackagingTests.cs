@@ -2144,7 +2144,15 @@ public sealed class FreshInstallPackagingTests
                       "19A113297EAFEFD796AA91C1A64D199628D9C58DC53928899D2E5D6A68074EFE",
                       "1F431092EC96A80B41AB5317F53AC02EA6F9B89B",
                       "[string]$SudoVdaDriverBinary",
+                      "[string]$BoostArchive",
                       "[switch]$ValidateExternalInputsOnly",
+                      "102078704",
+                      "67ACEC02D0D118B5DE9EB441F5FB707B3A1CDD884BE00CA24B9A73C995511F74",
+                      "boostArchiveUnavailable",
+                      "boostArchiveSizeMismatch",
+                      "boostArchiveHashMismatch",
+                      "boostArchiveSha256",
+                      "boostArchiveSize",
                       "83216",
                       "47EE263CB5DE9382C6630A2D7F3DAFEC4A49419F953BEEC869CA5DD0C460FF63",
                       "3C918FC73525AD8B1521B6DB26B71F694277CC49",
@@ -2179,6 +2187,14 @@ public sealed class FreshInstallPackagingTests
                 installerBuild,
                 @"\[Parameter\(Mandatory\)\]\s*\r?\n\s*\[string\]\$SudoVdaDriverBinary"),
             "The SudoVDA driver binary must be an explicit mandatory input.");
+        Assert.IsTrue(
+            System.Text.RegularExpressions.Regex.IsMatch(
+                installerBuild,
+                @"\[Parameter\(Mandatory\)\]\s*\r?\n\s*\[string\]\$BoostArchive"),
+            "The Boost archive must be an explicit mandatory input.");
+        var boostValidationIndex = installerBuild.IndexOf(
+            "$boostArchivePath = [IO.Path]::GetFullPath($BoostArchive)",
+            StringComparison.Ordinal);
         var driverValidationIndex = installerBuild.IndexOf(
             "$sudoVdaPath = [IO.Path]::GetFullPath($SudoVdaDriverBinary)",
             StringComparison.Ordinal);
@@ -2191,11 +2207,41 @@ public sealed class FreshInstallPackagingTests
             "driverBinarySha256 = $sudoVdaHash.ToLowerInvariant()",
             StringComparison.Ordinal);
         Assert.IsTrue(
-            driverValidationIndex >= 0 &&
+            boostValidationIndex >= 0 &&
+            driverValidationIndex > boostValidationIndex &&
             buildWorkspaceIndex > driverValidationIndex &&
             driverCopyIndex > buildWorkspaceIndex &&
             manifestDriverIndex > driverCopyIndex,
-            "The pinned DLL must validate before build and be copied before manifest projection.");
+            "Pinned external inputs must validate before build and the DLL must be copied before manifest projection.");
+        var boostCmake = File.ReadAllText(Path.Combine(
+            repo, "cmake", "dependencies", "Boost_Sunshine.cmake"));
+        foreach (var token in new[]
+                 {
+                     "LIGASE_BOOST_ARCHIVE is required for offline Windows builds",
+                     "get_filename_component(LIGASE_BOOST_ARCHIVE_ABSOLUTE",
+                     "LIGASE_BOOST_ARCHIVE_ABSOLUTE MATCHES \"^[Dd]:[/\\\\\\\\]\"",
+                     "LIGASE_BOOST_ARCHIVE must be on the D drive",
+                     "file(SIZE \"${LIGASE_BOOST_ARCHIVE_ABSOLUTE}\"",
+                     "file(SHA256 \"${LIGASE_BOOST_ARCHIVE_ABSOLUTE}\"",
+                     "LIGASE_BOOST_ARCHIVE_SIZE EQUAL 102078704",
+                     "67acec02d0d118b5de9eb441f5fb707b3a1cdd884be00ca24b9a73c995511f74",
+                     "set(BOOST_URL \"${LIGASE_BOOST_ARCHIVE_ABSOLUTE}\")"
+                 })
+        {
+            StringAssert.Contains(boostCmake, token);
+        }
+        Assert.IsTrue(
+            boostCmake.IndexOf(
+                "LIGASE_BOOST_ARCHIVE is required for offline Windows builds",
+                StringComparison.Ordinal) <
+            boostCmake.IndexOf(
+                "FetchContent_Declare(",
+                StringComparison.Ordinal),
+            "The local archive must be validated before FetchContent declaration.");
+        Assert.IsTrue(
+            boostCmake.IndexOf("set(Boost_FOUND FALSE)", StringComparison.Ordinal) <
+            boostCmake.IndexOf("if(NOT Boost_FOUND)", StringComparison.Ordinal),
+            "Windows builds must not bypass the pinned archive through a system Boost package.");
         foreach (var token in new[]
                  {
                      "[IO.File]::Replace($temp, $Path, $null, $true)",

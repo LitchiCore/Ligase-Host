@@ -19,6 +19,8 @@ param(
   [string]$NefconExecutable,
   [Parameter(Mandatory)]
   [string]$SudoVdaDriverBinary,
+  [Parameter(Mandatory)]
+  [string]$BoostArchive,
   [switch]$ValidateExternalInputsOnly,
   [switch]$SkipBuild
 )
@@ -83,6 +85,21 @@ if ($LASTEXITCODE -ne 0 -or $head -notmatch '^[0-9a-f]{40}$') {
   throw "sourceHeadUnavailable"
 }
 
+$boostArchivePath = [IO.Path]::GetFullPath($BoostArchive)
+if ([IO.Path]::GetPathRoot($boostArchivePath) -cne "D:\" -or
+    -not (Test-Path -LiteralPath $boostArchivePath -PathType Leaf)) {
+  throw "boostArchiveUnavailable"
+}
+if ((Get-Item -LiteralPath $boostArchivePath).Length -ne 102078704) {
+  throw "boostArchiveSizeMismatch"
+}
+$boostArchiveHash = (Get-FileHash -Algorithm SHA256 `
+  -LiteralPath $boostArchivePath).Hash
+if ($boostArchiveHash -cne
+    "67ACEC02D0D118B5DE9EB441F5FB707B3A1CDD884BE00CA24B9A73C995511F74") {
+  throw "boostArchiveHashMismatch"
+}
+
 $nefconPath = [IO.Path]::GetFullPath($NefconExecutable)
 if ([IO.Path]::GetPathRoot($nefconPath) -cne "D:\" -or
     -not (Test-Path -LiteralPath $nefconPath -PathType Leaf)) {
@@ -142,6 +159,8 @@ if ($sudoVdaInfText -notmatch '(?m)^SudoVDA\.dll=1\s*$' -or
 if ($ValidateExternalInputsOnly) {
   [ordered]@{
     code = "installerExternalInputsValid"
+    boostArchiveSha256 = $boostArchiveHash
+    boostArchiveSize = 102078704
     nefconSha256 = $nefconHash
     sudoVdaDriverSha256 = $sudoVdaHash
     sudoVdaDriverSize = 83216
