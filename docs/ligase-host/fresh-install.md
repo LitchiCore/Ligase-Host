@@ -664,7 +664,23 @@ Candidate construction requires an explicitly supplied official nefcon v1.8.0
 x64 console tool. Before producing the payload, the build verifies its fixed
 size, SHA-256, Authenticode publisher and timestamp, copies only those exact
 bytes, and records the tool identity in the manifest. It never searches
-`PATH` or downloads an installer tool. The batch wrapper emits one bounded
+`PATH` or downloads an installer tool.
+The SudoVDA UMDF binary is a second explicit external build input rather than a
+repository binary. Its authority is the official Apollo v0.4.6 driver package
+whose INF and catalog bytes match the canonical package in this repository.
+Before any build or staging work, the installer build requires the exact
+83,216-byte x64 `SudoVDA.dll`, SHA-256
+`47EE263CB5DE9382C6630A2D7F3DAFEC4A49419F953BEEC869CA5DD0C460FF63`,
+embedded signer thumbprint
+`3C918FC73525AD8B1521B6DB26B71F694277CC49`, and INF driver version
+`1.10.9.289`. The INF `SourceDisksFiles`, `CopyFiles`, and service-binary
+references must form the exact `SudoVDA.dll` closure. The build copies that
+validated binary beside the INF/CAT/CER files and records its size, hash,
+architecture, version, and signer in the package manifest. Missing, extra,
+wrong-hash, wrong-architecture, wrong-signer, or version-mismatched driver
+input fails before candidate creation. Installed-tree bytes, `PATH`, and
+network fallback are never package authority.
+The batch wrapper emits one bounded
 closed tuple and preserves the exit of each certificate, device-create and
 driver-package step; its final `popd` cannot replace a failed child exit with
 success. The managed owner independently binds that tuple to the process exit

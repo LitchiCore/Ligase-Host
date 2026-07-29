@@ -1649,6 +1649,17 @@ if ($boundedInstallerSource.IndexOf(
 }
 $driverInstallerSource = [IO.File]::ReadAllText((Join-Path $sourceRoot (
   "src_assets/windows/drivers/sudovda/install.bat")))
+$driverInfSource = [IO.File]::ReadAllText((Join-Path $sourceRoot (
+  "src_assets/windows/drivers/sudovda/SudoVDA.inf")))
+foreach ($token in @(
+    '[SourceDisksFiles]', 'SudoVDA.dll=1', 'CopyFiles=UMDriverCopy',
+    'ServiceBinary=%12%\UMDF\SudoVDA.dll',
+    'DriverVer = 07/14/2025,1.10.9.289')) {
+  if ($driverInfSource.IndexOf(
+      $token, [StringComparison]::Ordinal) -lt 0) {
+    throw "virtualDisplayDriverInfClosureMissing:$token"
+  }
+}
 foreach ($token in @(
     'if not exist "%NEFCON%"',
     'stage=certificateRoot', 'stage=certificatePublisher',
@@ -1666,7 +1677,19 @@ foreach ($token in @(
     '[string]$NefconExecutable', '586152',
     '19A113297EAFEFD796AA91C1A64D199628D9C58DC53928899D2E5D6A68074EFE',
     '1F431092EC96A80B41AB5317F53AC02EA6F9B89B',
-    'installerToolSha256', 'Deployment/Drivers/sudovda/nefconc.exe')) {
+    '[string]$SudoVdaDriverBinary', '[switch]$ValidateExternalInputsOnly',
+    '83216', '47EE263CB5DE9382C6630A2D7F3DAFEC4A49419F953BEEC869CA5DD0C460FF63',
+    '3C918FC73525AD8B1521B6DB26B71F694277CC49', '0x8664',
+    'virtualDisplayDriverBinaryUnavailable',
+    'virtualDisplayDriverBinarySizeMismatch',
+    'virtualDisplayDriverBinaryArchitectureMismatch',
+    'virtualDisplayDriverBinaryHashMismatch',
+    'virtualDisplayDriverBinarySignatureInvalid',
+    'virtualDisplayDriverVersionMismatch',
+    'virtualDisplayDriverInfClosureInvalid',
+    'driverBinarySha256', 'driverBinaryArchitecture', 'driverVersion',
+    'installerToolSha256', 'Deployment/Drivers/sudovda/nefconc.exe',
+    'Deployment/Drivers/sudovda/SudoVDA.dll')) {
   if ($buildSource.IndexOf($token, [StringComparison]::Ordinal) -lt 0) {
     throw "virtualDisplayInstallerBuildInputGateMissing:$token"
   }

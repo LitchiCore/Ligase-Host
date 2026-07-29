@@ -2056,6 +2056,45 @@ public sealed class FreshInstallPackagingTests
         var driverInstaller = File.ReadAllText(Path.Combine(
             repo, "src_assets", "windows", "drivers", "sudovda",
             "install.bat"));
+        var driverInf = File.ReadAllText(Path.Combine(
+            repo, "src_assets", "windows", "drivers", "sudovda",
+            "SudoVDA.inf"));
+        Assert.IsFalse(File.Exists(Path.Combine(
+            repo, "src_assets", "windows", "drivers", "sudovda",
+            "SudoVDA.dll")),
+            "The signed driver binary must remain an external pinned build input.");
+        foreach (var token in new[]
+                 {
+                     "[SourceDisksFiles]", "SudoVDA.dll=1",
+                     "CopyFiles=UMDriverCopy",
+                     "ServiceBinary=%12%\\UMDF\\SudoVDA.dll",
+                     "DriverVer = 07/14/2025,1.10.9.289"
+                 })
+        {
+            StringAssert.Contains(driverInf, token);
+        }
+        var sourceDisksFiles = System.Text.RegularExpressions.Regex.Match(
+            driverInf,
+            @"(?ms)^\[SourceDisksFiles\]\s*(?<body>.*?)(?=^\[)");
+        var umDriverCopy = System.Text.RegularExpressions.Regex.Match(
+            driverInf,
+            @"(?ms)^\[UMDriverCopy\]\s*(?<body>.*?)(?=^\[)");
+        Assert.IsTrue(sourceDisksFiles.Success);
+        Assert.IsTrue(umDriverCopy.Success);
+        CollectionAssert.AreEqual(
+            new[] { "SudoVDA.dll=1" },
+            sourceDisksFiles.Groups["body"].Value
+                .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                .Select(line => line.Trim())
+                .Where(line => line.Length > 0 && !line.StartsWith(';'))
+                .ToArray());
+        CollectionAssert.AreEqual(
+            new[] { "SudoVDA.dll" },
+            umDriverCopy.Groups["body"].Value
+                .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                .Select(line => line.Trim())
+                .Where(line => line.Length > 0 && !line.StartsWith(';'))
+                .ToArray());
         foreach (var token in new[]
                  {
                      "if not exist \"%NEFCON%\"", "stage=certificateRoot",
@@ -2076,13 +2115,30 @@ public sealed class FreshInstallPackagingTests
         foreach (var token in new[]
                  {
                      "[string]$NefconExecutable", "586152",
-                     "19A113297EAFEFD796AA91C1A64D199628D9C58DC53928899D2E5D6A68074EFE",
-                     "1F431092EC96A80B41AB5317F53AC02EA6F9B89B",
-                     "[ValidateRange(1, 64)]",
+                      "19A113297EAFEFD796AA91C1A64D199628D9C58DC53928899D2E5D6A68074EFE",
+                      "1F431092EC96A80B41AB5317F53AC02EA6F9B89B",
+                      "[string]$SudoVdaDriverBinary",
+                      "[switch]$ValidateExternalInputsOnly",
+                      "83216",
+                      "47EE263CB5DE9382C6630A2D7F3DAFEC4A49419F953BEEC869CA5DD0C460FF63",
+                      "3C918FC73525AD8B1521B6DB26B71F694277CC49",
+                      "0x8664",
+                      "virtualDisplayDriverBinaryUnavailable",
+                      "virtualDisplayDriverBinarySizeMismatch",
+                      "virtualDisplayDriverBinaryArchitectureMismatch",
+                      "virtualDisplayDriverBinaryHashMismatch",
+                      "virtualDisplayDriverBinarySignatureInvalid",
+                      "virtualDisplayDriverVersionMismatch",
+                      "virtualDisplayDriverInfClosureInvalid",
+                      "[ValidateRange(1, 64)]",
                      "[int]$CoreBuildParallelism = 1",
                      "--parallel $CoreBuildParallelism",
-                     "installerToolSha256",
-                     "Deployment/Drivers/sudovda/nefconc.exe"
+                      "installerToolSha256",
+                      "driverBinarySha256",
+                      "driverBinaryArchitecture",
+                      "driverVersion",
+                      "Deployment/Drivers/sudovda/nefconc.exe",
+                      "Deployment/Drivers/sudovda/SudoVDA.dll"
                  })
         {
             StringAssert.Contains(installerBuild, token);
@@ -2092,6 +2148,28 @@ public sealed class FreshInstallPackagingTests
                 installerBuild,
                 @"--parallel\s*(?:\r?\n|$)"),
             "The core build must never use an unbounded bare --parallel switch.");
+        Assert.IsTrue(
+            System.Text.RegularExpressions.Regex.IsMatch(
+                installerBuild,
+                @"\[Parameter\(Mandatory\)\]\s*\r?\n\s*\[string\]\$SudoVdaDriverBinary"),
+            "The SudoVDA driver binary must be an explicit mandatory input.");
+        var driverValidationIndex = installerBuild.IndexOf(
+            "$sudoVdaPath = [IO.Path]::GetFullPath($SudoVdaDriverBinary)",
+            StringComparison.Ordinal);
+        var buildWorkspaceIndex = installerBuild.IndexOf(
+            "$work = Join-Path $output", StringComparison.Ordinal);
+        var driverCopyIndex = installerBuild.IndexOf(
+            "Join-Path $temporaryStage \"Deployment/Drivers/sudovda/SudoVDA.dll\"",
+            StringComparison.Ordinal);
+        var manifestDriverIndex = installerBuild.IndexOf(
+            "driverBinarySha256 = $sudoVdaHash.ToLowerInvariant()",
+            StringComparison.Ordinal);
+        Assert.IsTrue(
+            driverValidationIndex >= 0 &&
+            buildWorkspaceIndex > driverValidationIndex &&
+            driverCopyIndex > buildWorkspaceIndex &&
+            manifestDriverIndex > driverCopyIndex,
+            "The pinned DLL must validate before build and be copied before manifest projection.");
         foreach (var token in new[]
                  {
                      "[IO.File]::Replace($temp, $Path, $null, $true)",

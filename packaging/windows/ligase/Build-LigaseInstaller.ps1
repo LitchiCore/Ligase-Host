@@ -17,6 +17,9 @@ param(
   [string[]]$AllowedPublisher = @(),
   [Parameter(Mandatory)]
   [string]$NefconExecutable,
+  [Parameter(Mandatory)]
+  [string]$SudoVdaDriverBinary,
+  [switch]$ValidateExternalInputsOnly,
   [switch]$SkipBuild
 )
 
@@ -34,6 +37,33 @@ function Get-CanonicalRelativePath(
     throw "packagePathEscapesRoot"
   }
   return $value.Substring($base.Length).Replace("\", "/")
+}
+
+function Test-PeMachineX64(
+  [Parameter(Mandatory)][string]$Path
+) {
+  $stream = [IO.File]::Open(
+    $Path,
+    [IO.FileMode]::Open,
+    [IO.FileAccess]::Read,
+    [IO.FileShare]::Read)
+  try {
+    if ($stream.Length -lt 64) { return $false }
+    $reader = [IO.BinaryReader]::new($stream)
+    try {
+      if ($reader.ReadUInt16() -ne 0x5A4D) { return $false }
+      $stream.Position = 0x3C
+      $peOffset = $reader.ReadUInt32()
+      if ($peOffset -gt $stream.Length - 6) { return $false }
+      $stream.Position = $peOffset
+      if ($reader.ReadUInt32() -ne 0x00004550) { return $false }
+      return $reader.ReadUInt16() -eq 0x8664
+    } finally {
+      $reader.Dispose()
+    }
+  } finally {
+    $stream.Dispose()
+  }
 }
 
 $sourceRoot = (Resolve-Path (Join-Path $PSScriptRoot "../../..")).Path
@@ -73,6 +103,54 @@ if ($nefconSignature.Status -ne "Valid" -or
       "1F431092EC96A80B41AB5317F53AC02EA6F9B89B" -or
     $null -eq $nefconSignature.TimeStamperCertificate) {
   throw "virtualDisplayInstallerToolSignatureInvalid"
+}
+
+$sudoVdaPath = [IO.Path]::GetFullPath($SudoVdaDriverBinary)
+if ([IO.Path]::GetPathRoot($sudoVdaPath) -cne "D:\" -or
+    -not (Test-Path -LiteralPath $sudoVdaPath -PathType Leaf)) {
+  throw "virtualDisplayDriverBinaryUnavailable"
+}
+if ((Get-Item -LiteralPath $sudoVdaPath).Length -ne 83216) {
+  throw "virtualDisplayDriverBinarySizeMismatch"
+}
+if (-not (Test-PeMachineX64 $sudoVdaPath)) {
+  throw "virtualDisplayDriverBinaryArchitectureMismatch"
+}
+$sudoVdaHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $sudoVdaPath).Hash
+if ($sudoVdaHash -cne
+    "47EE263CB5DE9382C6630A2D7F3DAFEC4A49419F953BEEC869CA5DD0C460FF63") {
+  throw "virtualDisplayDriverBinaryHashMismatch"
+}
+$sudoVdaSignature = Get-AuthenticodeSignature -LiteralPath $sudoVdaPath
+if ($sudoVdaSignature.Status -ne "Valid" -or
+    $null -eq $sudoVdaSignature.SignerCertificate -or
+    $sudoVdaSignature.SignerCertificate.Thumbprint -cne
+      "3C918FC73525AD8B1521B6DB26B71F694277CC49") {
+  throw "virtualDisplayDriverBinarySignatureInvalid"
+}
+$sudoVdaInf = Join-Path $sourceRoot "src_assets/windows/drivers/sudovda/SudoVDA.inf"
+$sudoVdaInfText = [IO.File]::ReadAllText($sudoVdaInf)
+if ($sudoVdaInfText -notmatch
+    '(?m)^DriverVer\s*=\s*07/14/2025,1\.10\.9\.289\s*$') {
+  throw "virtualDisplayDriverVersionMismatch"
+}
+if ($sudoVdaInfText -notmatch '(?m)^SudoVDA\.dll=1\s*$' -or
+    $sudoVdaInfText -notmatch '(?m)^CopyFiles=UMDriverCopy\s*$' -or
+    $sudoVdaInfText -notmatch '(?m)^SudoVDA\.dll\s*$') {
+  throw "virtualDisplayDriverInfClosureInvalid"
+}
+if ($ValidateExternalInputsOnly) {
+  [ordered]@{
+    code = "installerExternalInputsValid"
+    nefconSha256 = $nefconHash
+    sudoVdaDriverSha256 = $sudoVdaHash
+    sudoVdaDriverSize = 83216
+    sudoVdaDriverArchitecture = "x86-64"
+    sudoVdaDriverVersion = "1.10.9.289"
+    sudoVdaDriverSignerThumbprint =
+      $sudoVdaSignature.SignerCertificate.Thumbprint
+  } | ConvertTo-Json -Compress
+  return
 }
 
 $work = Join-Path $output "work-$head-$Configuration-$Platform"
@@ -183,6 +261,8 @@ Copy-Item -LiteralPath (Join-Path $sourceRoot "src_assets/windows/drivers/sudovd
   -Destination (Join-Path $temporaryStage "Deployment/Drivers/sudovda") -Recurse
 Copy-Item -LiteralPath $nefconPath -Destination (
   Join-Path $temporaryStage "Deployment/Drivers/sudovda/nefconc.exe")
+Copy-Item -LiteralPath $sudoVdaPath -Destination (
+  Join-Path $temporaryStage "Deployment/Drivers/sudovda/SudoVDA.dll")
 Copy-Item -LiteralPath (Join-Path $sourceRoot "src_assets/windows/misc/firewall") `
   -Destination (Join-Path $temporaryStage "Deployment/Firewall") -Recurse
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "Manage-LigaseInstallation.ps1") `
@@ -296,6 +376,13 @@ $manifest = [ordered]@{
     installerToolSha256 = $nefconHash.ToLowerInvariant()
     installerToolSignerThumbprint =
       $nefconSignature.SignerCertificate.Thumbprint
+    driverBinary = "Deployment/Drivers/sudovda/SudoVDA.dll"
+    driverBinarySize = 83216
+    driverBinarySha256 = $sudoVdaHash.ToLowerInvariant()
+    driverBinaryArchitecture = "x86-64"
+    driverVersion = "1.10.9.289"
+    driverBinarySignerThumbprint =
+      $sudoVdaSignature.SignerCertificate.Thumbprint
     catalogSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath (
       Join-Path $temporaryStage "Deployment/Drivers/sudovda/sudovda.cat")).Hash.ToLowerInvariant()
     signerSubject = if ($driverSignature.SignerCertificate) {
@@ -351,6 +438,7 @@ $manifest = [ordered]@{
         "Drivers/sudovda/" +
           (Get-CanonicalRelativePath $legacyDriverRoot $_.FullName)
       }
+    "Drivers/sudovda/SudoVDA.dll"
     "Manage-LigaseInstallation.ps1"
     "Firewall/Manage-LigaseFirewall.ps1"
     "Firewall/ligase-firewall-v1.json"
