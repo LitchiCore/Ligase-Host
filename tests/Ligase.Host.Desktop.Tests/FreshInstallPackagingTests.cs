@@ -1616,6 +1616,7 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(management, "\"virtualDisplayDeviceRemoveFailed\"");
         StringAssert.Contains(management, "\"virtualDisplayDeviceRemoveReadbackFailed\"");
         StringAssert.Contains(management, "\"virtualDisplayDeviceRemoveSettleFailed\"");
+        StringAssert.Contains(management, "\"virtualDisplayDeviceRemoveFallbackFailed\"");
         StringAssert.Contains(management, "Invoke-VirtualDisplayRemovalReconciliation");
         StringAssert.Contains(management,
             "$beforeCount = [int]$before.deviceCount");
@@ -1625,6 +1626,16 @@ public sealed class FreshInstallPackagingTests
             "if ($afterCount -lt $beforeCount)");
         StringAssert.Contains(management,
             "$env:LIGASE_VDISPLAY_ACTION = \"removeOne\"");
+        StringAssert.Contains(management,
+            "$env:LIGASE_VDISPLAY_ACTION = \"removeInstance\"");
+        StringAssert.Contains(management,
+            "$env:LIGASE_VDISPLAY_INSTANCE_ID = $InstanceId");
+        StringAssert.Contains(management,
+            "[LigaseFileIdentity]::GetTrustedPnPUtilPath()");
+        StringAssert.Contains(management, "GetSystemDirectoryW");
+        StringAssert.Contains(management, "GetFinalPathNameByHandleW");
+        StringAssert.Contains(management,
+            "$env:LIGASE_VDISPLAY_PNPUTIL = $trustedPnPUtil");
         StringAssert.Contains(management,
             "$env:LIGASE_VDISPLAY_ACTION = \"install\"");
         StringAssert.Contains(management, "uniqueDeviceIdsSha256");
@@ -1666,7 +1677,14 @@ public sealed class FreshInstallPackagingTests
             "\"virtualDisplayDeviceRemoveFailed\"");
         StringAssert.Contains(runtimeHarness, "\"deviceRemove\"");
         StringAssert.Contains(runtimeHarness, "virtualDisplayRemovalCases");
-        StringAssert.Contains(runtimeHarness, "\"exit6Count2\"");
+        StringAssert.Contains(runtimeHarness, "\"exit6Fallback\"");
+        StringAssert.Contains(runtimeHarness, "\"exit6FallbackFailed\"");
+        StringAssert.Contains(runtimeHarness, "\"fallbackTimeoutPreTuple\"");
+        StringAssert.Contains(runtimeHarness, "\"fallbackOutputPreTuple\"");
+        StringAssert.Contains(runtimeHarness, "\"fallbackCleanupPreTuple\"");
+        StringAssert.Contains(runtimeHarness, "\"postRemoveReadbackFailure\"");
+        StringAssert.Contains(runtimeHarness,
+            "\"virtualDisplayTrustedToolValidated\"");
         StringAssert.Contains(runtimeHarness, "\"settleProgress\"");
         StringAssert.Contains(runtimeHarness, "\"settleTimeout\"");
         StringAssert.Contains(runtimeHarness, "removeCount -ne 16");
@@ -1676,6 +1694,9 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(nsis,
             "{\"code\":\"virtualDisplayInstalled\",\"success\":true}");
         StringAssert.Contains(management, "driverBindingVerified");
+        StringAssert.Contains(management, "deviceRecovery");
+        StringAssert.Contains(management, "residualDeviceState");
+        StringAssert.Contains(management, "compensationState");
         StringAssert.Contains(management, "Invoke-VirtualDisplayInstaller");
         StringAssert.Contains(management, "ValidateVirtualDisplayInstallerProcess");
         StringAssert.Contains(management, "jobProcess.StandardOutput.ReadAsync");
@@ -2161,10 +2182,13 @@ public sealed class FreshInstallPackagingTests
                 .ToArray());
         foreach (var token in new[]
                  {
-                     "if not exist \"%NEFCON%\"", "stage=certificateRoot",
-                     "if \"%ACTION%\"==\"removeOne\" goto remove_one_device",
-                     "if not \"%ACTION%\"==\"install\"",
-                     "stage=deviceRemove", "removeExit=%REMOVE_EXIT%",
+                      "if not exist \"%NEFCON%\"", "stage=certificateRoot",
+                      "if \"%ACTION%\"==\"removeOne\" goto remove_one_device",
+                      "if \"%ACTION%\"==\"removeInstance\" goto remove_instance",
+                      "if not \"%ACTION%\"==\"install\"",
+                      "stage=deviceRemove", "removeExit=%REMOVE_EXIT%",
+                      "\"%LIGASE_VDISPLAY_PNPUTIL%\" /remove-device \"%LIGASE_VDISPLAY_INSTANCE_ID%\"",
+                      "stage=deviceRemoveFallback", "exit /b 26",
                      "stage=certificatePublisher", "stage=deviceCreate",
                      "stage=driverPackageInstall", "stage=completed",
                      "exit /b 20", "exit /b 21", "exit /b 22", "exit /b 23",
@@ -2175,6 +2199,9 @@ public sealed class FreshInstallPackagingTests
         }
         Assert.IsFalse(driverInstaller.Contains(
             "if not \"%REMOVE_EXIT%\"==\"0\" goto removed_all_devices",
+            StringComparison.Ordinal));
+        Assert.IsFalse(driverInstaller.Contains(
+            "%SystemRoot%\\System32\\pnputil.exe",
             StringComparison.Ordinal));
         Assert.IsTrue(
             driverInstaller.LastIndexOf("exit /b 0", StringComparison.Ordinal) >

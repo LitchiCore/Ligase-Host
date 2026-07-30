@@ -652,7 +652,18 @@ creating a replacement. Each removal is followed by a bounded enumeration
 readback, and creation is permitted only after that readback proves the
 matching device count is zero. A nefcon removal exit of 6, or any other
 nonzero exit, is a typed removal failure and is never interpreted as “no
-devices remain.” Failure to read the count is closed
+devices remain.” When and only when that exit is 6, repair may use the
+system `PnPUtil /remove-device` fallback for one instance identity taken from
+the immediately preceding exact-hardware-ID enumeration. The identity must
+match the closed ROOT display-instance form; it is passed as typed argv, never
+persisted, and the executable is resolved by the elevated owner through
+`GetSystemDirectoryW` with canonical, non-reparse, handle-final-path identity
+checks rather than `SystemRoot`, `PATH`, or caller input. The fallback is still
+provisional until a fresh enumeration
+proves the count decreased. A fallback failure is closed
+`virtualDisplayDeviceRemoveFallbackFailed` and preserves the original nefcon
+exit and residual identity-set hash; its own exit is `-1` until a complete
+strict child tuple exists. Failure to read the count after mutation is closed
 `virtualDisplayDeviceRemoveReadbackFailed`; failure to observe monotonic
 progress within the settle or total deadline is
 `virtualDisplayDeviceRemoveSettleFailed`. Before writing the ownership marker or
@@ -665,9 +676,16 @@ only the count and a SHA-256 of the sorted unique instance identities, never the
 raw identities.
 
 The child action atomically persists a strict, safe virtual-display diagnostic
-containing the install stage, readback code, child/remove exits, removal count,
-process cleanup state, marker stage, observed count, identity-set hash, and
-binding result. A new child action first removes any previous diagnostic; the
+containing the install stage, readback code, child/remove and fallback exits,
+removal count, process cleanup state, marker stage, observed count,
+identity-set hash, binding result, device-recovery state, residual-device
+state, and marker/certificate compensation state. Device recovery is
+`completed` only when enumeration proves zero before creation; a completed
+transaction, shortcut, firewall, marker, or certificate compensation never
+asserts that PnP state was restored. Any terminal post-mutation readback error
+sets device recovery to `failed` and residual state to `unknown`, rather than
+leaving an in-progress state or claiming zero. A new child action first removes any
+previous diagnostic; the
 strict readback binds the replacement to the current manifest source and a
 bounded UTC freshness window. It contains no stdout, stderr, path, device identity, or
 exception text. NSIS accepts success only when the child exit is zero and its

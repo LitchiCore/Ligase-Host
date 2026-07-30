@@ -5833,19 +5833,76 @@ foreach ($case in $readbackCases) {
   }
 }
 
+$trustedToolRoot = Join-Path $root "virtual-display-trusted-tool"
+New-Item -ItemType Directory -Path $trustedToolRoot | Out-Null
+$previousHarness = $env:LIGASE_INSTALL_VALIDATION_HARNESS
+$previousTrustedToolRoot =
+  $env:LIGASE_VIRTUAL_DISPLAY_TRUSTED_TOOL_VALIDATION_ROOT
+try {
+  $env:LIGASE_INSTALL_VALIDATION_HARNESS = "1"
+  $env:LIGASE_VIRTUAL_DISPLAY_TRUSTED_TOOL_VALIDATION_ROOT = $trustedToolRoot
+  $trustedToolRaw = @(& $readbackPowerShell -NoProfile -NonInteractive `
+    -ExecutionPolicy Bypass -File $managementScript `
+    -Action ValidateVirtualDisplayTrustedPnPUtil `
+    -InstallDirectory $trustedToolRoot -ValidationRoot $trustedToolRoot)
+} finally {
+  if ($null -eq $previousHarness) {
+    Remove-Item Env:LIGASE_INSTALL_VALIDATION_HARNESS `
+      -ErrorAction SilentlyContinue
+  } else { $env:LIGASE_INSTALL_VALIDATION_HARNESS = $previousHarness }
+  if ($null -eq $previousTrustedToolRoot) {
+    Remove-Item Env:LIGASE_VIRTUAL_DISPLAY_TRUSTED_TOOL_VALIDATION_ROOT `
+      -ErrorAction SilentlyContinue
+  } else {
+    $env:LIGASE_VIRTUAL_DISPLAY_TRUSTED_TOOL_VALIDATION_ROOT =
+      $previousTrustedToolRoot
+  }
+}
+if ($LASTEXITCODE -ne 0 -or @($trustedToolRaw).Count -ne 1) {
+  throw "virtualDisplayTrustedToolFixtureFailed"
+}
+$trustedToolProjection = [string]$trustedToolRaw | ConvertFrom-Json
+if ([string]$trustedToolProjection.code -cne
+      "virtualDisplayTrustedToolValidated" -or
+    -not [bool]$trustedToolProjection.success -or
+    [string]$trustedToolProjection.leaf -cne "pnputil.exe" -or
+    [string]$trustedToolProjection.pathSha256 -cnotmatch '^[0-9a-f]{64}$' -or
+    -not [bool]$trustedToolProjection.systemRootIgnored -or
+    -not [bool]$trustedToolProjection.pathIgnored -or
+    [int]$trustedToolProjection.processStartCount -ne 0 -or
+    -not [bool]$trustedToolProjection.environmentRestored) {
+  throw "virtualDisplayTrustedToolFixtureAssertionFailed"
+}
+
 $virtualDisplayRemovalResults = @()
 $removalCases = @(
-  @{ name = "zero"; counts = @(0); exits = @(); success = $true
+  @{ name = "zero"; counts = @(0); exits = @(); fallback = @(); fault = "none"; readbackFaultAt = -1; success = $true
     code = "virtualDisplayRemoved"; removed = 0; final = 0 },
-  @{ name = "one"; counts = @(1, 0); exits = @(0); success = $true
+  @{ name = "one"; counts = @(1, 0); exits = @(0); fallback = @(); fault = "none"; readbackFaultAt = -1; success = $true
     code = "virtualDisplayRemoved"; removed = 1; final = 0 },
-  @{ name = "two"; counts = @(2, 1, 1, 0); exits = @(0, 0); success = $true
+  @{ name = "two"; counts = @(2, 1, 1, 0); exits = @(0, 0); fallback = @(); fault = "none"; readbackFaultAt = -1; success = $true
     code = "virtualDisplayRemoved"; removed = 2; final = 0 },
-  @{ name = "exit6Count2"; counts = @(2); exits = @(6); success = $false
-    code = "virtualDisplayDeviceRemoveFailed"; removed = 0; final = 2 },
-  @{ name = "settleProgress"; counts = @(1, 1, 0); exits = @(0)
+  @{ name = "exit6Fallback"; counts = @(2, 1, 1, 0); exits = @(0, 6)
+    fallback = @(0); fault = "none"; readbackFaultAt = -1; success = $true; code = "virtualDisplayRemoved"
+    removed = 2; final = 0 },
+  @{ name = "exit6FallbackFailed"; counts = @(1); exits = @(6)
+    fallback = @(5); fault = "none"; readbackFaultAt = -1; success = $false
+    code = "virtualDisplayDeviceRemoveFallbackFailed"; removed = 0; final = 1 },
+  @{ name = "fallbackTimeoutPreTuple"; counts = @(1); exits = @(6)
+    fallback = @(); fault = "timeout"; readbackFaultAt = -1; success = $false
+    code = "virtualDisplayDeviceRemoveFallbackFailed"; removed = 0; final = 1 },
+  @{ name = "fallbackOutputPreTuple"; counts = @(1); exits = @(6)
+    fallback = @(); fault = "output"; readbackFaultAt = -1; success = $false
+    code = "virtualDisplayDeviceRemoveFallbackFailed"; removed = 0; final = 1 },
+  @{ name = "fallbackCleanupPreTuple"; counts = @(1); exits = @(6)
+    fallback = @(); fault = "cleanup"; readbackFaultAt = -1; success = $false
+    code = "virtualDisplayDeviceRemoveFallbackFailed"; removed = 0; final = 1 },
+  @{ name = "postRemoveReadbackFailure"; counts = @(1); exits = @(0)
+    fallback = @(); fault = "none"; readbackFaultAt = 1; success = $false
+    code = "virtualDisplayDeviceRemoveReadbackFailed"; removed = 0; final = 1 },
+  @{ name = "settleProgress"; counts = @(1, 1, 0); exits = @(0); fallback = @(); fault = "none"; readbackFaultAt = -1
     success = $true; code = "virtualDisplayRemoved"; removed = 1; final = 0 },
-  @{ name = "settleTimeout"; counts = @(1); exits = @(0); success = $false
+  @{ name = "settleTimeout"; counts = @(1); exits = @(0); fallback = @(); fault = "none"; readbackFaultAt = -1; success = $false
     code = "virtualDisplayDeviceRemoveSettleFailed"; removed = 0; final = 1 }
 )
 foreach ($case in $removalCases) {
@@ -5857,6 +5914,9 @@ foreach ($case in $removalCases) {
       schemaVersion = 1
       counts = @($case.counts)
       removeExits = @($case.exits)
+      fallbackExits = @($case.fallback)
+      fallbackFault = [string]$case.fault
+      readbackFaultAt = [int]$case.readbackFaultAt
       settleMilliseconds = 200
       totalMilliseconds = 1000
     } | ConvertTo-Json -Compress),
@@ -5894,14 +5954,34 @@ foreach ($case in $removalCases) {
       [int]$projection.observedDeviceCount -ne [int]$case.final) {
     throw "virtualDisplayRemovalFixtureAssertionFailed:$($case.name)"
   }
+  if ([string]$case.name -like "fallback*PreTuple" -and (
+      [int]$projection.fallbackExitCode -ne -1 -or
+      [int]$projection.removeExitCode -ne 6 -or
+      [string]$projection.deviceRecovery -cne "failed" -or
+      [string]$projection.residualDeviceState -cne "exactOneBound")) {
+    throw "virtualDisplayRemovalFixtureAssertionFailed:$($case.name)"
+  }
+  if ([string]$case.name -ceq "exit6FallbackFailed" -and
+      [int]$projection.fallbackExitCode -ne 5) {
+    throw "virtualDisplayRemovalFixtureAssertionFailed:$($case.name)"
+  }
+  if ([string]$case.name -ceq "postRemoveReadbackFailure" -and (
+      [string]$projection.deviceRecovery -cne "failed" -or
+      [string]$projection.residualDeviceState -cne "unknown")) {
+    throw "virtualDisplayRemovalFixtureAssertionFailed:$($case.name)"
+  }
   $virtualDisplayRemovalResults += [ordered]@{
     name = [string]$case.name
     code = [string]$projection.code
     success = [bool]$projection.success
     removeCalls = [int]$projection.removeCalls
+    fallbackCalls = [int]$projection.fallbackCalls
     removeCount = [int]$projection.removeCount
+    fallbackExitCode = [int]$projection.fallbackExitCode
     observedDeviceCount = [int]$projection.observedDeviceCount
     snapshotReads = [int]$projection.snapshotReads
+    deviceRecovery = [string]$projection.deviceRecovery
+    residualDeviceState = [string]$projection.residualDeviceState
   }
 }
 
@@ -5962,6 +6042,11 @@ if ([string]$diagnosticProjection.code -cne
     [string]$diagnosticProjection.readbackCode -cne
       "virtualDisplayDeviceCountInvalid" -or
     [int]$diagnosticProjection.observedDeviceCount -ne 2 -or
+    [bool]$diagnosticProjection.driverBindingVerified -or
+    [string]$diagnosticProjection.deviceRecovery -cne "failed" -or
+    [string]$diagnosticProjection.residualDeviceState -cne "multiple" -or
+    [string]$diagnosticProjection.compensationState -cne "completed" -or
+    [string]$diagnosticProjection.transactionRollback -cne "completed" -or
     [int]$diagnosticProjection.tokenLength -lt 1 -or
     [int]$diagnosticProjection.tokenLength -gt 970 -or
     [string]$diagnosticProjection.tokenSha256 -cnotmatch '^[0-9a-f]{64}$' -or
@@ -5990,6 +6075,7 @@ if ([string]$diagnosticProjection.code -cne
   virtualDisplayInstallerProcessCases = $installerProcessResults
   virtualDisplayInstallerCaseSchemaCases = $installerProcessCaseSchemaResults
   virtualDisplayReadbackCases = $virtualDisplayReadbackResults
+  virtualDisplayTrustedTool = $trustedToolProjection
   virtualDisplayRemovalCases = $virtualDisplayRemovalResults
   virtualDisplayDiagnosticProjection = $diagnosticProjection
   boundedHostProcessCases = $boundedHostCases
