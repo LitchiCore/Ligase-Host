@@ -1616,12 +1616,21 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(management, "\"virtualDisplayDeviceRemoveFailed\"");
         StringAssert.Contains(management, "\"virtualDisplayDeviceRemoveReadbackFailed\"");
         StringAssert.Contains(management, "\"virtualDisplayDeviceRemoveSettleFailed\"");
+        StringAssert.Contains(management, "\"virtualDisplayDeviceZeroProofFailed\"");
         StringAssert.Contains(management, "\"virtualDisplayDeviceRemoveFallbackFailed\"");
         StringAssert.Contains(management, "Invoke-VirtualDisplayRemovalReconciliation");
         StringAssert.Contains(management,
             "$beforeCount = [int]$before.deviceCount");
         StringAssert.Contains(management,
             "if ($beforeCount -eq 0)");
+        StringAssert.Contains(management,
+            "$zeroProofSamples -lt 3");
+        StringAssert.Contains(management,
+            "$zeroReadbackCount -ne 0");
+        StringAssert.Contains(management,
+            "if ($totalClock.ElapsedMilliseconds -ge $TotalMilliseconds)");
+        StringAssert.Contains(management,
+            "[string]$zeroReadback.uniqueDeviceIdsSha256 -cne $zeroEpoch");
         StringAssert.Contains(management,
             "if ($afterCount -lt $beforeCount)");
         StringAssert.Contains(management,
@@ -1683,6 +1692,11 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(runtimeHarness, "\"fallbackOutputPreTuple\"");
         StringAssert.Contains(runtimeHarness, "\"fallbackCleanupPreTuple\"");
         StringAssert.Contains(runtimeHarness, "\"postRemoveReadbackFailure\"");
+        StringAssert.Contains(runtimeHarness, "\"stableZero\"");
+        StringAssert.Contains(runtimeHarness, "\"transientZeroToTwo\"");
+        StringAssert.Contains(runtimeHarness, "\"zeroIdentityEpochDrift\"");
+        StringAssert.Contains(runtimeHarness,
+            "\"lastZeroSampleCrossesDeadline\"");
         StringAssert.Contains(runtimeHarness,
             "\"virtualDisplayTrustedToolValidated\"");
         StringAssert.Contains(runtimeHarness, "\"settleProgress\"");

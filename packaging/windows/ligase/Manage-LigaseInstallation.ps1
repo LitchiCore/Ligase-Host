@@ -2409,6 +2409,58 @@ function Invoke-VirtualDisplayRemovalReconciliation(
     }
     Set-VirtualDisplayResidualAuthority $before
     if ($beforeCount -eq 0) {
+      $zeroEpoch = [string]$before.uniqueDeviceIdsSha256
+      if ($zeroEpoch -cnotmatch '^[0-9a-f]{64}$') {
+        $script:virtualDisplayDeviceRecovery = "failed"
+        $script:virtualDisplayResidualState = "unknown"
+        $script:virtualDisplayDriverBindingVerified = $false
+        throw "virtualDisplayDeviceZeroProofFailed"
+      }
+      $zeroProofClock = [Diagnostics.Stopwatch]::StartNew()
+      $zeroProofSamples = 1
+      while ($zeroProofSamples -lt 3 -or
+          $zeroProofClock.ElapsedMilliseconds -lt
+            [Math]::Min(500, $SettleMilliseconds)) {
+        if ($totalClock.ElapsedMilliseconds -ge $TotalMilliseconds) {
+          $script:virtualDisplayDeviceRecovery = "failed"
+          throw "virtualDisplayDeviceZeroProofFailed"
+        }
+        Start-Sleep -Milliseconds 50
+        try {
+          $zeroReadback = & $SnapshotProvider
+        } catch {
+          $script:virtualDisplayDeviceRecovery = "failed"
+          $script:virtualDisplayResidualState = "unknown"
+          $script:virtualDisplayDriverBindingVerified = $false
+          throw "virtualDisplayDeviceZeroProofFailed"
+        }
+        if ($totalClock.ElapsedMilliseconds -ge $TotalMilliseconds) {
+          $script:virtualDisplayDeviceRecovery = "failed"
+          throw "virtualDisplayDeviceZeroProofFailed"
+        }
+        $zeroReadbackCount = [int]$zeroReadback.deviceCount
+        if ($zeroReadbackCount -lt 0 -or $zeroReadbackCount -gt 16 -or
+            ([string]$zeroReadback.state -ceq "failed" -and
+              [string]$zeroReadback.machineCode -notin @(
+                "virtualDisplayDeviceCountInvalid",
+                "virtualDisplayDriverBindingMissing"))) {
+          $script:virtualDisplayDeviceRecovery = "failed"
+          $script:virtualDisplayResidualState = "unknown"
+          $script:virtualDisplayDriverBindingVerified = $false
+          throw "virtualDisplayDeviceZeroProofFailed"
+        }
+        Set-VirtualDisplayResidualAuthority $zeroReadback
+        if ($zeroReadbackCount -ne 0 -or
+            [string]$zeroReadback.uniqueDeviceIdsSha256 -cne $zeroEpoch) {
+          $script:virtualDisplayDeviceRecovery = "failed"
+          throw "virtualDisplayDeviceZeroProofFailed"
+        }
+        $zeroProofSamples++
+      }
+      if ($totalClock.ElapsedMilliseconds -ge $TotalMilliseconds) {
+        $script:virtualDisplayDeviceRecovery = "failed"
+        throw "virtualDisplayDeviceZeroProofFailed"
+      }
       $script:virtualDisplayRemoveExit = 0
       $script:virtualDisplayRemoveCount = $removed
       $script:virtualDisplayDeviceRecovery = "completed"
@@ -2525,10 +2577,21 @@ function Invoke-VirtualDisplayRemovalValidation([string]$Root) {
   Assert-ClosedProperties $case @(
     "schemaVersion", "counts", "removeExits", "fallbackExits",
     "fallbackFault", "readbackFaultAt", "settleMilliseconds",
-    "totalMilliseconds") "virtualDisplayRemovalValidation"
+    "totalMilliseconds", "identityEpochs",
+    "snapshotDelayMilliseconds") "virtualDisplayRemovalValidation"
   if ($case.schemaVersion -ne 1 -or $case.counts -isnot [array] -or
       $case.removeExits -isnot [array] -or
       $case.fallbackExits -isnot [array] -or
+      $case.identityEpochs -isnot [array] -or
+      $case.identityEpochs.Count -ne $case.counts.Count -or
+      @($case.identityEpochs | Where-Object {
+        $_ -isnot [string] -or [string]$_ -cnotmatch '^[0-9a-f]{64}$'
+      }).Count -ne 0 -or
+      $case.snapshotDelayMilliseconds -isnot [array] -or
+      $case.snapshotDelayMilliseconds.Count -ne $case.counts.Count -or
+      @($case.snapshotDelayMilliseconds | Where-Object {
+        $_ -isnot [int] -or [int]$_ -lt 0 -or [int]$_ -gt 1000
+      }).Count -ne 0 -or
       $case.fallbackFault -isnot [string] -or
       @("none", "timeout", "output", "cleanup") -cnotcontains
         [string]$case.fallbackFault -or
@@ -2561,6 +2624,14 @@ function Invoke-VirtualDisplayRemovalValidation([string]$Root) {
     fallbackIndex = 0
   }
   $snapshotProvider = {
+    $delayIndex = [Math]::Min(
+      [int]$validationState.snapshotIndex,
+      $case.snapshotDelayMilliseconds.Count - 1)
+    $snapshotDelay =
+      [int]$case.snapshotDelayMilliseconds[$delayIndex]
+    if ($snapshotDelay -gt 0) {
+      Start-Sleep -Milliseconds $snapshotDelay
+    }
     if ([int]$case.readbackFaultAt -eq
         [int]$validationState.snapshotIndex) {
       $validationState.snapshotIndex =
@@ -2588,8 +2659,10 @@ function Invoke-VirtualDisplayRemovalValidation([string]$Root) {
         "virtualDisplayDeviceCountInvalid"
       }
       deviceCount = $count
-      uniqueDeviceIdsSha256 =
-        ("{0:x64}" -f ([long]$count + 1))
+      uniqueDeviceIdsSha256 = [string]$case.identityEpochs[
+        [Math]::Min(
+          [int]$validationState.snapshotIndex - 1,
+          $case.identityEpochs.Count - 1)]
       driverBindingVerified = $count -eq 1
       removalInstanceIds = @(
         0..([Math]::Max(0, $count - 1)) | ForEach-Object {
@@ -4966,6 +5039,50 @@ try {
         [string]$lastOutcome.rollback.state -cne "completed") {
       throw "virtualDisplayDiagnosticProjectionInvalid"
     }
+    $script:virtualDisplayInstallStage = "completed"
+    $script:virtualDisplayReadbackCode = "virtualDisplayDeviceCountInvalid"
+    $script:virtualDisplayChildExit = 0
+    $script:virtualDisplayRemoveExit = 0
+    $script:virtualDisplayRemoveCount = 0
+    $script:virtualDisplayFallbackAttempted = $false
+    $script:virtualDisplayFallbackExitCode = -1
+    $script:virtualDisplayObservedDeviceCount = 2
+    $script:virtualDisplayDriverBindingVerified = $false
+    $script:virtualDisplayDeviceRecovery = "completed"
+    $script:virtualDisplayResidualState = "multiple"
+    $script:virtualDisplayCompensation = "failed"
+    $postCreateOriginal = New-VirtualDisplayDiagnostic (
+      "virtualDisplayRollbackFailed") $false
+    $postCreateToken =
+      ConvertTo-VirtualDisplayDiagnosticToken $postCreateOriginal
+    $postCreatePrimaryWriteFailed = $false
+    try { Write-VirtualDisplayDiagnostic $postCreateOriginal } catch {
+      $postCreatePrimaryWriteFailed = $true
+    }
+    $postCreateProjected =
+      ConvertFrom-VirtualDisplayDiagnosticToken $postCreateToken
+    $script:virtualDisplayDiagnostic = $postCreateProjected
+    $null = Write-InstallerEvidence
+    $postCreateLastOutcomeBytes = [IO.File]::ReadAllBytes($lastOutcomePath)
+    $postCreateLastOutcome = [Text.UTF8Encoding]::new(
+      $false, $true).GetString(
+        $postCreateLastOutcomeBytes) | ConvertFrom-Json
+    if ([string]$postCreateLastOutcome.failedField -cne "virtualDisplay" -or
+        [string]$postCreateLastOutcome.virtualDisplay.resultCode -cne
+          "virtualDisplayRollbackFailed" -or
+        [string]$postCreateLastOutcome.virtualDisplay.installStage -cne
+          "completed" -or
+        [int]$postCreateLastOutcome.virtualDisplay.removeCount -ne 0 -or
+        [bool]$postCreateLastOutcome.virtualDisplay.fallbackAttempted -or
+        [int]$postCreateLastOutcome.virtualDisplay.observedDeviceCount -ne 2 -or
+        [string]$postCreateLastOutcome.virtualDisplay.deviceRecovery -cne
+          "completed" -or
+        [string]$postCreateLastOutcome.virtualDisplay.residualDeviceState -cne
+          "multiple" -or
+        [string]$postCreateLastOutcome.virtualDisplay.compensationState -cne
+          "failed") {
+      throw "virtualDisplayDiagnosticProjectionInvalid"
+    }
     $script:virtualDisplayInstallStage = "deviceRemove"
     $script:virtualDisplayReadbackCode = "notAttempted"
     $script:virtualDisplayRemoveExit = 0
@@ -5017,6 +5134,21 @@ try {
       removePrimaryWriteFailed = $removePrimaryWriteFailed
       removeTokenLength = [int]$removeToken.Length
       removeLastOutcomeSha256 = Get-ByteSha256 $removeLastOutcomeBytes
+      postCreateResultCode = [string]$postCreateProjected.resultCode
+      postCreateRemoveCount = [int]$postCreateProjected.removeCount
+      postCreateFallbackAttempted =
+        [bool]$postCreateProjected.fallbackAttempted
+      postCreateObservedDeviceCount =
+        [int]$postCreateProjected.observedDeviceCount
+      postCreateDeviceRecovery =
+        [string]$postCreateProjected.deviceRecovery
+      postCreateResidualDeviceState =
+        [string]$postCreateProjected.residualDeviceState
+      postCreateCompensationState =
+        [string]$postCreateProjected.compensationState
+      postCreatePrimaryWriteFailed = $postCreatePrimaryWriteFailed
+      postCreateLastOutcomeSha256 =
+        Get-ByteSha256 $postCreateLastOutcomeBytes
     } | ConvertTo-Json -Compress))
     exit 0
   }
@@ -5251,6 +5383,7 @@ try {
             "virtualDisplayDeviceRemoveFailed",
             "virtualDisplayDeviceRemoveReadbackFailed",
             "virtualDisplayDeviceRemoveSettleFailed",
+            "virtualDisplayDeviceZeroProofFailed",
             "virtualDisplayDeviceRemoveFallbackFailed",
             "virtualDisplayInstallerCleanupFailed",
             "virtualDisplayInstallerOutputInvalid",
@@ -5712,6 +5845,7 @@ try {
     "virtualDisplayDeviceRemoveFallbackFailed",
     "virtualDisplayDeviceRemoveReadbackFailed",
     "virtualDisplayDeviceRemoveSettleFailed",
+    "virtualDisplayDeviceZeroProofFailed",
     "virtualDisplayDeviceCreateFailed",
     "virtualDisplayDriverPackageInstallFailed",
     "virtualDisplayReadbackFailed",

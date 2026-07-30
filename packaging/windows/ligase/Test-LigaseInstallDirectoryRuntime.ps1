@@ -5876,8 +5876,17 @@ if ([string]$trustedToolProjection.code -cne
 
 $virtualDisplayRemovalResults = @()
 $removalCases = @(
-  @{ name = "zero"; counts = @(0); exits = @(); fallback = @(); fault = "none"; readbackFaultAt = -1; success = $true
+  @{ name = "stableZero"; counts = @(0); exits = @(); fallback = @(); fault = "none"; readbackFaultAt = -1; success = $true
     code = "virtualDisplayRemoved"; removed = 0; final = 0 },
+  @{ name = "transientZeroToTwo"; counts = @(0, 2); exits = @(); fallback = @(); fault = "none"; readbackFaultAt = -1; success = $false
+    code = "virtualDisplayDeviceZeroProofFailed"; removed = 0; final = 2 },
+  @{ name = "zeroIdentityEpochDrift"; counts = @(0, 0); epochs = @(
+      ("1" * 64), ("2" * 64)); exits = @(); fallback = @(); fault = "none"; readbackFaultAt = -1; success = $false
+    code = "virtualDisplayDeviceZeroProofFailed"; removed = 0; final = 0 },
+  @{ name = "lastZeroSampleCrossesDeadline"; counts = @(0, 0, 0)
+    delays = @(0, 0, 180); total = 250; exits = @(); fallback = @()
+    fault = "none"; readbackFaultAt = -1; success = $false
+    code = "virtualDisplayDeviceZeroProofFailed"; removed = 0; final = 0 },
   @{ name = "one"; counts = @(1, 0); exits = @(0); fallback = @(); fault = "none"; readbackFaultAt = -1; success = $true
     code = "virtualDisplayRemoved"; removed = 1; final = 0 },
   @{ name = "two"; counts = @(2, 1, 1, 0); exits = @(0, 0); fallback = @(); fault = "none"; readbackFaultAt = -1; success = $true
@@ -5918,7 +5927,23 @@ foreach ($case in $removalCases) {
       fallbackFault = [string]$case.fault
       readbackFaultAt = [int]$case.readbackFaultAt
       settleMilliseconds = 200
-      totalMilliseconds = 1000
+      totalMilliseconds = if ($case.ContainsKey("total")) {
+        [int]$case.total
+      } else { 1000 }
+      identityEpochs = @(
+        if ($case.ContainsKey("epochs")) {
+          @($case.epochs)
+        } else {
+          @($case.counts | ForEach-Object {
+            "{0:x64}" -f ([long]$_ + 1)
+          })
+        })
+      snapshotDelayMilliseconds = @(
+        if ($case.ContainsKey("delays")) {
+          @($case.delays)
+        } else {
+          @($case.counts | ForEach-Object { 0 })
+        })
     } | ConvertTo-Json -Compress),
     [Text.UTF8Encoding]::new($false))
   $previousHarness = $env:LIGASE_INSTALL_VALIDATION_HARNESS
@@ -5968,6 +5993,14 @@ foreach ($case in $removalCases) {
   if ([string]$case.name -ceq "postRemoveReadbackFailure" -and (
       [string]$projection.deviceRecovery -cne "failed" -or
       [string]$projection.residualDeviceState -cne "unknown")) {
+    throw "virtualDisplayRemovalFixtureAssertionFailed:$($case.name)"
+  }
+  if ([string]$case.name -in @(
+      "transientZeroToTwo", "zeroIdentityEpochDrift",
+      "lastZeroSampleCrossesDeadline") -and (
+      [int]$projection.removeCalls -ne 0 -or
+      [int]$projection.fallbackCalls -ne 0 -or
+      [string]$projection.deviceRecovery -cne "failed")) {
     throw "virtualDisplayRemovalFixtureAssertionFailed:$($case.name)"
   }
   $virtualDisplayRemovalResults += [ordered]@{
@@ -6061,6 +6094,20 @@ if ([string]$diagnosticProjection.code -cne
     [int]$diagnosticProjection.removeTokenLength -lt 1 -or
     [int]$diagnosticProjection.removeTokenLength -gt 970 -or
     [string]$diagnosticProjection.removeLastOutcomeSha256 -cnotmatch
+      '^[0-9a-f]{64}$' -or
+    [string]$diagnosticProjection.postCreateResultCode -cne
+      "virtualDisplayRollbackFailed" -or
+    [int]$diagnosticProjection.postCreateRemoveCount -ne 0 -or
+    [bool]$diagnosticProjection.postCreateFallbackAttempted -or
+    [int]$diagnosticProjection.postCreateObservedDeviceCount -ne 2 -or
+    [string]$diagnosticProjection.postCreateDeviceRecovery -cne
+      "completed" -or
+    [string]$diagnosticProjection.postCreateResidualDeviceState -cne
+      "multiple" -or
+    [string]$diagnosticProjection.postCreateCompensationState -cne
+      "failed" -or
+    -not [bool]$diagnosticProjection.postCreatePrimaryWriteFailed -or
+    [string]$diagnosticProjection.postCreateLastOutcomeSha256 -cnotmatch
       '^[0-9a-f]{64}$') {
   throw "virtualDisplayDiagnosticProjectionFixtureAssertionFailed"
 }

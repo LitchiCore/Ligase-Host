@@ -650,7 +650,13 @@ An `install.bat` exit code of zero is provisional rather than success
 authority. Repair removes matching device nodes with a bounded loop before
 creating a replacement. Each removal is followed by a bounded enumeration
 readback, and creation is permitted only after that readback proves the
-matching device count is zero. A nefcon removal exit of 6, or any other
+matching device count is zero. A single zero snapshot is never sufficient:
+the helper requires at least three zero snapshots spanning a bounded settle
+window, with the same sorted unique-identity-set SHA-256 throughout. A
+nonzero count, readback uncertainty, identity epoch drift, or total-deadline
+expiry during this proof is closed
+`virtualDisplayDeviceZeroProofFailed`; creation is not attempted. A nefcon
+removal exit of 6, or any other
 nonzero exit, is a typed removal failure and is never interpreted as “no
 devices remain.” When and only when that exit is 6, repair may use the
 system `PnPUtil /remove-device` fallback for one instance identity taken from
