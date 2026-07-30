@@ -673,8 +673,15 @@ strict child tuple exists. Failure to read the count after mutation is closed
 `virtualDisplayDeviceRemoveReadbackFailed`; failure to observe monotonic
 progress within the settle or total deadline is
 `virtualDisplayDeviceRemoveSettleFailed`. Before writing the ownership marker or
-returning `virtualDisplayInstalled`, the helper requires exactly one present
-device with the complete SudoVDA hardware ID, compared using Windows'
+returning `virtualDisplayInstalled`, the helper first inventories every PnP
+devnode with the complete SudoVDA hardware ID, including non-present and
+unbound nodes and without prefiltering friendly name or instance text. Zero
+before creation requires that full inventory to be empty; an unavailable or
+incomplete inventory is unknown and fails closed. Hardware IDs and the bound
+INF are read through typed PnP properties for each enumerated node; a property
+read failure cannot be interpreted as an absent node. Final success then requires
+exactly one total matching node which is present and has a bound Windows OEM
+INF. Hardware IDs are compared using Windows'
 ordinal-ignore-case identity semantics without prefix, suffix, or substring
 matching, and a bound Windows OEM INF. Zero or duplicate matching devices,
 missing driver binding, or readback failure is closed. The readback projects
@@ -684,7 +691,7 @@ raw identities.
 The child action atomically persists a strict, safe virtual-display diagnostic
 containing the install stage, readback code, child/remove and fallback exits,
 the closed fallback substage and reason, removal count, process cleanup state,
-marker stage, observed count,
+marker stage, total observed and present counts,
 identity-set hash, binding result, device-recovery state, residual-device
 state, marker/certificate compensation state and failure reason, and the final
 terminal-enumeration state and reason. It also records a bounded create

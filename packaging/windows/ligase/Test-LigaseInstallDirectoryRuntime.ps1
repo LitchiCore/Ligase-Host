@@ -5761,51 +5761,101 @@ if (-not (Test-Path -LiteralPath $readbackPowerShell -PathType Leaf)) {
   throw "virtualDisplayReadbackFixtureHostUnavailable"
 }
 $readbackCases = @(
-  @{ name = "absent"; devices = @(); state = "notInstalled"; count = 0 },
+  @{ name = "absent"; inventoryState = "available"; devices = @();
+    state = "notInstalled"; count = 0; present = 0 },
+  @{ name = "inventoryUnavailable"; inventoryState = "unavailable";
+    devices = @(); state = "failed"; count = 0; present = 0 },
   @{ name = "exactOne"; devices = @([ordered]@{
       instanceId = "ROOT\DISPLAY\1000"
       hardwareIds = @("root\sudomaker\sudovda")
       status = "OK"
+      present = $true
       driverInf = "oem32.inf"
-    }); state = "available"; count = 1 },
+    }); inventoryState = "available"; state = "available"; count = 1;
+      present = 1 },
   @{ name = "exactOneUppercase"; devices = @([ordered]@{
       instanceId = "ROOT\DISPLAY\1002"
       hardwareIds = @("ROOT\SUDOMAKER\SUDOVDA")
       status = "OK"
+      present = $true
       driverInf = "oem32.inf"
-    }); state = "available"; count = 1 },
+    }); inventoryState = "available"; state = "available"; count = 1;
+      present = 1 },
   @{ name = "exactOneMixedCase"; devices = @([ordered]@{
       instanceId = "ROOT\DISPLAY\1003"
       hardwareIds = @("Root\SudoMaker\SudoVDA")
       status = "OK"
+      present = $true
       driverInf = "oem32.inf"
-    }); state = "available"; count = 1 },
+    }); inventoryState = "available"; state = "available"; count = 1;
+      present = 1 },
   @{ name = "duplicate"; devices = @(
       [ordered]@{
         instanceId = "ROOT\DISPLAY\1000"
         hardwareIds = @("root\sudomaker\sudovda")
         status = "OK"
+        present = $true
         driverInf = "oem32.inf"
       },
       [ordered]@{
         instanceId = "ROOT\DISPLAY\1001"
         hardwareIds = @("root\sudomaker\sudovda")
         status = "OK"
+        present = $true
         driverInf = "oem32.inf"
-      }); state = "failed"; count = 2 },
+      }); inventoryState = "available"; state = "failed"; count = 2;
+        present = 2 },
   @{ name = "bindingMissing"; devices = @([ordered]@{
       instanceId = "ROOT\DISPLAY\1000"
       hardwareIds = @("root\sudomaker\sudovda")
       status = "OK"
+      present = $true
       driverInf = ""
-    }); state = "failed"; count = 1 }
+    }); inventoryState = "available"; state = "failed"; count = 1;
+      present = 1 },
+  @{ name = "nonPresentExact"; devices = @([ordered]@{
+      instanceId = "ROOT\DISPLAY\2000"
+      hardwareIds = @("root\sudomaker\sudovda")
+      status = "Unknown"
+      present = $false
+      driverInf = ""
+    }); inventoryState = "available"; state = "failed"; count = 1;
+      present = 0 },
+  @{ name = "unboundExactUnexpectedNames"; devices = @([ordered]@{
+      instanceId = "ROOT\OTHER\2001"
+      hardwareIds = @("root\sudomaker\sudovda")
+      status = "OK"
+      present = $true
+      driverInf = ""
+    }); inventoryState = "available"; state = "failed"; count = 1;
+      present = 1 },
+  @{ name = "mixedPresentAndPhantom"; devices = @(
+      [ordered]@{
+        instanceId = "ROOT\DISPLAY\2002"
+        hardwareIds = @("root\sudomaker\sudovda")
+        status = "OK"
+        present = $true
+        driverInf = "oem32.inf"
+      },
+      [ordered]@{
+        instanceId = "ROOT\OTHER\2003"
+        hardwareIds = @("root\sudomaker\sudovda")
+        status = "Unknown"
+        present = $false
+        driverInf = ""
+      }); inventoryState = "available"; state = "failed"; count = 2;
+        present = 1 }
 )
 foreach ($case in $readbackCases) {
   $caseRoot = Join-Path $root ("virtual-display-readback-" + $case.name)
   New-Item -ItemType Directory -Path $caseRoot | Out-Null
   [IO.File]::WriteAllText(
     (Join-Path $caseRoot "virtual-display-snapshot.json"),
-    ([ordered]@{ schemaVersion = 1; devices = @($case.devices) } |
+    ([ordered]@{
+        schemaVersion = 1
+        inventoryState = [string]$case.inventoryState
+        devices = @($case.devices)
+      } |
       ConvertTo-Json -Depth 5 -Compress),
     [Text.UTF8Encoding]::new($false))
   $previousHarness = $env:LIGASE_INSTALL_VALIDATION_HARNESS
@@ -5834,6 +5884,7 @@ foreach ($case in $readbackCases) {
   $projection = [string]$raw | ConvertFrom-Json
   if ([string]$projection.state -cne [string]$case.state -or
       [int]$projection.deviceCount -ne [int]$case.count -or
+      [int]$projection.presentDeviceCount -ne [int]$case.present -or
       [string]$projection.uniqueDeviceIdsSha256 -cnotmatch '^[0-9a-f]{64}$') {
     throw "virtualDisplayReadbackFixtureAssertionFailed:$($case.name)"
   }
@@ -5841,6 +5892,7 @@ foreach ($case in $readbackCases) {
     name = [string]$case.name
     state = [string]$projection.state
     deviceCount = [int]$projection.deviceCount
+    presentDeviceCount = [int]$projection.presentDeviceCount
     identitySha = [string]$projection.uniqueDeviceIdsSha256
   }
 }
@@ -5917,6 +5969,10 @@ $removalCases = @(
     fallback = @(); fault = "output"; readbackFaultAt = -1; success = $false
     code = "virtualDisplayDeviceRemoveFallbackFailed"; removed = 0; final = 1
     fallbackStage = "processInvoke"; fallbackReason = "outputInvalid" },
+  @{ name = "fallbackEncodingPreTuple"; counts = @(1); exits = @(6)
+    fallback = @(); fault = "encoding"; readbackFaultAt = -1; success = $false
+    code = "virtualDisplayDeviceRemoveFallbackFailed"; removed = 0; final = 1
+    fallbackStage = "processInvoke"; fallbackReason = "encodingInvalid" },
   @{ name = "fallbackOverflowPreTuple"; counts = @(1); exits = @(6)
     fallback = @(); fault = "overflow"; readbackFaultAt = -1; success = $false
     code = "virtualDisplayDeviceRemoveFallbackFailed"; removed = 0; final = 1
@@ -6177,7 +6233,7 @@ $diagnosticProjection = [string]$diagnosticRaw | ConvertFrom-Json
 if ([string]$diagnosticProjection.code -cne
       "virtualDisplayDiagnosticProjectionValidated" -or
     -not [bool]$diagnosticProjection.success -or
-    [int]$diagnosticProjection.crossSpliceRejected -ne 9 -or
+    [int]$diagnosticProjection.crossSpliceRejected -ne 11 -or
     -not [bool]$diagnosticProjection.primaryWriteFailed -or
     [string]$diagnosticProjection.resultCode -cne
       "virtualDisplayReadbackFailed" -or

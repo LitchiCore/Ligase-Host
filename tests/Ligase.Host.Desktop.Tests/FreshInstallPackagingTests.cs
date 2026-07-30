@@ -1727,6 +1727,18 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(management, "postCreateIdentitySha256");
         StringAssert.Contains(management, "postCreateIdentityState");
         StringAssert.Contains(management, "postCreateIdentityReason");
+        StringAssert.Contains(management, "presentDeviceCount");
+        StringAssert.Contains(management, "Get-PnpDevice -ErrorAction Stop");
+        StringAssert.Contains(management, "\"DEVPKEY_Device_HardwareIds\"");
+        StringAssert.Contains(management, "\"DEVPKEY_Device_DriverInfPath\"");
+        StringAssert.Contains(management,
+            "return $env:LIGASE_VIRTUAL_DISPLAY_DEPENDENT_DEVICE -ceq \"1\"");
+        Assert.IsFalse(management.Contains(
+            "Get-PnpDevice -PresentOnly -ErrorAction Stop",
+            StringComparison.Ordinal));
+        Assert.IsFalse(management.Contains(
+            "$_.FriendlyName -match \"SudoVDA|Virtual Display\"",
+            StringComparison.Ordinal));
         StringAssert.Contains(management,
             "$script:virtualDisplayCreateInvocationCount = 1");
         StringAssert.Contains(management,
@@ -1752,6 +1764,8 @@ public sealed class FreshInstallPackagingTests
             "\"createInvocationPostIdentityContradiction\"");
         StringAssert.Contains(management,
             "\"createInvocationPostFailureContradiction\"");
+        StringAssert.Contains(management, "\"presentCountContradiction\"");
+        StringAssert.Contains(management, "\"boundNonPresentContradiction\"");
         StringAssert.Contains(management, "$createProvenanceValid =");
         StringAssert.Contains(management,
             "Set-VirtualDisplayPostCreateIdentityAuthority");
@@ -1773,6 +1787,13 @@ public sealed class FreshInstallPackagingTests
             "virtualDisplayTerminalReadbackCases");
         StringAssert.Contains(runtimeHarness, "\"oneUnbound\"");
         StringAssert.Contains(runtimeHarness, "\"unavailable\"");
+        StringAssert.Contains(runtimeHarness, "\"nonPresentExact\"");
+        StringAssert.Contains(runtimeHarness,
+            "\"unboundExactUnexpectedNames\"");
+        StringAssert.Contains(runtimeHarness, "\"mixedPresentAndPhantom\"");
+        StringAssert.Contains(runtimeHarness, "\"inventoryUnavailable\"");
+        StringAssert.Contains(management,
+            "\"schemaVersion\", \"inventoryState\", \"devices\"");
         StringAssert.Contains(management, "Invoke-VirtualDisplayInstaller");
         StringAssert.Contains(management, "ValidateVirtualDisplayInstallerProcess");
         StringAssert.Contains(management, "jobProcess.StandardOutput.ReadAsync");
