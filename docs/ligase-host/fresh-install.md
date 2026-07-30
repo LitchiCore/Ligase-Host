@@ -683,14 +683,22 @@ raw identities.
 
 The child action atomically persists a strict, safe virtual-display diagnostic
 containing the install stage, readback code, child/remove and fallback exits,
-removal count, process cleanup state, marker stage, observed count,
+the closed fallback substage and reason, removal count, process cleanup state,
+marker stage, observed count,
 identity-set hash, binding result, device-recovery state, residual-device
-state, and marker/certificate compensation state. Device recovery is
+state, marker/certificate compensation state and failure reason, and the final
+terminal-enumeration state and reason. A pre-tuple fallback failure therefore
+distinguishes trusted-tool resolution, process start or cleanup, timeout,
+bounded-output, and tuple-validation boundaries without persisting paths,
+output, exception text, or raw device identities. Device recovery is
 `completed` only when enumeration proves zero before creation; a completed
 transaction, shortcut, firewall, marker, or certificate compensation never
 asserts that PnP state was restored. Any terminal post-mutation readback error
-sets device recovery to `failed` and residual state to `unknown`, rather than
-leaving an in-progress state or claiming zero. A new child action first removes any
+sets its observed count to the closed unknown value, binding to false, and
+residual state to `unknown`, rather than retaining an earlier transient zero.
+After every marker and certificate compensation attempt, one fresh terminal
+enumeration replaces the earlier residual projection; compensation failure
+does not overwrite the primary removal or fallback failure. A new child action first removes any
 previous diagnostic; the
 strict readback binds the replacement to the current manifest source and a
 bounded UTC freshness window. It contains no stdout, stderr, path, device identity, or
@@ -701,6 +709,15 @@ passes that token without interpreting its contents; `FinalizeInstall` accepts
 it only after strict base64url, hash, unique-property, schema, source-head, and
 freshness validation. This secondary transport preserves the original failure
 tuple when the primary diagnostic ACL or atomic file write is unavailable.
+Both file and token consumers enforce the same cross-field correlations. A
+fallback which was not attempted cannot carry an exit or completed stage; a
+completed or not-required compensation cannot carry a failure reason; and the
+terminal state, reason, count, residual class, and binding must describe one
+internally consistent authority. A completed zero count requires the frozen
+empty-set SHA-256, while any positive count requires a non-empty-set identity
+hash; failed or not-attempted terminal reads carry only the empty-set hash and
+cannot preserve an earlier sample as terminal authority. Cross-spliced
+diagnostics are rejected before they can reach `last-outcome.json`.
 `FinalizeInstall` includes the validated tuple in `last-outcome.json`, so a
 duplicate-device count or other failed UI retains the first closed
 virtual-display authority for later readback. A secondary persistence failure

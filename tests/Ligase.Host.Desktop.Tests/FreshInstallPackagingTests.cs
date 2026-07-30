@@ -1690,7 +1690,10 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(runtimeHarness, "\"exit6FallbackFailed\"");
         StringAssert.Contains(runtimeHarness, "\"fallbackTimeoutPreTuple\"");
         StringAssert.Contains(runtimeHarness, "\"fallbackOutputPreTuple\"");
+        StringAssert.Contains(runtimeHarness, "\"fallbackOverflowPreTuple\"");
+        StringAssert.Contains(runtimeHarness, "\"fallbackUnavailablePreTuple\"");
         StringAssert.Contains(runtimeHarness, "\"fallbackCleanupPreTuple\"");
+        StringAssert.Contains(runtimeHarness, "\"fallbackTrustedToolPreTuple\"");
         StringAssert.Contains(runtimeHarness, "\"postRemoveReadbackFailure\"");
         StringAssert.Contains(runtimeHarness, "\"stableZero\"");
         StringAssert.Contains(runtimeHarness, "\"transientZeroToTwo\"");
@@ -1711,6 +1714,27 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(management, "deviceRecovery");
         StringAssert.Contains(management, "residualDeviceState");
         StringAssert.Contains(management, "compensationState");
+        StringAssert.Contains(management, "fallbackStage");
+        StringAssert.Contains(management, "fallbackReason");
+        StringAssert.Contains(management, "compensationFailureReason");
+        StringAssert.Contains(management, "terminalReadbackState");
+        StringAssert.Contains(management, "terminalReadbackReason");
+        StringAssert.Contains(management,
+            "Set-VirtualDisplayTerminalResidualAuthority");
+        StringAssert.Contains(management,
+            "Assert-VirtualDisplayDiagnosticCorrelation");
+        StringAssert.Contains(management, "\"fallbackContradiction\"");
+        StringAssert.Contains(management, "\"compensationContradiction\"");
+        StringAssert.Contains(management, "\"terminalContradiction\"");
+        StringAssert.Contains(management,
+            "\"terminalZeroHashContradiction\"");
+        StringAssert.Contains(management,
+            "\"terminalPositiveHashContradiction\"");
+        StringAssert.Contains(runtimeHarness, "crossSpliceRejected");
+        StringAssert.Contains(runtimeHarness,
+            "virtualDisplayTerminalReadbackCases");
+        StringAssert.Contains(runtimeHarness, "\"oneUnbound\"");
+        StringAssert.Contains(runtimeHarness, "\"unavailable\"");
         StringAssert.Contains(management, "Invoke-VirtualDisplayInstaller");
         StringAssert.Contains(management, "ValidateVirtualDisplayInstallerProcess");
         StringAssert.Contains(management, "jobProcess.StandardOutput.ReadAsync");

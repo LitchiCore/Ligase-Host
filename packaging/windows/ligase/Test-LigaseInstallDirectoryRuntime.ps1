@@ -5899,13 +5899,29 @@ $removalCases = @(
     code = "virtualDisplayDeviceRemoveFallbackFailed"; removed = 0; final = 1 },
   @{ name = "fallbackTimeoutPreTuple"; counts = @(1); exits = @(6)
     fallback = @(); fault = "timeout"; readbackFaultAt = -1; success = $false
-    code = "virtualDisplayDeviceRemoveFallbackFailed"; removed = 0; final = 1 },
+    code = "virtualDisplayDeviceRemoveFallbackFailed"; removed = 0; final = 1
+    fallbackStage = "processInvoke"; fallbackReason = "timeout" },
   @{ name = "fallbackOutputPreTuple"; counts = @(1); exits = @(6)
     fallback = @(); fault = "output"; readbackFaultAt = -1; success = $false
-    code = "virtualDisplayDeviceRemoveFallbackFailed"; removed = 0; final = 1 },
+    code = "virtualDisplayDeviceRemoveFallbackFailed"; removed = 0; final = 1
+    fallbackStage = "processInvoke"; fallbackReason = "outputInvalid" },
+  @{ name = "fallbackOverflowPreTuple"; counts = @(1); exits = @(6)
+    fallback = @(); fault = "overflow"; readbackFaultAt = -1; success = $false
+    code = "virtualDisplayDeviceRemoveFallbackFailed"; removed = 0; final = 1
+    fallbackStage = "processInvoke"; fallbackReason = "outputOverflow" },
+  @{ name = "fallbackUnavailablePreTuple"; counts = @(1); exits = @(6)
+    fallback = @(); fault = "unavailable"; readbackFaultAt = -1; success = $false
+    code = "virtualDisplayDeviceRemoveFallbackFailed"; removed = 0; final = 1
+    fallbackStage = "processInvoke"; fallbackReason = "outputUnavailable" },
   @{ name = "fallbackCleanupPreTuple"; counts = @(1); exits = @(6)
     fallback = @(); fault = "cleanup"; readbackFaultAt = -1; success = $false
-    code = "virtualDisplayDeviceRemoveFallbackFailed"; removed = 0; final = 1 },
+    code = "virtualDisplayDeviceRemoveFallbackFailed"; removed = 0; final = 1
+    fallbackStage = "processInvoke"; fallbackReason = "processStartOrCleanup" },
+  @{ name = "fallbackTrustedToolPreTuple"; counts = @(1); exits = @(6)
+    fallback = @(); fault = "trustedTool"; readbackFaultAt = -1; success = $false
+    code = "virtualDisplayDeviceRemoveFallbackFailed"; removed = 0; final = 1
+    fallbackStage = "trustedToolResolve"
+    fallbackReason = "trustedToolUnavailable" },
   @{ name = "postRemoveReadbackFailure"; counts = @(1); exits = @(0)
     fallback = @(); fault = "none"; readbackFaultAt = 1; success = $false
     code = "virtualDisplayDeviceRemoveReadbackFailed"; removed = 0; final = 1 },
@@ -5983,7 +5999,11 @@ foreach ($case in $removalCases) {
       [int]$projection.fallbackExitCode -ne -1 -or
       [int]$projection.removeExitCode -ne 6 -or
       [string]$projection.deviceRecovery -cne "failed" -or
-      [string]$projection.residualDeviceState -cne "exactOneBound")) {
+      [string]$projection.residualDeviceState -cne "exactOneBound" -or
+      [string]$projection.fallbackStage -cne
+        [string]$case.fallbackStage -or
+      [string]$projection.fallbackReason -cne
+        [string]$case.fallbackReason)) {
     throw "virtualDisplayRemovalFixtureAssertionFailed:$($case.name)"
   }
   if ([string]$case.name -ceq "exit6FallbackFailed" -and
@@ -6011,10 +6031,86 @@ foreach ($case in $removalCases) {
     fallbackCalls = [int]$projection.fallbackCalls
     removeCount = [int]$projection.removeCount
     fallbackExitCode = [int]$projection.fallbackExitCode
+    fallbackStage = [string]$projection.fallbackStage
+    fallbackReason = [string]$projection.fallbackReason
     observedDeviceCount = [int]$projection.observedDeviceCount
     snapshotReads = [int]$projection.snapshotReads
     deviceRecovery = [string]$projection.deviceRecovery
     residualDeviceState = [string]$projection.residualDeviceState
+  }
+}
+
+$virtualDisplayTerminalReadbackResults = @()
+$terminalCases = @(
+  @{ mode = "zero"; count = 0; state = "zero"; readback = "completed"
+    reason = "none"; binding = $false },
+  @{ mode = "oneBound"; count = 1; state = "exactOneBound"
+    readback = "completed"; reason = "none"; binding = $true },
+  @{ mode = "oneUnbound"; count = 1; state = "exactOneUnbound"
+    readback = "completed"; reason = "none"; binding = $false },
+  @{ mode = "unknown"; count = -1; state = "unknown"
+    readback = "failed"; reason = "invalid"; binding = $false },
+  @{ mode = "unavailable"; count = -1; state = "unknown"
+    readback = "failed"; reason = "unavailable"; binding = $false }
+)
+foreach ($case in $terminalCases) {
+  $caseRoot = Join-Path $root (
+    "virtual-display-terminal-" + [string]$case.mode)
+  New-Item -ItemType Directory -Path $caseRoot | Out-Null
+  [IO.File]::WriteAllText(
+    (Join-Path $caseRoot "terminal-case.json"),
+    ([ordered]@{
+      schemaVersion = 1
+      mode = [string]$case.mode
+    } | ConvertTo-Json -Compress),
+    [Text.UTF8Encoding]::new($false))
+  $previousHarness = $env:LIGASE_INSTALL_VALIDATION_HARNESS
+  $previousTerminalRoot =
+    $env:LIGASE_VIRTUAL_DISPLAY_TERMINAL_VALIDATION_ROOT
+  try {
+    $env:LIGASE_INSTALL_VALIDATION_HARNESS = "1"
+    $env:LIGASE_VIRTUAL_DISPLAY_TERMINAL_VALIDATION_ROOT = $caseRoot
+    $terminalRaw = @(& $readbackPowerShell -NoProfile -NonInteractive `
+      -ExecutionPolicy Bypass -File $managementScript `
+      -Action ValidateVirtualDisplayTerminalReadback `
+      -InstallDirectory $caseRoot -ValidationRoot $caseRoot)
+  } finally {
+    if ($null -eq $previousHarness) {
+      Remove-Item Env:LIGASE_INSTALL_VALIDATION_HARNESS `
+        -ErrorAction SilentlyContinue
+    } else { $env:LIGASE_INSTALL_VALIDATION_HARNESS = $previousHarness }
+    if ($null -eq $previousTerminalRoot) {
+      Remove-Item Env:LIGASE_VIRTUAL_DISPLAY_TERMINAL_VALIDATION_ROOT `
+        -ErrorAction SilentlyContinue
+    } else {
+      $env:LIGASE_VIRTUAL_DISPLAY_TERMINAL_VALIDATION_ROOT =
+        $previousTerminalRoot
+    }
+  }
+  if ($LASTEXITCODE -ne 0 -or @($terminalRaw).Count -ne 1) {
+    throw "virtualDisplayTerminalFixtureFailed:$($case.mode)"
+  }
+  $projection = [string]$terminalRaw | ConvertFrom-Json
+  if ([string]$projection.code -cne
+        "virtualDisplayTerminalReadbackValidated" -or
+      -not [bool]$projection.success -or
+      [int]$projection.observedDeviceCount -ne [int]$case.count -or
+      [string]$projection.residualDeviceState -cne [string]$case.state -or
+      [string]$projection.terminalReadbackState -cne
+        [string]$case.readback -or
+      [string]$projection.terminalReadbackReason -cne
+        [string]$case.reason -or
+      [bool]$projection.driverBindingVerified -ne [bool]$case.binding -or
+      [bool]$projection.pnpAccess -or
+      [bool]$projection.programDataAccess) {
+    throw "virtualDisplayTerminalFixtureAssertionFailed:$($case.mode)"
+  }
+  $virtualDisplayTerminalReadbackResults += [ordered]@{
+    mode = [string]$case.mode
+    observedDeviceCount = [int]$projection.observedDeviceCount
+    residualDeviceState = [string]$projection.residualDeviceState
+    terminalReadbackState = [string]$projection.terminalReadbackState
+    terminalReadbackReason = [string]$projection.terminalReadbackReason
   }
 }
 
@@ -6069,6 +6165,7 @@ $diagnosticProjection = [string]$diagnosticRaw | ConvertFrom-Json
 if ([string]$diagnosticProjection.code -cne
       "virtualDisplayDiagnosticProjectionValidated" -or
     -not [bool]$diagnosticProjection.success -or
+    [int]$diagnosticProjection.crossSpliceRejected -ne 5 -or
     -not [bool]$diagnosticProjection.primaryWriteFailed -or
     [string]$diagnosticProjection.resultCode -cne
       "virtualDisplayReadbackFailed" -or
@@ -6081,7 +6178,7 @@ if ([string]$diagnosticProjection.code -cne
     [string]$diagnosticProjection.compensationState -cne "completed" -or
     [string]$diagnosticProjection.transactionRollback -cne "completed" -or
     [int]$diagnosticProjection.tokenLength -lt 1 -or
-    [int]$diagnosticProjection.tokenLength -gt 970 -or
+    [int]$diagnosticProjection.tokenLength -gt 1400 -or
     [string]$diagnosticProjection.tokenSha256 -cnotmatch '^[0-9a-f]{64}$' -or
     [string]$diagnosticProjection.lastOutcomeSha256 -cnotmatch
       '^[0-9a-f]{64}$' -or
@@ -6092,20 +6189,26 @@ if ([string]$diagnosticProjection.code -cne
     [int]$diagnosticProjection.removeCount -ne 16 -or
     -not [bool]$diagnosticProjection.removePrimaryWriteFailed -or
     [int]$diagnosticProjection.removeTokenLength -lt 1 -or
-    [int]$diagnosticProjection.removeTokenLength -gt 970 -or
+    [int]$diagnosticProjection.removeTokenLength -gt 1400 -or
     [string]$diagnosticProjection.removeLastOutcomeSha256 -cnotmatch
       '^[0-9a-f]{64}$' -or
     [string]$diagnosticProjection.postCreateResultCode -cne
       "virtualDisplayRollbackFailed" -or
     [int]$diagnosticProjection.postCreateRemoveCount -ne 0 -or
     [bool]$diagnosticProjection.postCreateFallbackAttempted -or
-    [int]$diagnosticProjection.postCreateObservedDeviceCount -ne 2 -or
+    [int]$diagnosticProjection.postCreateObservedDeviceCount -ne 1 -or
     [string]$diagnosticProjection.postCreateDeviceRecovery -cne
       "completed" -or
     [string]$diagnosticProjection.postCreateResidualDeviceState -cne
-      "multiple" -or
+      "exactOneUnbound" -or
     [string]$diagnosticProjection.postCreateCompensationState -cne
       "failed" -or
+    [string]$diagnosticProjection.postCreateCompensationFailureReason -cne
+      "dependentDevice" -or
+    [string]$diagnosticProjection.postCreateTerminalReadbackState -cne
+      "completed" -or
+    [string]$diagnosticProjection.postCreateTerminalReadbackReason -cne
+      "none" -or
     -not [bool]$diagnosticProjection.postCreatePrimaryWriteFailed -or
     [string]$diagnosticProjection.postCreateLastOutcomeSha256 -cnotmatch
       '^[0-9a-f]{64}$') {
@@ -6124,6 +6227,8 @@ if ([string]$diagnosticProjection.code -cne
   virtualDisplayReadbackCases = $virtualDisplayReadbackResults
   virtualDisplayTrustedTool = $trustedToolProjection
   virtualDisplayRemovalCases = $virtualDisplayRemovalResults
+  virtualDisplayTerminalReadbackCases =
+    $virtualDisplayTerminalReadbackResults
   virtualDisplayDiagnosticProjection = $diagnosticProjection
   boundedHostProcessCases = $boundedHostCases
   boundedHostRunner = [ordered]@{
