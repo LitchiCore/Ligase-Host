@@ -1652,6 +1652,8 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(management, "Read-VirtualDisplayDiagnostic");
         StringAssert.Contains(management, "ConvertTo-VirtualDisplayDiagnosticToken");
         StringAssert.Contains(management, "ConvertFrom-VirtualDisplayDiagnosticToken");
+        StringAssert.Contains(management,
+            "[A-Za-z0-9_-]{1,2048}");
         StringAssert.Contains(management, "\"vd1.$payload.");
         StringAssert.Contains(nsis,
             "-VirtualDisplayDiagnosticToken \"$VirtualDisplayDiagnosticToken\"");
@@ -1719,6 +1721,18 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(management, "compensationFailureReason");
         StringAssert.Contains(management, "terminalReadbackState");
         StringAssert.Contains(management, "terminalReadbackReason");
+        StringAssert.Contains(management, "createInvocationCount");
+        StringAssert.Contains(management, "createInvocationIdSha256");
+        StringAssert.Contains(management, "preCreateIdentitySha256");
+        StringAssert.Contains(management, "postCreateIdentitySha256");
+        StringAssert.Contains(management, "postCreateIdentityState");
+        StringAssert.Contains(management, "postCreateIdentityReason");
+        StringAssert.Contains(management,
+            "$script:virtualDisplayCreateInvocationCount = 1");
+        StringAssert.Contains(management,
+            "$script:virtualDisplayPreCreateIdentitySha256 =");
+        StringAssert.Contains(management,
+            "$script:virtualDisplayPostCreateIdentitySha256 =");
         StringAssert.Contains(management,
             "Set-VirtualDisplayTerminalResidualAuthority");
         StringAssert.Contains(management,
@@ -1730,6 +1744,30 @@ public sealed class FreshInstallPackagingTests
             "\"terminalZeroHashContradiction\"");
         StringAssert.Contains(management,
             "\"terminalPositiveHashContradiction\"");
+        StringAssert.Contains(management,
+            "\"createInvocationAbsentContradiction\"");
+        StringAssert.Contains(management,
+            "\"createInvocationPresentContradiction\"");
+        StringAssert.Contains(management,
+            "\"createInvocationPostIdentityContradiction\"");
+        StringAssert.Contains(management,
+            "\"createInvocationPostFailureContradiction\"");
+        StringAssert.Contains(management, "$createProvenanceValid =");
+        StringAssert.Contains(management,
+            "Set-VirtualDisplayPostCreateIdentityAuthority");
+        StringAssert.Contains(runtimeHarness, "prePostIdentityState");
+        StringAssert.Contains(runtimeHarness, "prePostIdentityReason");
+        StringAssert.Contains(runtimeHarness, "prePostZeroIdentityState");
+        StringAssert.Contains(runtimeHarness,
+            "prePostZeroObservedDeviceCount");
+        StringAssert.Contains(management, "$markerAlreadyExact =");
+        StringAssert.Contains(management, "if (-not $markerAlreadyExact)");
+        StringAssert.Contains(runtimeHarness, "\"marker-restore-exact-noop\"");
+        StringAssert.Contains(runtimeHarness,
+            "LIGASE_VIRTUAL_DISPLAY_FORCE_MARKER_CHANGED");
+        StringAssert.Contains(runtimeHarness, "-ForceMarkerChanged $true");
+        StringAssert.Contains(management,
+            "LIGASE_VIRTUAL_DISPLAY_FORCE_MARKER_CHANGED");
         StringAssert.Contains(runtimeHarness, "crossSpliceRejected");
         StringAssert.Contains(runtimeHarness,
             "virtualDisplayTerminalReadbackCases");

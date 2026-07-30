@@ -687,7 +687,17 @@ the closed fallback substage and reason, removal count, process cleanup state,
 marker stage, observed count,
 identity-set hash, binding result, device-recovery state, residual-device
 state, marker/certificate compensation state and failure reason, and the final
-terminal-enumeration state and reason. A pre-tuple fallback failure therefore
+terminal-enumeration state and reason. It also records a bounded create
+provenance tuple: the invocation count (zero or one), a fresh invocation-ID
+SHA-256, the pre-create identity-set hash, and a closed post-create snapshot
+state/reason. A completed post-create snapshot carries its real identity-set
+hash, including the canonical empty-set hash when fresh enumeration proves
+zero devices; an unavailable or invalid snapshot carries that same empty hash
+only when its failed state and reason exactly match the terminal enumeration
+failure, rather than fabricating or cross-splicing identity authority. These fields
+distinguish one managed create invocation that exposes multiple nodes from a
+repeated invocation without persisting the invocation ID or raw device
+identities. A pre-tuple fallback failure therefore
 distinguishes trusted-tool resolution, process start or cleanup, timeout,
 bounded-output, and tuple-validation boundaries without persisting paths,
 output, exception text, or raw device identities. Device recovery is
@@ -731,6 +741,9 @@ exact pre-existing marker bytes or its prior absence, removes transaction temp
 files, and may remove only certificate-store entries which were absent before
 this exact invocation and have no dependent device. Failure to prove marker,
 temp-file, or certificate rollback is `virtualDisplayRollbackFailed`.
+An unchanged pre-existing marker is treated as an already-restored no-op and
+is byte-read back rather than unnecessarily replaced; this prevents a
+secondary marker write from masking the primary device-count failure.
 Pre-existing certificates and markers are not claimed or deleted.
 Candidate construction requires an explicitly supplied official nefcon v1.8.0
 x64 console tool. Before producing the payload, the build verifies its fixed

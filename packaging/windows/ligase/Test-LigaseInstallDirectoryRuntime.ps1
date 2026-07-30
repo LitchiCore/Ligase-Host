@@ -5644,6 +5644,7 @@ function Invoke-MarkerBehaviorFixture(
     [string]$FailureStage,
     [bool]$PriorMarker,
     [bool]$DependentDevice = $false,
+    [bool]$ForceMarkerChanged = $false,
     [string]$CompensationFailure = "",
     [string]$ExpectedCode = "virtualDisplayMarkerCommitFailed") {
   $caseRoot = Join-Path $markerBehaviorRoot $Name
@@ -5660,6 +5661,8 @@ function Invoke-MarkerBehaviorFixture(
     $env:LIGASE_VIRTUAL_DISPLAY_MARKER_FAILURE_STAGE = $FailureStage
     $env:LIGASE_VIRTUAL_DISPLAY_DEPENDENT_DEVICE =
       $(if ($DependentDevice) { "1" } else { "0" })
+    $env:LIGASE_VIRTUAL_DISPLAY_FORCE_MARKER_CHANGED =
+      $(if ($ForceMarkerChanged) { "1" } else { "0" })
     $env:LIGASE_VIRTUAL_DISPLAY_COMPENSATION_FAILURE = $CompensationFailure
     $raw = & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass `
       -File $managementScript `
@@ -5672,6 +5675,7 @@ function Invoke-MarkerBehaviorFixture(
     Remove-Item Env:\LIGASE_VIRTUAL_DISPLAY_VALIDATION_ROOT -ErrorAction SilentlyContinue
     Remove-Item Env:\LIGASE_VIRTUAL_DISPLAY_MARKER_FAILURE_STAGE -ErrorAction SilentlyContinue
     Remove-Item Env:\LIGASE_VIRTUAL_DISPLAY_DEPENDENT_DEVICE -ErrorAction SilentlyContinue
+    Remove-Item Env:\LIGASE_VIRTUAL_DISPLAY_FORCE_MARKER_CHANGED -ErrorAction SilentlyContinue
     Remove-Item Env:\LIGASE_VIRTUAL_DISPLAY_COMPENSATION_FAILURE -ErrorAction SilentlyContinue
   }
   if ($nativeExit -ne 0 -or @($raw).Count -ne 1) {
@@ -5693,7 +5697,10 @@ function Invoke-MarkerBehaviorFixture(
       [int]$projection.tempResidueCount -ne 0 -or $tempCount -ne 0 -or
       (-not $markerExact -and $CompensationFailure -cne "restoreMarker") -or
       $sentinelPresent -ne $expectedSentinel) {
-    throw "virtualDisplayMarkerFixtureAssertionFailed:$Name"
+    throw (
+      "virtualDisplayMarkerFixtureAssertionFailed:" +
+      "${Name}:$([string]$projection.code):${markerExact}:" +
+      "${sentinelPresent}:$tempCount")
   }
   $evidence = [ordered]@{
     name = $Name
@@ -5738,9 +5745,14 @@ $markerBehaviorResults += Invoke-MarkerBehaviorFixture `
   -PriorMarker $true -CompensationFailure "removeCert" `
   -ExpectedCode "virtualDisplayRollbackFailed"
 $markerBehaviorResults += Invoke-MarkerBehaviorFixture `
-  -Name "marker-restore-failure" -FailureStage "finalReadback" `
-  -PriorMarker $true -CompensationFailure "restoreMarker" `
+  -Name "marker-restore-failure" -FailureStage "" `
+  -PriorMarker $true -ForceMarkerChanged $true `
+  -CompensationFailure "restoreMarker" `
   -ExpectedCode "virtualDisplayRollbackFailed"
+$markerBehaviorResults += Invoke-MarkerBehaviorFixture `
+  -Name "marker-restore-exact-noop" -FailureStage "writeTemp" `
+  -PriorMarker $true -CompensationFailure "restoreMarker" `
+  -ExpectedCode "virtualDisplayMarkerCommitFailed"
 
 $virtualDisplayReadbackResults = @()
 $readbackPowerShell = Join-Path ([Environment]::SystemDirectory) (
@@ -6165,7 +6177,7 @@ $diagnosticProjection = [string]$diagnosticRaw | ConvertFrom-Json
 if ([string]$diagnosticProjection.code -cne
       "virtualDisplayDiagnosticProjectionValidated" -or
     -not [bool]$diagnosticProjection.success -or
-    [int]$diagnosticProjection.crossSpliceRejected -ne 5 -or
+    [int]$diagnosticProjection.crossSpliceRejected -ne 9 -or
     -not [bool]$diagnosticProjection.primaryWriteFailed -or
     [string]$diagnosticProjection.resultCode -cne
       "virtualDisplayReadbackFailed" -or
@@ -6178,7 +6190,7 @@ if ([string]$diagnosticProjection.code -cne
     [string]$diagnosticProjection.compensationState -cne "completed" -or
     [string]$diagnosticProjection.transactionRollback -cne "completed" -or
     [int]$diagnosticProjection.tokenLength -lt 1 -or
-    [int]$diagnosticProjection.tokenLength -gt 1400 -or
+    [int]$diagnosticProjection.tokenLength -gt 2048 -or
     [string]$diagnosticProjection.tokenSha256 -cnotmatch '^[0-9a-f]{64}$' -or
     [string]$diagnosticProjection.lastOutcomeSha256 -cnotmatch
       '^[0-9a-f]{64}$' -or
@@ -6189,7 +6201,7 @@ if ([string]$diagnosticProjection.code -cne
     [int]$diagnosticProjection.removeCount -ne 16 -or
     -not [bool]$diagnosticProjection.removePrimaryWriteFailed -or
     [int]$diagnosticProjection.removeTokenLength -lt 1 -or
-    [int]$diagnosticProjection.removeTokenLength -gt 1400 -or
+    [int]$diagnosticProjection.removeTokenLength -gt 2048 -or
     [string]$diagnosticProjection.removeLastOutcomeSha256 -cnotmatch
       '^[0-9a-f]{64}$' -or
     [string]$diagnosticProjection.postCreateResultCode -cne
@@ -6209,6 +6221,27 @@ if ([string]$diagnosticProjection.code -cne
       "completed" -or
     [string]$diagnosticProjection.postCreateTerminalReadbackReason -cne
       "none" -or
+    [int]$diagnosticProjection.postCreateInvocationCount -ne 1 -or
+    [string]$diagnosticProjection.postCreateInvocationIdSha256 -cnotmatch
+      '^[1-9a-f][0-9a-f]{63}$' -or
+    [string]$diagnosticProjection.postCreatePreIdentitySha256 -cne
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" -or
+    [string]$diagnosticProjection.postCreatePostIdentitySha256 -cne
+      "1111111111111111111111111111111111111111111111111111111111111111" -or
+    [string]$diagnosticProjection.postCreateIdentityState -cne "completed" -or
+    [string]$diagnosticProjection.postCreateIdentityReason -cne "none" -or
+    [string]$diagnosticProjection.prePostResultCode -cne
+      "virtualDisplayInstallFailed" -or
+    [string]$diagnosticProjection.prePostIdentityState -cne "failed" -or
+    [string]$diagnosticProjection.prePostIdentityReason -cne "unavailable" -or
+    [string]$diagnosticProjection.prePostLastOutcomeSha256 -cnotmatch
+      '^[0-9a-f]{64}$' -or
+    [string]$diagnosticProjection.prePostZeroResultCode -cne
+      "virtualDisplayInstallFailed" -or
+    [string]$diagnosticProjection.prePostZeroIdentityState -cne "completed" -or
+    [int]$diagnosticProjection.prePostZeroObservedDeviceCount -ne 0 -or
+    [string]$diagnosticProjection.prePostZeroLastOutcomeSha256 -cnotmatch
+      '^[0-9a-f]{64}$' -or
     -not [bool]$diagnosticProjection.postCreatePrimaryWriteFailed -or
     [string]$diagnosticProjection.postCreateLastOutcomeSha256 -cnotmatch
       '^[0-9a-f]{64}$') {

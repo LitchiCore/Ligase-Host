@@ -1851,6 +1851,17 @@ function New-VirtualDisplayDiagnostic([string]$ResultCode, [bool]$Success) {
       [string]$script:virtualDisplayTerminalReadbackState
     terminalReadbackReason =
       [string]$script:virtualDisplayTerminalReadbackReason
+    createInvocationCount = [int]$script:virtualDisplayCreateInvocationCount
+    createInvocationIdSha256 =
+      [string]$script:virtualDisplayCreateInvocationIdSha256
+    preCreateIdentitySha256 =
+      [string]$script:virtualDisplayPreCreateIdentitySha256
+    postCreateIdentitySha256 =
+      [string]$script:virtualDisplayPostCreateIdentitySha256
+    postCreateIdentityState =
+      [string]$script:virtualDisplayPostCreateIdentityState
+    postCreateIdentityReason =
+      [string]$script:virtualDisplayPostCreateIdentityReason
   }
 }
 
@@ -1937,8 +1948,37 @@ function Assert-VirtualDisplayDiagnosticCorrelation($Document) {
     }
     default { $false }
   }
+  $createProvenanceValid = if (
+      [int]$Document.createInvocationCount -eq 0) {
+    [string]$Document.createInvocationIdSha256 -ceq $emptyIdentitySha -and
+    [string]$Document.preCreateIdentitySha256 -ceq $emptyIdentitySha -and
+    [string]$Document.postCreateIdentitySha256 -ceq $emptyIdentitySha -and
+    [string]$Document.postCreateIdentityState -ceq "notAttempted" -and
+    [string]$Document.postCreateIdentityReason -ceq "none"
+  } elseif ([int]$Document.createInvocationCount -eq 1) {
+    if ([string]$Document.createInvocationIdSha256 -ceq $emptyIdentitySha -or
+        [string]$Document.preCreateIdentitySha256 -cne $emptyIdentitySha) {
+      $false
+    } elseif ([string]$Document.postCreateIdentityState -ceq "completed") {
+      [string]$Document.postCreateIdentityReason -ceq "none" -and
+      [string]$Document.terminalReadbackState -ceq "completed" -and
+      [string]$Document.postCreateIdentitySha256 -ceq
+        [string]$Document.uniqueDeviceIdsSha256
+    } elseif ([string]$Document.postCreateIdentityState -ceq "failed") {
+      [string]$Document.terminalReadbackState -ceq "failed" -and
+      [string]$Document.postCreateIdentityReason -ceq
+        [string]$Document.terminalReadbackReason -and
+      @("unavailable", "invalid") -ccontains
+        [string]$Document.postCreateIdentityReason -and
+      [string]$Document.postCreateIdentitySha256 -ceq $emptyIdentitySha
+    } else {
+      $false
+    }
+  } else {
+    $false
+  }
   if (-not $fallbackValid -or -not $compensationValid -or
-      -not $terminalValid) {
+      -not $terminalValid -or -not $createProvenanceValid) {
     throw "virtualDisplayDiagnosticInvalid"
   }
 }
@@ -1952,7 +1992,7 @@ function ConvertTo-VirtualDisplayDiagnosticToken($Document) {
 }
 
 function ConvertFrom-VirtualDisplayDiagnosticToken([string]$Token) {
-  if ($Token -notmatch '^vd1\.([A-Za-z0-9_-]{1,1400})\.([0-9a-f]{64})$') {
+  if ($Token -notmatch '^vd1\.([A-Za-z0-9_-]{1,2048})\.([0-9a-f]{64})$') {
     throw "virtualDisplayDiagnosticInvalid"
   }
   $expectedSha = $Matches[2]
@@ -1982,7 +2022,11 @@ function ConvertFrom-VirtualDisplayDiagnosticToken([string]$Token) {
     "fallbackStage", "fallbackReason",
     "deviceRecovery", "residualDeviceState",
     "compensationState", "compensationFailureReason",
-    "terminalReadbackState", "terminalReadbackReason") "virtualDisplayDiagnostic"
+    "terminalReadbackState", "terminalReadbackReason",
+    "createInvocationCount", "createInvocationIdSha256",
+    "preCreateIdentitySha256", "postCreateIdentitySha256",
+    "postCreateIdentityState", "postCreateIdentityReason") `
+      "virtualDisplayDiagnostic"
   $written = [DateTime]::MinValue
   if (-not [DateTime]::TryParseExact(
       [string]$document.writtenUtc, "O",
@@ -2053,6 +2097,24 @@ function ConvertFrom-VirtualDisplayDiagnosticToken([string]$Token) {
       $document.terminalReadbackReason -isnot [string] -or
       @("none", "unavailable", "invalid") -cnotcontains
         [string]$document.terminalReadbackReason -or
+      $document.createInvocationCount -isnot [int] -or
+      $document.createInvocationCount -lt 0 -or
+      $document.createInvocationCount -gt 1 -or
+      $document.createInvocationIdSha256 -isnot [string] -or
+      [string]$document.createInvocationIdSha256 -cnotmatch
+        '^[0-9a-f]{64}$' -or
+      $document.preCreateIdentitySha256 -isnot [string] -or
+      [string]$document.preCreateIdentitySha256 -cnotmatch
+        '^[0-9a-f]{64}$' -or
+      $document.postCreateIdentitySha256 -isnot [string] -or
+      [string]$document.postCreateIdentitySha256 -cnotmatch
+        '^[0-9a-f]{64}$' -or
+      $document.postCreateIdentityState -isnot [string] -or
+      @("notAttempted", "completed", "failed") -cnotcontains
+        [string]$document.postCreateIdentityState -or
+      $document.postCreateIdentityReason -isnot [string] -or
+      @("none", "unavailable", "invalid") -cnotcontains
+        [string]$document.postCreateIdentityReason -or
       ([string]$document.terminalReadbackState -ceq "failed" -and (
         [int]$document.observedDeviceCount -ne -1 -or
         [string]$document.residualDeviceState -cne "unknown" -or
@@ -2128,7 +2190,11 @@ function Read-VirtualDisplayDiagnostic {
     "fallbackStage", "fallbackReason",
     "deviceRecovery", "residualDeviceState",
     "compensationState", "compensationFailureReason",
-    "terminalReadbackState", "terminalReadbackReason") "virtualDisplayDiagnostic"
+    "terminalReadbackState", "terminalReadbackReason",
+    "createInvocationCount", "createInvocationIdSha256",
+    "preCreateIdentitySha256", "postCreateIdentitySha256",
+    "postCreateIdentityState", "postCreateIdentityReason") `
+      "virtualDisplayDiagnostic"
   $written = [DateTime]::MinValue
   if (-not [DateTime]::TryParseExact(
       [string]$document.writtenUtc, "O",
@@ -2201,6 +2267,24 @@ function Read-VirtualDisplayDiagnostic {
       $document.terminalReadbackReason -isnot [string] -or
       @("none", "unavailable", "invalid") -cnotcontains
         [string]$document.terminalReadbackReason -or
+      $document.createInvocationCount -isnot [int] -or
+      $document.createInvocationCount -lt 0 -or
+      $document.createInvocationCount -gt 1 -or
+      $document.createInvocationIdSha256 -isnot [string] -or
+      [string]$document.createInvocationIdSha256 -cnotmatch
+        '^[0-9a-f]{64}$' -or
+      $document.preCreateIdentitySha256 -isnot [string] -or
+      [string]$document.preCreateIdentitySha256 -cnotmatch
+        '^[0-9a-f]{64}$' -or
+      $document.postCreateIdentitySha256 -isnot [string] -or
+      [string]$document.postCreateIdentitySha256 -cnotmatch
+        '^[0-9a-f]{64}$' -or
+      $document.postCreateIdentityState -isnot [string] -or
+      @("notAttempted", "completed", "failed") -cnotcontains
+        [string]$document.postCreateIdentityState -or
+      $document.postCreateIdentityReason -isnot [string] -or
+      @("none", "unavailable", "invalid") -cnotcontains
+        [string]$document.postCreateIdentityReason -or
       ([string]$document.terminalReadbackState -ceq "failed" -and (
         [int]$document.observedDeviceCount -ne -1 -or
         [string]$document.residualDeviceState -cne "unknown" -or
@@ -2222,6 +2306,15 @@ $script:virtualDisplayMarkerStage = "notAttempted"
 $script:virtualDisplayObservedDeviceCount = 0
 $script:virtualDisplayUniqueDeviceIdsSha256 =
   "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+$script:virtualDisplayCreateInvocationCount = 0
+$script:virtualDisplayCreateInvocationIdSha256 =
+  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+$script:virtualDisplayPreCreateIdentitySha256 =
+  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+$script:virtualDisplayPostCreateIdentitySha256 =
+  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+$script:virtualDisplayPostCreateIdentityState = "notAttempted"
+$script:virtualDisplayPostCreateIdentityReason = "none"
 $script:virtualDisplayDriverBindingVerified = $false
 $script:virtualDisplayFallbackAttempted = $false
 $script:virtualDisplayFallbackExitCode = -1
@@ -2577,6 +2670,22 @@ function Set-VirtualDisplayTerminalResidualAuthority(
   $script:virtualDisplayTerminalReadbackState = "completed"
   $script:virtualDisplayTerminalReadbackReason = "none"
   return $true
+}
+
+function Set-VirtualDisplayPostCreateIdentityAuthority {
+  if ($script:virtualDisplayCreateInvocationCount -ne 1) { return }
+  if ($script:virtualDisplayTerminalReadbackState -ceq "completed") {
+    $script:virtualDisplayPostCreateIdentitySha256 =
+      [string]$script:virtualDisplayUniqueDeviceIdsSha256
+    $script:virtualDisplayPostCreateIdentityState = "completed"
+    $script:virtualDisplayPostCreateIdentityReason = "none"
+  } else {
+    $script:virtualDisplayPostCreateIdentitySha256 =
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    $script:virtualDisplayPostCreateIdentityState = "failed"
+    $script:virtualDisplayPostCreateIdentityReason =
+      [string]$script:virtualDisplayTerminalReadbackReason
+  }
 }
 
 function Invoke-VirtualDisplayRemovalReconciliation(
@@ -4927,14 +5036,14 @@ function Invoke-VirtualDisplayMarkerValidation([string]$Root) {
   $rollbackFailed = $false
   $resultCode = "virtualDisplayMarkerCommitFailed"
   try {
+    if ($env:LIGASE_VIRTUAL_DISPLAY_FORCE_MARKER_CHANGED -ceq "1") {
+      [IO.File]::WriteAllBytes($marker, $newBytes)
+      throw "virtualDisplayMarkerCommitFailed"
+    }
     Write-VirtualDisplayOwnershipMarkerAtomic $marker $newBytes
     throw "virtualDisplayMarkerCommitFailed"
   } catch {
     try {
-      if ($env:LIGASE_VIRTUAL_DISPLAY_COMPENSATION_FAILURE -ceq
-          "restoreMarker") {
-        throw "validationRestoreFailure"
-      }
       if ($null -eq $original) {
         if (Test-Path -LiteralPath $marker) {
           Remove-Item -LiteralPath $marker -Force
@@ -4943,6 +5052,10 @@ function Invoke-VirtualDisplayMarkerValidation([string]$Root) {
         $liveExact = (Test-Path -LiteralPath $marker -PathType Leaf) -and
           (Test-ExactBytes $original ([IO.File]::ReadAllBytes($marker)))
         if (-not $liveExact) {
+          if ($env:LIGASE_VIRTUAL_DISPLAY_COMPENSATION_FAILURE -ceq
+              "restoreMarker") {
+            throw "validationRestoreFailure"
+          }
           Write-VirtualDisplayOwnershipMarkerAtomic $marker $original $false
         }
       }
@@ -5339,6 +5452,15 @@ try {
     $script:virtualDisplayCompensationFailureReason = "none"
     $script:virtualDisplayTerminalReadbackState = "completed"
     $script:virtualDisplayTerminalReadbackReason = "none"
+    $script:virtualDisplayCreateInvocationCount = 0
+    $script:virtualDisplayCreateInvocationIdSha256 =
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    $script:virtualDisplayPreCreateIdentitySha256 =
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    $script:virtualDisplayPostCreateIdentitySha256 =
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    $script:virtualDisplayPostCreateIdentityState = "notAttempted"
+    $script:virtualDisplayPostCreateIdentityReason = "none"
     $original = New-VirtualDisplayDiagnostic "virtualDisplayReadbackFailed" $false
     $crossSpliceCases = @(
       [ordered]@{
@@ -5387,6 +5509,46 @@ try {
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
           residualDeviceState = "exactOneBound"
           driverBindingVerified = $true
+        }
+      },
+      [ordered]@{
+        name = "createInvocationAbsentContradiction"
+        values = [ordered]@{
+          createInvocationCount = 0
+          createInvocationIdSha256 =
+            "2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      },
+      [ordered]@{
+        name = "createInvocationPresentContradiction"
+        values = [ordered]@{
+          createInvocationCount = 1
+          createInvocationIdSha256 =
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      [ordered]@{
+        name = "createInvocationPostIdentityContradiction"
+        values = [ordered]@{
+          createInvocationCount = 1
+          createInvocationIdSha256 =
+            "2222222222222222222222222222222222222222222222222222222222222222"
+          postCreateIdentityState = "completed"
+          postCreateIdentityReason = "none"
+          postCreateIdentitySha256 =
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      [ordered]@{
+        name = "createInvocationPostFailureContradiction"
+        values = [ordered]@{
+          createInvocationCount = 1
+          createInvocationIdSha256 =
+            "2222222222222222222222222222222222222222222222222222222222222222"
+          postCreateIdentityState = "failed"
+          postCreateIdentityReason = "unavailable"
+          postCreateIdentitySha256 =
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         }
       })
     $crossSpliceRejected = 0
@@ -5465,6 +5627,8 @@ try {
     $script:virtualDisplayFallbackStage = "notAttempted"
     $script:virtualDisplayFallbackReason = "none"
     $script:virtualDisplayObservedDeviceCount = 1
+    $script:virtualDisplayUniqueDeviceIdsSha256 =
+      "1111111111111111111111111111111111111111111111111111111111111111"
     $script:virtualDisplayDriverBindingVerified = $false
     $script:virtualDisplayDeviceRecovery = "completed"
     $script:virtualDisplayResidualState = "exactOneUnbound"
@@ -5472,6 +5636,15 @@ try {
     $script:virtualDisplayCompensationFailureReason = "dependentDevice"
     $script:virtualDisplayTerminalReadbackState = "completed"
     $script:virtualDisplayTerminalReadbackReason = "none"
+    $script:virtualDisplayCreateInvocationCount = 1
+    $script:virtualDisplayCreateInvocationIdSha256 =
+      "2222222222222222222222222222222222222222222222222222222222222222"
+    $script:virtualDisplayPreCreateIdentitySha256 =
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    $script:virtualDisplayPostCreateIdentitySha256 =
+      "1111111111111111111111111111111111111111111111111111111111111111"
+    $script:virtualDisplayPostCreateIdentityState = "completed"
+    $script:virtualDisplayPostCreateIdentityReason = "none"
     $postCreateOriginal = New-VirtualDisplayDiagnostic (
       "virtualDisplayRollbackFailed") $false
     $postCreateToken =
@@ -5505,18 +5678,127 @@ try {
         [string]$postCreateLastOutcome.virtualDisplay.compensationFailureReason `
           -cne "dependentDevice" -or
         [string]$postCreateLastOutcome.virtualDisplay.terminalReadbackState `
-          -cne "completed") {
+          -cne "completed" -or
+        [int]$postCreateLastOutcome.virtualDisplay.createInvocationCount -ne 1 -or
+        [string]$postCreateLastOutcome.virtualDisplay.createInvocationIdSha256 `
+          -cne "2222222222222222222222222222222222222222222222222222222222222222" -or
+        [string]$postCreateLastOutcome.virtualDisplay.preCreateIdentitySha256 `
+          -cne "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" -or
+        [string]$postCreateLastOutcome.virtualDisplay.postCreateIdentitySha256 `
+          -cne "1111111111111111111111111111111111111111111111111111111111111111" -or
+        [string]$postCreateLastOutcome.virtualDisplay.postCreateIdentityState `
+          -cne "completed" -or
+        [string]$postCreateLastOutcome.virtualDisplay.postCreateIdentityReason `
+          -cne "none") {
       throw "virtualDisplayDiagnosticProjectionInvalid"
     }
+    $script:virtualDisplayInstallStage = "notStarted"
+    $script:virtualDisplayReadbackCode = "notAttempted"
+    $script:virtualDisplayObservedDeviceCount = -1
+    $script:virtualDisplayUniqueDeviceIdsSha256 =
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    $script:virtualDisplayDriverBindingVerified = $false
+    $script:virtualDisplayDeviceRecovery = "failed"
+    $script:virtualDisplayResidualState = "unknown"
+    $script:virtualDisplayTerminalReadbackState = "failed"
+    $script:virtualDisplayTerminalReadbackReason = "unavailable"
+    $script:virtualDisplayPostCreateIdentitySha256 =
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    $script:virtualDisplayPostCreateIdentityState = "failed"
+    $script:virtualDisplayPostCreateIdentityReason = "unavailable"
+    $prePostOriginal =
+      New-VirtualDisplayDiagnostic "virtualDisplayInstallFailed" $false
+    $prePostToken = ConvertTo-VirtualDisplayDiagnosticToken $prePostOriginal
+    $prePostProjected =
+      ConvertFrom-VirtualDisplayDiagnosticToken $prePostToken
+    $prePostPath = Get-VirtualDisplayDiagnosticPath
+    [IO.File]::WriteAllText(
+      $prePostPath, ($prePostOriginal | ConvertTo-Json -Compress),
+      [Text.UTF8Encoding]::new($false))
+    $prePostFile = Read-VirtualDisplayDiagnostic
+    $script:virtualDisplayDiagnostic = $prePostProjected
+    $null = Write-InstallerEvidence
+    $prePostLastOutcome = [Text.UTF8Encoding]::new(
+      $false, $true).GetString(
+        [IO.File]::ReadAllBytes($lastOutcomePath)) | ConvertFrom-Json
+    $prePostLastOutcomeSha256 = (
+      Get-ByteSha256 (
+        [IO.File]::ReadAllBytes($lastOutcomePath))).ToLowerInvariant()
+    if ([string]$prePostFile.resultCode -cne "virtualDisplayInstallFailed" -or
+        [string]$prePostLastOutcome.virtualDisplay.resultCode -cne
+          "virtualDisplayInstallFailed" -or
+        [int]$prePostLastOutcome.virtualDisplay.createInvocationCount -ne 1 -or
+        [string]$prePostLastOutcome.virtualDisplay.postCreateIdentityState `
+          -cne "failed" -or
+        [string]$prePostLastOutcome.virtualDisplay.postCreateIdentityReason `
+          -cne "unavailable" -or
+        [string]$prePostLastOutcome.virtualDisplay.postCreateIdentitySha256 `
+          -cne "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855") {
+      throw "virtualDisplayDiagnosticProjectionInvalid"
+    }
+    $script:virtualDisplayObservedDeviceCount = 0
+    $script:virtualDisplayUniqueDeviceIdsSha256 =
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    $script:virtualDisplayResidualState = "zero"
+    $script:virtualDisplayTerminalReadbackState = "completed"
+    $script:virtualDisplayTerminalReadbackReason = "none"
+    $script:virtualDisplayPostCreateIdentitySha256 =
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    $script:virtualDisplayPostCreateIdentityState = "completed"
+    $script:virtualDisplayPostCreateIdentityReason = "none"
+    $prePostZeroOriginal =
+      New-VirtualDisplayDiagnostic "virtualDisplayInstallFailed" $false
+    $prePostZeroToken =
+      ConvertTo-VirtualDisplayDiagnosticToken $prePostZeroOriginal
+    $prePostZeroProjected =
+      ConvertFrom-VirtualDisplayDiagnosticToken $prePostZeroToken
+    [IO.File]::WriteAllText(
+      $prePostPath, ($prePostZeroOriginal | ConvertTo-Json -Compress),
+      [Text.UTF8Encoding]::new($false))
+    $prePostZeroFile = Read-VirtualDisplayDiagnostic
+    $script:virtualDisplayDiagnostic = $prePostZeroProjected
+    $null = Write-InstallerEvidence
+    $prePostZeroLastOutcome = [Text.UTF8Encoding]::new(
+      $false, $true).GetString(
+        [IO.File]::ReadAllBytes($lastOutcomePath)) | ConvertFrom-Json
+    if ([string]$prePostZeroFile.resultCode -cne
+          "virtualDisplayInstallFailed" -or
+        [string]$prePostZeroLastOutcome.virtualDisplay.resultCode -cne
+          "virtualDisplayInstallFailed" -or
+        [int]$prePostZeroLastOutcome.virtualDisplay.observedDeviceCount -ne 0 -or
+        [string]$prePostZeroLastOutcome.virtualDisplay.residualDeviceState -cne
+          "zero" -or
+        [string]$prePostZeroLastOutcome.virtualDisplay.postCreateIdentityState `
+          -cne "completed" -or
+        [string]$prePostZeroLastOutcome.virtualDisplay.postCreateIdentityReason `
+          -cne "none" -or
+        [string]$prePostZeroLastOutcome.virtualDisplay.postCreateIdentitySha256 `
+          -cne "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855") {
+      throw "virtualDisplayDiagnosticProjectionInvalid"
+    }
+    $prePostZeroLastOutcomeSha256 = (
+      Get-ByteSha256 (
+        [IO.File]::ReadAllBytes($lastOutcomePath))).ToLowerInvariant()
     $script:virtualDisplayInstallStage = "deviceRemove"
     $script:virtualDisplayReadbackCode = "notAttempted"
     $script:virtualDisplayRemoveExit = 0
     $script:virtualDisplayRemoveCount = 16
     $script:virtualDisplayObservedDeviceCount = 2
+    $script:virtualDisplayUniqueDeviceIdsSha256 =
+      "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
     $script:virtualDisplayDriverBindingVerified = $false
     $script:virtualDisplayResidualState = "multiple"
     $script:virtualDisplayTerminalReadbackState = "completed"
     $script:virtualDisplayTerminalReadbackReason = "none"
+    $script:virtualDisplayCreateInvocationCount = 0
+    $script:virtualDisplayCreateInvocationIdSha256 =
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    $script:virtualDisplayPreCreateIdentitySha256 =
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    $script:virtualDisplayPostCreateIdentitySha256 =
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    $script:virtualDisplayPostCreateIdentityState = "notAttempted"
+    $script:virtualDisplayPostCreateIdentityReason = "none"
     $removeOriginal = New-VirtualDisplayDiagnostic (
       "virtualDisplayDeviceRemoveFailed") $false
     $removeToken = ConvertTo-VirtualDisplayDiagnosticToken $removeOriginal
@@ -5582,6 +5864,31 @@ try {
         [string]$postCreateProjected.terminalReadbackState
       postCreateTerminalReadbackReason =
         [string]$postCreateProjected.terminalReadbackReason
+      postCreateInvocationCount =
+        [int]$postCreateProjected.createInvocationCount
+      postCreateInvocationIdSha256 =
+        [string]$postCreateProjected.createInvocationIdSha256
+      postCreatePreIdentitySha256 =
+        [string]$postCreateProjected.preCreateIdentitySha256
+      postCreatePostIdentitySha256 =
+        [string]$postCreateProjected.postCreateIdentitySha256
+      postCreateIdentityState =
+        [string]$postCreateProjected.postCreateIdentityState
+      postCreateIdentityReason =
+        [string]$postCreateProjected.postCreateIdentityReason
+      prePostResultCode = [string]$prePostProjected.resultCode
+      prePostIdentityState =
+        [string]$prePostProjected.postCreateIdentityState
+      prePostIdentityReason =
+        [string]$prePostProjected.postCreateIdentityReason
+      prePostLastOutcomeSha256 =
+        $prePostLastOutcomeSha256
+      prePostZeroResultCode = [string]$prePostZeroProjected.resultCode
+      prePostZeroIdentityState =
+        [string]$prePostZeroProjected.postCreateIdentityState
+      prePostZeroObservedDeviceCount =
+        [int]$prePostZeroProjected.observedDeviceCount
+      prePostZeroLastOutcomeSha256 = $prePostZeroLastOutcomeSha256
       postCreatePrimaryWriteFailed = $postCreatePrimaryWriteFailed
       postCreateLastOutcomeSha256 =
         Get-ByteSha256 $postCreateLastOutcomeBytes
@@ -5857,6 +6164,15 @@ try {
         throw
       }
       $failureCode = "virtualDisplayInstallFailed"
+      $script:virtualDisplayPreCreateIdentitySha256 =
+        [string]$script:virtualDisplayUniqueDeviceIdsSha256
+      $createInvocationId = [Guid]::NewGuid().ToString("N")
+      $script:virtualDisplayCreateInvocationIdSha256 = (
+        Get-ByteSha256 (
+          [Text.Encoding]::ASCII.GetBytes($createInvocationId))).ToLowerInvariant()
+      $script:virtualDisplayCreateInvocationCount = 1
+      $script:virtualDisplayPostCreateIdentityState = "notAttempted"
+      $script:virtualDisplayPostCreateIdentityReason = "none"
       $priorAction = $env:LIGASE_VDISPLAY_ACTION
       try {
         $env:LIGASE_VDISPLAY_ACTION = "install"
@@ -5881,6 +6197,7 @@ try {
       $null = Set-VirtualDisplayTerminalResidualAuthority {
         $displayReadback
       }
+      Set-VirtualDisplayPostCreateIdentityAuthority
       $failureCode = "virtualDisplayReadbackFailed"
       if ($displayReadback.state -notin @("available", "rebootRequired") -or
           -not [bool]$displayReadback.driverBindingVerified) {
@@ -5910,9 +6227,16 @@ try {
             $compensationFailures.Add("markerRestore")
           }
         } else {
-          Write-VirtualDisplayOwnershipMarkerAtomic `
-            $ownershipPath $ownershipBytes $false
-          if (-not (Test-ExactBytes $ownershipBytes (
+          $markerAlreadyExact =
+            (Test-Path -LiteralPath $ownershipPath -PathType Leaf) -and
+            (Test-ExactBytes $ownershipBytes (
+                [IO.File]::ReadAllBytes($ownershipPath)))
+          if (-not $markerAlreadyExact) {
+            Write-VirtualDisplayOwnershipMarkerAtomic `
+              $ownershipPath $ownershipBytes $false
+          }
+          if (-not (Test-Path -LiteralPath $ownershipPath -PathType Leaf) -or
+              -not (Test-ExactBytes $ownershipBytes (
                 [IO.File]::ReadAllBytes($ownershipPath)))) {
             $rollbackFailed = $true
             $compensationFailures.Add("markerRestore")
@@ -5970,6 +6294,7 @@ try {
       $null = Set-VirtualDisplayTerminalResidualAuthority {
         Get-VirtualDisplay
       }
+      Set-VirtualDisplayPostCreateIdentityAuthority
       $script:virtualDisplayCompensation = if ($rollbackFailed) {
         "failed"
       } else { "completed" }
