@@ -711,7 +711,16 @@ the closed fallback substage and reason, removal count, process cleanup state,
 marker stage, total observed and present counts,
 identity-set hash, binding result, device-recovery state, residual-device
 state, marker/certificate compensation state and failure reason, and the final
-terminal-enumeration state and reason. It also records a bounded create
+terminal-enumeration state and reason. The same diagnostic preserves the
+inventory authority even after its primary file is consumed by finalization:
+the all-device/property stage, closed failure substage, safe total-node and
+current/total batch counts, completed hardware-ID and driver-INF batch counts,
+elapsed/run/hard-cap milliseconds, and cleanup/root-PID/Job-active state.
+Trusted-runner start, output, UTF-8/JSON decode, tuple, coverage, deadline, and
+cleanup failures are cross-field correlated. No raw output, executable path,
+device identity, or exception text is persisted, and an inventory failure
+keeps terminal count unknown without replacing the primary remove-readback
+result. It also records a bounded create
 provenance tuple: the invocation count (zero or one), a fresh invocation-ID
 SHA-256, the pre-create identity-set hash, and a closed post-create snapshot
 state/reason. A completed post-create snapshot carries its real identity-set

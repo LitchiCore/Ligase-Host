@@ -1653,7 +1653,7 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(management, "ConvertTo-VirtualDisplayDiagnosticToken");
         StringAssert.Contains(management, "ConvertFrom-VirtualDisplayDiagnosticToken");
         StringAssert.Contains(management,
-            "[A-Za-z0-9_-]{1,2048}");
+            "[A-Za-z0-9_-]{1,4096}");
         StringAssert.Contains(management, "\"vd1.$payload.");
         StringAssert.Contains(nsis,
             "-VirtualDisplayDiagnosticToken \"$VirtualDisplayDiagnosticToken\"");
@@ -1728,6 +1728,18 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(management, "postCreateIdentityState");
         StringAssert.Contains(management, "postCreateIdentityReason");
         StringAssert.Contains(management, "presentDeviceCount");
+        StringAssert.Contains(management, "inventoryFailureStage");
+        StringAssert.Contains(management, "inventoryCurrentBatchIndex");
+        StringAssert.Contains(management, "inventoryTotalBatchCount");
+        StringAssert.Contains(management,
+            "inventoryHardwareBatchesCompleted");
+        StringAssert.Contains(management,
+            "inventoryDriverBatchesCompleted");
+        StringAssert.Contains(management, "inventoryRunBudgetMilliseconds");
+        StringAssert.Contains(management, "inventoryHardCapMilliseconds");
+        StringAssert.Contains(management, "inventoryCleanupState");
+        StringAssert.Contains(management, "inventoryRootPidZero");
+        StringAssert.Contains(management, "inventoryJobActiveProcesses");
         StringAssert.Contains(management, "Get-PnpDevice -ErrorAction Stop");
         StringAssert.Contains(management, "\"DEVPKEY_Device_HardwareIds\"");
         StringAssert.Contains(management, "\"DEVPKEY_Device_DriverInfPath\"");
@@ -1803,6 +1815,18 @@ public sealed class FreshInstallPackagingTests
             "\"createInvocationPostFailureContradiction\"");
         StringAssert.Contains(management, "\"presentCountContradiction\"");
         StringAssert.Contains(management, "\"boundNonPresentContradiction\"");
+        StringAssert.Contains(management,
+            "\"inventoryNotAttemptedContradiction\"");
+        StringAssert.Contains(management,
+            "\"inventoryDeadlineContradiction\"");
+        StringAssert.Contains(management,
+            "\"inventoryCoverageContradiction\"");
+        StringAssert.Contains(management,
+            "\"inventoryCleanupContradiction\"");
+        StringAssert.Contains(management,
+            "\"inventoryCompletedCleanupContradiction\"");
+        StringAssert.Contains(management,
+            "Assert-VirtualDisplayInventoryDiagnosticCorrelation");
         StringAssert.Contains(management, "$createProvenanceValid =");
         StringAssert.Contains(management,
             "Set-VirtualDisplayPostCreateIdentityAuthority");

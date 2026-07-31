@@ -5932,6 +5932,15 @@ $chunkedInventoryCases = @(
     hardwareBatches = 1; driverBatches = 0; exact = -1 },
   @{ name = "startRetain"; deviceCount = 33; failureMode = "startRetain";
     failureBatchIndex = 0; deadline = 1500; result = "failed";
+    hardwareBatches = 1; driverBatches = 0; exact = -1 },
+  @{ name = "outputInvalid"; deviceCount = 33; failureMode = "outputInvalid";
+    failureBatchIndex = 0; deadline = 1500; result = "failed";
+    hardwareBatches = 1; driverBatches = 0; exact = -1 },
+  @{ name = "encodingInvalid"; deviceCount = 33; failureMode = "encodingInvalid";
+    failureBatchIndex = 0; deadline = 1500; result = "failed";
+    hardwareBatches = 1; driverBatches = 0; exact = -1 },
+  @{ name = "tupleInvalid"; deviceCount = 33; failureMode = "tupleInvalid";
+    failureBatchIndex = 0; deadline = 1500; result = "failed";
     hardwareBatches = 1; driverBatches = 0; exact = -1 }
 )
 foreach ($case in $chunkedInventoryCases) {
@@ -5984,6 +5993,9 @@ foreach ($case in $chunkedInventoryCases) {
       ([string]$case.result -ceq "passed" -and (
         [int]$projection.hardwareCount -ne [int]$case.deviceCount -or
         [int]$projection.driverCount -ne [int]$case.deviceCount)) -or
+      ([string]$case.name -ceq "large369" -and (
+        [int]$projection.exactPresentCount -ne 1 -or
+        [int]$projection.exactBoundCount -ne 0)) -or
       ([string]$case.result -ceq "failed" -and
         ([string]$projection.code -cne "virtualDisplayReadbackFailed" -or
          [int]$projection.elapsedMilliseconds -gt
@@ -6003,6 +6015,8 @@ foreach ($case in $chunkedInventoryCases) {
     driverBatchCount = [int]$projection.driverBatchCount
     maxBatchSize = [int]$projection.maxBatchSize
     exactNodeCount = [int]$projection.exactNodeCount
+    exactPresentCount = [int]$projection.exactPresentCount
+    exactBoundCount = [int]$projection.exactBoundCount
     elapsedMilliseconds = [int]$projection.elapsedMilliseconds
     hardCapMilliseconds = [int]$projection.hardCapMilliseconds
     cleanupState = [string]$projection.cleanupState
@@ -6347,7 +6361,7 @@ $diagnosticProjection = [string]$diagnosticRaw | ConvertFrom-Json
 if ([string]$diagnosticProjection.code -cne
       "virtualDisplayDiagnosticProjectionValidated" -or
     -not [bool]$diagnosticProjection.success -or
-    [int]$diagnosticProjection.crossSpliceRejected -ne 11 -or
+    [int]$diagnosticProjection.crossSpliceRejected -ne 16 -or
     -not [bool]$diagnosticProjection.primaryWriteFailed -or
     [string]$diagnosticProjection.resultCode -cne
       "virtualDisplayReadbackFailed" -or
@@ -6360,7 +6374,7 @@ if ([string]$diagnosticProjection.code -cne
     [string]$diagnosticProjection.compensationState -cne "completed" -or
     [string]$diagnosticProjection.transactionRollback -cne "completed" -or
     [int]$diagnosticProjection.tokenLength -lt 1 -or
-    [int]$diagnosticProjection.tokenLength -gt 2048 -or
+    [int]$diagnosticProjection.tokenLength -gt 4096 -or
     [string]$diagnosticProjection.tokenSha256 -cnotmatch '^[0-9a-f]{64}$' -or
     [string]$diagnosticProjection.lastOutcomeSha256 -cnotmatch
       '^[0-9a-f]{64}$' -or
@@ -6371,7 +6385,7 @@ if ([string]$diagnosticProjection.code -cne
     [int]$diagnosticProjection.removeCount -ne 16 -or
     -not [bool]$diagnosticProjection.removePrimaryWriteFailed -or
     [int]$diagnosticProjection.removeTokenLength -lt 1 -or
-    [int]$diagnosticProjection.removeTokenLength -gt 2048 -or
+    [int]$diagnosticProjection.removeTokenLength -gt 4096 -or
     [string]$diagnosticProjection.removeLastOutcomeSha256 -cnotmatch
       '^[0-9a-f]{64}$' -or
     [string]$diagnosticProjection.postCreateResultCode -cne
@@ -6414,6 +6428,14 @@ if ([string]$diagnosticProjection.code -cne
       '^[0-9a-f]{64}$' -or
     -not [bool]$diagnosticProjection.postCreatePrimaryWriteFailed -or
     [string]$diagnosticProjection.postCreateLastOutcomeSha256 -cnotmatch
+      '^[0-9a-f]{64}$' -or
+    [string]$diagnosticProjection.inventoryStage -cne "hardwareIds" -or
+    [string]$diagnosticProjection.inventoryFailureStage -cne "deadline" -or
+    [int]$diagnosticProjection.inventoryDeviceCount -ne 369 -or
+    [int]$diagnosticProjection.inventoryHardwareBatchesCompleted -ne 11 -or
+    [int]$diagnosticProjection.inventoryDriverBatchesCompleted -ne 0 -or
+    [string]$diagnosticProjection.inventoryCleanupState -cne "completed" -or
+    [string]$diagnosticProjection.inventoryLastOutcomeSha256 -cnotmatch
       '^[0-9a-f]{64}$') {
   throw "virtualDisplayDiagnosticProjectionFixtureAssertionFailed"
 }

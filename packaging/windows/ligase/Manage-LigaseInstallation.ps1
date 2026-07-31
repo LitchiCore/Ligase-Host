@@ -1945,6 +1945,29 @@ function New-VirtualDisplayDiagnostic([string]$ResultCode, [bool]$Success) {
       [string]$script:virtualDisplayPostCreateIdentityState
     postCreateIdentityReason =
       [string]$script:virtualDisplayPostCreateIdentityReason
+    inventoryStage = [string]$script:virtualDisplayInventoryStage
+    inventoryFailureStage =
+      [string]$script:virtualDisplayInventoryFailureStage
+    inventoryDeviceCount = [int]$script:virtualDisplayInventoryDeviceCount
+    inventoryCurrentBatchIndex =
+      [int]$script:virtualDisplayInventoryCurrentBatchIndex
+    inventoryTotalBatchCount =
+      [int]$script:virtualDisplayInventoryTotalBatchCount
+    inventoryHardwareBatchesCompleted =
+      [int]$script:virtualDisplayInventoryHardwareBatchesCompleted
+    inventoryDriverBatchesCompleted =
+      [int]$script:virtualDisplayInventoryDriverBatchesCompleted
+    inventoryElapsedMilliseconds =
+      [int]$script:virtualDisplayInventoryElapsedMilliseconds
+    inventoryRunBudgetMilliseconds =
+      [int]$script:virtualDisplayInventoryRunBudgetMilliseconds
+    inventoryHardCapMilliseconds =
+      [int]$script:virtualDisplayInventoryHardCapMilliseconds
+    inventoryCleanupState =
+      [string]$script:virtualDisplayInventoryCleanupState
+    inventoryRootPidZero = [bool]$script:virtualDisplayInventoryRootPidZero
+    inventoryJobActiveProcesses =
+      [int]$script:virtualDisplayInventoryJobActiveProcesses
   }
 }
 
@@ -2071,6 +2094,74 @@ function Assert-VirtualDisplayDiagnosticCorrelation($Document) {
       -not $terminalValid -or -not $createProvenanceValid) {
     throw "virtualDisplayDiagnosticInvalid"
   }
+  Assert-VirtualDisplayInventoryDiagnosticCorrelation $Document
+}
+
+function Assert-VirtualDisplayInventoryDiagnosticCorrelation($Document) {
+  $stage = [string]$Document.inventoryStage
+  $failure = [string]$Document.inventoryFailureStage
+  $deviceCount = [int]$Document.inventoryDeviceCount
+  $currentBatch = [int]$Document.inventoryCurrentBatchIndex
+  $totalBatches = [int]$Document.inventoryTotalBatchCount
+  $hardwareCompleted =
+    [int]$Document.inventoryHardwareBatchesCompleted
+  $driverCompleted = [int]$Document.inventoryDriverBatchesCompleted
+  $elapsed = [int]$Document.inventoryElapsedMilliseconds
+  $runBudget = [int]$Document.inventoryRunBudgetMilliseconds
+  $hardCap = [int]$Document.inventoryHardCapMilliseconds
+  $cleanup = [string]$Document.inventoryCleanupState
+  $rootPidZero = [bool]$Document.inventoryRootPidZero
+  $jobActive = [int]$Document.inventoryJobActiveProcesses
+  $closedCleanup = (
+    ($cleanup -ceq "notRequired" -and $rootPidZero -and $jobActive -eq 0) -or
+    ($cleanup -ceq "completed" -and $rootPidZero -and $jobActive -eq 0) -or
+    ($cleanup -ceq "failed" -and -not $rootPidZero -and $jobActive -eq -1))
+  $batchShape = (
+    $deviceCount -ge -1 -and $deviceCount -le 4096 -and
+    $totalBatches -ge 0 -and $totalBatches -le 128 -and
+    $currentBatch -ge -1 -and $currentBatch -lt [Math]::Max(1, $totalBatches) -and
+    $hardwareCompleted -ge 0 -and $hardwareCompleted -le $totalBatches -and
+    $driverCompleted -ge 0 -and $driverCompleted -le $totalBatches -and
+    $driverCompleted -le $hardwareCompleted -and
+    $elapsed -ge 0 -and $elapsed -le $hardCap -and
+    $runBudget -gt 0 -and $runBudget -lt $hardCap -and
+    $hardCap -eq 10000)
+  $valid = $false
+  if ($stage -ceq "notAttempted") {
+    $valid = (
+      $failure -ceq "none" -and $deviceCount -eq -1 -and
+      $currentBatch -eq -1 -and $totalBatches -eq 0 -and
+      $hardwareCompleted -eq 0 -and $driverCompleted -eq 0 -and
+      $elapsed -eq 0 -and $cleanup -ceq "notRequired" -and
+      $rootPidZero -and $jobActive -eq 0)
+  } elseif ($stage -ceq "completed") {
+    $successCleanup = if ($totalBatches -eq 0) {
+      $cleanup -ceq "notRequired" -and $rootPidZero -and $jobActive -eq 0
+    } else {
+      $cleanup -ceq "completed" -and $rootPidZero -and $jobActive -eq 0
+    }
+    $valid = (
+      $failure -ceq "none" -and $deviceCount -ge 0 -and
+      $totalBatches -eq [int][Math]::Ceiling($deviceCount / 32.0) -and
+      $hardwareCompleted -eq $totalBatches -and
+      $driverCompleted -eq $totalBatches -and $successCleanup -and
+      ($totalBatches -eq 0 -or $currentBatch -eq $totalBatches - 1))
+  } else {
+    $valid = (
+      @("allDevices", "hardwareIds", "driverInf") -ccontains $stage -and
+      @("allDevices", "input", "trustedRunnerStart", "output", "decode",
+        "tuple", "coverage", "deadline", "cleanup") -ccontains $failure -and
+      $closedCleanup -and
+      ($failure -cne "deadline" -or $elapsed -ge $runBudget) -and
+      ($failure -cne "cleanup" -or $cleanup -ceq "failed") -and
+      ($stage -cne "allDevices" -or (
+        $deviceCount -eq -1 -and $currentBatch -eq -1 -and
+        $totalBatches -eq 0 -and $hardwareCompleted -eq 0 -and
+        $driverCompleted -eq 0 -and $cleanup -ceq "notRequired")))
+  }
+  if (-not $batchShape -or -not $valid) {
+    throw "virtualDisplayDiagnosticInvalid"
+  }
 }
 
 function ConvertTo-VirtualDisplayDiagnosticToken($Document) {
@@ -2082,7 +2173,7 @@ function ConvertTo-VirtualDisplayDiagnosticToken($Document) {
 }
 
 function ConvertFrom-VirtualDisplayDiagnosticToken([string]$Token) {
-  if ($Token -notmatch '^vd1\.([A-Za-z0-9_-]{1,2048})\.([0-9a-f]{64})$') {
+  if ($Token -notmatch '^vd1\.([A-Za-z0-9_-]{1,4096})\.([0-9a-f]{64})$') {
     throw "virtualDisplayDiagnosticInvalid"
   }
   $expectedSha = $Matches[2]
@@ -2116,7 +2207,13 @@ function ConvertFrom-VirtualDisplayDiagnosticToken([string]$Token) {
     "terminalReadbackState", "terminalReadbackReason",
     "createInvocationCount", "createInvocationIdSha256",
     "preCreateIdentitySha256", "postCreateIdentitySha256",
-    "postCreateIdentityState", "postCreateIdentityReason") `
+    "postCreateIdentityState", "postCreateIdentityReason",
+    "inventoryStage", "inventoryFailureStage", "inventoryDeviceCount",
+    "inventoryCurrentBatchIndex", "inventoryTotalBatchCount",
+    "inventoryHardwareBatchesCompleted", "inventoryDriverBatchesCompleted",
+    "inventoryElapsedMilliseconds", "inventoryRunBudgetMilliseconds",
+    "inventoryHardCapMilliseconds", "inventoryCleanupState",
+    "inventoryRootPidZero", "inventoryJobActiveProcesses") `
       "virtualDisplayDiagnostic"
   $written = [DateTime]::MinValue
   if (-not [DateTime]::TryParseExact(
@@ -2210,6 +2307,19 @@ function ConvertFrom-VirtualDisplayDiagnosticToken([string]$Token) {
       $document.postCreateIdentityReason -isnot [string] -or
       @("none", "unavailable", "invalid") -cnotcontains
         [string]$document.postCreateIdentityReason -or
+      $document.inventoryStage -isnot [string] -or
+      $document.inventoryFailureStage -isnot [string] -or
+      $document.inventoryDeviceCount -isnot [int] -or
+      $document.inventoryCurrentBatchIndex -isnot [int] -or
+      $document.inventoryTotalBatchCount -isnot [int] -or
+      $document.inventoryHardwareBatchesCompleted -isnot [int] -or
+      $document.inventoryDriverBatchesCompleted -isnot [int] -or
+      $document.inventoryElapsedMilliseconds -isnot [int] -or
+      $document.inventoryRunBudgetMilliseconds -isnot [int] -or
+      $document.inventoryHardCapMilliseconds -isnot [int] -or
+      $document.inventoryCleanupState -isnot [string] -or
+      $document.inventoryRootPidZero -isnot [bool] -or
+      $document.inventoryJobActiveProcesses -isnot [int] -or
       ([string]$document.terminalReadbackState -ceq "failed" -and (
         [int]$document.observedDeviceCount -ne -1 -or
         [string]$document.residualDeviceState -cne "unknown" -or
@@ -2289,7 +2399,13 @@ function Read-VirtualDisplayDiagnostic {
     "terminalReadbackState", "terminalReadbackReason",
     "createInvocationCount", "createInvocationIdSha256",
     "preCreateIdentitySha256", "postCreateIdentitySha256",
-    "postCreateIdentityState", "postCreateIdentityReason") `
+    "postCreateIdentityState", "postCreateIdentityReason",
+    "inventoryStage", "inventoryFailureStage", "inventoryDeviceCount",
+    "inventoryCurrentBatchIndex", "inventoryTotalBatchCount",
+    "inventoryHardwareBatchesCompleted", "inventoryDriverBatchesCompleted",
+    "inventoryElapsedMilliseconds", "inventoryRunBudgetMilliseconds",
+    "inventoryHardCapMilliseconds", "inventoryCleanupState",
+    "inventoryRootPidZero", "inventoryJobActiveProcesses") `
       "virtualDisplayDiagnostic"
   $written = [DateTime]::MinValue
   if (-not [DateTime]::TryParseExact(
@@ -2385,6 +2501,19 @@ function Read-VirtualDisplayDiagnostic {
       $document.postCreateIdentityReason -isnot [string] -or
       @("none", "unavailable", "invalid") -cnotcontains
         [string]$document.postCreateIdentityReason -or
+      $document.inventoryStage -isnot [string] -or
+      $document.inventoryFailureStage -isnot [string] -or
+      $document.inventoryDeviceCount -isnot [int] -or
+      $document.inventoryCurrentBatchIndex -isnot [int] -or
+      $document.inventoryTotalBatchCount -isnot [int] -or
+      $document.inventoryHardwareBatchesCompleted -isnot [int] -or
+      $document.inventoryDriverBatchesCompleted -isnot [int] -or
+      $document.inventoryElapsedMilliseconds -isnot [int] -or
+      $document.inventoryRunBudgetMilliseconds -isnot [int] -or
+      $document.inventoryHardCapMilliseconds -isnot [int] -or
+      $document.inventoryCleanupState -isnot [string] -or
+      $document.inventoryRootPidZero -isnot [bool] -or
+      $document.inventoryJobActiveProcesses -isnot [int] -or
       ([string]$document.terminalReadbackState -ceq "failed" -and (
         [int]$document.observedDeviceCount -ne -1 -or
         [string]$document.residualDeviceState -cne "unknown" -or
@@ -2438,6 +2567,20 @@ $script:virtualDisplayFirstCleanupProven = $true
 $script:virtualDisplayAuthorityRetained = $false
 $script:virtualDisplaySecondaryAttempted = $false
 $script:virtualDisplaySecondaryCompleted = $false
+$script:virtualDisplayInventoryStage = "notAttempted"
+$script:virtualDisplayInventoryFailureStage = "none"
+$script:virtualDisplayInventoryDeviceCount = -1
+$script:virtualDisplayInventoryCurrentBatchIndex = -1
+$script:virtualDisplayInventoryTotalBatchCount = 0
+$script:virtualDisplayInventoryHardwareBatchesCompleted = 0
+$script:virtualDisplayInventoryDriverBatchesCompleted = 0
+$script:virtualDisplayInventoryElapsedMilliseconds = 0
+$script:virtualDisplayInventoryRunBudgetMilliseconds = 9000
+$script:virtualDisplayInventoryHardCapMilliseconds = 10000
+$script:virtualDisplayInventoryCleanupState = "notRequired"
+$script:virtualDisplayInventoryRootPidZero = $true
+$script:virtualDisplayInventoryJobActiveProcesses = 0
+$script:virtualDisplayInventoryFailureLatched = $false
 
 function Invoke-VirtualDisplayInstaller(
     [string]$InstallerPath,
@@ -4616,6 +4759,9 @@ $p=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("__PAYLOAD__"))|C
 if($p.schemaVersion-ne 1-or$p.keyName-notin @("DEVPKEY_Device_HardwareIds","DEVPKEY_Device_DriverInfPath")-or$p.instanceIds-isnot[array]-or$p.instanceIds.Count-lt 1-or$p.instanceIds.Count-gt 32){exit 91}
 if($p.validationMode-eq"hang"){Start-Sleep -Seconds 60;exit 92}
 if($p.validationMode-eq"quota"){exit 94}
+if($p.validationMode-eq"outputInvalid"){[Console]::Error.Write("invalid");exit 0}
+if($p.validationMode-eq"encodingInvalid"){[Console]::OpenStandardOutput().WriteByte(255);exit 0}
+if($p.validationMode-eq"tupleInvalid"){[Console]::Out.Write("{}");exit 0}
 if($p.validationMode-ne"none" -and $p.validationMode-ne"fixture"){exit 93}
 if($p.validationMode-eq"fixture"){
   $rows=@($p.instanceIds|ForEach-Object{[ordered]@{InstanceId=[string]$_;Data=$(if($p.keyName-eq"DEVPKEY_Device_HardwareIds"){@("validation\other")}else{""})}})
@@ -4744,7 +4890,9 @@ if($p.validationMode-eq"fixture"){
       $script:virtualDisplayChunkRootPidZero =
         $script:virtualDisplayChunkCleanupState -ceq "completed"
       $script:virtualDisplayChunkJobActiveProcesses =
-        if ($job.HasNoActiveProcesses()) { 0 } else { -1 }
+        if ($script:virtualDisplayChunkCleanupState -ceq "completed") {
+          0
+        } else { -1 }
       throw "virtualDisplayReadbackFailed"
     }
     if ($TotalClock.ElapsedMilliseconds -ge $TotalMilliseconds -or
@@ -4756,16 +4904,27 @@ if($p.validationMode-eq"fixture"){
       throw "virtualDisplayReadbackFailed"
     }
     $strictUtf8 = [Text.UTF8Encoding]::new($false, $true)
-    $raw = $strictUtf8.GetString($stdout.ToArray())
+    try {
+      $raw = $strictUtf8.GetString($stdout.ToArray())
+    } catch {
+      $script:virtualDisplayChunkFailureStage = "json"
+      throw "virtualDisplayReadbackFailed"
+    }
     if (-not [LigaseStrictJson]::HasUniqueProperties($raw)) {
       $script:virtualDisplayChunkFailureStage = "json"
       throw "virtualDisplayReadbackFailed"
     }
-    $parsed = $raw | ConvertFrom-Json
+    try { $parsed = $raw | ConvertFrom-Json } catch {
+      $script:virtualDisplayChunkFailureStage = "json"
+      throw "virtualDisplayReadbackFailed"
+    }
     if ($parsed -isnot [array]) {
       $script:virtualDisplayChunkFailureStage = "shape"
       throw "virtualDisplayReadbackFailed"
     }
+    $script:virtualDisplayChunkCleanupState = "completed"
+    $script:virtualDisplayChunkRootPidZero = $true
+    $script:virtualDisplayChunkJobActiveProcesses = 0
     return @($parsed | ForEach-Object { $_ })
   } catch {
     if ($null -ne $job -and
@@ -4787,10 +4946,15 @@ if($p.validationMode-eq"fixture"){
       $script:virtualDisplayChunkRootPidZero =
         $script:virtualDisplayChunkCleanupState -ceq "completed"
       $script:virtualDisplayChunkJobActiveProcesses =
-        if ($job.HasNoActiveProcesses()) { 0 } else { -1 }
+        if ($script:virtualDisplayChunkCleanupState -ceq "completed") {
+          0
+        } else { -1 }
     }
     throw "virtualDisplayReadbackFailed"
   } finally {
+    $script:virtualDisplayInventoryElapsedMilliseconds = [Math]::Min(
+      $TotalMilliseconds, [Math]::Max(
+        0, [int]$TotalClock.ElapsedMilliseconds))
     if ($null -ne $job) { $job.Dispose() }
   }
 }
@@ -4817,6 +4981,12 @@ function Get-VirtualDisplayPropertyRowsChunked(
     [StringComparer]::Ordinal)
   for ($offset = 0; $offset -lt $InstanceIds.Count;
        $offset += $virtualDisplayPropertyBatchSize) {
+    $script:virtualDisplayInventoryStage = if (
+      $KeyName -ceq "DEVPKEY_Device_HardwareIds") {
+        "hardwareIds"
+      } else { "driverInf" }
+    $script:virtualDisplayInventoryCurrentBatchIndex =
+      [int]($offset / $virtualDisplayPropertyBatchSize)
     if ($TotalClock.ElapsedMilliseconds -ge $TotalMilliseconds) {
       throw "virtualDisplayReadbackFailed"
     }
@@ -4857,6 +5027,11 @@ function Get-VirtualDisplayPropertyRowsChunked(
       $script:virtualDisplayChunkFailureStage = "batchCoverage"
       throw "virtualDisplayReadbackFailed"
     }
+    if ($KeyName -ceq "DEVPKEY_Device_HardwareIds") {
+      $script:virtualDisplayInventoryHardwareBatchesCompleted++
+    } else {
+      $script:virtualDisplayInventoryDriverBatchesCompleted++
+    }
   }
   if ($TotalClock.ElapsedMilliseconds -ge $TotalMilliseconds -or
       $allRows.Count -ne $allRequested.Count) {
@@ -4892,7 +5067,7 @@ function Invoke-VirtualDisplayChunkedInventoryValidation(
       [string]$fixture.failureMode -cnotin @(
         "none", "inputDuplicate", "quota", "missing", "duplicate",
         "crossBatch", "timeout", "startAssign", "startResume",
-        "startRetain") -or
+        "startRetain", "outputInvalid", "encodingInvalid", "tupleInvalid") -or
       $fixture.failureBatchIndex -isnot [int] -or
       [int]$fixture.failureBatchIndex -lt 0 -or
       $fixture.deadlineMilliseconds -isnot [int] -or
@@ -4932,6 +5107,9 @@ function Invoke-VirtualDisplayChunkedInventoryValidation(
       "hang"
     } elseif ($applyFault -and [string]$fixture.failureMode -cin @(
         "startAssign", "startResume", "startRetain")) {
+      [string]$fixture.failureMode
+    } elseif ($applyFault -and [string]$fixture.failureMode -cin @(
+        "outputInvalid", "encodingInvalid", "tupleInvalid")) {
       [string]$fixture.failureMode
     } else { "fixture" }
     $rows = [Collections.Generic.List[object]]::new()
@@ -4980,6 +5158,14 @@ function Invoke-VirtualDisplayChunkedInventoryValidation(
               [string]$_, "root\sudomaker\sudovda")
           }).Count -eq 1
       }).Count
+    $exactPresentCount = $exactNodeCount
+    $exactBoundCount = @($instanceIds | Where-Object {
+        @($hardware[$_] | Where-Object {
+            [StringComparer]::OrdinalIgnoreCase.Equals(
+              [string]$_, "root\sudomaker\sudovda")
+          }).Count -eq 1 -and
+        [string]$driver[$_] -match '^oem[0-9]+\.inf$'
+      }).Count
     return [ordered]@{
       schemaVersion = 1
       result = "passed"
@@ -4988,6 +5174,8 @@ function Invoke-VirtualDisplayChunkedInventoryValidation(
       hardwareCount = $hardware.Count
       driverCount = $driver.Count
       exactNodeCount = $exactNodeCount
+      exactPresentCount = $exactPresentCount
+      exactBoundCount = $exactBoundCount
       batchSize = $virtualDisplayPropertyBatchSize
       hardwareBatchCount = [int]$state.hardwareCalls
       driverBatchCount = [int]$state.driverCalls
@@ -5008,6 +5196,8 @@ function Invoke-VirtualDisplayChunkedInventoryValidation(
       hardwareCount = -1
       driverCount = -1
       exactNodeCount = -1
+      exactPresentCount = -1
+      exactBoundCount = -1
       batchSize = $virtualDisplayPropertyBatchSize
       hardwareBatchCount = [int]$state.hardwareCalls
       driverBatchCount = [int]$state.driverCalls
@@ -5063,6 +5253,7 @@ function Get-VirtualDisplaySnapshot {
     }
     return @($fixture.devices)
   }
+  $script:virtualDisplayInventoryStage = "allDevices"
   $allDevices = @(Get-PnpDevice -ErrorAction Stop)
   $instanceIds = [string[]]@($allDevices | ForEach-Object {
     if ([string]::IsNullOrWhiteSpace([string]$_.InstanceId) -or
@@ -5072,6 +5263,9 @@ function Get-VirtualDisplaySnapshot {
     [string]$_.InstanceId
   })
   $inventoryClock = [Diagnostics.Stopwatch]::StartNew()
+  $script:virtualDisplayInventoryDeviceCount = $allDevices.Count
+  $script:virtualDisplayInventoryTotalBatchCount =
+    [int][Math]::Ceiling($allDevices.Count / 32.0)
   $propertyProvider = {
     param([string[]]$Batch, [string]$KeyName)
     @(Invoke-VirtualDisplayPropertyBatchProcess $Batch $KeyName `
@@ -5083,6 +5277,9 @@ function Get-VirtualDisplaySnapshot {
   $driverByInstance = Get-VirtualDisplayPropertyRowsChunked `
     $instanceIds "DEVPKEY_Device_DriverInfPath" $propertyProvider `
     $inventoryClock $virtualDisplayPropertyInventoryDeadlineMilliseconds
+  $script:virtualDisplayInventoryElapsedMilliseconds =
+    [Math]::Min($virtualDisplayPropertyInventoryDeadlineMilliseconds,
+      [int]$inventoryClock.ElapsedMilliseconds)
   if ($hardwareByInstance.Count -ne $allDevices.Count -or
       $driverByInstance.Count -ne $allDevices.Count) {
     throw "virtualDisplayReadbackFailed"
@@ -5109,6 +5306,54 @@ function Get-VirtualDisplaySnapshot {
   })
 }
 
+function Set-VirtualDisplayInventoryDiagnostic([bool]$Succeeded) {
+  if ($script:virtualDisplayInventoryFailureLatched) { return }
+  $script:virtualDisplayInventoryElapsedMilliseconds = [Math]::Min(
+    $virtualDisplayPropertyInventoryDeadlineMilliseconds,
+    [Math]::Max(0, [int]$script:virtualDisplayInventoryElapsedMilliseconds))
+  $script:virtualDisplayInventoryRunBudgetMilliseconds =
+    $virtualDisplayPropertyInventoryDeadlineMilliseconds -
+      $virtualDisplayPropertyCleanupReserveMilliseconds
+  $script:virtualDisplayInventoryHardCapMilliseconds =
+    $virtualDisplayPropertyInventoryDeadlineMilliseconds
+  $script:virtualDisplayInventoryCleanupState =
+    [string]$script:virtualDisplayChunkCleanupState
+  $script:virtualDisplayInventoryRootPidZero =
+    [bool]$script:virtualDisplayChunkRootPidZero
+  $script:virtualDisplayInventoryJobActiveProcesses =
+    [int]$script:virtualDisplayChunkJobActiveProcesses
+  if ($Succeeded) {
+    $script:virtualDisplayInventoryStage = "completed"
+    $script:virtualDisplayInventoryFailureStage = "none"
+    return
+  }
+  $script:virtualDisplayInventoryFailureStage = switch (
+      [string]$script:virtualDisplayChunkFailureStage) {
+    "start" { "trustedRunnerStart" }
+    "deadline" { "deadline" }
+    "postDeadline" { "deadline" }
+    "nativeExit" { "output" }
+    "stderr" { "output" }
+    "json" { "decode" }
+    "shape" { "tuple" }
+    "rowCount" { "coverage" }
+    "rowIdentity" { "coverage" }
+    "batchCoverage" { "coverage" }
+    "globalCoverage" { "coverage" }
+    "invoke" {
+      if ([string]$script:virtualDisplayChunkCleanupState -ceq "failed") {
+        "cleanup"
+      } else { "output" }
+    }
+    default {
+      if ([string]$script:virtualDisplayInventoryStage -ceq "allDevices") {
+        "allDevices"
+      } else { "input" }
+    }
+  }
+  $script:virtualDisplayInventoryFailureLatched = $true
+}
+
 function New-VirtualDisplayState(
     [string]$State, [string]$MachineCode, [int]$DeviceCount,
     [string]$IdentitySha256, [bool]$DriverBindingVerified,
@@ -5131,8 +5376,28 @@ function New-VirtualDisplayState(
 }
 
 function Get-VirtualDisplay([switch]$IncludeRemovalAuthority) {
+  $trackChunkInventory = [string]::IsNullOrWhiteSpace(
+    [string]$env:LIGASE_VIRTUAL_DISPLAY_READBACK_VALIDATION_ROOT)
+  if ($trackChunkInventory -and
+      -not $script:virtualDisplayInventoryFailureLatched) {
+    $script:virtualDisplayInventoryStage = "allDevices"
+    $script:virtualDisplayInventoryFailureStage = "none"
+    $script:virtualDisplayInventoryDeviceCount = -1
+    $script:virtualDisplayInventoryCurrentBatchIndex = -1
+    $script:virtualDisplayInventoryTotalBatchCount = 0
+    $script:virtualDisplayInventoryHardwareBatchesCompleted = 0
+    $script:virtualDisplayInventoryDriverBatchesCompleted = 0
+    $script:virtualDisplayInventoryElapsedMilliseconds = 0
+    $script:virtualDisplayChunkFailureStage = "none"
+    $script:virtualDisplayChunkCleanupState = "notRequired"
+    $script:virtualDisplayChunkRootPidZero = $true
+    $script:virtualDisplayChunkJobActiveProcesses = 0
+  }
   try {
     $candidates = @(Get-VirtualDisplaySnapshot)
+    if ($trackChunkInventory) {
+      Set-VirtualDisplayInventoryDiagnostic $true
+    }
     $devices = @($candidates | Where-Object {
       $hardwareIds = @($_.hardwareIds)
       @($hardwareIds | Where-Object {
@@ -5177,6 +5442,9 @@ function Get-VirtualDisplay([switch]$IncludeRemovalAuthority) {
       $devices.Count) $identitySha256 $true $devices (
       [bool]$IncludeRemovalAuthority)
   } catch {
+    if ($trackChunkInventory) {
+      Set-VirtualDisplayInventoryDiagnostic $false
+    }
     return New-VirtualDisplayState "failed" (
       "virtualDisplayReadbackFailed") 0 (
       "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855") (
@@ -6206,6 +6474,69 @@ try {
           terminalReadbackState = "completed"
           terminalReadbackReason = "none"
         }
+      },
+      [ordered]@{
+        name = "inventoryNotAttemptedContradiction"
+        values = [ordered]@{
+          inventoryStage = "hardwareIds"
+        }
+      },
+      [ordered]@{
+        name = "inventoryDeadlineContradiction"
+        values = [ordered]@{
+          inventoryStage = "hardwareIds"
+          inventoryFailureStage = "deadline"
+          inventoryDeviceCount = 369
+          inventoryCurrentBatchIndex = 11
+          inventoryTotalBatchCount = 12
+          inventoryHardwareBatchesCompleted = 11
+          inventoryElapsedMilliseconds = 8999
+          inventoryCleanupState = "completed"
+        }
+      },
+      [ordered]@{
+        name = "inventoryCoverageContradiction"
+        values = [ordered]@{
+          inventoryStage = "driverInf"
+          inventoryFailureStage = "coverage"
+          inventoryDeviceCount = 369
+          inventoryCurrentBatchIndex = 11
+          inventoryTotalBatchCount = 12
+          inventoryHardwareBatchesCompleted = 11
+          inventoryDriverBatchesCompleted = 12
+          inventoryElapsedMilliseconds = 8000
+          inventoryCleanupState = "completed"
+        }
+      },
+      [ordered]@{
+        name = "inventoryCleanupContradiction"
+        values = [ordered]@{
+          inventoryStage = "hardwareIds"
+          inventoryFailureStage = "cleanup"
+          inventoryDeviceCount = 369
+          inventoryCurrentBatchIndex = 0
+          inventoryTotalBatchCount = 12
+          inventoryElapsedMilliseconds = 200
+          inventoryCleanupState = "completed"
+          inventoryRootPidZero = $true
+          inventoryJobActiveProcesses = 0
+        }
+      },
+      [ordered]@{
+        name = "inventoryCompletedCleanupContradiction"
+        values = [ordered]@{
+          inventoryStage = "completed"
+          inventoryFailureStage = "none"
+          inventoryDeviceCount = 369
+          inventoryCurrentBatchIndex = 11
+          inventoryTotalBatchCount = 12
+          inventoryHardwareBatchesCompleted = 12
+          inventoryDriverBatchesCompleted = 12
+          inventoryElapsedMilliseconds = 8000
+          inventoryCleanupState = "failed"
+          inventoryRootPidZero = $false
+          inventoryJobActiveProcesses = -1
+        }
       })
     $crossSpliceRejected = 0
     foreach ($crossCase in $crossSpliceCases) {
@@ -6482,6 +6813,88 @@ try {
         [int]$removeLastOutcome.virtualDisplay.removeCount -ne 16) {
       throw "virtualDisplayDiagnosticProjectionInvalid"
     }
+    $script:virtualDisplayInstallStage = "notStarted"
+    $script:virtualDisplayReadbackCode = "notAttempted"
+    $script:virtualDisplayChildExit = -1
+    $script:virtualDisplayRemoveExit = -1
+    $script:virtualDisplayRemoveCount = 0
+    $script:virtualDisplayProcessCleanup = "notRequired"
+    $script:virtualDisplayMarkerStage = "notAttempted"
+    $script:virtualDisplayObservedDeviceCount = -1
+    $script:virtualDisplayPresentDeviceCount = -1
+    $script:virtualDisplayUniqueDeviceIdsSha256 =
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    $script:virtualDisplayDriverBindingVerified = $false
+    $script:virtualDisplayFallbackAttempted = $false
+    $script:virtualDisplayFallbackExitCode = -1
+    $script:virtualDisplayFallbackStage = "notAttempted"
+    $script:virtualDisplayFallbackReason = "none"
+    $script:virtualDisplayDeviceRecovery = "notAttempted"
+    $script:virtualDisplayResidualState = "unknown"
+    $script:virtualDisplayCompensation = "completed"
+    $script:virtualDisplayCompensationFailureReason = "none"
+    $script:virtualDisplayTerminalReadbackState = "failed"
+    $script:virtualDisplayTerminalReadbackReason = "invalid"
+    $script:virtualDisplayCreateInvocationCount = 0
+    $script:virtualDisplayCreateInvocationIdSha256 =
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    $script:virtualDisplayPreCreateIdentitySha256 =
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    $script:virtualDisplayPostCreateIdentitySha256 =
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    $script:virtualDisplayPostCreateIdentityState = "notAttempted"
+    $script:virtualDisplayPostCreateIdentityReason = "none"
+    $script:virtualDisplayInventoryStage = "hardwareIds"
+    $script:virtualDisplayInventoryFailureStage = "deadline"
+    $script:virtualDisplayInventoryDeviceCount = 369
+    $script:virtualDisplayInventoryCurrentBatchIndex = 11
+    $script:virtualDisplayInventoryTotalBatchCount = 12
+    $script:virtualDisplayInventoryHardwareBatchesCompleted = 11
+    $script:virtualDisplayInventoryDriverBatchesCompleted = 0
+    $script:virtualDisplayInventoryElapsedMilliseconds = 9000
+    $script:virtualDisplayInventoryRunBudgetMilliseconds = 9000
+    $script:virtualDisplayInventoryHardCapMilliseconds = 10000
+    $script:virtualDisplayInventoryCleanupState = "completed"
+    $script:virtualDisplayInventoryRootPidZero = $true
+    $script:virtualDisplayInventoryJobActiveProcesses = 0
+    $inventoryOriginal = New-VirtualDisplayDiagnostic (
+      "virtualDisplayDeviceRemoveReadbackFailed") $false
+    $inventoryToken = ConvertTo-VirtualDisplayDiagnosticToken $inventoryOriginal
+    $inventoryProjected =
+      ConvertFrom-VirtualDisplayDiagnosticToken $inventoryToken
+    $inventoryPath = Get-VirtualDisplayDiagnosticPath
+    [IO.File]::WriteAllText(
+      $inventoryPath, ($inventoryOriginal | ConvertTo-Json -Compress),
+      [Text.UTF8Encoding]::new($false))
+    $inventoryFile = Read-VirtualDisplayDiagnostic
+    $script:virtualDisplayDiagnostic = $inventoryProjected
+    $null = Write-InstallerEvidence
+    $inventoryLastOutcomeBytes = [IO.File]::ReadAllBytes($lastOutcomePath)
+    $inventoryLastOutcome = [Text.UTF8Encoding]::new(
+      $false, $true).GetString($inventoryLastOutcomeBytes) | ConvertFrom-Json
+    if ([string]$inventoryFile.inventoryStage -cne "hardwareIds" -or
+        [string]$inventoryProjected.inventoryFailureStage -cne "deadline" -or
+        [string]$inventoryLastOutcome.virtualDisplay.resultCode -cne
+          "virtualDisplayDeviceRemoveReadbackFailed" -or
+        [string]$inventoryLastOutcome.virtualDisplay.inventoryStage -cne
+          "hardwareIds" -or
+        [int]$inventoryLastOutcome.virtualDisplay.inventoryDeviceCount -ne 369 -or
+        [int]$inventoryLastOutcome.virtualDisplay.inventoryCurrentBatchIndex -ne 11 -or
+        [int]$inventoryLastOutcome.virtualDisplay.inventoryTotalBatchCount -ne 12 -or
+        [int]$inventoryLastOutcome.virtualDisplay.inventoryHardwareBatchesCompleted -ne 11 -or
+        [int]$inventoryLastOutcome.virtualDisplay.inventoryDriverBatchesCompleted -ne 0 -or
+        [int]$inventoryLastOutcome.virtualDisplay.inventoryElapsedMilliseconds -ne 9000 -or
+        [string]$inventoryLastOutcome.virtualDisplay.inventoryCleanupState -cne
+          "completed" -or
+        -not [bool]$inventoryLastOutcome.virtualDisplay.inventoryRootPidZero -or
+        [int]$inventoryLastOutcome.virtualDisplay.inventoryJobActiveProcesses -ne 0 -or
+        [string]$inventoryLastOutcome.virtualDisplay.terminalReadbackState -cne
+          "failed" -or
+        [string]$inventoryLastOutcome.virtualDisplay.terminalReadbackReason -cne
+          "invalid") {
+      throw "virtualDisplayDiagnosticProjectionInvalid"
+    }
+    $inventoryLastOutcomeSha256 = Get-ByteSha256 $inventoryLastOutcomeBytes
     [Console]::Out.WriteLine(([ordered]@{
       code = "virtualDisplayDiagnosticProjectionValidated"
       success = $true
@@ -6499,6 +6912,17 @@ try {
       tokenSha256 = Get-ByteSha256 (
         [Text.Encoding]::ASCII.GetBytes($token))
       lastOutcomeSha256 = Get-ByteSha256 $lastOutcomeBytes
+      inventoryStage = [string]$inventoryProjected.inventoryStage
+      inventoryFailureStage =
+        [string]$inventoryProjected.inventoryFailureStage
+      inventoryDeviceCount = [int]$inventoryProjected.inventoryDeviceCount
+      inventoryHardwareBatchesCompleted =
+        [int]$inventoryProjected.inventoryHardwareBatchesCompleted
+      inventoryDriverBatchesCompleted =
+        [int]$inventoryProjected.inventoryDriverBatchesCompleted
+      inventoryCleanupState =
+        [string]$inventoryProjected.inventoryCleanupState
+      inventoryLastOutcomeSha256 = $inventoryLastOutcomeSha256
       removeResultCode = [string]$removeProjected.resultCode
       removeInstallStage = [string]$removeProjected.installStage
       removeExitCode = [int]$removeProjected.removeExitCode
