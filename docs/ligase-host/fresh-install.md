@@ -690,7 +690,9 @@ accepted as failed only after that cleanup closes; it can never extend the
 inventory deadline or become a zero-device result. Process creation,
 Job assignment, and resume failures consume the same remaining deadline;
 retained native authority is secondarily contained before PID-zero can be
-reported. Instance identities must be
+reported. The deadline is rechecked after child output and after the final
+outer row-validation pass; a valid final batch that crosses the deadline is a
+deadline failure, never a coverage failure. Instance identities must be
 ordinal-unique before the
 first query; every batch must return exactly its requested identity set, and
 the union must contain every original devnode exactly once for both
@@ -716,6 +718,13 @@ inventory authority even after its primary file is consumed by finalization:
 the all-device/property stage, closed failure substage, safe total-node and
 current/total batch counts, completed hardware-ID and driver-INF batch counts,
 elapsed/run/hard-cap milliseconds, and cleanup/root-PID/Job-active state.
+When the system property call succeeds but a requested property is absent, the
+trusted child emits one explicit `absent` row for that identity; a sparse
+property result is therefore not confused with an incomplete batch. Coverage
+failures persist only safe counts and classifications: requested/returned row
+count, row-count versus row-identity versus batch-set stage, and
+missing/extra/duplicate/identity-mismatch reason. Raw identities and property
+values are never included in this diagnostic.
 Trusted-runner start, output, UTF-8/JSON decode, tuple, coverage, deadline, and
 cleanup failures are cross-field correlated. No raw output, executable path,
 device identity, or exception text is persisted, and an inventory failure

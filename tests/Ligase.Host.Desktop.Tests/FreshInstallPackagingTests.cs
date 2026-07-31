@@ -1729,6 +1729,10 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(management, "postCreateIdentityReason");
         StringAssert.Contains(management, "presentDeviceCount");
         StringAssert.Contains(management, "inventoryFailureStage");
+        StringAssert.Contains(management, "inventoryCoverageStage");
+        StringAssert.Contains(management, "inventoryCoverageReason");
+        StringAssert.Contains(management, "inventoryRequestedCount");
+        StringAssert.Contains(management, "inventoryReturnedCount");
         StringAssert.Contains(management, "inventoryCurrentBatchIndex");
         StringAssert.Contains(management, "inventoryTotalBatchCount");
         StringAssert.Contains(management,
@@ -1768,6 +1772,10 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(management,
             "Get-PnpDeviceProperty -InstanceId ([string[]]$p.instanceIds)");
         StringAssert.Contains(management,
+            "PropertyState=\"absent\";Data=$null");
+        StringAssert.Contains(management,
+            "PropertyState=\"present\"");
+        StringAssert.Contains(management,
             "function Get-VirtualDisplayPropertyRowsChunked(");
         StringAssert.Contains(management,
             "[StringComparer]::Ordinal)");
@@ -1775,8 +1783,11 @@ public sealed class FreshInstallPackagingTests
             "$rows.Count -ne $batch.Count");
         StringAssert.Contains(management,
             "-not $batchRequested.Contains($returnedId)");
+        Assert.IsFalse(management.Contains(
+            "$allRows.Count -ne $allRequested.Count",
+            StringComparison.Ordinal));
         StringAssert.Contains(management,
-            "$allRows.Count -ne $allRequested.Count");
+            "-ValidationForcePostLoopDeadline");
         Assert.IsFalse(management.Contains(
             "Get-PnpDeviceProperty -InstanceId $instanceIds",
             StringComparison.Ordinal));
@@ -1822,6 +1833,16 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(management,
             "\"inventoryCoverageContradiction\"");
         StringAssert.Contains(management,
+            "\"inventoryCoverageCountContradiction\"");
+        StringAssert.Contains(management,
+            "\"inventoryCoverageIdentityContradiction\"");
+        StringAssert.Contains(management,
+            "\"inventoryCoverageAllDevicesContradiction\"");
+        StringAssert.Contains(management,
+            "\"inventoryCoverageFirstBatchCountContradiction\"");
+        StringAssert.Contains(management,
+            "\"inventoryCoverageLastBatchCountContradiction\"");
+        StringAssert.Contains(management,
             "\"inventoryCleanupContradiction\"");
         StringAssert.Contains(management,
             "\"inventoryCompletedCleanupContradiction\"");
@@ -1860,9 +1881,16 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(runtimeHarness, "\"quota\"");
         StringAssert.Contains(runtimeHarness, "\"inputDuplicate\"");
         StringAssert.Contains(runtimeHarness, "\"missing\"");
+        StringAssert.Contains(runtimeHarness, "\"extra\"");
         StringAssert.Contains(runtimeHarness, "\"duplicate\"");
+        StringAssert.Contains(runtimeHarness, "\"identityMismatch\"");
+        StringAssert.Contains(runtimeHarness, "coverageStage");
+        StringAssert.Contains(runtimeHarness, "coverageReason");
+        StringAssert.Contains(runtimeHarness, "requestedCount");
+        StringAssert.Contains(runtimeHarness, "returnedCount");
         StringAssert.Contains(runtimeHarness, "\"crossBatch\"");
         StringAssert.Contains(runtimeHarness, "\"timeout\"");
+        StringAssert.Contains(runtimeHarness, "\"postLoopDeadline\"");
         StringAssert.Contains(runtimeHarness, "\"startAssign\"");
         StringAssert.Contains(runtimeHarness, "\"startResume\"");
         StringAssert.Contains(runtimeHarness, "\"startRetain\"");

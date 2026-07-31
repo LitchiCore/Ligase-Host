@@ -5913,17 +5913,38 @@ $chunkedInventoryCases = @(
     deadline = 10000; result = "failed";
     hardwareBatches = 0; driverBatches = 0; exact = -1 },
   @{ name = "missing"; deviceCount = 369; failureMode = "missing";
-    failureBatchIndex = 11; deadline = 10000; result = "failed";
-    hardwareBatches = 12; driverBatches = 0; exact = -1 },
+    failureBatchIndex = 0; deadline = 10000; result = "failed";
+    hardwareBatches = 1; driverBatches = 0; exact = -1;
+    coverageStage = "rowCount"; coverageReason = "missing";
+    requestedCount = 32; returnedCount = 31 },
+  @{ name = "extra"; deviceCount = 369; failureMode = "extra";
+    failureBatchIndex = 0; deadline = 10000; result = "failed";
+    hardwareBatches = 1; driverBatches = 0; exact = -1;
+    coverageStage = "rowCount"; coverageReason = "extra";
+    requestedCount = 32; returnedCount = 33 },
   @{ name = "duplicate"; deviceCount = 369; failureMode = "duplicate";
     failureBatchIndex = 0; deadline = 10000; result = "failed";
-    hardwareBatches = 1; driverBatches = 0; exact = -1 },
+    hardwareBatches = 1; driverBatches = 0; exact = -1;
+    coverageStage = "rowIdentity"; coverageReason = "duplicate";
+    requestedCount = 32; returnedCount = 32 },
+  @{ name = "identityMismatch"; deviceCount = 369;
+    failureMode = "identityMismatch"; failureBatchIndex = 0;
+    deadline = 10000; result = "failed";
+    hardwareBatches = 1; driverBatches = 0; exact = -1;
+    coverageStage = "rowIdentity"; coverageReason = "identityMismatch";
+    requestedCount = 32; returnedCount = 32 },
   @{ name = "crossBatch"; deviceCount = 369; failureMode = "crossBatch";
     failureBatchIndex = 1; deadline = 10000; result = "failed";
     hardwareBatches = 2; driverBatches = 0; exact = -1 },
   @{ name = "timeout"; deviceCount = 369; failureMode = "timeout";
     failureBatchIndex = 0; deadline = 1500; result = "failed";
     hardwareBatches = 1; driverBatches = 0; exact = -1 },
+  @{ name = "postLoopDeadline"; deviceCount = 33;
+    failureMode = "postLoopDeadline"; failureBatchIndex = 1;
+    deadline = 1500; result = "failed";
+    hardwareBatches = 2; driverBatches = 0; exact = -1;
+    coverageStage = "none"; coverageReason = "none";
+    requestedCount = -1; returnedCount = -1 },
   @{ name = "startAssign"; deviceCount = 33; failureMode = "startAssign";
     failureBatchIndex = 0; deadline = 1500; result = "failed";
     hardwareBatches = 1; driverBatches = 0; exact = -1 },
@@ -6007,6 +6028,13 @@ foreach ($case in $chunkedInventoryCases) {
           [string]$projection.cleanupState -cne "completed")))) {
     throw "virtualDisplayChunkedInventoryAssertionFailed:$($case.name)"
   }
+  if ($case.ContainsKey("coverageStage") -and (
+      [string]$projection.coverageStage -cne [string]$case.coverageStage -or
+      [string]$projection.coverageReason -cne [string]$case.coverageReason -or
+      [int]$projection.requestedCount -ne [int]$case.requestedCount -or
+      [int]$projection.returnedCount -ne [int]$case.returnedCount)) {
+    throw "virtualDisplayChunkedInventoryCoverageFailed:$($case.name)"
+  }
   $virtualDisplayChunkedInventoryResults += [ordered]@{
     name = [string]$case.name
     result = [string]$projection.result
@@ -6022,6 +6050,10 @@ foreach ($case in $chunkedInventoryCases) {
     cleanupState = [string]$projection.cleanupState
     rootPidZero = [bool]$projection.rootPidZero
     jobActiveProcesses = [int]$projection.jobActiveProcesses
+    coverageStage = [string]$projection.coverageStage
+    coverageReason = [string]$projection.coverageReason
+    requestedCount = [int]$projection.requestedCount
+    returnedCount = [int]$projection.returnedCount
   }
 }
 
@@ -6361,7 +6393,7 @@ $diagnosticProjection = [string]$diagnosticRaw | ConvertFrom-Json
 if ([string]$diagnosticProjection.code -cne
       "virtualDisplayDiagnosticProjectionValidated" -or
     -not [bool]$diagnosticProjection.success -or
-    [int]$diagnosticProjection.crossSpliceRejected -ne 16 -or
+    [int]$diagnosticProjection.crossSpliceRejected -ne 21 -or
     -not [bool]$diagnosticProjection.primaryWriteFailed -or
     [string]$diagnosticProjection.resultCode -cne
       "virtualDisplayReadbackFailed" -or
@@ -6430,12 +6462,22 @@ if ([string]$diagnosticProjection.code -cne
     [string]$diagnosticProjection.postCreateLastOutcomeSha256 -cnotmatch
       '^[0-9a-f]{64}$' -or
     [string]$diagnosticProjection.inventoryStage -cne "hardwareIds" -or
-    [string]$diagnosticProjection.inventoryFailureStage -cne "deadline" -or
+    [string]$diagnosticProjection.inventoryFailureStage -cne "coverage" -or
+    [string]$diagnosticProjection.inventoryCoverageStage -cne "rowCount" -or
+    [string]$diagnosticProjection.inventoryCoverageReason -cne "missing" -or
+    [int]$diagnosticProjection.inventoryRequestedCount -ne 32 -or
+    [int]$diagnosticProjection.inventoryReturnedCount -ne 31 -or
     [int]$diagnosticProjection.inventoryDeviceCount -ne 369 -or
-    [int]$diagnosticProjection.inventoryHardwareBatchesCompleted -ne 11 -or
+    [int]$diagnosticProjection.inventoryHardwareBatchesCompleted -ne 0 -or
     [int]$diagnosticProjection.inventoryDriverBatchesCompleted -ne 0 -or
     [string]$diagnosticProjection.inventoryCleanupState -cne "completed" -or
     [string]$diagnosticProjection.inventoryLastOutcomeSha256 -cnotmatch
+      '^[0-9a-f]{64}$' -or
+    [string]$diagnosticProjection.postLoopDeadlineFailureStage -cne
+      "deadline" -or
+    [string]$diagnosticProjection.postLoopDeadlineCoverageStage -cne
+      "none" -or
+    [string]$diagnosticProjection.postLoopDeadlineLastOutcomeSha256 -cnotmatch
       '^[0-9a-f]{64}$') {
   throw "virtualDisplayDiagnosticProjectionFixtureAssertionFailed"
 }
