@@ -5897,6 +5897,120 @@ foreach ($case in $readbackCases) {
   }
 }
 
+$virtualDisplayChunkedInventoryResults = @()
+$chunkedInventoryCases = @(
+  @{ name = "large369"; deviceCount = 369; failureMode = "none";
+    failureBatchIndex = 0; deadline = 10000; result = "passed";
+    hardwareBatches = 12; driverBatches = 12; exact = 1 },
+  @{ name = "batchBoundary33"; deviceCount = 33; failureMode = "none";
+    failureBatchIndex = 0; deadline = 10000; result = "passed";
+    hardwareBatches = 2; driverBatches = 2; exact = 1 },
+  @{ name = "quota"; deviceCount = 369; failureMode = "quota";
+    failureBatchIndex = 0; deadline = 10000; result = "failed";
+    hardwareBatches = 1; driverBatches = 0; exact = -1 },
+  @{ name = "inputDuplicate"; deviceCount = 369;
+    failureMode = "inputDuplicate"; failureBatchIndex = 0;
+    deadline = 10000; result = "failed";
+    hardwareBatches = 0; driverBatches = 0; exact = -1 },
+  @{ name = "missing"; deviceCount = 369; failureMode = "missing";
+    failureBatchIndex = 11; deadline = 10000; result = "failed";
+    hardwareBatches = 12; driverBatches = 0; exact = -1 },
+  @{ name = "duplicate"; deviceCount = 369; failureMode = "duplicate";
+    failureBatchIndex = 0; deadline = 10000; result = "failed";
+    hardwareBatches = 1; driverBatches = 0; exact = -1 },
+  @{ name = "crossBatch"; deviceCount = 369; failureMode = "crossBatch";
+    failureBatchIndex = 1; deadline = 10000; result = "failed";
+    hardwareBatches = 2; driverBatches = 0; exact = -1 },
+  @{ name = "timeout"; deviceCount = 369; failureMode = "timeout";
+    failureBatchIndex = 0; deadline = 1500; result = "failed";
+    hardwareBatches = 1; driverBatches = 0; exact = -1 },
+  @{ name = "startAssign"; deviceCount = 33; failureMode = "startAssign";
+    failureBatchIndex = 0; deadline = 1500; result = "failed";
+    hardwareBatches = 1; driverBatches = 0; exact = -1 },
+  @{ name = "startResume"; deviceCount = 33; failureMode = "startResume";
+    failureBatchIndex = 0; deadline = 1500; result = "failed";
+    hardwareBatches = 1; driverBatches = 0; exact = -1 },
+  @{ name = "startRetain"; deviceCount = 33; failureMode = "startRetain";
+    failureBatchIndex = 0; deadline = 1500; result = "failed";
+    hardwareBatches = 1; driverBatches = 0; exact = -1 }
+)
+foreach ($case in $chunkedInventoryCases) {
+  $caseRoot = Join-Path $root (
+    "virtual-display-chunked-inventory-" + [string]$case.name)
+  New-Item -ItemType Directory -Path $caseRoot | Out-Null
+  [IO.File]::WriteAllText(
+    (Join-Path $caseRoot "chunked-inventory-fixture.json"),
+    ([ordered]@{
+        schemaVersion = 1
+        deviceCount = [int]$case.deviceCount
+        failureMode = [string]$case.failureMode
+        failureBatchIndex = [int]$case.failureBatchIndex
+        deadlineMilliseconds = [int]$case.deadline
+      } | ConvertTo-Json -Compress),
+    [Text.UTF8Encoding]::new($false))
+  $previousHarness = $env:LIGASE_INSTALL_VALIDATION_HARNESS
+  $previousChunkRoot =
+    $env:LIGASE_VIRTUAL_DISPLAY_CHUNK_VALIDATION_ROOT
+  try {
+    $env:LIGASE_INSTALL_VALIDATION_HARNESS = "1"
+    $env:LIGASE_VIRTUAL_DISPLAY_CHUNK_VALIDATION_ROOT = $caseRoot
+    $raw = @(& $readbackPowerShell -NoProfile -NonInteractive `
+      -ExecutionPolicy Bypass -File $managementScript `
+      -Action ValidateVirtualDisplayChunkedInventory `
+      -InstallDirectory $caseRoot -ValidationRoot $caseRoot)
+  } finally {
+    if ($null -eq $previousHarness) {
+      Remove-Item Env:LIGASE_INSTALL_VALIDATION_HARNESS `
+        -ErrorAction SilentlyContinue
+    } else { $env:LIGASE_INSTALL_VALIDATION_HARNESS = $previousHarness }
+    if ($null -eq $previousChunkRoot) {
+      Remove-Item Env:LIGASE_VIRTUAL_DISPLAY_CHUNK_VALIDATION_ROOT `
+        -ErrorAction SilentlyContinue
+    } else {
+      $env:LIGASE_VIRTUAL_DISPLAY_CHUNK_VALIDATION_ROOT = $previousChunkRoot
+    }
+  }
+  if ($LASTEXITCODE -ne 0 -or @($raw).Count -ne 1) {
+    throw "virtualDisplayChunkedInventoryFixtureFailed:$($case.name)"
+  }
+  $projection = [string]$raw | ConvertFrom-Json
+  if ([string]$projection.result -cne [string]$case.result -or
+      [int]$projection.deviceCount -ne [int]$case.deviceCount -or
+      [int]$projection.hardwareBatchCount -ne [int]$case.hardwareBatches -or
+      [int]$projection.driverBatchCount -ne [int]$case.driverBatches -or
+      [int]$projection.exactNodeCount -ne [int]$case.exact -or
+      [int]$projection.batchSize -ne 32 -or
+      [int]$projection.maxBatchSize -gt 32 -or
+      ([string]$case.result -ceq "passed" -and (
+        [int]$projection.hardwareCount -ne [int]$case.deviceCount -or
+        [int]$projection.driverCount -ne [int]$case.deviceCount)) -or
+      ([string]$case.result -ceq "failed" -and
+        ([string]$projection.code -cne "virtualDisplayReadbackFailed" -or
+         [int]$projection.elapsedMilliseconds -gt
+           [int]$projection.hardCapMilliseconds -or
+         -not [bool]$projection.rootPidZero -or
+         [int]$projection.jobActiveProcesses -ne 0 -or
+         ([string]$case.name -cin @(
+             "timeout", "startAssign", "startResume", "startRetain") -and
+          [string]$projection.cleanupState -cne "completed")))) {
+    throw "virtualDisplayChunkedInventoryAssertionFailed:$($case.name)"
+  }
+  $virtualDisplayChunkedInventoryResults += [ordered]@{
+    name = [string]$case.name
+    result = [string]$projection.result
+    deviceCount = [int]$projection.deviceCount
+    hardwareBatchCount = [int]$projection.hardwareBatchCount
+    driverBatchCount = [int]$projection.driverBatchCount
+    maxBatchSize = [int]$projection.maxBatchSize
+    exactNodeCount = [int]$projection.exactNodeCount
+    elapsedMilliseconds = [int]$projection.elapsedMilliseconds
+    hardCapMilliseconds = [int]$projection.hardCapMilliseconds
+    cleanupState = [string]$projection.cleanupState
+    rootPidZero = [bool]$projection.rootPidZero
+    jobActiveProcesses = [int]$projection.jobActiveProcesses
+  }
+}
+
 $trustedToolRoot = Join-Path $root "virtual-display-trusted-tool"
 New-Item -ItemType Directory -Path $trustedToolRoot | Out-Null
 $previousHarness = $env:LIGASE_INSTALL_VALIDATION_HARNESS
@@ -6314,6 +6428,7 @@ if ([string]$diagnosticProjection.code -cne
   virtualDisplayInstallerProcessCases = $installerProcessResults
   virtualDisplayInstallerCaseSchemaCases = $installerProcessCaseSchemaResults
   virtualDisplayReadbackCases = $virtualDisplayReadbackResults
+  virtualDisplayChunkedInventoryCases = $virtualDisplayChunkedInventoryResults
   virtualDisplayTrustedTool = $trustedToolProjection
   virtualDisplayRemovalCases = $virtualDisplayRemovalResults
   virtualDisplayTerminalReadbackCases =

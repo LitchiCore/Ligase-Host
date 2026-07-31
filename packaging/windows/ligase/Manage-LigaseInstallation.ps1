@@ -12,6 +12,7 @@ param(
     "Uninstall",
     "InstallVirtualDisplay",
     "ValidateVirtualDisplayReadback",
+    "ValidateVirtualDisplayChunkedInventory",
     "ValidateVirtualDisplayRemovalReconciliation",
     "ValidateVirtualDisplayTerminalReadback",
     "ValidateVirtualDisplayTrustedPnPUtil",
@@ -424,6 +425,56 @@ public static class LigaseFileIdentity
         }
         return candidate;
     }
+
+    public static string GetTrustedWindowsPowerShellPath()
+    {
+        var buffer = new System.Text.StringBuilder(32768);
+        uint length = GetSystemDirectoryW(buffer, (uint)buffer.Capacity);
+        if (length == 0 || length >= buffer.Capacity)
+            throw new IOException("virtualDisplayReadbackFailed");
+        string systemDirectory = Path.GetFullPath(buffer.ToString());
+        string shellDirectory = Path.GetFullPath(Path.Combine(
+            systemDirectory, "WindowsPowerShell", "v1.0"));
+        foreach (string directoryPath in new[] {
+            systemDirectory,
+            Path.GetFullPath(Path.Combine(systemDirectory, "WindowsPowerShell")),
+            shellDirectory
+        })
+        {
+            var directory = new DirectoryInfo(directoryPath);
+            if (!directory.Exists ||
+                (directory.Attributes & FileAttributes.ReparsePoint) != 0)
+                throw new IOException("virtualDisplayReadbackFailed");
+        }
+        string candidate = Path.GetFullPath(
+            Path.Combine(shellDirectory, "powershell.exe"));
+        var file = new FileInfo(candidate);
+        if (!file.Exists || (file.Attributes & FileAttributes.Directory) != 0 ||
+            (file.Attributes & FileAttributes.ReparsePoint) != 0)
+            throw new IOException("virtualDisplayReadbackFailed");
+        using (var stream = new FileStream(
+            candidate, FileMode.Open, FileAccess.Read,
+            FileShare.Read | FileShare.Delete))
+        {
+            var final = new System.Text.StringBuilder(32768);
+            uint finalLength = GetFinalPathNameByHandleW(
+                stream.SafeFileHandle, final, (uint)final.Capacity, 0);
+            if (finalLength == 0 || finalLength >= final.Capacity)
+                throw new IOException("virtualDisplayReadbackFailed");
+            string finalPath = final.ToString();
+            if (finalPath.StartsWith(@"\\?\", StringComparison.Ordinal))
+                finalPath = finalPath.Substring(4);
+            if (!string.Equals(Path.GetFullPath(finalPath), candidate,
+                    StringComparison.OrdinalIgnoreCase))
+                throw new IOException("virtualDisplayReadbackFailed");
+            BY_HANDLE_FILE_INFORMATION information;
+            if (!GetFileInformationByHandle(
+                    stream.SafeFileHandle, out information) ||
+                information.FileIndexHigh == 0 && information.FileIndexLow == 0)
+                throw new IOException("virtualDisplayReadbackFailed");
+        }
+        return candidate;
+    }
 }
 "@
 
@@ -640,6 +691,29 @@ public sealed class LigaseJobProcess : IDisposable
         string commandInterpreter, string installerPath, string workingDirectory,
         string validationFault)
     {
+        string commandLine =
+            "\"" + commandInterpreter + "\" /d /s /c \"\"" +
+            installerPath + "\"\"";
+        return StartExact(
+            commandInterpreter, commandLine, workingDirectory, validationFault);
+    }
+
+    public static LigaseJobProcess StartExact(
+        string applicationPath, string exactCommandLine,
+        string workingDirectory, string validationFault)
+    {
+        return StartExact(
+            applicationPath, exactCommandLine, workingDirectory,
+            validationFault, 5000);
+    }
+
+    public static LigaseJobProcess StartExact(
+        string applicationPath, string exactCommandLine,
+        string workingDirectory, string validationFault,
+        int cleanupMilliseconds)
+    {
+        if (cleanupMilliseconds < 1 || cleanupMilliseconds > 5000)
+            throw new ArgumentOutOfRangeException("cleanupMilliseconds");
         IntPtr stdoutRead = IntPtr.Zero;
         IntPtr stdoutWrite = IntPtr.Zero;
         IntPtr stderrRead = IntPtr.Zero;
@@ -731,11 +805,9 @@ public sealed class LigaseJobProcess : IDisposable
                 },
                 lpAttributeList = attributeList
             };
-            var commandLine = new StringBuilder(
-                "\"" + commandInterpreter + "\" /d /s /c \"\"" +
-                installerPath + "\"\"");
+            var commandLine = new StringBuilder(exactCommandLine);
             if (!CreateProcess(
-                commandInterpreter, commandLine, IntPtr.Zero, IntPtr.Zero,
+                applicationPath, commandLine, IntPtr.Zero, IntPtr.Zero,
                 true, CREATE_SUSPENDED | CREATE_NO_WINDOW |
                 EXTENDED_STARTUPINFO_PRESENT, IntPtr.Zero,
                 workingDirectory, ref startup, out pi))
@@ -854,7 +926,8 @@ public sealed class LigaseJobProcess : IDisposable
                             signaled = WaitForSingleObject(
                                 pi.hProcess, 0) == WAIT_OBJECT_0;
                         while (!signaled &&
-                            cleanupClock.ElapsedMilliseconds < 5000)
+                            cleanupClock.ElapsedMilliseconds <
+                                cleanupMilliseconds)
                         {
                             signaled = WaitForSingleObject(
                                 pi.hProcess, 20) == WAIT_OBJECT_0;
@@ -872,7 +945,7 @@ public sealed class LigaseJobProcess : IDisposable
                         terminated = TerminateJobObject(job, 18);
                     bool rootSignaled = false;
                     while (!rootSignaled &&
-                        cleanupClock.ElapsedMilliseconds < 5000)
+                        cleanupClock.ElapsedMilliseconds < cleanupMilliseconds)
                     {
                         rootSignaled = WaitForSingleObject(
                             pi.hProcess, 20) == WAIT_OBJECT_0;
@@ -990,6 +1063,14 @@ public sealed class LigaseJobProcess : IDisposable
 
     public static bool SecondaryContainment(string validationFault)
     {
+        return SecondaryContainment(validationFault, 5000);
+    }
+
+    public static bool SecondaryContainment(
+        string validationFault, int cleanupMilliseconds)
+    {
+        if (cleanupMilliseconds < 1 || cleanupMilliseconds > 5000)
+            return false;
         SecondaryAttempted = true;
         SecondaryCompleted = false;
         if (_retainedProcess == IntPtr.Zero)
@@ -1012,7 +1093,8 @@ public sealed class LigaseJobProcess : IDisposable
             TerminateProcess(_retainedProcess, 18);
         var clock = Stopwatch.StartNew();
         bool rootSignaled = false;
-        while (!rootSignaled && clock.ElapsedMilliseconds < 5000)
+        while (!rootSignaled &&
+            clock.ElapsedMilliseconds < cleanupMilliseconds)
             rootSignaled = !String.Equals(
                 validationFault, "secondaryWait",
                 StringComparison.Ordinal) &&
@@ -4492,6 +4574,454 @@ function Get-FirewallReadback($Manifest) {
   }
 }
 
+$virtualDisplayPropertyBatchSize = 32
+$virtualDisplayPropertyInventoryDeadlineMilliseconds = 10000
+$virtualDisplayPropertyCleanupReserveMilliseconds = 1000
+
+function Invoke-VirtualDisplayPropertyBatchProcess(
+    [string[]]$InstanceIds,
+    [string]$KeyName,
+    [Diagnostics.Stopwatch]$TotalClock,
+    [int]$TotalMilliseconds,
+    [string]$ValidationMode = "none") {
+  $cleanupReserve = [Math]::Min(
+    $virtualDisplayPropertyCleanupReserveMilliseconds,
+    [Math]::Max(100, [int]($TotalMilliseconds / 3)))
+  $remaining = $TotalMilliseconds - [int]$TotalClock.ElapsedMilliseconds
+  $script:virtualDisplayChunkFailureStage = "none"
+  $startFault = switch ($ValidationMode) {
+    "startAssign" { "assign" }
+    "startResume" { "resume" }
+    "startRetain" { "retain" }
+    default { "none" }
+  }
+  $childMode = if ($startFault -cne "none") {
+    "fixture"
+  } else { $ValidationMode }
+  if ($remaining -le $cleanupReserve) {
+    throw "virtualDisplayReadbackFailed"
+  }
+  $payload = [ordered]@{
+    schemaVersion = 1
+    keyName = $KeyName
+    instanceIds = @($InstanceIds)
+    validationMode = $childMode
+  } | ConvertTo-Json -Compress
+  $payloadBase64 = [Convert]::ToBase64String(
+    [Text.Encoding]::UTF8.GetBytes($payload))
+$childSource = @'
+$ErrorActionPreference="Stop"
+$ProgressPreference="SilentlyContinue"
+$p=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("__PAYLOAD__"))|ConvertFrom-Json
+if($p.schemaVersion-ne 1-or$p.keyName-notin @("DEVPKEY_Device_HardwareIds","DEVPKEY_Device_DriverInfPath")-or$p.instanceIds-isnot[array]-or$p.instanceIds.Count-lt 1-or$p.instanceIds.Count-gt 32){exit 91}
+if($p.validationMode-eq"hang"){Start-Sleep -Seconds 60;exit 92}
+if($p.validationMode-eq"quota"){exit 94}
+if($p.validationMode-ne"none" -and $p.validationMode-ne"fixture"){exit 93}
+if($p.validationMode-eq"fixture"){
+  $rows=@($p.instanceIds|ForEach-Object{[ordered]@{InstanceId=[string]$_;Data=$(if($p.keyName-eq"DEVPKEY_Device_HardwareIds"){@("validation\other")}else{""})}})
+}else{
+  $rows=@(Get-PnpDeviceProperty -InstanceId ([string[]]$p.instanceIds) -KeyName ([string]$p.keyName) -ErrorAction Stop|ForEach-Object{[ordered]@{InstanceId=[string]$_.InstanceId;Data=$_.Data}})
+}
+[Console]::Out.Write((ConvertTo-Json -InputObject $rows -Compress -Depth 5))
+'@
+  $childSource = $childSource.Replace("__PAYLOAD__", $payloadBase64)
+  $encoded = [Convert]::ToBase64String(
+    [Text.Encoding]::Unicode.GetBytes($childSource))
+  $powerShell = [LigaseFileIdentity]::GetTrustedWindowsPowerShellPath()
+  $commandLine = '"' + $powerShell + '" -NoProfile -NonInteractive ' +
+    '-InputFormat Text -OutputFormat Text -ExecutionPolicy Bypass ' +
+    '-EncodedCommand ' + $encoded
+  $job = $null
+  try {
+    $startCleanupBudget = [Math]::Min(
+      5000, [Math]::Max(
+        1, $TotalMilliseconds - [int]$TotalClock.ElapsedMilliseconds))
+    try {
+      $job = [LigaseJobProcess]::StartExact(
+        $powerShell, $commandLine, [IO.Path]::GetDirectoryName($powerShell),
+        $startFault, $startCleanupBudget)
+    } catch {
+      $script:virtualDisplayChunkFailureStage = "start"
+      $remainingCleanup = [Math]::Min(
+        5000, [Math]::Max(
+          1, $TotalMilliseconds - [int]$TotalClock.ElapsedMilliseconds))
+      $closed = if ([LigaseJobProcess]::AuthorityRetained) {
+        [LigaseJobProcess]::SecondaryContainment(
+          $startFault, $remainingCleanup)
+      } else { [bool][LigaseJobProcess]::LastCleanupProven }
+      $script:virtualDisplayChunkCleanupState =
+        if ($closed) { "completed" } else { "failed" }
+      $script:virtualDisplayChunkRootPidZero =
+        $closed -and [int][LigaseJobProcess]::LastCleanupPid -eq 0
+      $script:virtualDisplayChunkJobActiveProcesses =
+        if ($script:virtualDisplayChunkRootPidZero) { 0 } else { -1 }
+      throw "virtualDisplayReadbackFailed"
+    }
+    $stdoutBuffer = [byte[]]::new(256)
+    $stderrBuffer = [byte[]]::new(256)
+    $stdout = [IO.MemoryStream]::new()
+    $stderr = [IO.MemoryStream]::new()
+    $stdoutTask = $job.StandardOutput.ReadAsync(
+      $stdoutBuffer, 0, $stdoutBuffer.Length)
+    $stderrTask = $job.StandardError.ReadAsync(
+      $stderrBuffer, 0, $stderrBuffer.Length)
+    $stdoutClosed = $false
+    $stderrClosed = $false
+    $failed = $false
+    $runLimit = $TotalMilliseconds - $cleanupReserve
+    while (-not ($job.HasNoActiveProcesses() -and
+        $stdoutClosed -and $stderrClosed)) {
+      foreach ($streamName in @("stdout", "stderr")) {
+        $task = if ($streamName -ceq "stdout") {
+          $stdoutTask
+        } else { $stderrTask }
+        if ($task.IsCompleted) {
+          try { $count = $task.GetAwaiter().GetResult() } catch {
+            $failed = $true
+            break
+          }
+          if ($count -eq 0) {
+            if ($streamName -ceq "stdout") {
+              $stdoutClosed = $true
+            } else { $stderrClosed = $true }
+          } else {
+            $target = if ($streamName -ceq "stdout") { $stdout } else { $stderr }
+            if ($target.Length + $count -gt 65536) {
+              $failed = $true
+              break
+            }
+            $buffer = if ($streamName -ceq "stdout") {
+              $stdoutBuffer
+            } else { $stderrBuffer }
+            $target.Write($buffer, 0, $count)
+            if ($streamName -ceq "stdout") {
+              $stdoutTask = $job.StandardOutput.ReadAsync(
+                $stdoutBuffer, 0, $stdoutBuffer.Length)
+            } else {
+              $stderrTask = $job.StandardError.ReadAsync(
+                $stderrBuffer, 0, $stderrBuffer.Length)
+            }
+          }
+        }
+      }
+      if ($failed -or $TotalClock.ElapsedMilliseconds -ge $runLimit) {
+        if (-not $failed) {
+          $script:virtualDisplayChunkFailureStage = "deadline"
+        }
+        break
+      }
+      Start-Sleep -Milliseconds 5
+    }
+    if ($failed -or -not ($job.HasNoActiveProcesses() -and
+        $stdoutClosed -and $stderrClosed)) {
+      if (-not $job.Terminate()) { throw "virtualDisplayReadbackFailed" }
+      while ($TotalClock.ElapsedMilliseconds -lt $TotalMilliseconds -and
+          -not ($job.HasNoActiveProcesses() -and
+            $stdoutClosed -and $stderrClosed)) {
+        if (-not $stdoutClosed -and $stdoutTask.IsCompleted) {
+          try { $count = $stdoutTask.GetAwaiter().GetResult() } catch {
+            throw "virtualDisplayReadbackFailed"
+          }
+          if ($count -eq 0) { $stdoutClosed = $true } else {
+            $stdoutTask = $job.StandardOutput.ReadAsync(
+              $stdoutBuffer, 0, $stdoutBuffer.Length)
+          }
+        }
+        if (-not $stderrClosed -and $stderrTask.IsCompleted) {
+          try { $count = $stderrTask.GetAwaiter().GetResult() } catch {
+            throw "virtualDisplayReadbackFailed"
+          }
+          if ($count -eq 0) { $stderrClosed = $true } else {
+            $stderrTask = $job.StandardError.ReadAsync(
+              $stderrBuffer, 0, $stderrBuffer.Length)
+          }
+        }
+        Start-Sleep -Milliseconds 5
+      }
+      $script:virtualDisplayChunkCleanupState = if (
+        $job.WaitForRoot(0) -and $job.HasNoActiveProcesses() -and
+        $stdoutClosed -and $stderrClosed) { "completed" } else { "failed" }
+      $script:virtualDisplayChunkRootPidZero =
+        $script:virtualDisplayChunkCleanupState -ceq "completed"
+      $script:virtualDisplayChunkJobActiveProcesses =
+        if ($job.HasNoActiveProcesses()) { 0 } else { -1 }
+      throw "virtualDisplayReadbackFailed"
+    }
+    if ($TotalClock.ElapsedMilliseconds -ge $TotalMilliseconds -or
+        $job.ExitCode -ne 0 -or $stderr.Length -ne 0) {
+      $script:virtualDisplayChunkFailureStage = if (
+        $TotalClock.ElapsedMilliseconds -ge $TotalMilliseconds) {
+          "deadline"
+        } elseif ($job.ExitCode -ne 0) { "nativeExit" } else { "stderr" }
+      throw "virtualDisplayReadbackFailed"
+    }
+    $strictUtf8 = [Text.UTF8Encoding]::new($false, $true)
+    $raw = $strictUtf8.GetString($stdout.ToArray())
+    if (-not [LigaseStrictJson]::HasUniqueProperties($raw)) {
+      $script:virtualDisplayChunkFailureStage = "json"
+      throw "virtualDisplayReadbackFailed"
+    }
+    $parsed = $raw | ConvertFrom-Json
+    if ($parsed -isnot [array]) {
+      $script:virtualDisplayChunkFailureStage = "shape"
+      throw "virtualDisplayReadbackFailed"
+    }
+    return @($parsed | ForEach-Object { $_ })
+  } catch {
+    if ($null -ne $job -and
+        -not ($job.WaitForRoot(0) -and $job.HasNoActiveProcesses())) {
+      $null = $job.Terminate()
+      while ($TotalClock.ElapsedMilliseconds -lt $TotalMilliseconds -and
+          -not ($job.WaitForRoot(0) -and $job.HasNoActiveProcesses())) {
+        Start-Sleep -Milliseconds 5
+      }
+    }
+    if ($script:virtualDisplayChunkFailureStage -ceq "none") {
+      $script:virtualDisplayChunkFailureStage = "invoke"
+    }
+    if ($null -ne $job) {
+      $script:virtualDisplayChunkCleanupState = if (
+        $job.WaitForRoot(0) -and $job.HasNoActiveProcesses()) {
+          "completed"
+        } else { "failed" }
+      $script:virtualDisplayChunkRootPidZero =
+        $script:virtualDisplayChunkCleanupState -ceq "completed"
+      $script:virtualDisplayChunkJobActiveProcesses =
+        if ($job.HasNoActiveProcesses()) { 0 } else { -1 }
+    }
+    throw "virtualDisplayReadbackFailed"
+  } finally {
+    if ($null -ne $job) { $job.Dispose() }
+  }
+}
+
+function Get-VirtualDisplayPropertyRowsChunked(
+    [string[]]$InstanceIds,
+    [string]$KeyName,
+    [scriptblock]$PropertyProvider,
+    [Diagnostics.Stopwatch]$TotalClock,
+    [int]$TotalMilliseconds) {
+  if ($InstanceIds.Count -eq 0) {
+    return [Collections.Generic.Dictionary[string,object]]::new(
+      [StringComparer]::Ordinal)
+  }
+  $allRequested = [Collections.Generic.HashSet[string]]::new(
+    [StringComparer]::Ordinal)
+  foreach ($instanceId in $InstanceIds) {
+    if ([string]::IsNullOrWhiteSpace($instanceId) -or
+        -not $allRequested.Add($instanceId)) {
+      throw "virtualDisplayReadbackFailed"
+    }
+  }
+  $allRows = [Collections.Generic.Dictionary[string,object]]::new(
+    [StringComparer]::Ordinal)
+  for ($offset = 0; $offset -lt $InstanceIds.Count;
+       $offset += $virtualDisplayPropertyBatchSize) {
+    if ($TotalClock.ElapsedMilliseconds -ge $TotalMilliseconds) {
+      throw "virtualDisplayReadbackFailed"
+    }
+    $batchCount = [Math]::Min(
+      $virtualDisplayPropertyBatchSize, $InstanceIds.Count - $offset)
+    $batch = [string[]]::new($batchCount)
+    [Array]::Copy($InstanceIds, $offset, $batch, 0, $batchCount)
+    $batchRequested = [Collections.Generic.HashSet[string]]::new(
+      [StringComparer]::Ordinal)
+    foreach ($instanceId in $batch) {
+      if (-not $batchRequested.Add($instanceId)) {
+        throw "virtualDisplayReadbackFailed"
+      }
+    }
+    $rows = @(& $PropertyProvider $batch $KeyName)
+    if ($TotalClock.ElapsedMilliseconds -ge $TotalMilliseconds) {
+      $script:virtualDisplayChunkFailureStage = "postDeadline"
+      throw "virtualDisplayReadbackFailed"
+    }
+    if ($rows.Count -ne $batch.Count) {
+      $script:virtualDisplayChunkFailureStage = "rowCount"
+      throw "virtualDisplayReadbackFailed"
+    }
+    $batchReturned = [Collections.Generic.HashSet[string]]::new(
+      [StringComparer]::Ordinal)
+    foreach ($row in $rows) {
+      $returnedId = [string]$row.InstanceId
+      if ([string]::IsNullOrWhiteSpace($returnedId) -or
+          -not $batchRequested.Contains($returnedId) -or
+          -not $batchReturned.Add($returnedId) -or
+          $allRows.ContainsKey($returnedId)) {
+        $script:virtualDisplayChunkFailureStage = "rowIdentity"
+        throw "virtualDisplayReadbackFailed"
+      }
+      $allRows.Add($returnedId, $row.Data)
+    }
+    if ($batchReturned.Count -ne $batchRequested.Count) {
+      $script:virtualDisplayChunkFailureStage = "batchCoverage"
+      throw "virtualDisplayReadbackFailed"
+    }
+  }
+  if ($TotalClock.ElapsedMilliseconds -ge $TotalMilliseconds -or
+      $allRows.Count -ne $allRequested.Count) {
+    $script:virtualDisplayChunkFailureStage = "globalCoverage"
+    throw "virtualDisplayReadbackFailed"
+  }
+  return $allRows
+}
+
+function Invoke-VirtualDisplayChunkedInventoryValidation(
+    [string]$ValidationRoot) {
+  $fullRoot = [IO.Path]::GetFullPath($ValidationRoot)
+  if ($env:LIGASE_INSTALL_VALIDATION_HARNESS -cne "1" -or
+      [string]$env:LIGASE_VIRTUAL_DISPLAY_CHUNK_VALIDATION_ROOT -cne
+        $fullRoot -or
+      [IO.Path]::GetPathRoot($fullRoot) -cne "D:\") {
+    throw "virtualDisplayValidationUnavailable"
+  }
+  $fixturePath = Join-Path $fullRoot "chunked-inventory-fixture.json"
+  $raw = [IO.File]::ReadAllText(
+    $fixturePath, [Text.UTF8Encoding]::new($false, $true))
+  if (-not [LigaseStrictJson]::HasUniqueProperties($raw)) {
+    throw "virtualDisplayValidationUnavailable"
+  }
+  $fixture = $raw | ConvertFrom-Json
+  Assert-ClosedProperties $fixture @(
+    "schemaVersion", "deviceCount", "failureMode", "failureBatchIndex",
+    "deadlineMilliseconds") "virtualDisplayChunkValidation"
+  if ($fixture.schemaVersion -ne 1 -or
+      $fixture.deviceCount -isnot [int] -or
+      [int]$fixture.deviceCount -lt 1 -or
+      [int]$fixture.deviceCount -gt 1024 -or
+      [string]$fixture.failureMode -cnotin @(
+        "none", "inputDuplicate", "quota", "missing", "duplicate",
+        "crossBatch", "timeout", "startAssign", "startResume",
+        "startRetain") -or
+      $fixture.failureBatchIndex -isnot [int] -or
+      [int]$fixture.failureBatchIndex -lt 0 -or
+      $fixture.deadlineMilliseconds -isnot [int] -or
+      [int]$fixture.deadlineMilliseconds -notin @(1500, 10000)) {
+    throw "virtualDisplayValidationUnavailable"
+  }
+  $instanceIds = [string[]]@(0..([int]$fixture.deviceCount - 1) |
+    ForEach-Object { "ROOT\VALIDATION\$($_.ToString('D4'))" })
+  if ([string]$fixture.failureMode -ceq "inputDuplicate") {
+    $instanceIds[$instanceIds.Count - 1] = $instanceIds[0]
+  }
+  $state = [ordered]@{
+    hardwareCalls = 0
+    driverCalls = 0
+    maxBatchSize = 0
+    previousBatchFirst = ""
+  }
+  $script:virtualDisplayChunkCleanupState = "notRequired"
+  $script:virtualDisplayChunkRootPidZero = $true
+  $script:virtualDisplayChunkJobActiveProcesses = 0
+  $provider = {
+    param([string[]]$Batch, [string]$KeyName)
+    $isHardware = $KeyName -ceq "DEVPKEY_Device_HardwareIds"
+    if ($isHardware) { $state.hardwareCalls++ } else { $state.driverCalls++ }
+    $callIndex = if ($isHardware) {
+      [int]$state.hardwareCalls - 1
+    } else { [int]$state.driverCalls - 1 }
+    $state.maxBatchSize = [Math]::Max(
+      [int]$state.maxBatchSize, $Batch.Count)
+    $applyFault = $isHardware -and
+      $callIndex -eq [int]$fixture.failureBatchIndex
+    $mode = if ($applyFault -and
+        [string]$fixture.failureMode -ceq "quota") {
+      "quota"
+    } elseif ($applyFault -and
+        [string]$fixture.failureMode -ceq "timeout") {
+      "hang"
+    } elseif ($applyFault -and [string]$fixture.failureMode -cin @(
+        "startAssign", "startResume", "startRetain")) {
+      [string]$fixture.failureMode
+    } else { "fixture" }
+    $rows = [Collections.Generic.List[object]]::new()
+    foreach ($row in @(Invoke-VirtualDisplayPropertyBatchProcess `
+        $Batch $KeyName $clock ([int]$fixture.deadlineMilliseconds) $mode)) {
+      $data = if ($isHardware -and
+          [string]$row.InstanceId -ceq
+            $instanceIds[$instanceIds.Count - 1]) {
+        @("root\sudomaker\sudovda")
+      } else { $row.Data }
+      $rows.Add([pscustomobject]@{
+          InstanceId = [string]$row.InstanceId
+          Data = $data
+        })
+    }
+    if ($applyFault -and
+        [string]$fixture.failureMode -ceq "missing") {
+      $rows.RemoveAt($rows.Count - 1)
+    } elseif ($applyFault -and
+        [string]$fixture.failureMode -ceq "duplicate") {
+      $rows[$rows.Count - 1] = $rows[0]
+    } elseif ($applyFault -and
+        [string]$fixture.failureMode -ceq "crossBatch") {
+      if ([string]::IsNullOrWhiteSpace([string]$state.previousBatchFirst)) {
+        throw "virtualDisplayValidationUnavailable"
+      }
+      $rows[$rows.Count - 1] = [pscustomobject]@{
+        InstanceId = [string]$state.previousBatchFirst
+        Data = @("validation\other")
+      }
+    }
+    $state.previousBatchFirst = [string]$Batch[0]
+    return @($rows)
+  }
+  $clock = [Diagnostics.Stopwatch]::StartNew()
+  try {
+    $hardware = Get-VirtualDisplayPropertyRowsChunked $instanceIds `
+      "DEVPKEY_Device_HardwareIds" $provider $clock `
+      ([int]$fixture.deadlineMilliseconds)
+    $driver = Get-VirtualDisplayPropertyRowsChunked $instanceIds `
+      "DEVPKEY_Device_DriverInfPath" $provider $clock `
+      ([int]$fixture.deadlineMilliseconds)
+    $exactNodeCount = @($instanceIds | Where-Object {
+        @($hardware[$_] | Where-Object {
+            [StringComparer]::OrdinalIgnoreCase.Equals(
+              [string]$_, "root\sudomaker\sudovda")
+          }).Count -eq 1
+      }).Count
+    return [ordered]@{
+      schemaVersion = 1
+      result = "passed"
+      code = "none"
+      deviceCount = $instanceIds.Count
+      hardwareCount = $hardware.Count
+      driverCount = $driver.Count
+      exactNodeCount = $exactNodeCount
+      batchSize = $virtualDisplayPropertyBatchSize
+      hardwareBatchCount = [int]$state.hardwareCalls
+      driverBatchCount = [int]$state.driverCalls
+      maxBatchSize = [int]$state.maxBatchSize
+      elapsedMilliseconds = $clock.ElapsedMilliseconds
+      hardCapMilliseconds = [int]$fixture.deadlineMilliseconds
+      cleanupState = [string]$script:virtualDisplayChunkCleanupState
+      rootPidZero = [bool]$script:virtualDisplayChunkRootPidZero
+      jobActiveProcesses = [int]$script:virtualDisplayChunkJobActiveProcesses
+      failureStage = [string]$script:virtualDisplayChunkFailureStage
+    }
+  } catch {
+    return [ordered]@{
+      schemaVersion = 1
+      result = "failed"
+      code = "virtualDisplayReadbackFailed"
+      deviceCount = $instanceIds.Count
+      hardwareCount = -1
+      driverCount = -1
+      exactNodeCount = -1
+      batchSize = $virtualDisplayPropertyBatchSize
+      hardwareBatchCount = [int]$state.hardwareCalls
+      driverBatchCount = [int]$state.driverCalls
+      maxBatchSize = [int]$state.maxBatchSize
+      elapsedMilliseconds = $clock.ElapsedMilliseconds
+      hardCapMilliseconds = [int]$fixture.deadlineMilliseconds
+      cleanupState = [string]$script:virtualDisplayChunkCleanupState
+      rootPidZero = [bool]$script:virtualDisplayChunkRootPidZero
+      jobActiveProcesses = [int]$script:virtualDisplayChunkJobActiveProcesses
+      failureStage = [string]$script:virtualDisplayChunkFailureStage
+    }
+  }
+}
+
 function Get-VirtualDisplaySnapshot {
   if ($env:LIGASE_INSTALL_VALIDATION_HARNESS -ceq "1" -and
       -not [string]::IsNullOrWhiteSpace(
@@ -4534,38 +5064,28 @@ function Get-VirtualDisplaySnapshot {
     return @($fixture.devices)
   }
   $allDevices = @(Get-PnpDevice -ErrorAction Stop)
-  $instanceIds = @($allDevices | ForEach-Object {
+  $instanceIds = [string[]]@($allDevices | ForEach-Object {
     if ([string]::IsNullOrWhiteSpace([string]$_.InstanceId) -or
         $_.Present -isnot [bool]) {
       throw "virtualDisplayReadbackFailed"
     }
     [string]$_.InstanceId
   })
-  $hardwareRows = @(Get-PnpDeviceProperty -InstanceId $instanceIds `
-    -KeyName "DEVPKEY_Device_HardwareIds" -ErrorAction Stop)
-  $driverRows = @(Get-PnpDeviceProperty -InstanceId $instanceIds `
-    -KeyName "DEVPKEY_Device_DriverInfPath" -ErrorAction Stop)
-  if ($hardwareRows.Count -ne $allDevices.Count -or
-      $driverRows.Count -ne $allDevices.Count) {
+  $inventoryClock = [Diagnostics.Stopwatch]::StartNew()
+  $propertyProvider = {
+    param([string[]]$Batch, [string]$KeyName)
+    @(Invoke-VirtualDisplayPropertyBatchProcess $Batch $KeyName `
+      $inventoryClock $virtualDisplayPropertyInventoryDeadlineMilliseconds)
+  }
+  $hardwareByInstance = Get-VirtualDisplayPropertyRowsChunked `
+    $instanceIds "DEVPKEY_Device_HardwareIds" $propertyProvider `
+    $inventoryClock $virtualDisplayPropertyInventoryDeadlineMilliseconds
+  $driverByInstance = Get-VirtualDisplayPropertyRowsChunked `
+    $instanceIds "DEVPKEY_Device_DriverInfPath" $propertyProvider `
+    $inventoryClock $virtualDisplayPropertyInventoryDeadlineMilliseconds
+  if ($hardwareByInstance.Count -ne $allDevices.Count -or
+      $driverByInstance.Count -ne $allDevices.Count) {
     throw "virtualDisplayReadbackFailed"
-  }
-  $hardwareByInstance = [Collections.Generic.Dictionary[string,object]]::new(
-    [StringComparer]::OrdinalIgnoreCase)
-  $driverByInstance = [Collections.Generic.Dictionary[string,object]]::new(
-    [StringComparer]::OrdinalIgnoreCase)
-  foreach ($row in $hardwareRows) {
-    if ([string]::IsNullOrWhiteSpace([string]$row.InstanceId) -or
-        $hardwareByInstance.ContainsKey([string]$row.InstanceId)) {
-      throw "virtualDisplayReadbackFailed"
-    }
-    $hardwareByInstance.Add([string]$row.InstanceId, $row.Data)
-  }
-  foreach ($row in $driverRows) {
-    if ([string]::IsNullOrWhiteSpace([string]$row.InstanceId) -or
-        $driverByInstance.ContainsKey([string]$row.InstanceId)) {
-      throw "virtualDisplayReadbackFailed"
-    }
-    $driverByInstance.Add([string]$row.InstanceId, $row.Data)
   }
   return @($allDevices | ForEach-Object {
     $instanceId = [string]$_.InstanceId
@@ -5395,6 +5915,12 @@ try {
     }
     [Console]::Out.WriteLine((
       (Get-VirtualDisplay) | ConvertTo-Json -Compress))
+    exit 0
+  }
+  if ($Action -eq "ValidateVirtualDisplayChunkedInventory") {
+    $validationResult =
+      Invoke-VirtualDisplayChunkedInventoryValidation $ValidationRoot
+    [Console]::Out.WriteLine(($validationResult | ConvertTo-Json -Compress))
     exit 0
   }
   if ($Action -eq "ValidateVirtualDisplayRemovalReconciliation") {

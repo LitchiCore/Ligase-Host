@@ -1732,6 +1732,43 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(management, "\"DEVPKEY_Device_HardwareIds\"");
         StringAssert.Contains(management, "\"DEVPKEY_Device_DriverInfPath\"");
         StringAssert.Contains(management,
+            "$virtualDisplayPropertyBatchSize = 32");
+        StringAssert.Contains(management,
+            "$virtualDisplayPropertyInventoryDeadlineMilliseconds = 10000");
+        StringAssert.Contains(management,
+            "$virtualDisplayPropertyCleanupReserveMilliseconds = 1000");
+        StringAssert.Contains(management,
+            "function Invoke-VirtualDisplayPropertyBatchProcess(");
+        StringAssert.Contains(management,
+            "[LigaseJobProcess]::StartExact(");
+        StringAssert.Contains(management,
+            "$startCleanupBudget");
+        StringAssert.Contains(management,
+            "[LigaseJobProcess]::AuthorityRetained");
+        StringAssert.Contains(management,
+            "[LigaseJobProcess]::SecondaryContainment(");
+        StringAssert.Contains(management,
+            "[LigaseFileIdentity]::GetTrustedWindowsPowerShellPath()");
+        StringAssert.Contains(management,
+            "$job.Terminate()");
+        StringAssert.Contains(management,
+            "$job.HasNoActiveProcesses()");
+        StringAssert.Contains(management,
+            "Get-PnpDeviceProperty -InstanceId ([string[]]$p.instanceIds)");
+        StringAssert.Contains(management,
+            "function Get-VirtualDisplayPropertyRowsChunked(");
+        StringAssert.Contains(management,
+            "[StringComparer]::Ordinal)");
+        StringAssert.Contains(management,
+            "$rows.Count -ne $batch.Count");
+        StringAssert.Contains(management,
+            "-not $batchRequested.Contains($returnedId)");
+        StringAssert.Contains(management,
+            "$allRows.Count -ne $allRequested.Count");
+        Assert.IsFalse(management.Contains(
+            "Get-PnpDeviceProperty -InstanceId $instanceIds",
+            StringComparison.Ordinal));
+        StringAssert.Contains(management,
             "return $env:LIGASE_VIRTUAL_DISPLAY_DEPENDENT_DEVICE -ceq \"1\"");
         Assert.IsFalse(management.Contains(
             "Get-PnpDevice -PresentOnly -ErrorAction Stop",
@@ -1792,6 +1829,23 @@ public sealed class FreshInstallPackagingTests
             "\"unboundExactUnexpectedNames\"");
         StringAssert.Contains(runtimeHarness, "\"mixedPresentAndPhantom\"");
         StringAssert.Contains(runtimeHarness, "\"inventoryUnavailable\"");
+        StringAssert.Contains(runtimeHarness,
+            "virtualDisplayChunkedInventoryCases");
+        StringAssert.Contains(runtimeHarness, "\"large369\"");
+        StringAssert.Contains(runtimeHarness, "\"batchBoundary33\"");
+        StringAssert.Contains(runtimeHarness, "\"quota\"");
+        StringAssert.Contains(runtimeHarness, "\"inputDuplicate\"");
+        StringAssert.Contains(runtimeHarness, "\"missing\"");
+        StringAssert.Contains(runtimeHarness, "\"duplicate\"");
+        StringAssert.Contains(runtimeHarness, "\"crossBatch\"");
+        StringAssert.Contains(runtimeHarness, "\"timeout\"");
+        StringAssert.Contains(runtimeHarness, "\"startAssign\"");
+        StringAssert.Contains(runtimeHarness, "\"startResume\"");
+        StringAssert.Contains(runtimeHarness, "\"startRetain\"");
+        StringAssert.Contains(runtimeHarness, "hardCapMilliseconds");
+        StringAssert.Contains(runtimeHarness, "cleanupState");
+        StringAssert.Contains(runtimeHarness, "rootPidZero");
+        StringAssert.Contains(runtimeHarness, "jobActiveProcesses");
         StringAssert.Contains(management,
             "\"schemaVersion\", \"inventoryState\", \"devices\"");
         StringAssert.Contains(management, "Invoke-VirtualDisplayInstaller");

@@ -678,8 +678,25 @@ devnode with the complete SudoVDA hardware ID, including non-present and
 unbound nodes and without prefiltering friendly name or instance text. Zero
 before creation requires that full inventory to be empty; an unavailable or
 incomplete inventory is unknown and fails closed. Hardware IDs and the bound
-INF are read through typed PnP properties for each enumerated node; a property
-read failure cannot be interpreted as an absent node. Final success then requires
+INF are read through typed PnP properties for each enumerated node. To avoid
+Windows CIM quota failure on a large machine inventory, each property is read
+in fixed batches of at most 32 instance identities under one 10-second total
+inventory deadline. Every batch runs in a trusted Windows PowerShell child
+created suspended, assigned to a kill-on-close Job, and only then resumed.
+The child receives only the current typed batch and has a run budget that
+reserves time inside the same absolute deadline for tree termination, pipe
+drain, root wait, and zero-active-process accounting. A hung CIM batch is
+accepted as failed only after that cleanup closes; it can never extend the
+inventory deadline or become a zero-device result. Process creation,
+Job assignment, and resume failures consume the same remaining deadline;
+retained native authority is secondarily contained before PID-zero can be
+reported. Instance identities must be
+ordinal-unique before the
+first query; every batch must return exactly its requested identity set, and
+the union must contain every original devnode exactly once for both
+properties. A timeout, quota error, missing or duplicate row, cross-batch row,
+or property read failure makes the entire inventory unknown and cannot be
+interpreted as an absent node. Final success then requires
 exactly one total matching node which is present and has a bound Windows OEM
 INF. Hardware IDs are compared using Windows'
 ordinal-ignore-case identity semantics without prefix, suffix, or substring
