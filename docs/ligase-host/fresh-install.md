@@ -673,32 +673,35 @@ strict child tuple exists. Failure to read the count after mutation is closed
 `virtualDisplayDeviceRemoveReadbackFailed`; failure to observe monotonic
 progress within the settle or total deadline is
 `virtualDisplayDeviceRemoveSettleFailed`. Before writing the ownership marker or
-returning `virtualDisplayInstalled`, the helper first inventories every PnP
-devnode with the complete SudoVDA hardware ID, including non-present and
-unbound nodes and without prefiltering friendly name or instance text. Zero
-before creation requires that full inventory to be empty; an unavailable or
-incomplete inventory is unknown and fails closed. Hardware IDs and the bound
-INF are read through typed PnP properties for each enumerated node. To avoid
-Windows CIM quota failure on a large machine inventory, each property is read
-in fixed batches of at most 32 instance identities under one 10-second total
-inventory deadline. Every batch runs in a trusted Windows PowerShell child
-created suspended, assigned to a kill-on-close Job, and only then resumed.
-The child receives only the current typed batch and has a run budget that
-reserves time inside the same absolute deadline for tree termination, pipe
-drain, root wait, and zero-active-process accounting. A hung CIM batch is
-accepted as failed only after that cleanup closes; it can never extend the
-inventory deadline or become a zero-device result. Process creation,
-Job assignment, and resume failures consume the same remaining deadline;
-retained native authority is secondarily contained before PID-zero can be
-reported. The deadline is rechecked after child output and after the final
-outer row-validation pass; a valid final batch that crosses the deadline is a
-deadline failure, never a coverage failure. Instance identities must be
-ordinal-unique before the
-first query; every batch must return exactly its requested identity set, and
-the union must contain every original devnode exactly once for both
-properties. A timeout, quota error, missing or duplicate row, cross-batch row,
-or property read failure makes the entire inventory unknown and cannot be
-interpreted as an absent node. Final success then requires
+returning `virtualDisplayInstalled`, a purpose-built read-only native helper
+inventories every present and non-present PnP devnode through SetupAPI. It does
+not prefilter by setup class, friendly name, instance text, presence, or driver
+binding: a phantom, unbound, stopped, or class-unknown node remains visible to
+duplicate prevention. Inside the helper, HardwareIds are read for each devnode
+and only a complete ordinal-ignore-case `ROOT\SUDOMAKER\SUDOVDA` match is
+retained. InstanceId, present/status, and DriverInf are then read only for
+those retained nodes. DriverInf is read with the Windows SDK
+`DEVPKEY_Device_DriverInfPath` key (PID 5). The strict JSON result contains at most sixteen matching
+nodes and no unrelated device data.
+
+The helper is a self-contained x64 payload built from repository source. Its
+relative path and exact artifact hash are recorded in `privilegedHelpers` and
+verified immediately before every invocation; `PATH`, `SystemRoot`, caller
+input, and a dynamically substituted executable are never authority. The
+elevated owner incrementally captures raw stdout/stderr with a 64 KiB cap per
+stream, enforces one ten-second hard cap, and uses a kill-on-close Job with
+bounded root wait, pipe drain, and zero-active-process accounting on timeout or
+overflow. It rejects nonzero exit, stderr,
+oversized output, duplicate JSON properties, schema drift, duplicate instance
+identities, or unknown fields. Any invocation, enumeration, property, output,
+cleanup, or schema uncertainty makes the complete inventory unknown and can
+never become a zero-device result.
+
+This replaces the former full-system PowerShell property pipeline, its 32-node
+batching, EncodedCommand child, Job/pipe containment, and StartExact inventory
+diagnostics. Those mechanisms are not a secondary or fallback authority. Zero
+before creation requires the helper's complete result to be empty. Final
+success then requires
 exactly one total matching node which is present and has a bound Windows OEM
 INF. Hardware IDs are compared using Windows'
 ordinal-ignore-case identity semantics without prefix, suffix, or substring
@@ -713,64 +716,10 @@ the closed fallback substage and reason, removal count, process cleanup state,
 marker stage, total observed and present counts,
 identity-set hash, binding result, device-recovery state, residual-device
 state, marker/certificate compensation state and failure reason, and the final
-terminal-enumeration state and reason. The same diagnostic preserves the
-inventory authority even after its primary file is consumed by finalization:
-the all-device/property stage, closed failure substage, safe total-node and
-current/total batch counts, completed hardware-ID and driver-INF batch counts,
-elapsed/run/hard-cap milliseconds, and cleanup/root-PID/Job-active state.
-When the system property call succeeds but a requested property is absent, the
-trusted child emits one explicit `absent` row for that identity; a sparse
-property result is therefore not confused with an incomplete batch. Coverage
-failures persist only safe counts and classifications: requested/returned row
-count, row-count versus row-identity versus batch-set stage, and
-missing/extra/duplicate/identity-mismatch reason. Raw identities and property
-values are never included in this diagnostic.
-Trusted-runner start, output, UTF-8/JSON decode, tuple, coverage, deadline, and
-cleanup failures are cross-field correlated. No raw output, executable path,
-device identity, or exception text is persisted, and an inventory failure
-keeps terminal count unknown without replacing the primary remove-readback
-result. The closed inventory output reason distinguishes a nonzero native
-child exit, non-empty stderr, and an invocation/output failure; it is `none`
-for every non-output inventory failure and never carries the native output,
-exit text, path, or device identity. Each output reason is bound to the active
-hardware-ID or driver-INF batch and its exact preceding completed-batch count;
-a driver-phase failure cannot be reported before every hardware batch is
-complete. A nonzero child exit additionally persists only its bounded numeric
-exit code and a closed child stage (`inputValidation`, `validationMode`,
-`validationQuota`, `requestIdentityDuplicate`, `requestIdentityInvalid`,
-`responseIdentityUnknown`, `responseIdentityConflict`,
-`responseIdentityInvalid`, `propertyQuery`, or
-`hostFailure`). Requested and returned instance identities use full-string
-ordinal-ignore-case equality, matching Windows' case-insensitive device identity
-conventions without accepting prefixes, suffixes, substrings, or alternate
-escaping. Both sets use the same comparer; case-only duplicate requests remain
-fail-closed. Response rows for the same full identity may be folded only when
-their property state and KeyName-specific canonical data are identical.
-Hardware-ID data remains an ordered string array: comparison is element-wise
-ordinal-ignore-case with the same length, including repeated elements, and the
-validated normalized array is emitted directly. No delimiter join/split is an
-equality or reconstruction authority, so delimiter-shaped values cannot collide
-with multi-element arrays and order or length drift remains conflicting. The
-diagnostic persists only bounded counts (Ordinal and ordinal-ignore-case unique
-counts, duplicate groups, maximum multiplicity, case-only groups) plus the
-closed `none|identical|conflicting|invalid` relation; it never persists an
-identity or property value. Conflicting present/absent state or canonical data,
-unknown identity, malformed shape, and fuzzy identity remain fail-closed. An
-invalid response additionally persists only a bounded invalid-row count and the
-closed reason `empty|missingProperty|wrongType|rowShape|escapingInvalid|canonicalInvalid|propertyStateInvalid|absentDataInvalid|hardwareIdsDataInvalid|driverInfDataInvalid|mixed`;
-it never persists the rejected identity, property data, path, output, or
-exception. The token and file consumers bind that reason/count to child exit
-101 and reject it on conflicting or successful response tuples; no
-first- or last-row choice is authoritative. Successful output preserves the
-original requested spelling. A requested identity omitted by `Get-PnpDeviceProperty`
-is normalized to exactly one `absent` row with null data; it is property absence,
-not evidence that the device identity disappeared. Mixed present/absent and
-all-absent property batches therefore retain exact requested-row coverage.
-Unknown nonzero signed or high-bit child statuses are normalized
-at the producer boundary to the fixed safe `98` / `hostFailure` tuple; their raw
-native status is never persisted. Stderr and process-invocation failures carry their distinct
-closed stage and cannot be cross-spliced with a native exit. No stderr text,
-command line, executable path, device identity, or exception is stored. It
+terminal-enumeration state and reason. Inventory failure persists only a closed
+helper invocation/schema/cleanup classification. It never stores helper output,
+executable path, command line, unrelated device data, raw instance identity, or
+exception text, and it never replaces the primary virtual-display result. It
 also records a bounded create
 provenance tuple: the invocation count (zero or one), a fresh invocation-ID
 SHA-256, the pre-create identity-set hash, and a closed post-create snapshot

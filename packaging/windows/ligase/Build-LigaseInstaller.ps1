@@ -177,6 +177,7 @@ $desktop = Join-Path $work "desktop"
 $watcher = Join-Path $work "watcher"
 $launcher = Join-Path $work "launcher"
 $transactionHelper = Join-Path $work "transaction-helper"
+$virtualDisplayInventoryHelper = Join-Path $work "virtual-display-inventory-helper"
 $dotnetArtifacts = Join-Path $work "dotnet-artifacts"
 $stage = Join-Path $work "stage"
 $label = if ($ReleaseKind -eq "UnsignedDev") { "UNSIGNED-DEV" } else { "release" }
@@ -230,6 +231,11 @@ if (-not $SkipBuild) {
     -c $Configuration -p:Platform=$Platform -r win-x64 --self-contained true `
     -p:PublishSingleFile=true -p:UseSharedCompilation=false -o $transactionHelper
   if ($LASTEXITCODE -ne 0) { throw "transactionHelperPublishFailed" }
+  & $DotNet publish (Join-Path $sourceRoot "tools/Ligase.VirtualDisplay.InventoryHelper/Ligase.VirtualDisplay.InventoryHelper.csproj") `
+    -c $Configuration -p:Platform=$Platform -r win-x64 --self-contained true `
+    -p:PublishSingleFile=true -p:UseSharedCompilation=false `
+    -o $virtualDisplayInventoryHelper
+  if ($LASTEXITCODE -ne 0) { throw "virtualDisplayInventoryHelperPublishFailed" }
 }
 
 $coreBinary = Join-Path $cppRoot "sunshine.exe"
@@ -237,12 +243,15 @@ $desktopBinary = Join-Path $desktop "Ligase.Host.Desktop.exe"
 $watcherBinary = Join-Path $watcher "Ligase.GameWatcher.exe"
 $launcherBinary = Join-Path $launcher "Ligase Host.exe"
 $transactionHelperBinary = Join-Path $transactionHelper "Ligase.Installation.TransactionHelper.exe"
+$virtualDisplayInventoryHelperBinary = Join-Path $virtualDisplayInventoryHelper (
+  "Ligase.VirtualDisplay.InventoryHelper.exe")
 foreach ($entry in @(
   @{ code = "launcherArtifactMissing"; path = $launcherBinary },
   @{ code = "desktopArtifactMissing"; path = $desktopBinary },
   @{ code = "managedCoreArtifactMissing"; path = $coreBinary },
   @{ code = "gameWatcherArtifactMissing"; path = $watcherBinary },
-  @{ code = "transactionHelperArtifactMissing"; path = $transactionHelperBinary }
+  @{ code = "transactionHelperArtifactMissing"; path = $transactionHelperBinary },
+  @{ code = "virtualDisplayInventoryHelperArtifactMissing"; path = $virtualDisplayInventoryHelperBinary }
 )) {
   if (-not (Test-Path -LiteralPath $entry.path -PathType Leaf)) {
     throw $entry.code
@@ -292,6 +301,8 @@ Copy-Item -LiteralPath (Join-Path $PSScriptRoot "Invoke-LigaseInstaller.ps1") `
   -Destination (Join-Path $temporaryStage "Deployment")
 Copy-Item -LiteralPath $transactionHelperBinary `
   -Destination (Join-Path $temporaryStage "Deployment")
+Copy-Item -LiteralPath $virtualDisplayInventoryHelperBinary `
+  -Destination (Join-Path $temporaryStage "Deployment")
 
 $artifactDefinitions = @(
   @{ role = "launcher"; relativePath = "Ligase Host.exe" },
@@ -333,6 +344,7 @@ $helperDefinitions = @(
   "Deployment/Resolve-LigaseInstallDirectory.ps1",
   "Deployment/Invoke-LigaseInstaller.ps1",
   "Deployment/Ligase.Installation.TransactionHelper.exe",
+  "Deployment/Ligase.VirtualDisplay.InventoryHelper.exe",
   "Deployment/Firewall/Manage-LigaseFirewall.ps1"
 )
 $privilegedHelpers = $helperDefinitions | ForEach-Object {

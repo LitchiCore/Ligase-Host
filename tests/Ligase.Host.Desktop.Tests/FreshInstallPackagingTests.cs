@@ -1068,6 +1068,12 @@ public sealed class FreshInstallPackagingTests
                 "tools",
                 "Ligase.Installation.TransactionHelper",
                 "Program.cs"));
+        var virtualDisplayInventoryHelper = File.ReadAllText(
+            Path.Combine(
+                repo,
+                "tools",
+                "Ligase.VirtualDisplay.InventoryHelper",
+                "Program.cs"));
 
         StringAssert.Contains(nsis, "SectionIn RO");
         StringAssert.Contains(nsis, "Section /o \"Ligase 虚拟显示（可选）\"");
@@ -1275,6 +1281,32 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(
             build,
             "Deployment/Ligase.Installation.TransactionHelper.exe");
+        StringAssert.Contains(
+            build,
+            "Ligase.VirtualDisplay.InventoryHelper.csproj");
+        StringAssert.Contains(
+            build,
+            "Deployment/Ligase.VirtualDisplay.InventoryHelper.exe");
+        StringAssert.Contains(
+            management,
+            "function Invoke-VirtualDisplayInventoryHelper");
+        StringAssert.Contains(
+            management,
+            "Deployment\\Ligase.VirtualDisplay.InventoryHelper.exe");
+        StringAssert.Contains(virtualDisplayInventoryHelper,
+            "SetupDiGetClassDevsW(IntPtr.Zero, null, IntPtr.Zero, flags)");
+        StringAssert.Contains(virtualDisplayInventoryHelper,
+            "DigcfAllClasses | DigcfPresent");
+        StringAssert.Contains(virtualDisplayInventoryHelper,
+            "StringComparer.OrdinalIgnoreCase.Equals(value, TargetHardwareId)");
+        StringAssert.Contains(virtualDisplayInventoryHelper,
+            "ReadDriverInf(set.Handle, ref info)");
+        StringAssert.Contains(virtualDisplayInventoryHelper,
+            "private const uint DevpkeyDeviceDriverInfPathPid = 5;");
+        StringAssert.Contains(virtualDisplayInventoryHelper,
+            "Pid = DevpkeyDeviceDriverInfPathPid");
+        Assert.IsFalse(virtualDisplayInventoryHelper.Contains(
+            "DigcfPresent | DigcfAllClasses |", StringComparison.Ordinal));
         StringAssert.Contains(transactionHelper, "FileFlagOpenReparsePoint");
         StringAssert.Contains(transactionHelper, "FileFlagBackupSemantics");
         StringAssert.Contains(transactionHelper, "GetFinalPathNameByHandleW");
@@ -1747,52 +1779,66 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(management, "inventoryCleanupState");
         StringAssert.Contains(management, "inventoryRootPidZero");
         StringAssert.Contains(management, "inventoryJobActiveProcesses");
-        StringAssert.Contains(management, "Get-PnpDevice -ErrorAction Stop");
-        StringAssert.Contains(management, "\"DEVPKEY_Device_HardwareIds\"");
-        StringAssert.Contains(management, "\"DEVPKEY_Device_DriverInfPath\"");
-        StringAssert.Contains(management,
-            "$virtualDisplayPropertyBatchSize = 32");
-        StringAssert.Contains(management,
-            "$virtualDisplayPropertyInventoryDeadlineMilliseconds = 10000");
-        StringAssert.Contains(management,
-            "$virtualDisplayPropertyCleanupReserveMilliseconds = 1000");
-        StringAssert.Contains(management,
-            "function Invoke-VirtualDisplayPropertyBatchProcess(");
-        StringAssert.Contains(management,
+        var productionSnapshotIndex = management.IndexOf(
+            "function Get-VirtualDisplaySnapshot", StringComparison.Ordinal);
+        var productionSnapshotEnd = management.IndexOf(
+            "function Set-VirtualDisplayInventoryDiagnostic",
+            productionSnapshotIndex, StringComparison.Ordinal);
+        var productionSnapshot = management.Substring(
+            productionSnapshotIndex, productionSnapshotEnd - productionSnapshotIndex);
+        StringAssert.Contains(productionSnapshot,
+            "return @(Invoke-VirtualDisplayInventoryHelper)");
+        Assert.IsFalse(productionSnapshot.Contains(
+            "Get-PnpDevice", StringComparison.Ordinal));
+        Assert.IsFalse(productionSnapshot.Contains(
+            "Get-PnpDeviceProperty", StringComparison.Ordinal));
+        Assert.IsFalse(productionSnapshot.Contains(
+            "Invoke-VirtualDisplayPropertyBatchProcess", StringComparison.Ordinal));
+        Assert.IsFalse(productionSnapshot.Contains(
+            "Get-VirtualDisplayPropertyRowsChunked", StringComparison.Ordinal));
+        Assert.IsFalse(management.Contains(
+            "\"ValidateVirtualDisplayChunkedInventory\",",
+            StringComparison.Ordinal));
+        Assert.IsFalse(management.Contains(
+            "Get-VirtualDisplayPropertyRowsChunked",
+            StringComparison.Ordinal));
+        Assert.IsFalse(management.Contains(
+            "Invoke-VirtualDisplayPropertyBatchProcess",
+            StringComparison.Ordinal));
+        Assert.IsFalse(management.Contains(
+            "Get-PnpDeviceProperty -InstanceId",
+            StringComparison.Ordinal));
+        Assert.IsFalse(management.Contains(
+            "-EncodedCommand ", StringComparison.Ordinal));
+        var nativeInventoryStart = management.IndexOf(
+            "function Invoke-VirtualDisplayInventoryHelper",
+            StringComparison.Ordinal);
+        var nativeInventoryEnd = management.IndexOf(
+            "function Invoke-InstallTransactionHelper",
+            nativeInventoryStart, StringComparison.Ordinal);
+        var nativeInventoryBlock = management.Substring(
+            nativeInventoryStart,
+            nativeInventoryEnd - nativeInventoryStart);
+        StringAssert.Contains(nativeInventoryBlock,
             "[LigaseJobProcess]::StartExact(");
-        StringAssert.Contains(management,
-            "$startCleanupBudget");
-        StringAssert.Contains(management,
-            "[LigaseJobProcess]::AuthorityRetained");
-        StringAssert.Contains(management,
-            "[LigaseJobProcess]::SecondaryContainment(");
-        StringAssert.Contains(management,
-            "[LigaseFileIdentity]::GetTrustedWindowsPowerShellPath()");
-        StringAssert.Contains(management,
-            "$job.Terminate()");
-        StringAssert.Contains(management,
+        StringAssert.Contains(nativeInventoryBlock,
+            ".StandardOutput.ReadAsync(");
+        StringAssert.Contains(nativeInventoryBlock,
+            ".StandardError.ReadAsync(");
+        StringAssert.Contains(nativeInventoryBlock,
+            "$stdoutBytes = [byte[]]::new(65536)");
+        StringAssert.Contains(nativeInventoryBlock,
             "$job.HasNoActiveProcesses()");
-        StringAssert.Contains(management,
-            "Get-PnpDeviceProperty -InstanceId ([string[]]$p.instanceIds)");
-        StringAssert.Contains(management,
-            "PropertyState=\"absent\";Data=$null");
-        StringAssert.Contains(management,
-            "PropertyState=$value.State;Data=$value.Data");
-        StringAssert.Contains(management,
-            "function Get-VirtualDisplayPropertyRowsChunked(");
-        StringAssert.Contains(management,
-            "[StringComparer]::Ordinal)");
-        StringAssert.Contains(management,
-            "$rows.Count -ne $batch.Count");
-        StringAssert.Contains(management,
-            "-not $batchRequested.Contains($returnedId)");
+        StringAssert.Contains(nativeInventoryBlock,
+            "$stdoutClosed -and $stderrClosed");
+        StringAssert.Contains(nativeInventoryBlock,
+            "10000 - [int]$clock.ElapsedMilliseconds");
+        StringAssert.Contains(nativeInventoryBlock,
+            "SecondaryContainment(\"none\", $remaining)");
+        Assert.IsFalse(nativeInventoryBlock.Contains(
+            "ReadToEndAsync", StringComparison.Ordinal));
         Assert.IsFalse(management.Contains(
             "$allRows.Count -ne $allRequested.Count",
-            StringComparison.Ordinal));
-        StringAssert.Contains(management,
-            "-ValidationForcePostLoopDeadline");
-        Assert.IsFalse(management.Contains(
-            "Get-PnpDeviceProperty -InstanceId $instanceIds",
             StringComparison.Ordinal));
         StringAssert.Contains(management,
             "return $env:LIGASE_VIRTUAL_DISPLAY_DEPENDENT_DEVICE -ceq \"1\"");
@@ -1871,101 +1917,6 @@ public sealed class FreshInstallPackagingTests
             "\"inventoryRawNegativeExitContradiction\"");
         StringAssert.Contains(management,
             "\"inventoryRawHighExitContradiction\"");
-        StringAssert.Contains(management, "$phaseBatchAuthority = (");
-        StringAssert.Contains(management, "$nativeExitAuthority = switch");
-        StringAssert.Contains(management, "catch{exit 97}");
-        StringAssert.Contains(management, "default { 98 }");
-        StringAssert.Contains(management,
-            "98 { $childFailureStage -ceq \"hostFailure\" }");
-        StringAssert.Contains(runtimeHarness, "nativeExitCode = 94");
-        StringAssert.Contains(runtimeHarness,
-            "childFailureStage = \"validationQuota\"");
-        StringAssert.Contains(runtimeHarness, "outputReason = \"nativeExit\"");
-        StringAssert.Contains(runtimeHarness, "outputReason = \"stderr\"");
-        StringAssert.Contains(runtimeHarness,
-            "outputReason = \"invokeFailure\"");
-        StringAssert.Contains(runtimeHarness,
-            "inventoryOutputReasonsPersisted -ne 10");
-        StringAssert.Contains(management,
-            "[StringComparer]::OrdinalIgnoreCase");
-        StringAssert.Contains(management, "responseIdentityConflict");
-        StringAssert.Contains(management,
-            "Set-VirtualDisplayChunkDuplicateStats");
-        StringAssert.Contains(management,
-            "[StringComparer]::OrdinalIgnoreCase");
-        StringAssert.Contains(management, "duplicateGroupCount");
-        StringAssert.Contains(management, "caseOnlyDuplicateCount");
-        StringAssert.Contains(management, "responseEquivalentMultiValue");
-        StringAssert.Contains(management, "responseDuplicateElementEquivalent");
-        StringAssert.Contains(management, "responseDelimiterConflict");
-        StringAssert.Contains(management, "responseOrderConflict");
-        StringAssert.Contains(management, "responseLengthConflict");
-        StringAssert.Contains(management,
-            "ConvertTo-Json -InputObject $normalized -Compress");
-        Assert.IsFalse(management.Contains(
-            "$normalized-join\"\\u001f\"", StringComparison.Ordinal));
-        Assert.IsFalse(management.Contains(
-            "-split\"\\u001f\"", StringComparison.Ordinal));
-        StringAssert.Contains(management, "requestIdentityDuplicate");
-        StringAssert.Contains(runtimeHarness, "failureMode = \"caseCanonical\"");
-        StringAssert.Contains(runtimeHarness,
-            "failureMode = \"mixedAbsent\"");
-        StringAssert.Contains(runtimeHarness,
-            "failureMode = \"allAbsentHardware\"");
-        StringAssert.Contains(runtimeHarness,
-            "failureMode = \"allAbsentDriver\"");
-        Assert.AreEqual(1,
-            System.Text.RegularExpressions.Regex.Matches(runtimeHarness,
-                "failureMode = \"allAbsentDriver\";\\s*" +
-                "failureBatchIndex = 0;\\s*" +
-                "deadline = 10000; result = \"passed\"").Count);
-        StringAssert.Contains(runtimeHarness,
-            "failureMode = \"requestCaseDuplicate\"");
-        StringAssert.Contains(runtimeHarness,
-            "failureMode = \"responseExactDuplicate\"");
-        StringAssert.Contains(runtimeHarness,
-            "failureMode = \"responseEquivalentMultiValue\"");
-        StringAssert.Contains(runtimeHarness,
-            "failureMode = \"responseDuplicateElementEquivalent\"");
-        StringAssert.Contains(runtimeHarness,
-            "failureMode = \"responseConflict\"");
-        StringAssert.Contains(runtimeHarness,
-            "failureMode = \"responseStateConflict\"");
-        StringAssert.Contains(runtimeHarness,
-            "failureMode = \"responseDelimiterConflict\"");
-        StringAssert.Contains(runtimeHarness,
-            "failureMode = \"responseOrderConflict\"");
-        StringAssert.Contains(runtimeHarness,
-            "failureMode = \"responseLengthConflict\"");
-        StringAssert.Contains(runtimeHarness, "multiValueOutputCount");
-        StringAssert.Contains(runtimeHarness, "failureMode = \"responsePrefix\"");
-        StringAssert.Contains(runtimeHarness, "failureMode = \"responseSuffix\"");
-        StringAssert.Contains(runtimeHarness,
-            "failureMode = \"responseEscaping\"");
-        StringAssert.Contains(runtimeHarness,
-            "failureMode = \"responseMissingIdentity\"");
-        StringAssert.Contains(runtimeHarness,
-            "failureMode = \"responseWrongTypeIdentity\"");
-        StringAssert.Contains(runtimeHarness,
-            "failureMode = \"responseRowShape\"");
-        StringAssert.Contains(runtimeHarness,
-            "failureMode = \"responseCanonicalInvalid\"");
-        StringAssert.Contains(runtimeHarness,
-            "failureMode = \"responsePropertyStateInvalid\"");
-        StringAssert.Contains(runtimeHarness,
-            "failureMode = \"responseAbsentDataInvalid\"");
-        StringAssert.Contains(runtimeHarness,
-            "failureMode = \"responseHardwareIdsDataInvalid\"");
-        StringAssert.Contains(runtimeHarness,
-            "failureMode = \"responseDriverInfDataInvalid\"");
-        StringAssert.Contains(management, "identityInvalidReason");
-        StringAssert.Contains(management, "identityInvalidCount");
-        StringAssert.Contains(management,
-            "inventoryInvalidReasonMissingContradiction");
-        StringAssert.Contains(management,
-            "inventoryConflictCarriesInvalidReasonContradiction");
-        StringAssert.Contains(runtimeHarness, "failureMode = \"hostNegative\"");
-        StringAssert.Contains(runtimeHarness, "failureMode = \"hostHigh\"");
         StringAssert.Contains(management,
             "Assert-VirtualDisplayInventoryDiagnosticCorrelation");
         StringAssert.Contains(management, "$createProvenanceValid =");
@@ -1994,32 +1945,6 @@ public sealed class FreshInstallPackagingTests
             "\"unboundExactUnexpectedNames\"");
         StringAssert.Contains(runtimeHarness, "\"mixedPresentAndPhantom\"");
         StringAssert.Contains(runtimeHarness, "\"inventoryUnavailable\"");
-        StringAssert.Contains(runtimeHarness,
-            "virtualDisplayChunkedInventoryCases");
-        StringAssert.Contains(runtimeHarness, "\"large369\"");
-        StringAssert.Contains(runtimeHarness, "\"batchBoundary33\"");
-        StringAssert.Contains(runtimeHarness, "\"quota\"");
-        StringAssert.Contains(runtimeHarness, "\"inputDuplicate\"");
-        StringAssert.Contains(runtimeHarness, "\"missing\"");
-        StringAssert.Contains(runtimeHarness, "\"extra\"");
-        StringAssert.Contains(runtimeHarness, "\"duplicate\"");
-        StringAssert.Contains(runtimeHarness, "\"identityMismatch\"");
-        StringAssert.Contains(runtimeHarness, "coverageStage");
-        StringAssert.Contains(runtimeHarness, "coverageReason");
-        StringAssert.Contains(runtimeHarness, "requestedCount");
-        StringAssert.Contains(runtimeHarness, "returnedCount");
-        StringAssert.Contains(runtimeHarness, "\"crossBatch\"");
-        StringAssert.Contains(runtimeHarness, "\"timeout\"");
-        StringAssert.Contains(runtimeHarness, "\"postLoopDeadline\"");
-        StringAssert.Contains(runtimeHarness, "\"startAssign\"");
-        StringAssert.Contains(runtimeHarness, "\"startResume\"");
-        StringAssert.Contains(runtimeHarness, "\"startRetain\"");
-        StringAssert.Contains(runtimeHarness, "hardCapMilliseconds");
-        StringAssert.Contains(runtimeHarness, "cleanupState");
-        StringAssert.Contains(runtimeHarness, "rootPidZero");
-        StringAssert.Contains(runtimeHarness, "jobActiveProcesses");
-        StringAssert.Contains(management,
-            "\"schemaVersion\", \"inventoryState\", \"devices\"");
         StringAssert.Contains(management, "Invoke-VirtualDisplayInstaller");
         StringAssert.Contains(management, "ValidateVirtualDisplayInstallerProcess");
         StringAssert.Contains(management, "jobProcess.StandardOutput.ReadAsync");

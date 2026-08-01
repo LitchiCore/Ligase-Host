@@ -12,7 +12,7 @@ param(
     "Uninstall",
     "InstallVirtualDisplay",
     "ValidateVirtualDisplayReadback",
-    "ValidateVirtualDisplayChunkedInventory",
+    "ValidateVirtualDisplayNativeInventoryHelper",
     "ValidateVirtualDisplayRemovalReconciliation",
     "ValidateVirtualDisplayTerminalReadback",
     "ValidateVirtualDisplayTrustedPnPUtil",
@@ -1448,6 +1448,252 @@ function Get-InstallTransactionHelperPath {
     throw "installTransactionUnavailable"
   }
   return $path
+}
+
+function Get-VirtualDisplayInventoryHelperPath {
+  if ($Action -ceq "ValidateVirtualDisplayNativeInventoryHelper" -and
+      $env:LIGASE_INSTALL_VALIDATION_HARNESS -ceq "1" -and
+      $env:LIGASE_VDISPLAY_INVENTORY_HELPER_VALIDATION -ceq "1") {
+    $validationPath = [IO.Path]::GetFullPath(
+      [string]$env:LIGASE_VDISPLAY_INVENTORY_HELPER_PATH)
+    if (-not $validationPath.StartsWith(
+          "D:\", [StringComparison]::OrdinalIgnoreCase) -or
+        -not (Test-Path -LiteralPath $validationPath -PathType Leaf) -or
+        [bool]((Get-Item -LiteralPath $validationPath -Force).Attributes -band
+          [IO.FileAttributes]::ReparsePoint)) {
+      throw "virtualDisplayReadbackFailed"
+    }
+    return $validationPath
+  }
+  $path = Join-Path $installRoot (
+    "Deployment\Ligase.VirtualDisplay.InventoryHelper.exe")
+  if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+    throw "virtualDisplayReadbackFailed"
+  }
+  $manifest = [IO.File]::ReadAllText($manifestPath) | ConvertFrom-Json
+  $matches = @($manifest.privilegedHelpers | Where-Object {
+    [string]$_.relativePath -ceq (
+      "Deployment/Ligase.VirtualDisplay.InventoryHelper.exe")
+  })
+  $expectedHash = if ($matches.Count -eq 1) {
+    [string]$matches[0].signedArtifactSha256
+  } else { "" }
+  if ($matches.Count -ne 1 -or $expectedHash -notmatch '^[0-9a-f]{64}$' -or
+      (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash -cne
+        $expectedHash.ToUpperInvariant()) {
+    throw "virtualDisplayReadbackFailed"
+  }
+  return $path
+}
+
+function Invoke-VirtualDisplayInventoryHelper {
+  $script:virtualDisplayNativeInventoryValidationStage = "resolve"
+  $script:virtualDisplayNativeInventoryValidationExitCode = -1
+  $script:virtualDisplayNativeInventoryValidationStderrLength = -1
+  $script:virtualDisplayNativeInventoryCleanupState = "notRequired"
+  $script:virtualDisplayNativeInventoryRootPidZero = $true
+  $script:virtualDisplayNativeInventoryJobActiveProcesses = 0
+  $script:virtualDisplayNativeInventoryStdoutClosed = $false
+  $script:virtualDisplayNativeInventoryStderrClosed = $false
+  $totalClock = [Diagnostics.Stopwatch]::StartNew()
+  $helper = Get-VirtualDisplayInventoryHelperPath
+  $commandLine = '"' + $helper + '" --inventory'
+  $job = $null
+  try {
+    $script:virtualDisplayNativeInventoryValidationStage = "start"
+    $startFault = if (
+        $Action -ceq "ValidateVirtualDisplayNativeInventoryHelper" -and
+        $env:LIGASE_VDISPLAY_INVENTORY_HELPER_BEHAVIOR -ceq "startRetain") {
+      "retain"
+    } else { "none" }
+    $startCleanup = [Math]::Max(1, [Math]::Min(1000,
+      10000 - [int]$totalClock.ElapsedMilliseconds))
+    $job = [LigaseJobProcess]::StartExact(
+      $helper, $commandLine, (Split-Path -Parent $helper), $startFault,
+      $startCleanup)
+  } catch {
+    if ([LigaseJobProcess]::AuthorityRetained) {
+      $remaining = [Math]::Max(1, [Math]::Min(5000,
+        10000 - [int]$totalClock.ElapsedMilliseconds))
+      $null = [LigaseJobProcess]::SecondaryContainment("none", $remaining)
+    }
+    $closed = [LigaseJobProcess]::LastCleanupProven -or
+      [LigaseJobProcess]::SecondaryCompleted
+    $script:virtualDisplayNativeInventoryCleanupState = if ($closed) {
+      "completed"
+    } else { "failed" }
+    $script:virtualDisplayNativeInventoryRootPidZero =
+      $closed -and [LigaseJobProcess]::LastCleanupPid -eq 0
+    $script:virtualDisplayNativeInventoryJobActiveProcesses = if ($closed) {
+      0
+    } else { -1 }
+    $script:virtualDisplayNativeInventoryStdoutClosed = $closed
+    $script:virtualDisplayNativeInventoryStderrClosed = $closed
+    throw "virtualDisplayReadbackFailed"
+  }
+  try {
+    $script:virtualDisplayNativeInventoryValidationStage = "capture"
+    $stdoutBytes = [byte[]]::new(65536)
+    $stderrBytes = [byte[]]::new(65536)
+    $stdoutBuffer = [byte[]]::new(4096)
+    $stderrBuffer = [byte[]]::new(4096)
+    $stdoutLength = 0
+    $stderrLength = 0
+    $stdoutClosed = $false
+    $stderrClosed = $false
+    $overflow = $false
+    $pipeFault = $false
+    $stdoutTask = $job.StandardOutput.ReadAsync(
+      $stdoutBuffer, 0, $stdoutBuffer.Length)
+    $stderrTask = $job.StandardError.ReadAsync(
+      $stderrBuffer, 0, $stderrBuffer.Length)
+    if ($Action -ceq "ValidateVirtualDisplayNativeInventoryHelper" -and
+        $env:LIGASE_VDISPLAY_INVENTORY_HELPER_BEHAVIOR -ceq "pipeFault") {
+      $stdoutTask = [Threading.Tasks.Task[int]]::FromException(
+        [IO.IOException]::new("closedValidationPipeFault"))
+    }
+    $clock = $totalClock
+    while (-not ($job.HasNoActiveProcesses() -and
+        $stdoutClosed -and $stderrClosed)) {
+      foreach ($streamName in @("stdout", "stderr")) {
+        $task = if ($streamName -ceq "stdout") { $stdoutTask } else { $stderrTask }
+        if (-not $task.IsCompleted) { continue }
+        try { $count = $task.GetAwaiter().GetResult() } catch {
+          $pipeFault = $true
+          break
+        }
+        if ($count -eq 0) {
+          if ($streamName -ceq "stdout") { $stdoutClosed = $true } else { $stderrClosed = $true }
+          continue
+        }
+        if ($streamName -ceq "stdout") {
+          if ($stdoutLength + $count -gt $stdoutBytes.Length) { $overflow = $true; break }
+          [Array]::Copy($stdoutBuffer, 0, $stdoutBytes, $stdoutLength, $count)
+          $stdoutLength += $count
+          $stdoutTask = $job.StandardOutput.ReadAsync(
+            $stdoutBuffer, 0, $stdoutBuffer.Length)
+        } else {
+          if ($stderrLength + $count -gt $stderrBytes.Length) { $overflow = $true; break }
+          [Array]::Copy($stderrBuffer, 0, $stderrBytes, $stderrLength, $count)
+          $stderrLength += $count
+          $stderrTask = $job.StandardError.ReadAsync(
+            $stderrBuffer, 0, $stderrBuffer.Length)
+        }
+      }
+      if ($overflow -or $pipeFault -or $clock.ElapsedMilliseconds -ge 9000) { break }
+      Start-Sleep -Milliseconds 10
+    }
+    if ($overflow -or $pipeFault -or -not ($job.HasNoActiveProcesses() -and
+        $stdoutClosed -and $stderrClosed)) {
+      $terminated = $job.Terminate()
+      $remaining = [Math]::Max(0,
+        10000 - [int]$clock.ElapsedMilliseconds)
+      $rootExited = $remaining -gt 0 -and $job.WaitForRoot($remaining)
+      while ($clock.ElapsedMilliseconds -lt 10000 -and
+          -not ($stdoutClosed -and $stderrClosed)) {
+        foreach ($streamName in @("stdout", "stderr")) {
+          if (($streamName -ceq "stdout" -and $stdoutClosed) -or
+              ($streamName -ceq "stderr" -and $stderrClosed)) { continue }
+          $task = if ($streamName -ceq "stdout") { $stdoutTask } else { $stderrTask }
+          if (-not $task.IsCompleted) { continue }
+          try { $count = $task.GetAwaiter().GetResult() } catch {
+            try {
+              if ($streamName -ceq "stdout") {
+                $stdoutTask = $job.StandardOutput.ReadAsync(
+                  $stdoutBuffer, 0, $stdoutBuffer.Length)
+              } else {
+                $stderrTask = $job.StandardError.ReadAsync(
+                  $stderrBuffer, 0, $stderrBuffer.Length)
+              }
+            } catch {}
+            continue
+          }
+          if ($count -eq 0) {
+            if ($streamName -ceq "stdout") { $stdoutClosed = $true }
+            else { $stderrClosed = $true }
+          } elseif ($streamName -ceq "stdout") {
+            $stdoutTask = $job.StandardOutput.ReadAsync(
+              $stdoutBuffer, 0, $stdoutBuffer.Length)
+          } else {
+            $stderrTask = $job.StandardError.ReadAsync(
+              $stderrBuffer, 0, $stderrBuffer.Length)
+          }
+        }
+        if (-not ($stdoutClosed -and $stderrClosed)) {
+          Start-Sleep -Milliseconds 10
+        }
+      }
+      $jobEmpty = $job.HasNoActiveProcesses()
+      $cleanup = $terminated -and $rootExited -and $jobEmpty -and
+        $stdoutClosed -and $stderrClosed -and
+        $clock.ElapsedMilliseconds -le 10000
+      $script:virtualDisplayNativeInventoryStdoutClosed = $stdoutClosed
+      $script:virtualDisplayNativeInventoryStderrClosed = $stderrClosed
+      $script:virtualDisplayNativeInventoryCleanupState = if ($cleanup) {
+        "completed"
+      } else { "failed" }
+      $script:virtualDisplayNativeInventoryRootPidZero = $cleanup
+      $script:virtualDisplayNativeInventoryJobActiveProcesses = if ($cleanup) {
+        0
+      } else { -1 }
+      if (-not $cleanup) { throw "virtualDisplayReadbackFailed" }
+      throw "virtualDisplayReadbackFailed"
+    }
+    $script:virtualDisplayNativeInventoryCleanupState = "completed"
+    $script:virtualDisplayNativeInventoryStdoutClosed = $stdoutClosed
+    $script:virtualDisplayNativeInventoryStderrClosed = $stderrClosed
+    $process = $job.Process
+    $script:virtualDisplayNativeInventoryValidationStage = "exit"
+    $script:virtualDisplayNativeInventoryValidationExitCode =
+      [int]$process.ExitCode
+    $script:virtualDisplayNativeInventoryValidationStderrLength = $stderrLength
+    if ($script:virtualDisplayNativeInventoryValidationExitCode -ne 0 -or
+        $stderrLength -ne 0) {
+      throw "virtualDisplayReadbackFailed"
+    }
+    try {
+      $script:virtualDisplayNativeInventoryValidationStage = "decode"
+      $stdout = [Text.UTF8Encoding]::new($false, $true).GetString(
+        $stdoutBytes, 0, $stdoutLength)
+    } catch { throw "virtualDisplayReadbackFailed" }
+    if (-not [LigaseStrictJson]::HasUniqueProperties($stdout)) {
+      throw "virtualDisplayReadbackFailed"
+    }
+    $script:virtualDisplayNativeInventoryValidationStage = "schema"
+    $document = $stdout | ConvertFrom-Json
+    Assert-ClosedProperties $document @("schemaVersion", "state", "devices") (
+      "virtualDisplayInventory")
+    if ($document.schemaVersion -ne 1 -or
+        [string]$document.state -cne "available" -or
+        $document.devices -isnot [array] -or $document.devices.Count -gt 16) {
+      throw "virtualDisplayReadbackFailed"
+    }
+    $seen = [Collections.Generic.HashSet[string]]::new(
+      [StringComparer]::OrdinalIgnoreCase)
+    foreach ($device in @($document.devices)) {
+      Assert-ClosedProperties $device @(
+        "instanceId", "present", "status", "driverInf") (
+          "virtualDisplayInventoryDevice")
+      if ([string]::IsNullOrWhiteSpace([string]$device.instanceId) -or
+          $device.present -isnot [bool] -or
+          [string]$device.status -cnotin @("OK", "Problem", "Unknown") -or
+          $device.driverInf -isnot [string] -or
+          -not $seen.Add([string]$device.instanceId)) {
+        throw "virtualDisplayReadbackFailed"
+      }
+    }
+    return @($document.devices | ForEach-Object {
+      [ordered]@{
+        instanceId = [string]$_.instanceId
+        hardwareIds = @("root\sudomaker\sudovda")
+        status = [string]$_.status
+        present = [bool]$_.present
+        driverInf = [string]$_.driverInf
+      }
+    })
+  } finally {
+    if ($null -ne $job) { $job.Dispose() }
+  }
 }
 
 function Invoke-InstallTransactionHelper(
@@ -4981,923 +5227,6 @@ $virtualDisplayPropertyBatchSize = 32
 $virtualDisplayPropertyInventoryDeadlineMilliseconds = 10000
 $virtualDisplayPropertyCleanupReserveMilliseconds = 1000
 
-function Set-VirtualDisplayChunkDuplicateStats($Stats) {
-  Assert-ClosedProperties $Stats @(
-    "schemaVersion", "requestedCount", "returnedRowCount",
-    "uniqueOrdinalCount", "uniqueOrdinalIgnoreCaseCount",
-    "duplicateGroupCount", "maxMultiplicity", "caseOnlyDuplicateCount",
-    "dataRelation", "identityInvalidReason", "identityInvalidCount") `
-    "virtualDisplayPropertyDuplicateStats"
-  foreach ($name in @(
-      "schemaVersion", "requestedCount", "returnedRowCount",
-      "uniqueOrdinalCount", "uniqueOrdinalIgnoreCaseCount",
-      "duplicateGroupCount", "maxMultiplicity", "caseOnlyDuplicateCount",
-      "identityInvalidCount")) {
-    if ($Stats.$name -isnot [int]) { throw "virtualDisplayReadbackFailed" }
-  }
-  $requested = [int]$Stats.requestedCount
-  $returned = [int]$Stats.returnedRowCount
-  $uniqueOrdinal = [int]$Stats.uniqueOrdinalCount
-  $uniqueOrdinalIgnoreCase = [int]$Stats.uniqueOrdinalIgnoreCaseCount
-  $groups = [int]$Stats.duplicateGroupCount
-  $multiplicity = [int]$Stats.maxMultiplicity
-  $caseOnly = [int]$Stats.caseOnlyDuplicateCount
-  $relation = [string]$Stats.dataRelation
-  $invalidReason = [string]$Stats.identityInvalidReason
-  $invalidCount = [int]$Stats.identityInvalidCount
-  $valid = (
-    [int]$Stats.schemaVersion -eq 1 -and
-    $requested -ge 1 -and $requested -le 32 -and
-    $returned -ge 0 -and $returned -le 64 -and
-    $uniqueOrdinal -ge 0 -and $uniqueOrdinal -le $returned -and
-    $uniqueOrdinalIgnoreCase -ge 0 -and
-      $uniqueOrdinalIgnoreCase -le $uniqueOrdinal -and
-    $groups -ge 0 -and $groups -le $uniqueOrdinalIgnoreCase -and
-    $multiplicity -ge 0 -and $multiplicity -le $returned -and
-    $caseOnly -ge 0 -and $caseOnly -le $groups -and
-    @("none", "identical", "conflicting", "invalid") -ccontains $relation -and
-    @("none", "empty", "missingProperty", "wrongType", "rowShape",
-      "escapingInvalid", "canonicalInvalid", "propertyStateInvalid",
-      "absentDataInvalid", "hardwareIdsDataInvalid",
-      "driverInfDataInvalid", "mixed") -ccontains
-        $invalidReason -and
-    $invalidCount -ge 0 -and $invalidCount -le $returned -and
-    (($relation -ceq "invalid" -and $invalidReason -cne "none" -and
-        $invalidCount -ge 1) -or
-      ($relation -cne "invalid" -and $invalidReason -ceq "none" -and
-        $invalidCount -eq 0)) -and
-    ($relation -ceq "invalid" -or
-      ($returned -eq 0 -and $multiplicity -eq 0) -or
-      ($returned -gt 0 -and $multiplicity -ge 1)) -and
-    (($groups -eq 0 -and $caseOnly -eq 0 -and
-        @("none", "invalid") -ccontains $relation -and
-        $multiplicity -le 1) -or
-      ($groups -gt 0 -and $multiplicity -ge 2 -and
-        @("identical", "conflicting", "invalid") -ccontains $relation)))
-  if (-not $valid) { throw "virtualDisplayReadbackFailed" }
-  $script:virtualDisplayChunkDuplicateRequestedCount = $requested
-  $script:virtualDisplayChunkDuplicateReturnedRowCount = $returned
-  $script:virtualDisplayChunkDuplicateUniqueOrdinalCount = $uniqueOrdinal
-  $script:virtualDisplayChunkDuplicateUniqueOrdinalIgnoreCaseCount =
-    $uniqueOrdinalIgnoreCase
-  $script:virtualDisplayChunkDuplicateGroupCount = $groups
-  $script:virtualDisplayChunkDuplicateMaxMultiplicity = $multiplicity
-  $script:virtualDisplayChunkDuplicateCaseOnlyCount = $caseOnly
-  $script:virtualDisplayChunkDuplicateDataRelation = $relation
-  $script:virtualDisplayChunkIdentityInvalidReason = $invalidReason
-  $script:virtualDisplayChunkIdentityInvalidCount = $invalidCount
-}
-
-function Invoke-VirtualDisplayPropertyBatchProcess(
-    [string[]]$InstanceIds,
-    [string]$KeyName,
-    [Diagnostics.Stopwatch]$TotalClock,
-    [int]$TotalMilliseconds,
-    [string]$ValidationMode = "none") {
-  $cleanupReserve = [Math]::Min(
-    $virtualDisplayPropertyCleanupReserveMilliseconds,
-    [Math]::Max(100, [int]($TotalMilliseconds / 3)))
-  $remaining = $TotalMilliseconds - [int]$TotalClock.ElapsedMilliseconds
-  $script:virtualDisplayChunkFailureStage = "none"
-  $script:virtualDisplayChunkNativeExitCode = -1
-  $script:virtualDisplayChunkChildFailureStage = "none"
-  $script:virtualDisplayChunkCoverageStage = "none"
-  $script:virtualDisplayChunkCoverageReason = "none"
-  $script:virtualDisplayChunkRequestedCount = -1
-  $script:virtualDisplayChunkReturnedCount = -1
-  $script:virtualDisplayChunkDuplicateRequestedCount = -1
-  $script:virtualDisplayChunkDuplicateReturnedRowCount = -1
-  $script:virtualDisplayChunkDuplicateUniqueOrdinalCount = -1
-  $script:virtualDisplayChunkDuplicateUniqueOrdinalIgnoreCaseCount = -1
-  $script:virtualDisplayChunkDuplicateGroupCount = 0
-  $script:virtualDisplayChunkDuplicateMaxMultiplicity = 0
-  $script:virtualDisplayChunkDuplicateCaseOnlyCount = 0
-  $script:virtualDisplayChunkDuplicateDataRelation = "none"
-  $script:virtualDisplayChunkIdentityInvalidReason = "none"
-  $script:virtualDisplayChunkIdentityInvalidCount = 0
-  $startFault = switch ($ValidationMode) {
-    "startAssign" { "assign" }
-    "startResume" { "resume" }
-    "startRetain" { "retain" }
-    default { "none" }
-  }
-  $childMode = if ($startFault -cne "none") {
-    "fixture"
-  } else { $ValidationMode }
-  if ($remaining -le $cleanupReserve) {
-    throw "virtualDisplayReadbackFailed"
-  }
-  $payload = [ordered]@{
-    schemaVersion = 1
-    keyName = $KeyName
-    instanceIds = @($InstanceIds)
-    validationMode = $childMode
-  } | ConvertTo-Json -Compress
-  $payloadBase64 = [Convert]::ToBase64String(
-    [Text.Encoding]::UTF8.GetBytes($payload))
-$childSource = @'
-$ErrorActionPreference="Stop"
-$ProgressPreference="SilentlyContinue"
-$p=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("__PAYLOAD__"))|ConvertFrom-Json
-if($p.schemaVersion-ne 1-or$p.keyName-notin @("DEVPKEY_Device_HardwareIds","DEVPKEY_Device_DriverInfPath")-or$p.instanceIds-isnot[array]-or$p.instanceIds.Count-lt 1-or$p.instanceIds.Count-gt 32){exit 91}
-if($p.validationMode-eq"hang"){Start-Sleep -Seconds 60;exit 92}
-if($p.validationMode-eq"quota"){exit 94}
-if($p.validationMode-eq"hostNegative"){exit -532462766}
-if($p.validationMode-eq"hostHigh"){exit 70000}
-if($p.validationMode-eq"outputInvalid"){[Console]::Error.Write("invalid");exit 0}
-if($p.validationMode-eq"encodingInvalid"){[Console]::OpenStandardOutput().WriteByte(255);exit 0}
-if($p.validationMode-eq"tupleInvalid"){[Console]::Out.Write("{}");exit 0}
-if($p.validationMode-notin @("none","fixture","caseCanonical","mixedAbsent","allAbsent","responseExtra","responseDuplicate","responseExactDuplicate","responseEquivalentMultiValue","responseDuplicateElementEquivalent","responseConflict","responseStateConflict","responseDelimiterConflict","responseOrderConflict","responseLengthConflict","responseInvalid","responseMissingIdentity","responseWrongTypeIdentity","responseRowShape","responseCanonicalInvalid","responsePropertyStateInvalid","responseAbsentDataInvalid","responseHardwareIdsDataInvalid","responseDriverInfDataInvalid","responsePrefix","responseSuffix","responseEscaping")){exit 93}
-if($p.validationMode-ne"none"){
-  $actual=@($p.instanceIds|ForEach-Object{[pscustomobject]@{InstanceId=[string]$_;Data=$(if($p.keyName-eq"DEVPKEY_Device_HardwareIds"){@("validation\other")}else{""})}})
-  if($p.validationMode-eq"caseCanonical"){$actual=@($actual|ForEach-Object{[pscustomobject]@{InstanceId=([string]$_.InstanceId).ToLowerInvariant();Data=$_.Data}})}
-  if($p.validationMode-eq"responseExtra"){$actual+=@([pscustomobject]@{InstanceId="ROOT\VALIDATION\EXTRA";Data=@("validation\other")})}
-  if($p.validationMode-eq"responseDuplicate"){$actual+=@([pscustomobject]@{InstanceId=([string]$actual[0].InstanceId).ToLowerInvariant();Data=$actual[0].Data})}
-  if($p.validationMode-eq"responseExactDuplicate"){$actual+=@([pscustomobject]@{InstanceId=[string]$actual[0].InstanceId;Data=$actual[0].Data})}
-  if($p.validationMode-eq"responseEquivalentMultiValue"){$actual[0].Data=@("validation\other","validation\second");$actual+=@([pscustomobject]@{InstanceId=([string]$actual[0].InstanceId).ToLowerInvariant();Data=@("VALIDATION\OTHER","VALIDATION\SECOND")})}
-  if($p.validationMode-eq"responseDuplicateElementEquivalent"){$actual[0].Data=@("validation\other","validation\other");$actual+=@([pscustomobject]@{InstanceId=([string]$actual[0].InstanceId).ToLowerInvariant();Data=@("VALIDATION\OTHER","VALIDATION\OTHER")})}
-  if($p.validationMode-eq"responseConflict"){$actual+=@([pscustomobject]@{InstanceId=([string]$actual[0].InstanceId).ToLowerInvariant();Data=$(if($p.keyName-eq"DEVPKEY_Device_HardwareIds"){@("validation\conflict")}else{"oem999.inf"})})}
-  if($p.validationMode-eq"responseStateConflict"){$actual+=@([pscustomobject]@{InstanceId=([string]$actual[0].InstanceId).ToLowerInvariant();PropertyState="absent";Data=$null})}
-  if($p.validationMode-eq"responseDelimiterConflict"){$actual[0].Data=@("validation\u001fother");$actual+=@([pscustomobject]@{InstanceId=([string]$actual[0].InstanceId).ToLowerInvariant();Data=@("validation","u001fother")})}
-  if($p.validationMode-eq"responseOrderConflict"){$actual[0].Data=@("validation\first","validation\second");$actual+=@([pscustomobject]@{InstanceId=([string]$actual[0].InstanceId).ToLowerInvariant();Data=@("validation\second","validation\first")})}
-  if($p.validationMode-eq"responseLengthConflict"){$actual[0].Data=@("validation\other");$actual+=@([pscustomobject]@{InstanceId=([string]$actual[0].InstanceId).ToLowerInvariant();Data=@("validation\other","validation\second")})}
-  if($p.validationMode-eq"mixedAbsent"){$actual=@($actual|Select-Object -First ($actual.Count-1))}
-  if($p.validationMode-eq"allAbsent"){$actual=@()}
-  if($p.validationMode-eq"responseInvalid"){$actual[0].InstanceId=""}
-  if($p.validationMode-eq"responseMissingIdentity"){$actual[0]=[pscustomobject]@{Data=$actual[0].Data}}
-  if($p.validationMode-eq"responseWrongTypeIdentity"){$actual[0].InstanceId=7}
-  if($p.validationMode-eq"responseRowShape"){$actual[0]=$null}
-  if($p.validationMode-eq"responseCanonicalInvalid"){$actual[0].InstanceId=" "+[string]$actual[0].InstanceId}
-  if($p.validationMode-eq"responsePropertyStateInvalid"){$actual[0]|Add-Member -NotePropertyName PropertyState -NotePropertyValue "invalid"}
-  if($p.validationMode-eq"responseAbsentDataInvalid"){$actual[0]|Add-Member -NotePropertyName PropertyState -NotePropertyValue "absent";$actual[0].Data="unexpected"}
-  if($p.validationMode-eq"responseHardwareIdsDataInvalid"){$actual[0].Data=@()}
-  if($p.validationMode-eq"responseDriverInfDataInvalid"){$actual[0].Data=""}
-  if($p.validationMode-eq"responsePrefix"){$actual[0].InstanceId="X"+[string]$actual[0].InstanceId}
-  if($p.validationMode-eq"responseSuffix"){$actual[0].InstanceId=[string]$actual[0].InstanceId+"X"}
-  if($p.validationMode-eq"responseEscaping"){$actual[0].InstanceId=([string]$actual[0].InstanceId).Replace("\","/")}
-}else{
-  try{$actual=@(Get-PnpDeviceProperty -InstanceId ([string[]]$p.instanceIds) -KeyName ([string]$p.keyName) -ErrorAction Stop)}catch{exit 97}
-}
-  $requested=[Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
-  foreach($id in $p.instanceIds){if([string]::IsNullOrWhiteSpace([string]$id)){exit 102};if(-not $requested.Add([string]$id)){exit 95}}
-  $ordinal=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
-  $groups=[Collections.Generic.Dictionary[string,object]]::new([StringComparer]::OrdinalIgnoreCase)
-  $stats=[ordered]@{schemaVersion=1;requestedCount=$p.instanceIds.Count;returnedRowCount=$actual.Count;uniqueOrdinalCount=0;uniqueOrdinalIgnoreCaseCount=0;duplicateGroupCount=0;maxMultiplicity=0;caseOnlyDuplicateCount=0;dataRelation="none";identityInvalidReason="none";identityInvalidCount=0}
-  $validRows=[Collections.Generic.List[object]]::new();$invalidKinds=[Collections.Generic.List[string]]::new()
-  foreach($row in $actual){$reason="none";if($null-eq$row-or$row-is[string]-or$row.GetType().IsPrimitive){$reason="rowShape"}elseif($row.PSObject.Properties.Name-cnotcontains"InstanceId"){$reason="missingProperty"}elseif($row.InstanceId-isnot[string]){$reason="wrongType"}else{$id=[string]$row.InstanceId;if([string]::IsNullOrWhiteSpace($id)){$reason="empty"}elseif($id.Contains("/")){$reason="escapingInvalid"}elseif($id-cne$id.Trim()){$reason="canonicalInvalid"}}
-    if($reason-cne"none"){$invalidKinds.Add($reason);continue};$validRows.Add($row)}
-  foreach($row in $validRows){$id=[string]$row.InstanceId;if(-not $requested.Contains($id)){exit 96};[void]$ordinal.Add($id);if(-not $groups.ContainsKey($id)){$groups.Add($id,[Collections.Generic.List[object]]::new())};$groups[$id].Add($row)}
-  $stats.uniqueOrdinalCount=$ordinal.Count;$stats.uniqueOrdinalIgnoreCaseCount=$groups.Count
-  if($invalidKinds.Count-gt0){$kinds=@($invalidKinds|Select-Object -Unique);$stats.dataRelation="invalid";$stats.identityInvalidReason=$(if($kinds.Count-eq1){$kinds[0]}else{"mixed"});$stats.identityInvalidCount=$invalidKinds.Count;[Console]::Out.Write(($stats|ConvertTo-Json -Compress));exit 101}
-  $byId=[Collections.Generic.Dictionary[string,object]]::new([StringComparer]::OrdinalIgnoreCase)
-  foreach($entry in $groups.GetEnumerator()){$items=@($entry.Value);$stats.maxMultiplicity=[Math]::Max($stats.maxMultiplicity,$items.Count);if($items.Count-gt1){$stats.duplicateGroupCount++;$caseSet=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal);foreach($item in $items){[void]$caseSet.Add([string]$item.InstanceId)};if($caseSet.Count-gt1){$stats.caseOnlyDuplicateCount++}}
-    $canonical=@();$states=@();$normalizedRows=@();foreach($item in $items){$state=if($item.PSObject.Properties.Name-ccontains"PropertyState"){[string]$item.PropertyState}else{"present"};if($state-cnotin@("present","absent")){$stats.dataRelation="invalid";$stats.identityInvalidReason="propertyStateInvalid";$stats.identityInvalidCount=1;[Console]::Out.Write(($stats|ConvertTo-Json -Compress));exit 101};if($state-ceq"absent"){if($null-ne$item.Data){$stats.dataRelation="invalid";$stats.identityInvalidReason="absentDataInvalid";$stats.identityInvalidCount=1;[Console]::Out.Write(($stats|ConvertTo-Json -Compress));exit 101};$canonical+="absent";$normalizedRows+=,$null;$states+="absent"}elseif($p.keyName-eq"DEVPKEY_Device_HardwareIds"){$values=@($item.Data);if($values.Count-lt1-or@($values|Where-Object{$_-isnot[string]-or[string]::IsNullOrWhiteSpace([string]$_)}).Count-ne0){$stats.dataRelation="invalid";$stats.identityInvalidReason="hardwareIdsDataInvalid";$stats.identityInvalidCount=1;[Console]::Out.Write(($stats|ConvertTo-Json -Compress));exit 101};$normalized=[string[]]@($values|ForEach-Object{([string]$_).ToUpperInvariant()});$canonical+=(ConvertTo-Json -InputObject $normalized -Compress);$normalizedRows+=,$normalized;$states+="present"}else{$value=[string]$item.Data;if([string]::IsNullOrWhiteSpace($value)){$stats.dataRelation="invalid";$stats.identityInvalidReason="driverInfDataInvalid";$stats.identityInvalidCount=1;[Console]::Out.Write(($stats|ConvertTo-Json -Compress));exit 101};$normalized=$value.ToLowerInvariant();$canonical+=(ConvertTo-Json -InputObject $normalized.ToUpperInvariant() -Compress);$normalizedRows+=,$normalized;$states+="present"}}
-    if(@($canonical|Select-Object -Unique).Count-ne1){$stats.dataRelation="conflicting";[Console]::Out.Write(($stats|ConvertTo-Json -Compress));exit 103};if($items.Count-gt1){$stats.dataRelation="identical"};if($states[0]-ceq"absent"){$byId.Add($entry.Key,[pscustomobject]@{State="absent";Data=$null})}elseif($p.keyName-eq"DEVPKEY_Device_HardwareIds"){$byId.Add($entry.Key,[pscustomobject]@{State="present";Data=[string[]]@($normalizedRows[0])})}else{$byId.Add($entry.Key,[pscustomobject]@{State="present";Data=[string]$normalizedRows[0]})}}
-  $rows=@($p.instanceIds|ForEach-Object{$id=[string]$_;if($byId.ContainsKey($id)){$value=$byId[$id];[ordered]@{InstanceId=$id;PropertyState=$value.State;Data=$value.Data}}else{[ordered]@{InstanceId=$id;PropertyState="absent";Data=$null}}})
-$envelope=[ordered]@{schemaVersion=1;rows=$rows;stats=$stats}
-[Console]::Out.Write(($envelope|ConvertTo-Json -Compress -Depth 7))
-'@
-  $childSource = $childSource.Replace("__PAYLOAD__", $payloadBase64)
-  $encoded = [Convert]::ToBase64String(
-    [Text.Encoding]::Unicode.GetBytes($childSource))
-  $powerShell = [LigaseFileIdentity]::GetTrustedWindowsPowerShellPath()
-  $commandLine = '"' + $powerShell + '" -NoProfile -NonInteractive ' +
-    '-InputFormat Text -OutputFormat Text -ExecutionPolicy Bypass ' +
-    '-EncodedCommand ' + $encoded
-  $job = $null
-  try {
-    $startCleanupBudget = [Math]::Min(
-      5000, [Math]::Max(
-        1, $TotalMilliseconds - [int]$TotalClock.ElapsedMilliseconds))
-    try {
-      $job = [LigaseJobProcess]::StartExact(
-        $powerShell, $commandLine, [IO.Path]::GetDirectoryName($powerShell),
-        $startFault, $startCleanupBudget)
-    } catch {
-      $script:virtualDisplayChunkFailureStage = "start"
-      $remainingCleanup = [Math]::Min(
-        5000, [Math]::Max(
-          1, $TotalMilliseconds - [int]$TotalClock.ElapsedMilliseconds))
-      $closed = if ([LigaseJobProcess]::AuthorityRetained) {
-        [LigaseJobProcess]::SecondaryContainment(
-          $startFault, $remainingCleanup)
-      } else { [bool][LigaseJobProcess]::LastCleanupProven }
-      $script:virtualDisplayChunkCleanupState =
-        if ($closed) { "completed" } else { "failed" }
-      $script:virtualDisplayChunkRootPidZero =
-        $closed -and [int][LigaseJobProcess]::LastCleanupPid -eq 0
-      $script:virtualDisplayChunkJobActiveProcesses =
-        if ($script:virtualDisplayChunkRootPidZero) { 0 } else { -1 }
-      throw "virtualDisplayReadbackFailed"
-    }
-    $stdoutBuffer = [byte[]]::new(256)
-    $stderrBuffer = [byte[]]::new(256)
-    $stdout = [IO.MemoryStream]::new()
-    $stderr = [IO.MemoryStream]::new()
-    $stdoutTask = $job.StandardOutput.ReadAsync(
-      $stdoutBuffer, 0, $stdoutBuffer.Length)
-    $stderrTask = $job.StandardError.ReadAsync(
-      $stderrBuffer, 0, $stderrBuffer.Length)
-    $stdoutClosed = $false
-    $stderrClosed = $false
-    $failed = $false
-    $runLimit = $TotalMilliseconds - $cleanupReserve
-    while (-not ($job.HasNoActiveProcesses() -and
-        $stdoutClosed -and $stderrClosed)) {
-      foreach ($streamName in @("stdout", "stderr")) {
-        $task = if ($streamName -ceq "stdout") {
-          $stdoutTask
-        } else { $stderrTask }
-        if ($task.IsCompleted) {
-          try { $count = $task.GetAwaiter().GetResult() } catch {
-            $failed = $true
-            break
-          }
-          if ($count -eq 0) {
-            if ($streamName -ceq "stdout") {
-              $stdoutClosed = $true
-            } else { $stderrClosed = $true }
-          } else {
-            $target = if ($streamName -ceq "stdout") { $stdout } else { $stderr }
-            if ($target.Length + $count -gt 65536) {
-              $failed = $true
-              break
-            }
-            $buffer = if ($streamName -ceq "stdout") {
-              $stdoutBuffer
-            } else { $stderrBuffer }
-            $target.Write($buffer, 0, $count)
-            if ($streamName -ceq "stdout") {
-              $stdoutTask = $job.StandardOutput.ReadAsync(
-                $stdoutBuffer, 0, $stdoutBuffer.Length)
-            } else {
-              $stderrTask = $job.StandardError.ReadAsync(
-                $stderrBuffer, 0, $stderrBuffer.Length)
-            }
-          }
-        }
-      }
-      if ($failed -or $TotalClock.ElapsedMilliseconds -ge $runLimit) {
-        if (-not $failed) {
-          $script:virtualDisplayChunkFailureStage = "deadline"
-        }
-        break
-      }
-      Start-Sleep -Milliseconds 5
-    }
-    if ($failed -or -not ($job.HasNoActiveProcesses() -and
-        $stdoutClosed -and $stderrClosed)) {
-      if (-not $job.Terminate()) { throw "virtualDisplayReadbackFailed" }
-      while ($TotalClock.ElapsedMilliseconds -lt $TotalMilliseconds -and
-          -not ($job.HasNoActiveProcesses() -and
-            $stdoutClosed -and $stderrClosed)) {
-        if (-not $stdoutClosed -and $stdoutTask.IsCompleted) {
-          try { $count = $stdoutTask.GetAwaiter().GetResult() } catch {
-            throw "virtualDisplayReadbackFailed"
-          }
-          if ($count -eq 0) { $stdoutClosed = $true } else {
-            $stdoutTask = $job.StandardOutput.ReadAsync(
-              $stdoutBuffer, 0, $stdoutBuffer.Length)
-          }
-        }
-        if (-not $stderrClosed -and $stderrTask.IsCompleted) {
-          try { $count = $stderrTask.GetAwaiter().GetResult() } catch {
-            throw "virtualDisplayReadbackFailed"
-          }
-          if ($count -eq 0) { $stderrClosed = $true } else {
-            $stderrTask = $job.StandardError.ReadAsync(
-              $stderrBuffer, 0, $stderrBuffer.Length)
-          }
-        }
-        Start-Sleep -Milliseconds 5
-      }
-      $script:virtualDisplayChunkCleanupState = if (
-        $job.WaitForRoot(0) -and $job.HasNoActiveProcesses() -and
-        $stdoutClosed -and $stderrClosed) { "completed" } else { "failed" }
-      $script:virtualDisplayChunkRootPidZero =
-        $script:virtualDisplayChunkCleanupState -ceq "completed"
-      $script:virtualDisplayChunkJobActiveProcesses =
-        if ($script:virtualDisplayChunkCleanupState -ceq "completed") {
-          0
-        } else { -1 }
-      throw "virtualDisplayReadbackFailed"
-    }
-    if ($job.ExitCode -in @(101, 103)) {
-      $strictUtf8 = [Text.UTF8Encoding]::new($false, $true)
-      try {
-        $failureRaw = $strictUtf8.GetString($stdout.ToArray())
-        if (-not [LigaseStrictJson]::HasUniqueProperties($failureRaw)) {
-          throw "virtualDisplayReadbackFailed"
-        }
-        $failureStats = $failureRaw | ConvertFrom-Json
-        Set-VirtualDisplayChunkDuplicateStats $failureStats
-      } catch {
-        $script:virtualDisplayChunkFailureStage = "json"
-        throw "virtualDisplayReadbackFailed"
-      }
-    }
-    if ($TotalClock.ElapsedMilliseconds -ge $TotalMilliseconds -or
-        $job.ExitCode -ne 0 -or $stderr.Length -ne 0) {
-      if ($job.ExitCode -ne 0) {
-        $rawChildExitCode = [int]$job.ExitCode
-        $script:virtualDisplayChunkNativeExitCode = switch ($rawChildExitCode) {
-          91 { 91 }
-          93 { 93 }
-          94 { 94 }
-          95 { 95 }
-          96 { 96 }
-          97 { 97 }
-          101 { 101 }
-          102 { 102 }
-          103 { 103 }
-          default { 98 }
-        }
-        $script:virtualDisplayChunkChildFailureStage = switch (
-            $rawChildExitCode) {
-          91 { "inputValidation" }
-          93 { "validationMode" }
-          94 { "validationQuota" }
-          95 { "requestIdentityDuplicate" }
-          96 { "responseIdentityUnknown" }
-          97 { "propertyQuery" }
-          101 { "responseIdentityInvalid" }
-          102 { "requestIdentityInvalid" }
-          103 { "responseIdentityConflict" }
-          default { "hostFailure" }
-        }
-      } elseif ($stderr.Length -ne 0) {
-        $script:virtualDisplayChunkNativeExitCode = 0
-        $script:virtualDisplayChunkChildFailureStage = "stderr"
-      }
-      $script:virtualDisplayChunkFailureStage = if (
-        $TotalClock.ElapsedMilliseconds -ge $TotalMilliseconds) {
-          "deadline"
-        } elseif ($job.ExitCode -ne 0) { "nativeExit" } else { "stderr" }
-      throw "virtualDisplayReadbackFailed"
-    }
-    $strictUtf8 = [Text.UTF8Encoding]::new($false, $true)
-    try {
-      $raw = $strictUtf8.GetString($stdout.ToArray())
-    } catch {
-      $script:virtualDisplayChunkFailureStage = "json"
-      throw "virtualDisplayReadbackFailed"
-    }
-    if (-not [LigaseStrictJson]::HasUniqueProperties($raw)) {
-      $script:virtualDisplayChunkFailureStage = "json"
-      throw "virtualDisplayReadbackFailed"
-    }
-    try { $parsed = $raw | ConvertFrom-Json } catch {
-      $script:virtualDisplayChunkFailureStage = "json"
-      throw "virtualDisplayReadbackFailed"
-    }
-    if ($parsed -is [array]) {
-      $script:virtualDisplayChunkFailureStage = "shape"
-      throw "virtualDisplayReadbackFailed"
-    }
-    try {
-      Assert-ClosedProperties $parsed @("schemaVersion", "rows", "stats") `
-        "virtualDisplayPropertyBatchEnvelope"
-      if ($parsed.schemaVersion -isnot [int] -or
-          [int]$parsed.schemaVersion -ne 1 -or $parsed.rows -isnot [array]) {
-        throw "virtualDisplayReadbackFailed"
-      }
-      Set-VirtualDisplayChunkDuplicateStats $parsed.stats
-    } catch {
-      $script:virtualDisplayChunkFailureStage = "shape"
-      throw "virtualDisplayReadbackFailed"
-    }
-    $script:virtualDisplayChunkCleanupState = "completed"
-    $script:virtualDisplayChunkRootPidZero = $true
-    $script:virtualDisplayChunkJobActiveProcesses = 0
-    return @($parsed.rows | ForEach-Object { $_ })
-  } catch {
-    if ($null -ne $job -and
-        -not ($job.WaitForRoot(0) -and $job.HasNoActiveProcesses())) {
-      $null = $job.Terminate()
-      while ($TotalClock.ElapsedMilliseconds -lt $TotalMilliseconds -and
-          -not ($job.WaitForRoot(0) -and $job.HasNoActiveProcesses())) {
-        Start-Sleep -Milliseconds 5
-      }
-    }
-    if ($script:virtualDisplayChunkFailureStage -ceq "none") {
-      $script:virtualDisplayChunkFailureStage = "invoke"
-      $script:virtualDisplayChunkChildFailureStage = "processInvoke"
-    }
-    if ($null -ne $job) {
-      $script:virtualDisplayChunkCleanupState = if (
-        $job.WaitForRoot(0) -and $job.HasNoActiveProcesses()) {
-          "completed"
-        } else { "failed" }
-      $script:virtualDisplayChunkRootPidZero =
-        $script:virtualDisplayChunkCleanupState -ceq "completed"
-      $script:virtualDisplayChunkJobActiveProcesses =
-        if ($script:virtualDisplayChunkCleanupState -ceq "completed") {
-          0
-        } else { -1 }
-    }
-    throw "virtualDisplayReadbackFailed"
-  } finally {
-    $script:virtualDisplayInventoryElapsedMilliseconds = [Math]::Min(
-      $TotalMilliseconds, [Math]::Max(
-        0, [int]$TotalClock.ElapsedMilliseconds))
-    if ($null -ne $job) { $job.Dispose() }
-  }
-}
-
-function Get-VirtualDisplayPropertyRowsChunked(
-    [string[]]$InstanceIds,
-    [string]$KeyName,
-    [scriptblock]$PropertyProvider,
-    [Diagnostics.Stopwatch]$TotalClock,
-    [int]$TotalMilliseconds,
-    [switch]$ValidationForcePostLoopDeadline) {
-  if ($InstanceIds.Count -eq 0) {
-    return [Collections.Generic.Dictionary[string,object]]::new(
-      [StringComparer]::Ordinal)
-  }
-  $allRequested = [Collections.Generic.HashSet[string]]::new(
-    [StringComparer]::Ordinal)
-  foreach ($instanceId in $InstanceIds) {
-    if ([string]::IsNullOrWhiteSpace($instanceId) -or
-        -not $allRequested.Add($instanceId)) {
-      throw "virtualDisplayReadbackFailed"
-    }
-  }
-  $allRows = [Collections.Generic.Dictionary[string,object]]::new(
-    [StringComparer]::Ordinal)
-  for ($offset = 0; $offset -lt $InstanceIds.Count;
-       $offset += $virtualDisplayPropertyBatchSize) {
-    $script:virtualDisplayInventoryStage = if (
-      $KeyName -ceq "DEVPKEY_Device_HardwareIds") {
-        "hardwareIds"
-      } else { "driverInf" }
-    $script:virtualDisplayInventoryCurrentBatchIndex =
-      [int]($offset / $virtualDisplayPropertyBatchSize)
-    if ($TotalClock.ElapsedMilliseconds -ge $TotalMilliseconds) {
-      throw "virtualDisplayReadbackFailed"
-    }
-    $batchCount = [Math]::Min(
-      $virtualDisplayPropertyBatchSize, $InstanceIds.Count - $offset)
-    $batch = [string[]]::new($batchCount)
-    [Array]::Copy($InstanceIds, $offset, $batch, 0, $batchCount)
-    $batchRequested = [Collections.Generic.HashSet[string]]::new(
-      [StringComparer]::Ordinal)
-    foreach ($instanceId in $batch) {
-      if (-not $batchRequested.Add($instanceId)) {
-        throw "virtualDisplayReadbackFailed"
-      }
-    }
-    $rows = @(& $PropertyProvider $batch $KeyName)
-    $script:virtualDisplayChunkRequestedCount = $batch.Count
-    $script:virtualDisplayChunkReturnedCount = $rows.Count
-    if ($TotalClock.ElapsedMilliseconds -ge $TotalMilliseconds) {
-      $script:virtualDisplayChunkFailureStage = "postDeadline"
-      throw "virtualDisplayReadbackFailed"
-    }
-    if ($rows.Count -ne $batch.Count) {
-      $script:virtualDisplayChunkFailureStage = "rowCount"
-      $script:virtualDisplayChunkCoverageStage = "rowCount"
-      $script:virtualDisplayChunkCoverageReason = if (
-        $rows.Count -lt $batch.Count) { "missing" } else { "extra" }
-      throw "virtualDisplayReadbackFailed"
-    }
-    $batchReturned = [Collections.Generic.HashSet[string]]::new(
-      [StringComparer]::Ordinal)
-    foreach ($row in $rows) {
-      try {
-        Assert-ClosedProperties $row @(
-          "InstanceId", "PropertyState", "Data") "virtualDisplayPropertyRow"
-      } catch {
-        $script:virtualDisplayChunkFailureStage = "rowIdentity"
-        $script:virtualDisplayChunkCoverageStage = "rowIdentity"
-        $script:virtualDisplayChunkCoverageReason = "identityMismatch"
-        throw "virtualDisplayReadbackFailed"
-      }
-      $returnedId = [string]$row.InstanceId
-      if ([string]::IsNullOrWhiteSpace($returnedId) -or
-          -not $batchRequested.Contains($returnedId) -or
-          @("present", "absent") -cnotcontains [string]$row.PropertyState -or
-          ([string]$row.PropertyState -ceq "absent" -and
-            $null -ne $row.Data)) {
-        $script:virtualDisplayChunkFailureStage = "rowIdentity"
-        $script:virtualDisplayChunkCoverageStage = "rowIdentity"
-        $script:virtualDisplayChunkCoverageReason = "identityMismatch"
-        throw "virtualDisplayReadbackFailed"
-      }
-      if (-not $batchReturned.Add($returnedId) -or
-          $allRows.ContainsKey($returnedId)) {
-        $script:virtualDisplayChunkFailureStage = "rowIdentity"
-        $script:virtualDisplayChunkCoverageStage = "rowIdentity"
-        $script:virtualDisplayChunkCoverageReason = "duplicate"
-        throw "virtualDisplayReadbackFailed"
-      }
-      $allRows.Add($returnedId, $(if (
-        [string]$row.PropertyState -ceq "present") { $row.Data } else { $null }))
-    }
-    if ($batchReturned.Count -ne $batchRequested.Count) {
-      $script:virtualDisplayChunkFailureStage = "batchCoverage"
-      $script:virtualDisplayChunkCoverageStage = "batchCoverage"
-      $script:virtualDisplayChunkCoverageReason = "setMismatch"
-      throw "virtualDisplayReadbackFailed"
-    }
-    if ($KeyName -ceq "DEVPKEY_Device_HardwareIds") {
-      $script:virtualDisplayInventoryHardwareBatchesCompleted++
-    } else {
-      $script:virtualDisplayInventoryDriverBatchesCompleted++
-    }
-  }
-  if ($ValidationForcePostLoopDeadline) {
-    $remaining = [Math]::Max(
-      1, $TotalMilliseconds - [int]$TotalClock.ElapsedMilliseconds)
-    Start-Sleep -Milliseconds $remaining
-  }
-  if ($TotalClock.ElapsedMilliseconds -ge $TotalMilliseconds) {
-    $script:virtualDisplayChunkFailureStage = "postDeadline"
-    $script:virtualDisplayChunkCoverageStage = "none"
-    $script:virtualDisplayChunkCoverageReason = "none"
-    $script:virtualDisplayChunkRequestedCount = -1
-    $script:virtualDisplayChunkReturnedCount = -1
-    throw "virtualDisplayReadbackFailed"
-  }
-  return $allRows
-}
-
-function Invoke-VirtualDisplayChunkedInventoryValidation(
-    [string]$ValidationRoot) {
-  $fullRoot = [IO.Path]::GetFullPath($ValidationRoot)
-  if ($env:LIGASE_INSTALL_VALIDATION_HARNESS -cne "1" -or
-      [string]$env:LIGASE_VIRTUAL_DISPLAY_CHUNK_VALIDATION_ROOT -cne
-        $fullRoot -or
-      [IO.Path]::GetPathRoot($fullRoot) -cne "D:\") {
-    throw "virtualDisplayValidationUnavailable"
-  }
-  $fixturePath = Join-Path $fullRoot "chunked-inventory-fixture.json"
-  $raw = [IO.File]::ReadAllText(
-    $fixturePath, [Text.UTF8Encoding]::new($false, $true))
-  if (-not [LigaseStrictJson]::HasUniqueProperties($raw)) {
-    throw "virtualDisplayValidationUnavailable"
-  }
-  $fixture = $raw | ConvertFrom-Json
-  Assert-ClosedProperties $fixture @(
-    "schemaVersion", "deviceCount", "failureMode", "failureBatchIndex",
-    "deadlineMilliseconds") "virtualDisplayChunkValidation"
-  if ($fixture.schemaVersion -ne 1 -or
-      $fixture.deviceCount -isnot [int] -or
-      [int]$fixture.deviceCount -lt 1 -or
-      [int]$fixture.deviceCount -gt 1024 -or
-      [string]$fixture.failureMode -cnotin @(
-        "none", "inputDuplicate", "quota", "missing", "extra",
-        "duplicate", "identityMismatch", "crossBatch", "timeout",
-        "postLoopDeadline",
-        "startAssign", "startResume",
-        "startRetain", "outputInvalid", "invokeOutput",
-        "hostNegative", "hostHigh", "encodingInvalid", "tupleInvalid",
-        "caseCanonical", "mixedAbsent", "allAbsentHardware",
-        "allAbsentDriver", "responseExtra", "responseDuplicate",
-        "responseExactDuplicate", "responseEquivalentMultiValue",
-        "responseDuplicateElementEquivalent",
-        "responseConflict", "responseStateConflict",
-        "responseDelimiterConflict", "responseOrderConflict",
-        "responseLengthConflict",
-        "responseInvalid", "responseMissingIdentity",
-        "responseWrongTypeIdentity", "responseRowShape",
-        "responseCanonicalInvalid", "responsePropertyStateInvalid",
-        "responseAbsentDataInvalid", "responseHardwareIdsDataInvalid",
-        "responseDriverInfDataInvalid", "responsePrefix",
-        "responseSuffix", "responseEscaping", "requestCaseDuplicate",
-        "requestInvalid") -or
-      $fixture.failureBatchIndex -isnot [int] -or
-      [int]$fixture.failureBatchIndex -lt 0 -or
-      $fixture.deadlineMilliseconds -isnot [int] -or
-      [int]$fixture.deadlineMilliseconds -notin @(1500, 10000)) {
-    throw "virtualDisplayValidationUnavailable"
-  }
-  $instanceIds = [string[]]@(0..([int]$fixture.deviceCount - 1) |
-    ForEach-Object { "ROOT\VALIDATION\$($_.ToString('D4'))" })
-  if ([string]$fixture.failureMode -ceq "inputDuplicate") {
-    $instanceIds[$instanceIds.Count - 1] = $instanceIds[0]
-  }
-  $state = [ordered]@{
-    hardwareCalls = 0
-    driverCalls = 0
-    maxBatchSize = 0
-    previousBatchFirst = ""
-  }
-  $script:virtualDisplayChunkCleanupState = "notRequired"
-  $script:virtualDisplayChunkRootPidZero = $true
-  $script:virtualDisplayChunkNativeExitCode = -1
-  $script:virtualDisplayChunkChildFailureStage = "none"
-  $script:virtualDisplayChunkJobActiveProcesses = 0
-  $script:virtualDisplayChunkFailureStage = "none"
-  $script:virtualDisplayChunkCoverageStage = "none"
-  $script:virtualDisplayChunkCoverageReason = "none"
-  $script:virtualDisplayChunkRequestedCount = -1
-  $script:virtualDisplayChunkReturnedCount = -1
-  $script:virtualDisplayChunkDuplicateRequestedCount = -1
-  $script:virtualDisplayChunkDuplicateReturnedRowCount = -1
-  $script:virtualDisplayChunkDuplicateUniqueOrdinalCount = -1
-  $script:virtualDisplayChunkDuplicateUniqueOrdinalIgnoreCaseCount = -1
-  $script:virtualDisplayChunkDuplicateGroupCount = 0
-  $script:virtualDisplayChunkDuplicateMaxMultiplicity = 0
-  $script:virtualDisplayChunkDuplicateCaseOnlyCount = 0
-  $script:virtualDisplayChunkDuplicateDataRelation = "none"
-  $script:virtualDisplayChunkIdentityInvalidReason = "none"
-  $script:virtualDisplayChunkIdentityInvalidCount = 0
-  $provider = {
-    param([string[]]$Batch, [string]$KeyName)
-    $isHardware = $KeyName -ceq "DEVPKEY_Device_HardwareIds"
-    if ($isHardware) { $state.hardwareCalls++ } else { $state.driverCalls++ }
-    $callIndex = if ($isHardware) {
-      [int]$state.hardwareCalls - 1
-    } else { [int]$state.driverCalls - 1 }
-    $state.maxBatchSize = [Math]::Max(
-      [int]$state.maxBatchSize, $Batch.Count)
-    $driverOnlyFault = [string]$fixture.failureMode -ceq
-      "responseDriverInfDataInvalid"
-    $applyFault = (($isHardware -and -not $driverOnlyFault) -or
-        (-not $isHardware -and $driverOnlyFault)) -and
-      $callIndex -eq [int]$fixture.failureBatchIndex
-    if ($applyFault -and
-        [string]$fixture.failureMode -ceq "invokeOutput") {
-      $script:virtualDisplayChunkFailureStage = "invoke"
-      $script:virtualDisplayChunkNativeExitCode = -1
-      $script:virtualDisplayChunkChildFailureStage = "processInvoke"
-      $script:virtualDisplayChunkCleanupState = "completed"
-      $script:virtualDisplayChunkRootPidZero = $true
-      $script:virtualDisplayChunkJobActiveProcesses = 0
-      throw "virtualDisplayReadbackFailed"
-    }
-    $mode = if ($applyFault -and
-        [string]$fixture.failureMode -ceq "quota") {
-      "quota"
-    } elseif ($applyFault -and
-        [string]$fixture.failureMode -ceq "timeout") {
-      "hang"
-    } elseif ($applyFault -and [string]$fixture.failureMode -cin @(
-        "startAssign", "startResume", "startRetain")) {
-      [string]$fixture.failureMode
-    } elseif ($applyFault -and [string]$fixture.failureMode -cin @(
-        "outputInvalid", "hostNegative", "hostHigh",
-        "encodingInvalid", "tupleInvalid", "caseCanonical",
-        "mixedAbsent", "allAbsentHardware",
-        "responseExtra", "responseDuplicate",
-        "responseExactDuplicate", "responseEquivalentMultiValue",
-        "responseDuplicateElementEquivalent",
-        "responseConflict", "responseStateConflict",
-        "responseDelimiterConflict", "responseOrderConflict",
-        "responseLengthConflict",
-        "responseInvalid", "responseMissingIdentity",
-        "responseWrongTypeIdentity", "responseRowShape",
-        "responseCanonicalInvalid", "responsePropertyStateInvalid",
-        "responseAbsentDataInvalid", "responseHardwareIdsDataInvalid",
-        "responseDriverInfDataInvalid", "responsePrefix", "responseSuffix",
-        "responseEscaping")) {
-      if ([string]$fixture.failureMode -ceq "allAbsentHardware") {
-        "allAbsent"
-      } elseif ([string]$fixture.failureMode -ceq "mixedAbsent") {
-        "mixedAbsent"
-      } else { [string]$fixture.failureMode }
-    } elseif (-not $isHardware -and $callIndex -eq 0 -and
-        [string]$fixture.failureMode -ceq "allAbsentDriver") {
-      "allAbsent"
-    } else { "fixture" }
-    $rows = [Collections.Generic.List[object]]::new()
-    $requiresProcess = $mode -cne "fixture" -or
-      ($isHardware -and $callIndex -eq 0)
-    $processBatch = [string[]]@($Batch)
-    if ($applyFault -and
-        [string]$fixture.failureMode -ceq "requestCaseDuplicate") {
-      $processBatch[$processBatch.Count - 1] =
-        $processBatch[0].ToLowerInvariant()
-      $mode = "fixture"
-      $requiresProcess = $true
-    } elseif ($applyFault -and
-        [string]$fixture.failureMode -ceq "requestInvalid") {
-      $processBatch[$processBatch.Count - 1] = ""
-      $mode = "fixture"
-      $requiresProcess = $true
-    }
-    $providerRows = if ($requiresProcess) {
-      @(Invoke-VirtualDisplayPropertyBatchProcess `
-        $processBatch $KeyName $clock ([int]$fixture.deadlineMilliseconds) $mode)
-    } else {
-      @($Batch | ForEach-Object {
-        [pscustomobject]@{
-          InstanceId = [string]$_
-          PropertyState = "present"
-          Data = $(if ($isHardware) { @("validation\other") } else { "" })
-        }
-      })
-    }
-    foreach ($row in $providerRows) {
-      $data = if ($isHardware -and
-          [string]$row.PropertyState -ceq "present" -and
-          [string]$row.InstanceId -ceq
-            $instanceIds[$instanceIds.Count - 1]) {
-        @("root\sudomaker\sudovda")
-      } else { $row.Data }
-      $rows.Add([pscustomobject]@{
-          InstanceId = [string]$row.InstanceId
-          PropertyState = [string]$row.PropertyState
-          Data = $data
-        })
-    }
-    if ($applyFault -and
-        [string]$fixture.failureMode -ceq "missing") {
-      $rows.RemoveAt($rows.Count - 1)
-    } elseif ($applyFault -and
-        [string]$fixture.failureMode -ceq "extra") {
-      $rows.Add([pscustomobject]@{
-          InstanceId = "ROOT\VALIDATION\EXTRA"
-          PropertyState = "present"
-          Data = @("validation\other")
-        })
-    } elseif ($applyFault -and
-        [string]$fixture.failureMode -ceq "duplicate") {
-      $rows[$rows.Count - 1] = $rows[0]
-    } elseif ($applyFault -and
-        [string]$fixture.failureMode -ceq "identityMismatch") {
-      $rows[$rows.Count - 1] = [pscustomobject]@{
-        InstanceId = "ROOT\VALIDATION\MISMATCH"
-        PropertyState = "present"
-        Data = @("validation\other")
-      }
-    } elseif ($applyFault -and
-        [string]$fixture.failureMode -ceq "crossBatch") {
-      if ([string]::IsNullOrWhiteSpace([string]$state.previousBatchFirst)) {
-        throw "virtualDisplayValidationUnavailable"
-      }
-      $rows[$rows.Count - 1] = [pscustomobject]@{
-        InstanceId = [string]$state.previousBatchFirst
-        PropertyState = "present"
-        Data = @("validation\other")
-      }
-    }
-    $state.previousBatchFirst = [string]$Batch[0]
-    return @($rows)
-  }
-  $clock = [Diagnostics.Stopwatch]::StartNew()
-  try {
-    $hardware = Get-VirtualDisplayPropertyRowsChunked $instanceIds `
-      "DEVPKEY_Device_HardwareIds" $provider $clock `
-      ([int]$fixture.deadlineMilliseconds) `
-      -ValidationForcePostLoopDeadline:(
-        [string]$fixture.failureMode -ceq "postLoopDeadline")
-    $driver = Get-VirtualDisplayPropertyRowsChunked $instanceIds `
-      "DEVPKEY_Device_DriverInfPath" $provider $clock `
-      ([int]$fixture.deadlineMilliseconds)
-    $exactNodeCount = @($instanceIds | Where-Object {
-        @($hardware[$_] | Where-Object {
-            [StringComparer]::OrdinalIgnoreCase.Equals(
-              [string]$_, "root\sudomaker\sudovda")
-          }).Count -eq 1
-      }).Count
-    $exactPresentCount = $exactNodeCount
-    $exactBoundCount = @($instanceIds | Where-Object {
-        @($hardware[$_] | Where-Object {
-            [StringComparer]::OrdinalIgnoreCase.Equals(
-              [string]$_, "root\sudomaker\sudovda")
-          }).Count -eq 1 -and
-        [string]$driver[$_] -match '^oem[0-9]+\.inf$'
-      }).Count
-    $multiValueOutputCount = -1
-    $multiValueOutputValid = $true
-    if ([string]$fixture.failureMode -cin @(
-        "responseEquivalentMultiValue", "responseDuplicateElementEquivalent")) {
-      $multiValue = @($hardware[$instanceIds[0]])
-      $multiValueOutputCount = $multiValue.Count
-      $expectedSecond = if ([string]$fixture.failureMode -ceq
-          "responseEquivalentMultiValue") { "VALIDATION\SECOND" } else {
-        "VALIDATION\OTHER"
-      }
-      $multiValueOutputValid = (
-        $multiValue.Count -eq 2 -and
-        [string]$multiValue[0] -ceq "VALIDATION\OTHER" -and
-        [string]$multiValue[1] -ceq $expectedSecond)
-      if (-not $multiValueOutputValid) {
-        throw "virtualDisplayReadbackFailed"
-      }
-    }
-    return [ordered]@{
-      schemaVersion = 1
-      result = "passed"
-      code = "none"
-      deviceCount = $instanceIds.Count
-      hardwareCount = $hardware.Count
-      driverCount = $driver.Count
-      exactNodeCount = $exactNodeCount
-      exactPresentCount = $exactPresentCount
-      exactBoundCount = $exactBoundCount
-      multiValueOutputCount = $multiValueOutputCount
-      multiValueOutputValid = $multiValueOutputValid
-      batchSize = $virtualDisplayPropertyBatchSize
-      hardwareBatchCount = [int]$state.hardwareCalls
-      driverBatchCount = [int]$state.driverCalls
-      maxBatchSize = [int]$state.maxBatchSize
-      elapsedMilliseconds = [Math]::Min(
-        [int]$fixture.deadlineMilliseconds, [int]$clock.ElapsedMilliseconds)
-      hardCapMilliseconds = [int]$fixture.deadlineMilliseconds
-      cleanupState = [string]$script:virtualDisplayChunkCleanupState
-      rootPidZero = [bool]$script:virtualDisplayChunkRootPidZero
-      jobActiveProcesses = [int]$script:virtualDisplayChunkJobActiveProcesses
-      failureStage = [string]$script:virtualDisplayChunkFailureStage
-      outputReason = $(switch (
-          [string]$script:virtualDisplayChunkFailureStage) {
-        "nativeExit" { "nativeExit" }
-        "stderr" { "stderr" }
-        "invoke" { "invokeFailure" }
-        default { "none" }
-      })
-      nativeExitCode = [int]$script:virtualDisplayChunkNativeExitCode
-      childFailureStage =
-        [string]$script:virtualDisplayChunkChildFailureStage
-      coverageStage = [string]$script:virtualDisplayChunkCoverageStage
-      coverageReason = [string]$script:virtualDisplayChunkCoverageReason
-      requestedCount = [int]$script:virtualDisplayChunkRequestedCount
-      returnedCount = [int]$script:virtualDisplayChunkReturnedCount
-      duplicateRequestedCount =
-        [int]$script:virtualDisplayChunkDuplicateRequestedCount
-      duplicateReturnedRowCount =
-        [int]$script:virtualDisplayChunkDuplicateReturnedRowCount
-      duplicateUniqueOrdinalCount =
-        [int]$script:virtualDisplayChunkDuplicateUniqueOrdinalCount
-      duplicateUniqueOrdinalIgnoreCaseCount =
-        [int]$script:virtualDisplayChunkDuplicateUniqueOrdinalIgnoreCaseCount
-      duplicateGroupCount =
-        [int]$script:virtualDisplayChunkDuplicateGroupCount
-      duplicateMaxMultiplicity =
-        [int]$script:virtualDisplayChunkDuplicateMaxMultiplicity
-      caseOnlyDuplicateCount =
-        [int]$script:virtualDisplayChunkDuplicateCaseOnlyCount
-      duplicateDataRelation =
-        [string]$script:virtualDisplayChunkDuplicateDataRelation
-      identityInvalidReason =
-        [string]$script:virtualDisplayChunkIdentityInvalidReason
-      identityInvalidCount =
-        [int]$script:virtualDisplayChunkIdentityInvalidCount
-    }
-  } catch {
-    return [ordered]@{
-      schemaVersion = 1
-      result = "failed"
-      code = "virtualDisplayReadbackFailed"
-      deviceCount = $instanceIds.Count
-      hardwareCount = -1
-      driverCount = -1
-      exactNodeCount = -1
-      exactPresentCount = -1
-      exactBoundCount = -1
-      multiValueOutputCount = -1
-      multiValueOutputValid = $false
-      batchSize = $virtualDisplayPropertyBatchSize
-      hardwareBatchCount = [int]$state.hardwareCalls
-      driverBatchCount = [int]$state.driverCalls
-      maxBatchSize = [int]$state.maxBatchSize
-      elapsedMilliseconds = [Math]::Min(
-        [int]$fixture.deadlineMilliseconds, [int]$clock.ElapsedMilliseconds)
-      hardCapMilliseconds = [int]$fixture.deadlineMilliseconds
-      cleanupState = [string]$script:virtualDisplayChunkCleanupState
-      rootPidZero = [bool]$script:virtualDisplayChunkRootPidZero
-      jobActiveProcesses = [int]$script:virtualDisplayChunkJobActiveProcesses
-      failureStage = [string]$script:virtualDisplayChunkFailureStage
-      outputReason = $(switch (
-          [string]$script:virtualDisplayChunkFailureStage) {
-        "nativeExit" { "nativeExit" }
-        "stderr" { "stderr" }
-        "invoke" { "invokeFailure" }
-        default { "none" }
-      })
-      nativeExitCode = [int]$script:virtualDisplayChunkNativeExitCode
-      childFailureStage =
-        [string]$script:virtualDisplayChunkChildFailureStage
-      coverageStage = [string]$script:virtualDisplayChunkCoverageStage
-      coverageReason = [string]$script:virtualDisplayChunkCoverageReason
-      requestedCount = [int]$script:virtualDisplayChunkRequestedCount
-      returnedCount = [int]$script:virtualDisplayChunkReturnedCount
-      duplicateRequestedCount =
-        [int]$script:virtualDisplayChunkDuplicateRequestedCount
-      duplicateReturnedRowCount =
-        [int]$script:virtualDisplayChunkDuplicateReturnedRowCount
-      duplicateUniqueOrdinalCount =
-        [int]$script:virtualDisplayChunkDuplicateUniqueOrdinalCount
-      duplicateUniqueOrdinalIgnoreCaseCount =
-        [int]$script:virtualDisplayChunkDuplicateUniqueOrdinalIgnoreCaseCount
-      duplicateGroupCount =
-        [int]$script:virtualDisplayChunkDuplicateGroupCount
-      duplicateMaxMultiplicity =
-        [int]$script:virtualDisplayChunkDuplicateMaxMultiplicity
-      caseOnlyDuplicateCount =
-        [int]$script:virtualDisplayChunkDuplicateCaseOnlyCount
-      duplicateDataRelation =
-        [string]$script:virtualDisplayChunkDuplicateDataRelation
-      identityInvalidReason =
-        [string]$script:virtualDisplayChunkIdentityInvalidReason
-      identityInvalidCount =
-        [int]$script:virtualDisplayChunkIdentityInvalidCount
-    }
-  }
-}
-
 function Get-VirtualDisplaySnapshot {
   if ($env:LIGASE_INSTALL_VALIDATION_HARNESS -ceq "1" -and
       -not [string]::IsNullOrWhiteSpace(
@@ -5939,57 +5268,7 @@ function Get-VirtualDisplaySnapshot {
     }
     return @($fixture.devices)
   }
-  $script:virtualDisplayInventoryStage = "allDevices"
-  $allDevices = @(Get-PnpDevice -ErrorAction Stop)
-  $instanceIds = [string[]]@($allDevices | ForEach-Object {
-    if ([string]::IsNullOrWhiteSpace([string]$_.InstanceId) -or
-        $_.Present -isnot [bool]) {
-      throw "virtualDisplayReadbackFailed"
-    }
-    [string]$_.InstanceId
-  })
-  $inventoryClock = [Diagnostics.Stopwatch]::StartNew()
-  $script:virtualDisplayInventoryDeviceCount = $allDevices.Count
-  $script:virtualDisplayInventoryTotalBatchCount =
-    [int][Math]::Ceiling($allDevices.Count / 32.0)
-  $propertyProvider = {
-    param([string[]]$Batch, [string]$KeyName)
-    @(Invoke-VirtualDisplayPropertyBatchProcess $Batch $KeyName `
-      $inventoryClock $virtualDisplayPropertyInventoryDeadlineMilliseconds)
-  }
-  $hardwareByInstance = Get-VirtualDisplayPropertyRowsChunked `
-    $instanceIds "DEVPKEY_Device_HardwareIds" $propertyProvider `
-    $inventoryClock $virtualDisplayPropertyInventoryDeadlineMilliseconds
-  $driverByInstance = Get-VirtualDisplayPropertyRowsChunked `
-    $instanceIds "DEVPKEY_Device_DriverInfPath" $propertyProvider `
-    $inventoryClock $virtualDisplayPropertyInventoryDeadlineMilliseconds
-  $script:virtualDisplayInventoryElapsedMilliseconds =
-    [Math]::Min($virtualDisplayPropertyInventoryDeadlineMilliseconds,
-      [int]$inventoryClock.ElapsedMilliseconds)
-  if ($hardwareByInstance.Count -ne $allDevices.Count -or
-      $driverByInstance.Count -ne $allDevices.Count) {
-    throw "virtualDisplayReadbackFailed"
-  }
-  return @($allDevices | ForEach-Object {
-    $instanceId = [string]$_.InstanceId
-    if (-not $hardwareByInstance.ContainsKey($instanceId) -or
-        -not $driverByInstance.ContainsKey($instanceId)) {
-      throw "virtualDisplayReadbackFailed"
-    }
-    $hardwareIds = @($hardwareByInstance[$instanceId])
-    if (@($hardwareIds | Where-Object {
-          [StringComparer]::OrdinalIgnoreCase.Equals(
-            [string]$_, "root\sudomaker\sudovda")
-        }).Count -eq 1) {
-      [ordered]@{
-        instanceId = [string]$_.InstanceId
-        hardwareIds = $hardwareIds
-        status = [string]$_.Status
-        present = [bool]$_.Present
-        driverInf = [string]$driverByInstance[$instanceId]
-      }
-    }
-  })
+  return @(Invoke-VirtualDisplayInventoryHelper)
 }
 
 function Set-VirtualDisplayInventoryDiagnostic([bool]$Succeeded) {
@@ -6187,6 +5466,7 @@ function Get-VirtualDisplay([switch]$IncludeRemovalAuthority) {
   try {
     $candidates = @(Get-VirtualDisplaySnapshot)
     if ($trackChunkInventory) {
+      $script:virtualDisplayInventoryDeviceCount = $candidates.Count
       Set-VirtualDisplayInventoryDiagnostic $true
     }
     $devices = @($candidates | Where-Object {
@@ -6976,11 +6256,49 @@ try {
       (Get-VirtualDisplay) | ConvertTo-Json -Compress))
     exit 0
   }
-  if ($Action -eq "ValidateVirtualDisplayChunkedInventory") {
-    $validationResult =
-      Invoke-VirtualDisplayChunkedInventoryValidation $ValidationRoot
-    [Console]::Out.WriteLine(($validationResult | ConvertTo-Json -Compress))
-    exit 0
+  if ($Action -eq "ValidateVirtualDisplayNativeInventoryHelper") {
+    try {
+      $projection = @(Invoke-VirtualDisplayInventoryHelper)
+      $result = [ordered]@{
+        schemaVersion = 1
+        state = "available"
+        matchingDeviceCount = $projection.Count
+        cleanupState = $script:virtualDisplayNativeInventoryCleanupState
+        rootPidZero = $script:virtualDisplayNativeInventoryRootPidZero
+        jobActiveProcesses =
+          $script:virtualDisplayNativeInventoryJobActiveProcesses
+        validationStage =
+          $script:virtualDisplayNativeInventoryValidationStage
+        validationExitCode =
+          $script:virtualDisplayNativeInventoryValidationExitCode
+        validationStderrLength =
+          $script:virtualDisplayNativeInventoryValidationStderrLength
+        stdoutClosed = $script:virtualDisplayNativeInventoryStdoutClosed
+        stderrClosed = $script:virtualDisplayNativeInventoryStderrClosed
+      }
+      [Console]::Out.WriteLine(($result | ConvertTo-Json -Compress))
+      exit 0
+    } catch {
+      $result = [ordered]@{
+        schemaVersion = 1
+        state = "failed"
+        matchingDeviceCount = -1
+        cleanupState = $script:virtualDisplayNativeInventoryCleanupState
+        rootPidZero = $script:virtualDisplayNativeInventoryRootPidZero
+        jobActiveProcesses =
+          $script:virtualDisplayNativeInventoryJobActiveProcesses
+        validationStage =
+          $script:virtualDisplayNativeInventoryValidationStage
+        validationExitCode =
+          $script:virtualDisplayNativeInventoryValidationExitCode
+        validationStderrLength =
+          $script:virtualDisplayNativeInventoryValidationStderrLength
+        stdoutClosed = $script:virtualDisplayNativeInventoryStdoutClosed
+        stderrClosed = $script:virtualDisplayNativeInventoryStderrClosed
+      }
+      [Console]::Out.WriteLine(($result | ConvertTo-Json -Compress))
+      exit 18
+    }
   }
   if ($Action -eq "ValidateVirtualDisplayRemovalReconciliation") {
     $validationResult =

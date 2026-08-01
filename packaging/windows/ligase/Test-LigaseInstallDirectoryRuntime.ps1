@@ -3160,6 +3160,164 @@ $transactionHelper = Join-Path $transactionPublish (
 if (-not (Test-Path -LiteralPath $transactionHelper -PathType Leaf)) {
   throw "installTransactionHelperMissing"
 }
+$inventoryPublish = Join-Path $OutputRoot "virtual-display-inventory-helper"
+& $DotNet publish (Join-Path $sourceRoot (
+    "tools/Ligase.VirtualDisplay.InventoryHelper/" +
+    "Ligase.VirtualDisplay.InventoryHelper.csproj")) `
+  -c Release -p:Platform=x64 -r win-x64 --self-contained true `
+  -p:PublishSingleFile=true -p:UseSharedCompilation=false `
+  -o $inventoryPublish | Out-Null
+if ($LASTEXITCODE -ne 0) {
+  throw "virtualDisplayInventoryHelperPublishFailed"
+}
+$inventoryHelper = Join-Path $inventoryPublish (
+  "Ligase.VirtualDisplay.InventoryHelper.exe")
+if (-not (Test-Path -LiteralPath $inventoryHelper -PathType Leaf)) {
+  throw "virtualDisplayInventoryHelperMissing"
+}
+$inventoryFixtureRoot = Join-Path $OutputRoot "virtual-display-inventory-fixtures"
+New-Item -ItemType Directory -Path $inventoryFixtureRoot -Force | Out-Null
+$inventoryCases = @(
+  [ordered]@{ name="zero"; expected=0; nodes=@() },
+  [ordered]@{ name="present"; expected=1; nodes=@([ordered]@{
+    instanceId="ROOT\DISPLAY\0000";hardwareIds=@("ROOT\SUDOMAKER\SUDOVDA");
+    present=$true;status="OK";driverInf="oem32.inf"}) },
+  [ordered]@{ name="phantomClassUnknown"; expected=1; nodes=@([ordered]@{
+    instanceId="ROOT\DISPLAY\0001";hardwareIds=@("root\sudomaker\sudovda");
+    present=$false;status="Unknown";driverInf=""}) },
+  [ordered]@{ name="duplicate"; expected=2; nodes=@(
+    [ordered]@{instanceId="ROOT\DISPLAY\0000";hardwareIds=@("ROOT\SUDOMAKER\SUDOVDA");present=$true;status="OK";driverInf="oem32.inf"},
+    [ordered]@{instanceId="ROOT\DISPLAY\0001";hardwareIds=@("root\sudomaker\sudovda");present=$false;status="Unknown";driverInf=""}) },
+  [ordered]@{ name="unrelated"; expected=0; nodes=@([ordered]@{
+    instanceId="ROOT\DISPLAY\0002";hardwareIds=@(
+      "ROOT\OTHER\DISPLAY", "ROOT\SUDOMAKER\SUDOVDA\EXTRA");
+    present=$true;status="OK";driverInf="oem99.inf"}) }
+)
+$savedValidationHarness = [string]$env:LIGASE_INSTALL_VALIDATION_HARNESS
+$savedInventoryValidation = [string]$env:LIGASE_VDISPLAY_INVENTORY_HELPER_VALIDATION
+$inventoryHelperResults = @()
+try {
+  $env:LIGASE_INSTALL_VALIDATION_HARNESS = "1"
+  $env:LIGASE_VDISPLAY_INVENTORY_HELPER_VALIDATION = "1"
+  foreach ($inventoryCase in $inventoryCases) {
+    $fixturePath = Join-Path $inventoryFixtureRoot (
+      [string]$inventoryCase.name + ".json")
+    [ordered]@{schemaVersion=1;nodes=@($inventoryCase.nodes)} |
+      ConvertTo-Json -Depth 8 -Compress |
+      Set-Content -LiteralPath $fixturePath -Encoding UTF8 -NoNewline
+    $output = @(& $inventoryHelper --validate-fixture $fixturePath)
+    if ($LASTEXITCODE -ne 0 -or $output.Count -ne 1) {
+      throw "virtualDisplayInventoryHelperCaseFailed"
+    }
+    $projection = $output[0] | ConvertFrom-Json
+    if ([string]$projection.state -cne "available" -or
+        @($projection.devices).Count -ne [int]$inventoryCase.expected) {
+      throw "virtualDisplayInventoryHelperProjectionFailed"
+    }
+    $inventoryHelperResults += [ordered]@{
+      name = [string]$inventoryCase.name
+      result = "passed"
+      matchingDeviceCount = @($projection.devices).Count
+    }
+  }
+  $duplicateFixture = Join-Path $inventoryFixtureRoot "duplicate-identity.json"
+  [ordered]@{schemaVersion=1;nodes=@(
+    [ordered]@{instanceId="ROOT\DISPLAY\0000";hardwareIds=@("ROOT\SUDOMAKER\SUDOVDA");present=$true;status="OK";driverInf="oem32.inf"},
+    [ordered]@{instanceId="root\display\0000";hardwareIds=@("ROOT\SUDOMAKER\SUDOVDA");present=$false;status="Unknown";driverInf=""})} |
+    ConvertTo-Json -Depth 8 -Compress |
+    Set-Content -LiteralPath $duplicateFixture -Encoding UTF8 -NoNewline
+  $duplicateOutput = @(& $inventoryHelper --validate-fixture $duplicateFixture)
+  if ($LASTEXITCODE -ne 15 -or $duplicateOutput.Count -ne 1 -or
+      [string](($duplicateOutput[0] | ConvertFrom-Json).code) -cne
+        "validationInvalid") {
+    throw "virtualDisplayInventoryHelperDuplicateIdentityFailed"
+  }
+  $inventoryHelperResults += [ordered]@{
+    name = "duplicateIdentityRejected"
+    result = "passed"
+    matchingDeviceCount = -1
+  }
+} finally {
+  if ([string]::IsNullOrEmpty($savedValidationHarness)) {
+    Remove-Item Env:\LIGASE_INSTALL_VALIDATION_HARNESS -ErrorAction SilentlyContinue
+  } else { $env:LIGASE_INSTALL_VALIDATION_HARNESS = $savedValidationHarness }
+  if ([string]::IsNullOrEmpty($savedInventoryValidation)) {
+    Remove-Item Env:\LIGASE_VDISPLAY_INVENTORY_HELPER_VALIDATION -ErrorAction SilentlyContinue
+  } else { $env:LIGASE_VDISPLAY_INVENTORY_HELPER_VALIDATION = $savedInventoryValidation }
+}
+$nativeInventoryInvocationResults = @()
+$savedNativeHarness = [string]$env:LIGASE_INSTALL_VALIDATION_HARNESS
+$savedNativeValidation = [string]$env:LIGASE_VDISPLAY_INVENTORY_HELPER_VALIDATION
+$savedHelperPath = [string]$env:LIGASE_VDISPLAY_INVENTORY_HELPER_PATH
+$savedHelperBehavior = [string]$env:LIGASE_VDISPLAY_INVENTORY_HELPER_BEHAVIOR
+try {
+  $env:LIGASE_INSTALL_VALIDATION_HARNESS = "1"
+  $env:LIGASE_VDISPLAY_INVENTORY_HELPER_VALIDATION = "1"
+  $env:LIGASE_VDISPLAY_INVENTORY_HELPER_PATH = $inventoryHelper
+  foreach ($behavior in @(
+      "none", "hang", "overflow", "stderr", "stdoutPending",
+      "stderrPending", "dualPending", "overflowPending", "pipeFault",
+      "startRetain")) {
+    if ($behavior -ceq "none") {
+      Remove-Item Env:\LIGASE_VDISPLAY_INVENTORY_HELPER_BEHAVIOR `
+        -ErrorAction SilentlyContinue
+    } else { $env:LIGASE_VDISPLAY_INVENTORY_HELPER_BEHAVIOR = $behavior }
+    $clock = [Diagnostics.Stopwatch]::StartNew()
+    $raw = @(& (Join-Path $env:SystemRoot (
+          "System32\WindowsPowerShell\v1.0\powershell.exe")) `
+      -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+      -File $managementScript `
+      -Action ValidateVirtualDisplayNativeInventoryHelper `
+      -InstallDirectory $inventoryFixtureRoot)
+    $nativeExit = $LASTEXITCODE
+    $clock.Stop()
+    if ($raw.Count -ne 1 -or $clock.ElapsedMilliseconds -gt 11000) {
+      throw "virtualDisplayNativeInventoryInvocationUnavailable:$behavior"
+    }
+    $result = $raw[0] | ConvertFrom-Json
+    $expectedExit = if ($behavior -ceq "none") { 0 } else { 18 }
+    $expectedState = if ($behavior -ceq "none") { "available" } else { "failed" }
+    if ($nativeExit -ne $expectedExit -or
+        [string]$result.state -cne $expectedState -or
+        [string]$result.cleanupState -cne "completed" -or
+        -not [bool]$result.rootPidZero -or
+        [int]$result.jobActiveProcesses -ne 0 -or
+        -not [bool]$result.stdoutClosed -or
+        -not [bool]$result.stderrClosed) {
+      throw "virtualDisplayNativeInventoryInvocationFailed:$behavior"
+    }
+    $nativeInventoryInvocationResults += [ordered]@{
+      name = $behavior
+      state = [string]$result.state
+      matchingDeviceCount = [int]$result.matchingDeviceCount
+      elapsedMilliseconds = [int]$clock.ElapsedMilliseconds
+      cleanupState = [string]$result.cleanupState
+      rootPidZero = [bool]$result.rootPidZero
+      jobActiveProcesses = [int]$result.jobActiveProcesses
+      stdoutClosed = [bool]$result.stdoutClosed
+      stderrClosed = [bool]$result.stderrClosed
+    }
+  }
+} finally {
+  if ([string]::IsNullOrEmpty($savedNativeHarness)) {
+    Remove-Item Env:\LIGASE_INSTALL_VALIDATION_HARNESS `
+      -ErrorAction SilentlyContinue
+  } else { $env:LIGASE_INSTALL_VALIDATION_HARNESS = $savedNativeHarness }
+  if ([string]::IsNullOrEmpty($savedNativeValidation)) {
+    Remove-Item Env:\LIGASE_VDISPLAY_INVENTORY_HELPER_VALIDATION `
+      -ErrorAction SilentlyContinue
+  } else {
+    $env:LIGASE_VDISPLAY_INVENTORY_HELPER_VALIDATION = $savedNativeValidation
+  }
+  if ([string]::IsNullOrEmpty($savedHelperPath)) {
+    Remove-Item Env:\LIGASE_VDISPLAY_INVENTORY_HELPER_PATH `
+      -ErrorAction SilentlyContinue
+  } else { $env:LIGASE_VDISPLAY_INVENTORY_HELPER_PATH = $savedHelperPath }
+  if ([string]::IsNullOrEmpty($savedHelperBehavior)) {
+    Remove-Item Env:\LIGASE_VDISPLAY_INVENTORY_HELPER_BEHAVIOR `
+      -ErrorAction SilentlyContinue
+  } else { $env:LIGASE_VDISPLAY_INVENTORY_HELPER_BEHAVIOR = $savedHelperBehavior }
+}
 $boundedInstallRoot = Join-Path $combinationRoot "bounded-helper-install"
 $boundedDeployment = Join-Path $boundedInstallRoot "Deployment"
 New-Item -ItemType Directory -Path $boundedDeployment -Force | Out-Null
@@ -5897,421 +6055,6 @@ foreach ($case in $readbackCases) {
   }
 }
 
-$virtualDisplayChunkedInventoryResults = @()
-$chunkedInventoryCases = @(
-  @{ name = "large369"; deviceCount = 369; failureMode = "none";
-    failureBatchIndex = 0; deadline = 10000; result = "passed";
-    hardwareBatches = 12; driverBatches = 12; exact = 1 },
-  @{ name = "batchBoundary33"; deviceCount = 33; failureMode = "none";
-    failureBatchIndex = 0; deadline = 10000; result = "passed";
-    hardwareBatches = 2; driverBatches = 2; exact = 1 },
-  @{ name = "caseCanonical"; deviceCount = 33;
-    failureMode = "caseCanonical"; failureBatchIndex = 0;
-    deadline = 1500; result = "passed";
-    hardwareBatches = 2; driverBatches = 2; exact = 1 },
-  @{ name = "mixedPresentAbsent"; deviceCount = 32;
-    failureMode = "mixedAbsent"; failureBatchIndex = 0;
-    deadline = 1500; result = "passed";
-    hardwareBatches = 1; driverBatches = 1; exact = 0 },
-  @{ name = "allAbsentHardwareIds"; deviceCount = 32;
-    failureMode = "allAbsentHardware"; failureBatchIndex = 0;
-    deadline = 1500; result = "passed";
-    hardwareBatches = 1; driverBatches = 1; exact = 0 },
-  @{ name = "allAbsentDriverInf"; deviceCount = 32;
-    failureMode = "allAbsentDriver"; failureBatchIndex = 0;
-    deadline = 10000; result = "passed";
-    hardwareBatches = 1; driverBatches = 1; exact = 1 },
-  @{ name = "requestCaseDuplicate"; deviceCount = 33;
-    failureMode = "requestCaseDuplicate"; failureBatchIndex = 0;
-    deadline = 1500; result = "failed";
-    hardwareBatches = 1; driverBatches = 0; exact = -1;
-    outputReason = "nativeExit"; nativeExitCode = 95;
-    childFailureStage = "requestIdentityDuplicate" },
-  @{ name = "requestInvalid"; deviceCount = 33;
-    failureMode = "requestInvalid"; failureBatchIndex = 0;
-    deadline = 1500; result = "failed";
-    hardwareBatches = 1; driverBatches = 0; exact = -1;
-    outputReason = "nativeExit"; nativeExitCode = 102;
-    childFailureStage = "requestIdentityInvalid" },
-  @{ name = "responseExtra"; deviceCount = 33;
-    failureMode = "responseExtra"; failureBatchIndex = 0;
-    deadline = 1500; result = "failed";
-    hardwareBatches = 1; driverBatches = 0; exact = -1;
-    outputReason = "nativeExit"; nativeExitCode = 96;
-    childFailureStage = "responseIdentityUnknown" },
-  @{ name = "responseDuplicate"; deviceCount = 33;
-    failureMode = "responseDuplicate"; failureBatchIndex = 0;
-    deadline = 1500; result = "passed";
-    hardwareBatches = 2; driverBatches = 2; exact = 1;
-    duplicateRelation = "identical"; duplicateGroups = 1;
-    caseOnlyDuplicates = 1; maxMultiplicity = 2 },
-  @{ name = "responseExactDuplicate"; deviceCount = 33;
-    failureMode = "responseExactDuplicate"; failureBatchIndex = 0;
-    deadline = 1500; result = "passed";
-    hardwareBatches = 2; driverBatches = 2; exact = 1;
-    duplicateRelation = "identical"; duplicateGroups = 1;
-    caseOnlyDuplicates = 0; maxMultiplicity = 2 },
-  @{ name = "responseEquivalentMultiValue"; deviceCount = 33;
-    failureMode = "responseEquivalentMultiValue"; failureBatchIndex = 0;
-    deadline = 1500; result = "passed";
-    hardwareBatches = 2; driverBatches = 2; exact = 1;
-    duplicateRelation = "identical"; duplicateGroups = 1;
-    caseOnlyDuplicates = 1; maxMultiplicity = 2;
-    multiValueCount = 2 },
-  @{ name = "responseDuplicateElementEquivalent"; deviceCount = 33;
-    failureMode = "responseDuplicateElementEquivalent"; failureBatchIndex = 0;
-    deadline = 1500; result = "passed";
-    hardwareBatches = 2; driverBatches = 2; exact = 1;
-    duplicateRelation = "identical"; duplicateGroups = 1;
-    caseOnlyDuplicates = 1; maxMultiplicity = 2;
-    multiValueCount = 2 },
-  @{ name = "responseConflict"; deviceCount = 33;
-    failureMode = "responseConflict"; failureBatchIndex = 0;
-    deadline = 1500; result = "failed";
-    hardwareBatches = 1; driverBatches = 0; exact = -1;
-    outputReason = "nativeExit"; nativeExitCode = 103;
-    childFailureStage = "responseIdentityConflict";
-    duplicateRelation = "conflicting"; duplicateGroups = 1;
-    caseOnlyDuplicates = 1; maxMultiplicity = 2 },
-  @{ name = "responseStateConflict"; deviceCount = 33;
-    failureMode = "responseStateConflict"; failureBatchIndex = 0;
-    deadline = 1500; result = "failed";
-    hardwareBatches = 1; driverBatches = 0; exact = -1;
-    outputReason = "nativeExit"; nativeExitCode = 103;
-    childFailureStage = "responseIdentityConflict";
-    duplicateRelation = "conflicting"; duplicateGroups = 1;
-    caseOnlyDuplicates = 1; maxMultiplicity = 2 },
-  @{ name = "responseDelimiterConflict"; deviceCount = 33;
-    failureMode = "responseDelimiterConflict"; failureBatchIndex = 0;
-    deadline = 1500; result = "failed";
-    hardwareBatches = 1; driverBatches = 0; exact = -1;
-    outputReason = "nativeExit"; nativeExitCode = 103;
-    childFailureStage = "responseIdentityConflict";
-    duplicateRelation = "conflicting"; duplicateGroups = 1;
-    caseOnlyDuplicates = 1; maxMultiplicity = 2 },
-  @{ name = "responseOrderConflict"; deviceCount = 33;
-    failureMode = "responseOrderConflict"; failureBatchIndex = 0;
-    deadline = 1500; result = "failed";
-    hardwareBatches = 1; driverBatches = 0; exact = -1;
-    outputReason = "nativeExit"; nativeExitCode = 103;
-    childFailureStage = "responseIdentityConflict";
-    duplicateRelation = "conflicting"; duplicateGroups = 1;
-    caseOnlyDuplicates = 1; maxMultiplicity = 2 },
-  @{ name = "responseLengthConflict"; deviceCount = 33;
-    failureMode = "responseLengthConflict"; failureBatchIndex = 0;
-    deadline = 1500; result = "failed";
-    hardwareBatches = 1; driverBatches = 0; exact = -1;
-    outputReason = "nativeExit"; nativeExitCode = 103;
-    childFailureStage = "responseIdentityConflict";
-    duplicateRelation = "conflicting"; duplicateGroups = 1;
-    caseOnlyDuplicates = 1; maxMultiplicity = 2 },
-  @{ name = "responseInvalid"; deviceCount = 33;
-    failureMode = "responseInvalid"; failureBatchIndex = 0;
-    deadline = 1500; result = "failed";
-    hardwareBatches = 1; driverBatches = 0; exact = -1;
-    outputReason = "nativeExit"; nativeExitCode = 101;
-    childFailureStage = "responseIdentityInvalid";
-    invalidReason = "empty"; invalidCount = 1 },
-  @{ name = "responseMissingIdentity"; deviceCount = 33;
-    failureMode = "responseMissingIdentity"; failureBatchIndex = 0;
-    deadline = 1500; result = "failed";
-    hardwareBatches = 1; driverBatches = 0; exact = -1;
-    outputReason = "nativeExit"; nativeExitCode = 101;
-    childFailureStage = "responseIdentityInvalid";
-    invalidReason = "missingProperty"; invalidCount = 1 },
-  @{ name = "responseWrongTypeIdentity"; deviceCount = 33;
-    failureMode = "responseWrongTypeIdentity"; failureBatchIndex = 0;
-    deadline = 1500; result = "failed";
-    hardwareBatches = 1; driverBatches = 0; exact = -1;
-    outputReason = "nativeExit"; nativeExitCode = 101;
-    childFailureStage = "responseIdentityInvalid";
-    invalidReason = "wrongType"; invalidCount = 1 },
-  @{ name = "responseRowShape"; deviceCount = 33;
-    failureMode = "responseRowShape"; failureBatchIndex = 0;
-    deadline = 1500; result = "failed";
-    hardwareBatches = 1; driverBatches = 0; exact = -1;
-    outputReason = "nativeExit"; nativeExitCode = 101;
-    childFailureStage = "responseIdentityInvalid";
-    invalidReason = "rowShape"; invalidCount = 1 },
-  @{ name = "responseCanonicalInvalid"; deviceCount = 33;
-    failureMode = "responseCanonicalInvalid"; failureBatchIndex = 0;
-    deadline = 1500; result = "failed";
-    hardwareBatches = 1; driverBatches = 0; exact = -1;
-    outputReason = "nativeExit"; nativeExitCode = 101;
-    childFailureStage = "responseIdentityInvalid";
-    invalidReason = "canonicalInvalid"; invalidCount = 1 },
-  @{ name = "responsePropertyStateInvalid"; deviceCount = 33;
-    failureMode = "responsePropertyStateInvalid"; failureBatchIndex = 0;
-    deadline = 1500; result = "failed";
-    hardwareBatches = 1; driverBatches = 0; exact = -1;
-    outputReason = "nativeExit"; nativeExitCode = 101;
-    childFailureStage = "responseIdentityInvalid";
-    invalidReason = "propertyStateInvalid"; invalidCount = 1 },
-  @{ name = "responseAbsentDataInvalid"; deviceCount = 33;
-    failureMode = "responseAbsentDataInvalid"; failureBatchIndex = 0;
-    deadline = 1500; result = "failed";
-    hardwareBatches = 1; driverBatches = 0; exact = -1;
-    outputReason = "nativeExit"; nativeExitCode = 101;
-    childFailureStage = "responseIdentityInvalid";
-    invalidReason = "absentDataInvalid"; invalidCount = 1 },
-  @{ name = "responseHardwareIdsDataInvalid"; deviceCount = 33;
-    failureMode = "responseHardwareIdsDataInvalid"; failureBatchIndex = 0;
-    deadline = 1500; result = "failed";
-    hardwareBatches = 1; driverBatches = 0; exact = -1;
-    outputReason = "nativeExit"; nativeExitCode = 101;
-    childFailureStage = "responseIdentityInvalid";
-    invalidReason = "hardwareIdsDataInvalid"; invalidCount = 1 },
-  @{ name = "responseDriverInfDataInvalid"; deviceCount = 33;
-    failureMode = "responseDriverInfDataInvalid"; failureBatchIndex = 0;
-    deadline = 1500; result = "failed";
-    hardwareBatches = 2; driverBatches = 1; exact = -1;
-    outputReason = "nativeExit"; nativeExitCode = 101;
-    childFailureStage = "responseIdentityInvalid";
-    invalidReason = "driverInfDataInvalid"; invalidCount = 1 },
-  @{ name = "responsePrefix"; deviceCount = 33;
-    failureMode = "responsePrefix"; failureBatchIndex = 0;
-    deadline = 1500; result = "failed";
-    hardwareBatches = 1; driverBatches = 0; exact = -1;
-    outputReason = "nativeExit"; nativeExitCode = 96;
-    childFailureStage = "responseIdentityUnknown" },
-  @{ name = "responseSuffix"; deviceCount = 33;
-    failureMode = "responseSuffix"; failureBatchIndex = 0;
-    deadline = 1500; result = "failed";
-    hardwareBatches = 1; driverBatches = 0; exact = -1;
-    outputReason = "nativeExit"; nativeExitCode = 96;
-    childFailureStage = "responseIdentityUnknown" },
-  @{ name = "responseEscaping"; deviceCount = 33;
-    failureMode = "responseEscaping"; failureBatchIndex = 0;
-    deadline = 1500; result = "failed";
-    hardwareBatches = 1; driverBatches = 0; exact = -1;
-    outputReason = "nativeExit"; nativeExitCode = 101;
-    childFailureStage = "responseIdentityInvalid";
-    invalidReason = "escapingInvalid"; invalidCount = 1 },
-  @{ name = "quota"; deviceCount = 369; failureMode = "quota";
-    failureBatchIndex = 0; deadline = 10000; result = "failed";
-    hardwareBatches = 1; driverBatches = 0; exact = -1;
-    outputReason = "nativeExit"; nativeExitCode = 94;
-    childFailureStage = "validationQuota" },
-  @{ name = "hostNegative"; deviceCount = 33; failureMode = "hostNegative";
-    failureBatchIndex = 0; deadline = 1500; result = "failed";
-    hardwareBatches = 1; driverBatches = 0; exact = -1;
-    outputReason = "nativeExit"; nativeExitCode = 98;
-    childFailureStage = "hostFailure" },
-  @{ name = "hostHigh"; deviceCount = 33; failureMode = "hostHigh";
-    failureBatchIndex = 0; deadline = 1500; result = "failed";
-    hardwareBatches = 1; driverBatches = 0; exact = -1;
-    outputReason = "nativeExit"; nativeExitCode = 98;
-    childFailureStage = "hostFailure" },
-  @{ name = "inputDuplicate"; deviceCount = 369;
-    failureMode = "inputDuplicate"; failureBatchIndex = 0;
-    deadline = 10000; result = "failed";
-    hardwareBatches = 0; driverBatches = 0; exact = -1 },
-  @{ name = "missing"; deviceCount = 369; failureMode = "missing";
-    failureBatchIndex = 0; deadline = 10000; result = "failed";
-    hardwareBatches = 1; driverBatches = 0; exact = -1;
-    coverageStage = "rowCount"; coverageReason = "missing";
-    requestedCount = 32; returnedCount = 31 },
-  @{ name = "extra"; deviceCount = 369; failureMode = "extra";
-    failureBatchIndex = 0; deadline = 10000; result = "failed";
-    hardwareBatches = 1; driverBatches = 0; exact = -1;
-    coverageStage = "rowCount"; coverageReason = "extra";
-    requestedCount = 32; returnedCount = 33 },
-  @{ name = "duplicate"; deviceCount = 369; failureMode = "duplicate";
-    failureBatchIndex = 0; deadline = 10000; result = "failed";
-    hardwareBatches = 1; driverBatches = 0; exact = -1;
-    coverageStage = "rowIdentity"; coverageReason = "duplicate";
-    requestedCount = 32; returnedCount = 32 },
-  @{ name = "identityMismatch"; deviceCount = 369;
-    failureMode = "identityMismatch"; failureBatchIndex = 0;
-    deadline = 10000; result = "failed";
-    hardwareBatches = 1; driverBatches = 0; exact = -1;
-    coverageStage = "rowIdentity"; coverageReason = "identityMismatch";
-    requestedCount = 32; returnedCount = 32 },
-  @{ name = "crossBatch"; deviceCount = 369; failureMode = "crossBatch";
-    failureBatchIndex = 1; deadline = 10000; result = "failed";
-    hardwareBatches = 2; driverBatches = 0; exact = -1 },
-  @{ name = "timeout"; deviceCount = 369; failureMode = "timeout";
-    failureBatchIndex = 0; deadline = 1500; result = "failed";
-    hardwareBatches = 1; driverBatches = 0; exact = -1 },
-  @{ name = "postLoopDeadline"; deviceCount = 33;
-    failureMode = "postLoopDeadline"; failureBatchIndex = 1;
-    deadline = 1500; result = "failed";
-    hardwareBatches = 2; driverBatches = 0; exact = -1;
-    coverageStage = "none"; coverageReason = "none";
-    requestedCount = -1; returnedCount = -1 },
-  @{ name = "startAssign"; deviceCount = 33; failureMode = "startAssign";
-    failureBatchIndex = 0; deadline = 1500; result = "failed";
-    hardwareBatches = 1; driverBatches = 0; exact = -1 },
-  @{ name = "startResume"; deviceCount = 33; failureMode = "startResume";
-    failureBatchIndex = 0; deadline = 1500; result = "failed";
-    hardwareBatches = 1; driverBatches = 0; exact = -1 },
-  @{ name = "startRetain"; deviceCount = 33; failureMode = "startRetain";
-    failureBatchIndex = 0; deadline = 1500; result = "failed";
-    hardwareBatches = 1; driverBatches = 0; exact = -1 },
-  @{ name = "outputInvalid"; deviceCount = 33; failureMode = "outputInvalid";
-    failureBatchIndex = 0; deadline = 1500; result = "failed";
-    hardwareBatches = 1; driverBatches = 0; exact = -1;
-    outputReason = "stderr"; nativeExitCode = 0;
-    childFailureStage = "stderr" },
-  @{ name = "invokeOutput"; deviceCount = 33; failureMode = "invokeOutput";
-    failureBatchIndex = 0; deadline = 1500; result = "failed";
-    hardwareBatches = 1; driverBatches = 0; exact = -1;
-    outputReason = "invokeFailure"; nativeExitCode = -1;
-    childFailureStage = "processInvoke" },
-  @{ name = "encodingInvalid"; deviceCount = 33; failureMode = "encodingInvalid";
-    failureBatchIndex = 0; deadline = 1500; result = "failed";
-    hardwareBatches = 1; driverBatches = 0; exact = -1 },
-  @{ name = "tupleInvalid"; deviceCount = 33; failureMode = "tupleInvalid";
-    failureBatchIndex = 0; deadline = 1500; result = "failed";
-    hardwareBatches = 1; driverBatches = 0; exact = -1 }
-)
-foreach ($case in $chunkedInventoryCases) {
-  $caseRoot = Join-Path $root (
-    "virtual-display-chunked-inventory-" + [string]$case.name)
-  New-Item -ItemType Directory -Path $caseRoot | Out-Null
-  [IO.File]::WriteAllText(
-    (Join-Path $caseRoot "chunked-inventory-fixture.json"),
-    ([ordered]@{
-        schemaVersion = 1
-        deviceCount = [int]$case.deviceCount
-        failureMode = [string]$case.failureMode
-        failureBatchIndex = [int]$case.failureBatchIndex
-        deadlineMilliseconds = [int]$case.deadline
-      } | ConvertTo-Json -Compress),
-    [Text.UTF8Encoding]::new($false))
-  $previousHarness = $env:LIGASE_INSTALL_VALIDATION_HARNESS
-  $previousChunkRoot =
-    $env:LIGASE_VIRTUAL_DISPLAY_CHUNK_VALIDATION_ROOT
-  try {
-    $env:LIGASE_INSTALL_VALIDATION_HARNESS = "1"
-    $env:LIGASE_VIRTUAL_DISPLAY_CHUNK_VALIDATION_ROOT = $caseRoot
-    $raw = @(& $readbackPowerShell -NoProfile -NonInteractive `
-      -ExecutionPolicy Bypass -File $managementScript `
-      -Action ValidateVirtualDisplayChunkedInventory `
-      -InstallDirectory $caseRoot -ValidationRoot $caseRoot)
-  } finally {
-    if ($null -eq $previousHarness) {
-      Remove-Item Env:LIGASE_INSTALL_VALIDATION_HARNESS `
-        -ErrorAction SilentlyContinue
-    } else { $env:LIGASE_INSTALL_VALIDATION_HARNESS = $previousHarness }
-    if ($null -eq $previousChunkRoot) {
-      Remove-Item Env:LIGASE_VIRTUAL_DISPLAY_CHUNK_VALIDATION_ROOT `
-        -ErrorAction SilentlyContinue
-    } else {
-      $env:LIGASE_VIRTUAL_DISPLAY_CHUNK_VALIDATION_ROOT = $previousChunkRoot
-    }
-  }
-  if ($LASTEXITCODE -ne 0 -or @($raw).Count -ne 1) {
-    throw "virtualDisplayChunkedInventoryFixtureFailed:$($case.name)"
-  }
-  $projection = [string]$raw | ConvertFrom-Json
-  if ([string]$projection.result -cne [string]$case.result -or
-      [int]$projection.deviceCount -ne [int]$case.deviceCount -or
-      [int]$projection.hardwareBatchCount -ne [int]$case.hardwareBatches -or
-      [int]$projection.driverBatchCount -ne [int]$case.driverBatches -or
-      [int]$projection.exactNodeCount -ne [int]$case.exact -or
-      [int]$projection.batchSize -ne 32 -or
-      [int]$projection.maxBatchSize -gt 32 -or
-      ([string]$case.result -ceq "passed" -and (
-        [int]$projection.hardwareCount -ne [int]$case.deviceCount -or
-        [int]$projection.driverCount -ne [int]$case.deviceCount)) -or
-      ([string]$case.name -ceq "large369" -and (
-        [int]$projection.exactPresentCount -ne 1 -or
-        [int]$projection.exactBoundCount -ne 0)) -or
-      ([string]$case.result -ceq "failed" -and
-        ([string]$projection.code -cne "virtualDisplayReadbackFailed" -or
-         [int]$projection.elapsedMilliseconds -gt
-           [int]$projection.hardCapMilliseconds -or
-         -not [bool]$projection.rootPidZero -or
-         [int]$projection.jobActiveProcesses -ne 0 -or
-         ([string]$case.name -cin @(
-             "timeout", "startAssign", "startResume", "startRetain") -and
-          [string]$projection.cleanupState -cne "completed")))) {
-    throw "virtualDisplayChunkedInventoryAssertionFailed:$($case.name)"
-  }
-  if ($case.ContainsKey("coverageStage") -and (
-      [string]$projection.coverageStage -cne [string]$case.coverageStage -or
-      [string]$projection.coverageReason -cne [string]$case.coverageReason -or
-      [int]$projection.requestedCount -ne [int]$case.requestedCount -or
-      [int]$projection.returnedCount -ne [int]$case.returnedCount)) {
-    throw "virtualDisplayChunkedInventoryCoverageFailed:$($case.name)"
-  }
-  if ($case.ContainsKey("outputReason") -and
-      ([string]$projection.outputReason -cne [string]$case.outputReason -or
-       [int]$projection.nativeExitCode -ne [int]$case.nativeExitCode -or
-       [string]$projection.childFailureStage -cne
-         [string]$case.childFailureStage -or
-       [string]$projection.coverageStage -cne "none" -or
-       [string]$projection.coverageReason -cne "none" -or
-       [int]$projection.requestedCount -ne -1 -or
-       [int]$projection.returnedCount -ne -1)) {
-    throw "virtualDisplayChunkedInventoryOutputReasonFailed:$($case.name)"
-  }
-  if ($case.ContainsKey("duplicateRelation") -and (
-      [string]$projection.duplicateDataRelation -cne
-        [string]$case.duplicateRelation -or
-      [int]$projection.duplicateGroupCount -ne
-        [int]$case.duplicateGroups -or
-      [int]$projection.caseOnlyDuplicateCount -ne
-        [int]$case.caseOnlyDuplicates -or
-      [int]$projection.duplicateMaxMultiplicity -ne
-        [int]$case.maxMultiplicity -or
-      [int]$projection.duplicateRequestedCount -ne 32 -or
-      [int]$projection.duplicateReturnedRowCount -ne 33)) {
-    throw "virtualDisplayChunkedInventoryDuplicateStatsFailed:$($case.name)"
-  }
-  if ($case.ContainsKey("invalidReason") -and (
-      [string]$projection.identityInvalidReason -cne
-        [string]$case.invalidReason -or
-      [int]$projection.identityInvalidCount -ne [int]$case.invalidCount -or
-      [string]$projection.duplicateDataRelation -cne "invalid")) {
-    throw "virtualDisplayChunkedInventoryInvalidStatsFailed:$($case.name)"
-  }
-  if ($case.ContainsKey("multiValueCount") -and (
-      [int]$projection.multiValueOutputCount -ne
-        [int]$case.multiValueCount -or
-      -not [bool]$projection.multiValueOutputValid)) {
-    throw "virtualDisplayChunkedInventoryMultiValueFailed:$($case.name)"
-  }
-  $virtualDisplayChunkedInventoryResults += [ordered]@{
-    name = [string]$case.name
-    result = [string]$projection.result
-    deviceCount = [int]$projection.deviceCount
-    hardwareBatchCount = [int]$projection.hardwareBatchCount
-    driverBatchCount = [int]$projection.driverBatchCount
-    maxBatchSize = [int]$projection.maxBatchSize
-    exactNodeCount = [int]$projection.exactNodeCount
-    exactPresentCount = [int]$projection.exactPresentCount
-    exactBoundCount = [int]$projection.exactBoundCount
-    multiValueOutputCount = [int]$projection.multiValueOutputCount
-    multiValueOutputValid = [bool]$projection.multiValueOutputValid
-    elapsedMilliseconds = [int]$projection.elapsedMilliseconds
-    hardCapMilliseconds = [int]$projection.hardCapMilliseconds
-    cleanupState = [string]$projection.cleanupState
-    rootPidZero = [bool]$projection.rootPidZero
-    jobActiveProcesses = [int]$projection.jobActiveProcesses
-    coverageStage = [string]$projection.coverageStage
-    coverageReason = [string]$projection.coverageReason
-    requestedCount = [int]$projection.requestedCount
-    returnedCount = [int]$projection.returnedCount
-    duplicateRequestedCount = [int]$projection.duplicateRequestedCount
-    duplicateReturnedRowCount = [int]$projection.duplicateReturnedRowCount
-    duplicateUniqueOrdinalCount =
-      [int]$projection.duplicateUniqueOrdinalCount
-    duplicateUniqueOrdinalIgnoreCaseCount =
-      [int]$projection.duplicateUniqueOrdinalIgnoreCaseCount
-    duplicateGroupCount = [int]$projection.duplicateGroupCount
-    duplicateMaxMultiplicity = [int]$projection.duplicateMaxMultiplicity
-    caseOnlyDuplicateCount = [int]$projection.caseOnlyDuplicateCount
-    duplicateDataRelation = [string]$projection.duplicateDataRelation
-    identityInvalidReason = [string]$projection.identityInvalidReason
-    identityInvalidCount = [int]$projection.identityInvalidCount
-    outputReason = [string]$projection.outputReason
-    nativeExitCode = [int]$projection.nativeExitCode
-    childFailureStage = [string]$projection.childFailureStage
-  }
-}
-
 $trustedToolRoot = Join-Path $root "virtual-display-trusted-tool"
 New-Item -ItemType Directory -Path $trustedToolRoot | Out-Null
 $previousHarness = $env:LIGASE_INSTALL_VALIDATION_HARNESS
@@ -6751,7 +6494,9 @@ if ([string]$diagnosticProjection.code -cne
   virtualDisplayInstallerProcessCases = $installerProcessResults
   virtualDisplayInstallerCaseSchemaCases = $installerProcessCaseSchemaResults
   virtualDisplayReadbackCases = $virtualDisplayReadbackResults
-  virtualDisplayChunkedInventoryCases = $virtualDisplayChunkedInventoryResults
+  virtualDisplayNativeInventoryHelperCases = $inventoryHelperResults
+  virtualDisplayNativeInventoryInvocationCases =
+    $nativeInventoryInvocationResults
   virtualDisplayTrustedTool = $trustedToolProjection
   virtualDisplayRemovalCases = $virtualDisplayRemovalResults
   virtualDisplayTerminalReadbackCases =
