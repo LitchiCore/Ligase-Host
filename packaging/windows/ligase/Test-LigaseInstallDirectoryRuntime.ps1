@@ -5905,6 +5905,70 @@ $chunkedInventoryCases = @(
   @{ name = "batchBoundary33"; deviceCount = 33; failureMode = "none";
     failureBatchIndex = 0; deadline = 10000; result = "passed";
     hardwareBatches = 2; driverBatches = 2; exact = 1 },
+  @{ name = "caseCanonical"; deviceCount = 33;
+    failureMode = "caseCanonical"; failureBatchIndex = 0;
+    deadline = 1500; result = "passed";
+    hardwareBatches = 2; driverBatches = 2; exact = 1 },
+  @{ name = "mixedPresentAbsent"; deviceCount = 32;
+    failureMode = "mixedAbsent"; failureBatchIndex = 0;
+    deadline = 1500; result = "passed";
+    hardwareBatches = 1; driverBatches = 1; exact = 0 },
+  @{ name = "allAbsentHardwareIds"; deviceCount = 32;
+    failureMode = "allAbsentHardware"; failureBatchIndex = 0;
+    deadline = 1500; result = "passed";
+    hardwareBatches = 1; driverBatches = 1; exact = 0 },
+  @{ name = "allAbsentDriverInf"; deviceCount = 32;
+    failureMode = "allAbsentDriver"; failureBatchIndex = 0;
+    deadline = 1500; result = "passed";
+    hardwareBatches = 1; driverBatches = 1; exact = 1 },
+  @{ name = "requestCaseDuplicate"; deviceCount = 33;
+    failureMode = "requestCaseDuplicate"; failureBatchIndex = 0;
+    deadline = 1500; result = "failed";
+    hardwareBatches = 1; driverBatches = 0; exact = -1;
+    outputReason = "nativeExit"; nativeExitCode = 95;
+    childFailureStage = "requestIdentityDuplicate" },
+  @{ name = "requestInvalid"; deviceCount = 33;
+    failureMode = "requestInvalid"; failureBatchIndex = 0;
+    deadline = 1500; result = "failed";
+    hardwareBatches = 1; driverBatches = 0; exact = -1;
+    outputReason = "nativeExit"; nativeExitCode = 102;
+    childFailureStage = "requestIdentityInvalid" },
+  @{ name = "responseExtra"; deviceCount = 33;
+    failureMode = "responseExtra"; failureBatchIndex = 0;
+    deadline = 1500; result = "failed";
+    hardwareBatches = 1; driverBatches = 0; exact = -1;
+    outputReason = "nativeExit"; nativeExitCode = 96;
+    childFailureStage = "responseIdentityUnknown" },
+  @{ name = "responseDuplicate"; deviceCount = 33;
+    failureMode = "responseDuplicate"; failureBatchIndex = 0;
+    deadline = 1500; result = "failed";
+    hardwareBatches = 1; driverBatches = 0; exact = -1;
+    outputReason = "nativeExit"; nativeExitCode = 99;
+    childFailureStage = "responseIdentityDuplicate" },
+  @{ name = "responseInvalid"; deviceCount = 33;
+    failureMode = "responseInvalid"; failureBatchIndex = 0;
+    deadline = 1500; result = "failed";
+    hardwareBatches = 1; driverBatches = 0; exact = -1;
+    outputReason = "nativeExit"; nativeExitCode = 101;
+    childFailureStage = "responseIdentityInvalid" },
+  @{ name = "responsePrefix"; deviceCount = 33;
+    failureMode = "responsePrefix"; failureBatchIndex = 0;
+    deadline = 1500; result = "failed";
+    hardwareBatches = 1; driverBatches = 0; exact = -1;
+    outputReason = "nativeExit"; nativeExitCode = 96;
+    childFailureStage = "responseIdentityUnknown" },
+  @{ name = "responseSuffix"; deviceCount = 33;
+    failureMode = "responseSuffix"; failureBatchIndex = 0;
+    deadline = 1500; result = "failed";
+    hardwareBatches = 1; driverBatches = 0; exact = -1;
+    outputReason = "nativeExit"; nativeExitCode = 96;
+    childFailureStage = "responseIdentityUnknown" },
+  @{ name = "responseEscaping"; deviceCount = 33;
+    failureMode = "responseEscaping"; failureBatchIndex = 0;
+    deadline = 1500; result = "failed";
+    hardwareBatches = 1; driverBatches = 0; exact = -1;
+    outputReason = "nativeExit"; nativeExitCode = 96;
+    childFailureStage = "responseIdentityUnknown" },
   @{ name = "quota"; deviceCount = 369; failureMode = "quota";
     failureBatchIndex = 0; deadline = 10000; result = "failed";
     hardwareBatches = 1; driverBatches = 0; exact = -1;
@@ -6426,7 +6490,7 @@ $diagnosticProjection = [string]$diagnosticRaw | ConvertFrom-Json
 if ([string]$diagnosticProjection.code -cne
       "virtualDisplayDiagnosticProjectionValidated" -or
     -not [bool]$diagnosticProjection.success -or
-    [int]$diagnosticProjection.crossSpliceRejected -ne 30 -or
+    [int]$diagnosticProjection.crossSpliceRejected -ne 32 -or
     -not [bool]$diagnosticProjection.primaryWriteFailed -or
     [string]$diagnosticProjection.resultCode -cne
       "virtualDisplayReadbackFailed" -or
@@ -6509,7 +6573,7 @@ if ([string]$diagnosticProjection.code -cne
     [string]$diagnosticProjection.inventoryCleanupState -cne "completed" -or
     [string]$diagnosticProjection.inventoryLastOutcomeSha256 -cnotmatch
       '^[0-9a-f]{64}$' -or
-    [int]$diagnosticProjection.inventoryOutputReasonsPersisted -ne 5 -or
+    [int]$diagnosticProjection.inventoryOutputReasonsPersisted -ne 10 -or
     [string]$diagnosticProjection.postLoopDeadlineFailureStage -cne
       "deadline" -or
     [string]$diagnosticProjection.postLoopDeadlineCoverageStage -cne

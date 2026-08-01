@@ -2165,10 +2165,13 @@ function Assert-VirtualDisplayInventoryDiagnosticCorrelation($Document) {
     91 { $childFailureStage -ceq "inputValidation" }
     93 { $childFailureStage -ceq "validationMode" }
     94 { $childFailureStage -ceq "validationQuota" }
-    95 { $childFailureStage -ceq "requestIdentity" }
-    96 { $childFailureStage -ceq "responseIdentity" }
+    95 { $childFailureStage -ceq "requestIdentityDuplicate" }
+    96 { $childFailureStage -ceq "responseIdentityUnknown" }
     97 { $childFailureStage -ceq "propertyQuery" }
     98 { $childFailureStage -ceq "hostFailure" }
+    99 { $childFailureStage -ceq "responseIdentityDuplicate" }
+    101 { $childFailureStage -ceq "responseIdentityInvalid" }
+    102 { $childFailureStage -ceq "requestIdentityInvalid" }
     default { $false }
   }
   $outputTupleValid = switch ($outputReason) {
@@ -2404,7 +2407,9 @@ function ConvertFrom-VirtualDisplayDiagnosticToken([string]$Token) {
       $document.inventoryNativeExitCode -isnot [int] -or
       $document.inventoryChildFailureStage -isnot [string] -or
       @("none", "inputValidation", "validationMode", "validationQuota",
-        "requestIdentity", "responseIdentity", "propertyQuery",
+        "requestIdentityDuplicate", "requestIdentityInvalid",
+        "responseIdentityUnknown", "responseIdentityDuplicate",
+        "responseIdentityInvalid", "propertyQuery",
         "hostFailure", "stderr", "processInvoke") -cnotcontains
           [string]$document.inventoryChildFailureStage -or
       $document.inventoryCoverageStage -isnot [string] -or
@@ -2620,7 +2625,9 @@ function Read-VirtualDisplayDiagnostic {
       $document.inventoryNativeExitCode -isnot [int] -or
       $document.inventoryChildFailureStage -isnot [string] -or
       @("none", "inputValidation", "validationMode", "validationQuota",
-        "requestIdentity", "responseIdentity", "propertyQuery",
+        "requestIdentityDuplicate", "requestIdentityInvalid",
+        "responseIdentityUnknown", "responseIdentityDuplicate",
+        "responseIdentityInvalid", "propertyQuery",
         "hostFailure", "stderr", "processInvoke") -cnotcontains
           [string]$document.inventoryChildFailureStage -or
       $document.inventoryCoverageStage -isnot [string] -or
@@ -4906,16 +4913,25 @@ if($p.validationMode-eq"hostHigh"){exit 70000}
 if($p.validationMode-eq"outputInvalid"){[Console]::Error.Write("invalid");exit 0}
 if($p.validationMode-eq"encodingInvalid"){[Console]::OpenStandardOutput().WriteByte(255);exit 0}
 if($p.validationMode-eq"tupleInvalid"){[Console]::Out.Write("{}");exit 0}
-if($p.validationMode-ne"none" -and $p.validationMode-ne"fixture"){exit 93}
-if($p.validationMode-eq"fixture"){
-  $actual=@($p.instanceIds|Select-Object -First ([Math]::Max(1,[int]($p.instanceIds.Count/2)))|ForEach-Object{[pscustomobject]@{InstanceId=[string]$_;Data=$(if($p.keyName-eq"DEVPKEY_Device_HardwareIds"){@("validation\other")}else{""})}})
+if($p.validationMode-notin @("none","fixture","caseCanonical","mixedAbsent","allAbsent","responseExtra","responseDuplicate","responseInvalid","responsePrefix","responseSuffix","responseEscaping")){exit 93}
+if($p.validationMode-ne"none"){
+  $actual=@($p.instanceIds|ForEach-Object{[pscustomobject]@{InstanceId=[string]$_;Data=$(if($p.keyName-eq"DEVPKEY_Device_HardwareIds"){@("validation\other")}else{""})}})
+  if($p.validationMode-eq"caseCanonical"){$actual=@($actual|ForEach-Object{[pscustomobject]@{InstanceId=([string]$_.InstanceId).ToLowerInvariant();Data=$_.Data}})}
+  if($p.validationMode-eq"responseExtra"){$actual+=@([pscustomobject]@{InstanceId="ROOT\VALIDATION\EXTRA";Data=@("validation\other")})}
+  if($p.validationMode-eq"responseDuplicate"){$actual+=@([pscustomobject]@{InstanceId=([string]$actual[0].InstanceId).ToLowerInvariant();Data=$actual[0].Data})}
+  if($p.validationMode-eq"mixedAbsent"){$actual=@($actual|Select-Object -First ($actual.Count-1))}
+  if($p.validationMode-eq"allAbsent"){$actual=@()}
+  if($p.validationMode-eq"responseInvalid"){$actual[0].InstanceId=""}
+  if($p.validationMode-eq"responsePrefix"){$actual[0].InstanceId="X"+[string]$actual[0].InstanceId}
+  if($p.validationMode-eq"responseSuffix"){$actual[0].InstanceId=[string]$actual[0].InstanceId+"X"}
+  if($p.validationMode-eq"responseEscaping"){$actual[0].InstanceId=([string]$actual[0].InstanceId).Replace("\","/")}
 }else{
   try{$actual=@(Get-PnpDeviceProperty -InstanceId ([string[]]$p.instanceIds) -KeyName ([string]$p.keyName) -ErrorAction Stop)}catch{exit 97}
 }
-  $requested=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
-  foreach($id in $p.instanceIds){if([string]::IsNullOrWhiteSpace([string]$id)-or-not $requested.Add([string]$id)){exit 95}}
-  $byId=[Collections.Generic.Dictionary[string,object]]::new([StringComparer]::Ordinal)
-  foreach($row in $actual){$id=[string]$row.InstanceId;if([string]::IsNullOrWhiteSpace($id)-or-not $requested.Contains($id)-or $byId.ContainsKey($id)){exit 96};$byId.Add($id,$row.Data)}
+  $requested=[Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+  foreach($id in $p.instanceIds){if([string]::IsNullOrWhiteSpace([string]$id)){exit 102};if(-not $requested.Add([string]$id)){exit 95}}
+  $byId=[Collections.Generic.Dictionary[string,object]]::new([StringComparer]::OrdinalIgnoreCase)
+  foreach($row in $actual){$id=[string]$row.InstanceId;if([string]::IsNullOrWhiteSpace($id)){exit 101};if(-not $requested.Contains($id)){exit 96};if($byId.ContainsKey($id)){exit 99};$byId.Add($id,$row.Data)}
   $rows=@($p.instanceIds|ForEach-Object{$id=[string]$_;if($byId.ContainsKey($id)){[ordered]@{InstanceId=$id;PropertyState="present";Data=$byId[$id]}}else{[ordered]@{InstanceId=$id;PropertyState="absent";Data=$null}}})
 [Console]::Out.Write((ConvertTo-Json -InputObject $rows -Compress -Depth 5))
 '@
@@ -5055,6 +5071,9 @@ if($p.validationMode-eq"fixture"){
           95 { 95 }
           96 { 96 }
           97 { 97 }
+          99 { 99 }
+          101 { 101 }
+          102 { 102 }
           default { 98 }
         }
         $script:virtualDisplayChunkChildFailureStage = switch (
@@ -5062,9 +5081,12 @@ if($p.validationMode-eq"fixture"){
           91 { "inputValidation" }
           93 { "validationMode" }
           94 { "validationQuota" }
-          95 { "requestIdentity" }
-          96 { "responseIdentity" }
+          95 { "requestIdentityDuplicate" }
+          96 { "responseIdentityUnknown" }
           97 { "propertyQuery" }
+          99 { "responseIdentityDuplicate" }
+          101 { "responseIdentityInvalid" }
+          102 { "requestIdentityInvalid" }
           default { "hostFailure" }
         }
       } elseif ($stderr.Length -ne 0) {
@@ -5281,7 +5303,12 @@ function Invoke-VirtualDisplayChunkedInventoryValidation(
         "postLoopDeadline",
         "startAssign", "startResume",
         "startRetain", "outputInvalid", "invokeOutput",
-        "hostNegative", "hostHigh", "encodingInvalid", "tupleInvalid") -or
+        "hostNegative", "hostHigh", "encodingInvalid", "tupleInvalid",
+        "caseCanonical", "mixedAbsent", "allAbsentHardware",
+        "allAbsentDriver", "responseExtra", "responseDuplicate",
+        "responseInvalid", "responsePrefix",
+        "responseSuffix", "responseEscaping", "requestCaseDuplicate",
+        "requestInvalid") -or
       $fixture.failureBatchIndex -isnot [int] -or
       [int]$fixture.failureBatchIndex -lt 0 -or
       $fixture.deadlineMilliseconds -isnot [int] -or
@@ -5341,15 +5368,39 @@ function Invoke-VirtualDisplayChunkedInventoryValidation(
       [string]$fixture.failureMode
     } elseif ($applyFault -and [string]$fixture.failureMode -cin @(
         "outputInvalid", "hostNegative", "hostHigh",
-        "encodingInvalid", "tupleInvalid")) {
-      [string]$fixture.failureMode
+        "encodingInvalid", "tupleInvalid", "caseCanonical",
+        "mixedAbsent", "allAbsentHardware",
+        "responseExtra", "responseDuplicate",
+        "responseInvalid", "responsePrefix", "responseSuffix",
+        "responseEscaping")) {
+      if ([string]$fixture.failureMode -ceq "allAbsentHardware") {
+        "allAbsent"
+      } elseif ([string]$fixture.failureMode -ceq "mixedAbsent") {
+        "mixedAbsent"
+      } else { [string]$fixture.failureMode }
+    } elseif (-not $isHardware -and $callIndex -eq 0 -and
+        [string]$fixture.failureMode -ceq "allAbsentDriver") {
+      "allAbsent"
     } else { "fixture" }
     $rows = [Collections.Generic.List[object]]::new()
     $requiresProcess = $mode -cne "fixture" -or
       ($isHardware -and $callIndex -eq 0)
+    $processBatch = [string[]]@($Batch)
+    if ($applyFault -and
+        [string]$fixture.failureMode -ceq "requestCaseDuplicate") {
+      $processBatch[$processBatch.Count - 1] =
+        $processBatch[0].ToLowerInvariant()
+      $mode = "fixture"
+      $requiresProcess = $true
+    } elseif ($applyFault -and
+        [string]$fixture.failureMode -ceq "requestInvalid") {
+      $processBatch[$processBatch.Count - 1] = ""
+      $mode = "fixture"
+      $requiresProcess = $true
+    }
     $providerRows = if ($requiresProcess) {
       @(Invoke-VirtualDisplayPropertyBatchProcess `
-        $Batch $KeyName $clock ([int]$fixture.deadlineMilliseconds) $mode)
+        $processBatch $KeyName $clock ([int]$fixture.deadlineMilliseconds) $mode)
     } else {
       @($Batch | ForEach-Object {
         [pscustomobject]@{
@@ -5361,6 +5412,7 @@ function Invoke-VirtualDisplayChunkedInventoryValidation(
     }
     foreach ($row in $providerRows) {
       $data = if ($isHardware -and
+          [string]$row.PropertyState -ceq "present" -and
           [string]$row.InstanceId -ceq
             $instanceIds[$instanceIds.Count - 1]) {
         @("root\sudomaker\sudovda")
@@ -7057,6 +7109,36 @@ try {
         }
       },
       [ordered]@{
+        name = "inventoryResponseIdentityStageContradiction"
+        values = [ordered]@{
+          inventoryStage = "hardwareIds"
+          inventoryFailureStage = "output"
+          inventoryOutputReason = "nativeExit"
+          inventoryNativeExitCode = 99
+          inventoryChildFailureStage = "responseIdentityInvalid"
+          inventoryDeviceCount = 369
+          inventoryCurrentBatchIndex = 0
+          inventoryTotalBatchCount = 12
+          inventoryElapsedMilliseconds = 708
+          inventoryCleanupState = "completed"
+        }
+      },
+      [ordered]@{
+        name = "inventoryRequestIdentityStageContradiction"
+        values = [ordered]@{
+          inventoryStage = "hardwareIds"
+          inventoryFailureStage = "output"
+          inventoryOutputReason = "nativeExit"
+          inventoryNativeExitCode = 95
+          inventoryChildFailureStage = "requestIdentityInvalid"
+          inventoryDeviceCount = 369
+          inventoryCurrentBatchIndex = 0
+          inventoryTotalBatchCount = 12
+          inventoryElapsedMilliseconds = 708
+          inventoryCleanupState = "completed"
+        }
+      },
+      [ordered]@{
         name = "inventoryRawNegativeExitContradiction"
         values = [ordered]@{
           inventoryStage = "hardwareIds"
@@ -7462,6 +7544,16 @@ try {
         stage = "hostFailure" },
       @{ name = "hostHigh"; reason = "nativeExit"; code = 98;
         stage = "hostFailure" },
+      @{ name = "requestDuplicate"; reason = "nativeExit"; code = 95;
+        stage = "requestIdentityDuplicate" },
+      @{ name = "requestInvalid"; reason = "nativeExit"; code = 102;
+        stage = "requestIdentityInvalid" },
+      @{ name = "responseUnknown"; reason = "nativeExit"; code = 96;
+        stage = "responseIdentityUnknown" },
+      @{ name = "responseDuplicate"; reason = "nativeExit"; code = 99;
+        stage = "responseIdentityDuplicate" },
+      @{ name = "responseInvalid"; reason = "nativeExit"; code = 101;
+        stage = "responseIdentityInvalid" },
       @{ name = "stderr"; reason = "stderr"; code = 0; stage = "stderr" },
       @{ name = "invokeFailure"; reason = "invokeFailure"; code = -1;
         stage = "processInvoke" })

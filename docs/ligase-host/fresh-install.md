@@ -737,8 +737,19 @@ hardware-ID or driver-INF batch and its exact preceding completed-batch count;
 a driver-phase failure cannot be reported before every hardware batch is
 complete. A nonzero child exit additionally persists only its bounded numeric
 exit code and a closed child stage (`inputValidation`, `validationMode`,
-`validationQuota`, `requestIdentity`, `responseIdentity`, `propertyQuery`, or
-`hostFailure`). Unknown nonzero signed or high-bit child statuses are normalized
+`validationQuota`, `requestIdentityDuplicate`, `requestIdentityInvalid`,
+`responseIdentityUnknown`, `responseIdentityDuplicate`,
+`responseIdentityInvalid`, `propertyQuery`, or
+`hostFailure`). Requested and returned instance identities use full-string
+ordinal-ignore-case equality, matching Windows' case-insensitive device identity
+conventions without accepting prefixes, suffixes, substrings, or alternate
+escaping. Both sets use the same comparer; case-only duplicate requests or
+responses remain fail-closed, and successful output preserves the original
+requested spelling. A requested identity omitted by `Get-PnpDeviceProperty`
+is normalized to exactly one `absent` row with null data; it is property absence,
+not evidence that the device identity disappeared. Mixed present/absent and
+all-absent property batches therefore retain exact requested-row coverage.
+Unknown nonzero signed or high-bit child statuses are normalized
 at the producer boundary to the fixed safe `98` / `hostFailure` tuple; their raw
 native status is never persisted. Stderr and process-invocation failures carry their distinct
 closed stage and cannot be cross-spliced with a native exit. No stderr text,

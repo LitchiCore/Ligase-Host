@@ -1862,6 +1862,10 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(management,
             "\"inventoryNativeExitStageContradiction\"");
         StringAssert.Contains(management,
+            "\"inventoryResponseIdentityStageContradiction\"");
+        StringAssert.Contains(management,
+            "\"inventoryRequestIdentityStageContradiction\"");
+        StringAssert.Contains(management,
             "\"inventoryOutputNativeCodeContradiction\"");
         StringAssert.Contains(management,
             "\"inventoryRawNegativeExitContradiction\"");
@@ -1881,7 +1885,24 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(runtimeHarness,
             "outputReason = \"invokeFailure\"");
         StringAssert.Contains(runtimeHarness,
-            "inventoryOutputReasonsPersisted -ne 5");
+            "inventoryOutputReasonsPersisted -ne 10");
+        StringAssert.Contains(management,
+            "[StringComparer]::OrdinalIgnoreCase");
+        StringAssert.Contains(management, "responseIdentityDuplicate");
+        StringAssert.Contains(management, "requestIdentityDuplicate");
+        StringAssert.Contains(runtimeHarness, "failureMode = \"caseCanonical\"");
+        StringAssert.Contains(runtimeHarness,
+            "failureMode = \"mixedAbsent\"");
+        StringAssert.Contains(runtimeHarness,
+            "failureMode = \"allAbsentHardware\"");
+        StringAssert.Contains(runtimeHarness,
+            "failureMode = \"allAbsentDriver\"");
+        StringAssert.Contains(runtimeHarness,
+            "failureMode = \"requestCaseDuplicate\"");
+        StringAssert.Contains(runtimeHarness, "failureMode = \"responsePrefix\"");
+        StringAssert.Contains(runtimeHarness, "failureMode = \"responseSuffix\"");
+        StringAssert.Contains(runtimeHarness,
+            "failureMode = \"responseEscaping\"");
         StringAssert.Contains(runtimeHarness, "failureMode = \"hostNegative\"");
         StringAssert.Contains(runtimeHarness, "failureMode = \"hostHigh\"");
         StringAssert.Contains(management,
