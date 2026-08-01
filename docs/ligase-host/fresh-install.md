@@ -738,14 +738,26 @@ a driver-phase failure cannot be reported before every hardware batch is
 complete. A nonzero child exit additionally persists only its bounded numeric
 exit code and a closed child stage (`inputValidation`, `validationMode`,
 `validationQuota`, `requestIdentityDuplicate`, `requestIdentityInvalid`,
-`responseIdentityUnknown`, `responseIdentityDuplicate`,
+`responseIdentityUnknown`, `responseIdentityConflict`,
 `responseIdentityInvalid`, `propertyQuery`, or
 `hostFailure`). Requested and returned instance identities use full-string
 ordinal-ignore-case equality, matching Windows' case-insensitive device identity
 conventions without accepting prefixes, suffixes, substrings, or alternate
-escaping. Both sets use the same comparer; case-only duplicate requests or
-responses remain fail-closed, and successful output preserves the original
-requested spelling. A requested identity omitted by `Get-PnpDeviceProperty`
+escaping. Both sets use the same comparer; case-only duplicate requests remain
+fail-closed. Response rows for the same full identity may be folded only when
+their property state and KeyName-specific canonical data are identical.
+Hardware-ID data remains an ordered string array: comparison is element-wise
+ordinal-ignore-case with the same length, including repeated elements, and the
+validated normalized array is emitted directly. No delimiter join/split is an
+equality or reconstruction authority, so delimiter-shaped values cannot collide
+with multi-element arrays and order or length drift remains conflicting. The
+diagnostic persists only bounded counts (Ordinal and ordinal-ignore-case unique
+counts, duplicate groups, maximum multiplicity, case-only groups) plus the
+closed `none|identical|conflicting|invalid` relation; it never persists an
+identity or property value. Conflicting present/absent state or canonical data,
+unknown identity, malformed shape, and fuzzy identity remain fail-closed; no
+first- or last-row choice is authoritative. Successful output preserves the
+original requested spelling. A requested identity omitted by `Get-PnpDeviceProperty`
 is normalized to exactly one `absent` row with null data; it is property absence,
 not evidence that the device identity disappeared. Mixed present/absent and
 all-absent property batches therefore retain exact requested-row coverage.

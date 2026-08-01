@@ -5941,10 +5941,70 @@ $chunkedInventoryCases = @(
     childFailureStage = "responseIdentityUnknown" },
   @{ name = "responseDuplicate"; deviceCount = 33;
     failureMode = "responseDuplicate"; failureBatchIndex = 0;
+    deadline = 1500; result = "passed";
+    hardwareBatches = 2; driverBatches = 2; exact = 1;
+    duplicateRelation = "identical"; duplicateGroups = 1;
+    caseOnlyDuplicates = 1; maxMultiplicity = 2 },
+  @{ name = "responseExactDuplicate"; deviceCount = 33;
+    failureMode = "responseExactDuplicate"; failureBatchIndex = 0;
+    deadline = 1500; result = "passed";
+    hardwareBatches = 2; driverBatches = 2; exact = 1;
+    duplicateRelation = "identical"; duplicateGroups = 1;
+    caseOnlyDuplicates = 0; maxMultiplicity = 2 },
+  @{ name = "responseEquivalentMultiValue"; deviceCount = 33;
+    failureMode = "responseEquivalentMultiValue"; failureBatchIndex = 0;
+    deadline = 1500; result = "passed";
+    hardwareBatches = 2; driverBatches = 2; exact = 1;
+    duplicateRelation = "identical"; duplicateGroups = 1;
+    caseOnlyDuplicates = 1; maxMultiplicity = 2;
+    multiValueCount = 2 },
+  @{ name = "responseDuplicateElementEquivalent"; deviceCount = 33;
+    failureMode = "responseDuplicateElementEquivalent"; failureBatchIndex = 0;
+    deadline = 1500; result = "passed";
+    hardwareBatches = 2; driverBatches = 2; exact = 1;
+    duplicateRelation = "identical"; duplicateGroups = 1;
+    caseOnlyDuplicates = 1; maxMultiplicity = 2;
+    multiValueCount = 2 },
+  @{ name = "responseConflict"; deviceCount = 33;
+    failureMode = "responseConflict"; failureBatchIndex = 0;
     deadline = 1500; result = "failed";
     hardwareBatches = 1; driverBatches = 0; exact = -1;
-    outputReason = "nativeExit"; nativeExitCode = 99;
-    childFailureStage = "responseIdentityDuplicate" },
+    outputReason = "nativeExit"; nativeExitCode = 103;
+    childFailureStage = "responseIdentityConflict";
+    duplicateRelation = "conflicting"; duplicateGroups = 1;
+    caseOnlyDuplicates = 1; maxMultiplicity = 2 },
+  @{ name = "responseStateConflict"; deviceCount = 33;
+    failureMode = "responseStateConflict"; failureBatchIndex = 0;
+    deadline = 1500; result = "failed";
+    hardwareBatches = 1; driverBatches = 0; exact = -1;
+    outputReason = "nativeExit"; nativeExitCode = 103;
+    childFailureStage = "responseIdentityConflict";
+    duplicateRelation = "conflicting"; duplicateGroups = 1;
+    caseOnlyDuplicates = 1; maxMultiplicity = 2 },
+  @{ name = "responseDelimiterConflict"; deviceCount = 33;
+    failureMode = "responseDelimiterConflict"; failureBatchIndex = 0;
+    deadline = 1500; result = "failed";
+    hardwareBatches = 1; driverBatches = 0; exact = -1;
+    outputReason = "nativeExit"; nativeExitCode = 103;
+    childFailureStage = "responseIdentityConflict";
+    duplicateRelation = "conflicting"; duplicateGroups = 1;
+    caseOnlyDuplicates = 1; maxMultiplicity = 2 },
+  @{ name = "responseOrderConflict"; deviceCount = 33;
+    failureMode = "responseOrderConflict"; failureBatchIndex = 0;
+    deadline = 1500; result = "failed";
+    hardwareBatches = 1; driverBatches = 0; exact = -1;
+    outputReason = "nativeExit"; nativeExitCode = 103;
+    childFailureStage = "responseIdentityConflict";
+    duplicateRelation = "conflicting"; duplicateGroups = 1;
+    caseOnlyDuplicates = 1; maxMultiplicity = 2 },
+  @{ name = "responseLengthConflict"; deviceCount = 33;
+    failureMode = "responseLengthConflict"; failureBatchIndex = 0;
+    deadline = 1500; result = "failed";
+    hardwareBatches = 1; driverBatches = 0; exact = -1;
+    outputReason = "nativeExit"; nativeExitCode = 103;
+    childFailureStage = "responseIdentityConflict";
+    duplicateRelation = "conflicting"; duplicateGroups = 1;
+    caseOnlyDuplicates = 1; maxMultiplicity = 2 },
   @{ name = "responseInvalid"; deviceCount = 33;
     failureMode = "responseInvalid"; failureBatchIndex = 0;
     deadline = 1500; result = "failed";
@@ -6129,6 +6189,25 @@ foreach ($case in $chunkedInventoryCases) {
        [int]$projection.returnedCount -ne -1)) {
     throw "virtualDisplayChunkedInventoryOutputReasonFailed:$($case.name)"
   }
+  if ($case.ContainsKey("duplicateRelation") -and (
+      [string]$projection.duplicateDataRelation -cne
+        [string]$case.duplicateRelation -or
+      [int]$projection.duplicateGroupCount -ne
+        [int]$case.duplicateGroups -or
+      [int]$projection.caseOnlyDuplicateCount -ne
+        [int]$case.caseOnlyDuplicates -or
+      [int]$projection.duplicateMaxMultiplicity -ne
+        [int]$case.maxMultiplicity -or
+      [int]$projection.duplicateRequestedCount -ne 32 -or
+      [int]$projection.duplicateReturnedRowCount -ne 33)) {
+    throw "virtualDisplayChunkedInventoryDuplicateStatsFailed:$($case.name)"
+  }
+  if ($case.ContainsKey("multiValueCount") -and (
+      [int]$projection.multiValueOutputCount -ne
+        [int]$case.multiValueCount -or
+      -not [bool]$projection.multiValueOutputValid)) {
+    throw "virtualDisplayChunkedInventoryMultiValueFailed:$($case.name)"
+  }
   $virtualDisplayChunkedInventoryResults += [ordered]@{
     name = [string]$case.name
     result = [string]$projection.result
@@ -6139,6 +6218,8 @@ foreach ($case in $chunkedInventoryCases) {
     exactNodeCount = [int]$projection.exactNodeCount
     exactPresentCount = [int]$projection.exactPresentCount
     exactBoundCount = [int]$projection.exactBoundCount
+    multiValueOutputCount = [int]$projection.multiValueOutputCount
+    multiValueOutputValid = [bool]$projection.multiValueOutputValid
     elapsedMilliseconds = [int]$projection.elapsedMilliseconds
     hardCapMilliseconds = [int]$projection.hardCapMilliseconds
     cleanupState = [string]$projection.cleanupState
@@ -6148,6 +6229,16 @@ foreach ($case in $chunkedInventoryCases) {
     coverageReason = [string]$projection.coverageReason
     requestedCount = [int]$projection.requestedCount
     returnedCount = [int]$projection.returnedCount
+    duplicateRequestedCount = [int]$projection.duplicateRequestedCount
+    duplicateReturnedRowCount = [int]$projection.duplicateReturnedRowCount
+    duplicateUniqueOrdinalCount =
+      [int]$projection.duplicateUniqueOrdinalCount
+    duplicateUniqueOrdinalIgnoreCaseCount =
+      [int]$projection.duplicateUniqueOrdinalIgnoreCaseCount
+    duplicateGroupCount = [int]$projection.duplicateGroupCount
+    duplicateMaxMultiplicity = [int]$projection.duplicateMaxMultiplicity
+    caseOnlyDuplicateCount = [int]$projection.caseOnlyDuplicateCount
+    duplicateDataRelation = [string]$projection.duplicateDataRelation
     outputReason = [string]$projection.outputReason
     nativeExitCode = [int]$projection.nativeExitCode
     childFailureStage = [string]$projection.childFailureStage
@@ -6490,7 +6581,7 @@ $diagnosticProjection = [string]$diagnosticRaw | ConvertFrom-Json
 if ([string]$diagnosticProjection.code -cne
       "virtualDisplayDiagnosticProjectionValidated" -or
     -not [bool]$diagnosticProjection.success -or
-    [int]$diagnosticProjection.crossSpliceRejected -ne 32 -or
+    [int]$diagnosticProjection.crossSpliceRejected -ne 35 -or
     -not [bool]$diagnosticProjection.primaryWriteFailed -or
     [string]$diagnosticProjection.resultCode -cne
       "virtualDisplayReadbackFailed" -or

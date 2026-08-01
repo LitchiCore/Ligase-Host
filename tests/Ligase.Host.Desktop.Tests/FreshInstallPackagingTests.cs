@@ -1777,7 +1777,7 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(management,
             "PropertyState=\"absent\";Data=$null");
         StringAssert.Contains(management,
-            "PropertyState=\"present\"");
+            "PropertyState=$value.State;Data=$value.Data");
         StringAssert.Contains(management,
             "function Get-VirtualDisplayPropertyRowsChunked(");
         StringAssert.Contains(management,
@@ -1888,7 +1888,24 @@ public sealed class FreshInstallPackagingTests
             "inventoryOutputReasonsPersisted -ne 10");
         StringAssert.Contains(management,
             "[StringComparer]::OrdinalIgnoreCase");
-        StringAssert.Contains(management, "responseIdentityDuplicate");
+        StringAssert.Contains(management, "responseIdentityConflict");
+        StringAssert.Contains(management,
+            "Set-VirtualDisplayChunkDuplicateStats");
+        StringAssert.Contains(management,
+            "[StringComparer]::OrdinalIgnoreCase");
+        StringAssert.Contains(management, "duplicateGroupCount");
+        StringAssert.Contains(management, "caseOnlyDuplicateCount");
+        StringAssert.Contains(management, "responseEquivalentMultiValue");
+        StringAssert.Contains(management, "responseDuplicateElementEquivalent");
+        StringAssert.Contains(management, "responseDelimiterConflict");
+        StringAssert.Contains(management, "responseOrderConflict");
+        StringAssert.Contains(management, "responseLengthConflict");
+        StringAssert.Contains(management,
+            "ConvertTo-Json -InputObject $normalized -Compress");
+        Assert.IsFalse(management.Contains(
+            "$normalized-join\"\\u001f\"", StringComparison.Ordinal));
+        Assert.IsFalse(management.Contains(
+            "-split\"\\u001f\"", StringComparison.Ordinal));
         StringAssert.Contains(management, "requestIdentityDuplicate");
         StringAssert.Contains(runtimeHarness, "failureMode = \"caseCanonical\"");
         StringAssert.Contains(runtimeHarness,
@@ -1899,6 +1916,23 @@ public sealed class FreshInstallPackagingTests
             "failureMode = \"allAbsentDriver\"");
         StringAssert.Contains(runtimeHarness,
             "failureMode = \"requestCaseDuplicate\"");
+        StringAssert.Contains(runtimeHarness,
+            "failureMode = \"responseExactDuplicate\"");
+        StringAssert.Contains(runtimeHarness,
+            "failureMode = \"responseEquivalentMultiValue\"");
+        StringAssert.Contains(runtimeHarness,
+            "failureMode = \"responseDuplicateElementEquivalent\"");
+        StringAssert.Contains(runtimeHarness,
+            "failureMode = \"responseConflict\"");
+        StringAssert.Contains(runtimeHarness,
+            "failureMode = \"responseStateConflict\"");
+        StringAssert.Contains(runtimeHarness,
+            "failureMode = \"responseDelimiterConflict\"");
+        StringAssert.Contains(runtimeHarness,
+            "failureMode = \"responseOrderConflict\"");
+        StringAssert.Contains(runtimeHarness,
+            "failureMode = \"responseLengthConflict\"");
+        StringAssert.Contains(runtimeHarness, "multiValueOutputCount");
         StringAssert.Contains(runtimeHarness, "failureMode = \"responsePrefix\"");
         StringAssert.Contains(runtimeHarness, "failureMode = \"responseSuffix\"");
         StringAssert.Contains(runtimeHarness,
