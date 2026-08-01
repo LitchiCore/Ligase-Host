@@ -5908,7 +5908,18 @@ $chunkedInventoryCases = @(
   @{ name = "quota"; deviceCount = 369; failureMode = "quota";
     failureBatchIndex = 0; deadline = 10000; result = "failed";
     hardwareBatches = 1; driverBatches = 0; exact = -1;
-    outputReason = "nativeExit" },
+    outputReason = "nativeExit"; nativeExitCode = 94;
+    childFailureStage = "validationQuota" },
+  @{ name = "hostNegative"; deviceCount = 33; failureMode = "hostNegative";
+    failureBatchIndex = 0; deadline = 1500; result = "failed";
+    hardwareBatches = 1; driverBatches = 0; exact = -1;
+    outputReason = "nativeExit"; nativeExitCode = 98;
+    childFailureStage = "hostFailure" },
+  @{ name = "hostHigh"; deviceCount = 33; failureMode = "hostHigh";
+    failureBatchIndex = 0; deadline = 1500; result = "failed";
+    hardwareBatches = 1; driverBatches = 0; exact = -1;
+    outputReason = "nativeExit"; nativeExitCode = 98;
+    childFailureStage = "hostFailure" },
   @{ name = "inputDuplicate"; deviceCount = 369;
     failureMode = "inputDuplicate"; failureBatchIndex = 0;
     deadline = 10000; result = "failed";
@@ -5958,11 +5969,13 @@ $chunkedInventoryCases = @(
   @{ name = "outputInvalid"; deviceCount = 33; failureMode = "outputInvalid";
     failureBatchIndex = 0; deadline = 1500; result = "failed";
     hardwareBatches = 1; driverBatches = 0; exact = -1;
-    outputReason = "stderr" },
+    outputReason = "stderr"; nativeExitCode = 0;
+    childFailureStage = "stderr" },
   @{ name = "invokeOutput"; deviceCount = 33; failureMode = "invokeOutput";
     failureBatchIndex = 0; deadline = 1500; result = "failed";
     hardwareBatches = 1; driverBatches = 0; exact = -1;
-    outputReason = "invokeFailure" },
+    outputReason = "invokeFailure"; nativeExitCode = -1;
+    childFailureStage = "processInvoke" },
   @{ name = "encodingInvalid"; deviceCount = 33; failureMode = "encodingInvalid";
     failureBatchIndex = 0; deadline = 1500; result = "failed";
     hardwareBatches = 1; driverBatches = 0; exact = -1 },
@@ -6043,6 +6056,9 @@ foreach ($case in $chunkedInventoryCases) {
   }
   if ($case.ContainsKey("outputReason") -and
       ([string]$projection.outputReason -cne [string]$case.outputReason -or
+       [int]$projection.nativeExitCode -ne [int]$case.nativeExitCode -or
+       [string]$projection.childFailureStage -cne
+         [string]$case.childFailureStage -or
        [string]$projection.coverageStage -cne "none" -or
        [string]$projection.coverageReason -cne "none" -or
        [int]$projection.requestedCount -ne -1 -or
@@ -6069,6 +6085,8 @@ foreach ($case in $chunkedInventoryCases) {
     requestedCount = [int]$projection.requestedCount
     returnedCount = [int]$projection.returnedCount
     outputReason = [string]$projection.outputReason
+    nativeExitCode = [int]$projection.nativeExitCode
+    childFailureStage = [string]$projection.childFailureStage
   }
 }
 
@@ -6408,7 +6426,7 @@ $diagnosticProjection = [string]$diagnosticRaw | ConvertFrom-Json
 if ([string]$diagnosticProjection.code -cne
       "virtualDisplayDiagnosticProjectionValidated" -or
     -not [bool]$diagnosticProjection.success -or
-    [int]$diagnosticProjection.crossSpliceRejected -ne 26 -or
+    [int]$diagnosticProjection.crossSpliceRejected -ne 30 -or
     -not [bool]$diagnosticProjection.primaryWriteFailed -or
     [string]$diagnosticProjection.resultCode -cne
       "virtualDisplayReadbackFailed" -or
@@ -6479,6 +6497,8 @@ if ([string]$diagnosticProjection.code -cne
     [string]$diagnosticProjection.inventoryStage -cne "hardwareIds" -or
     [string]$diagnosticProjection.inventoryFailureStage -cne "coverage" -or
     [string]$diagnosticProjection.inventoryOutputReason -cne "none" -or
+    [int]$diagnosticProjection.inventoryNativeExitCode -ne -1 -or
+    [string]$diagnosticProjection.inventoryChildFailureStage -cne "none" -or
     [string]$diagnosticProjection.inventoryCoverageStage -cne "rowCount" -or
     [string]$diagnosticProjection.inventoryCoverageReason -cne "missing" -or
     [int]$diagnosticProjection.inventoryRequestedCount -ne 32 -or
@@ -6489,7 +6509,7 @@ if ([string]$diagnosticProjection.code -cne
     [string]$diagnosticProjection.inventoryCleanupState -cne "completed" -or
     [string]$diagnosticProjection.inventoryLastOutcomeSha256 -cnotmatch
       '^[0-9a-f]{64}$' -or
-    [int]$diagnosticProjection.inventoryOutputReasonsPersisted -ne 3 -or
+    [int]$diagnosticProjection.inventoryOutputReasonsPersisted -ne 5 -or
     [string]$diagnosticProjection.postLoopDeadlineFailureStage -cne
       "deadline" -or
     [string]$diagnosticProjection.postLoopDeadlineCoverageStage -cne

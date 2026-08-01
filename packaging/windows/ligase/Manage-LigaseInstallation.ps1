@@ -1950,6 +1950,10 @@ function New-VirtualDisplayDiagnostic([string]$ResultCode, [bool]$Success) {
       [string]$script:virtualDisplayInventoryFailureStage
     inventoryOutputReason =
       [string]$script:virtualDisplayInventoryOutputReason
+    inventoryNativeExitCode =
+      [int]$script:virtualDisplayInventoryNativeExitCode
+    inventoryChildFailureStage =
+      [string]$script:virtualDisplayInventoryChildFailureStage
     inventoryCoverageStage =
       [string]$script:virtualDisplayInventoryCoverageStage
     inventoryCoverageReason =
@@ -2111,6 +2115,8 @@ function Assert-VirtualDisplayInventoryDiagnosticCorrelation($Document) {
   $stage = [string]$Document.inventoryStage
   $failure = [string]$Document.inventoryFailureStage
   $outputReason = [string]$Document.inventoryOutputReason
+  $nativeExitCode = [int]$Document.inventoryNativeExitCode
+  $childFailureStage = [string]$Document.inventoryChildFailureStage
   $coverageStage = [string]$Document.inventoryCoverageStage
   $coverageReason = [string]$Document.inventoryCoverageReason
   $requestedCount = [int]$Document.inventoryRequestedCount
@@ -2155,11 +2161,33 @@ function Assert-VirtualDisplayInventoryDiagnosticCorrelation($Document) {
      ($stage -ceq "driverInf" -and
       $hardwareCompleted -eq $totalBatches -and
       $driverCompleted -eq $currentBatch)))
+  $nativeExitAuthority = switch ($nativeExitCode) {
+    91 { $childFailureStage -ceq "inputValidation" }
+    93 { $childFailureStage -ceq "validationMode" }
+    94 { $childFailureStage -ceq "validationQuota" }
+    95 { $childFailureStage -ceq "requestIdentity" }
+    96 { $childFailureStage -ceq "responseIdentity" }
+    97 { $childFailureStage -ceq "propertyQuery" }
+    98 { $childFailureStage -ceq "hostFailure" }
+    default { $false }
+  }
+  $outputTupleValid = switch ($outputReason) {
+    "nativeExit" { [bool]$nativeExitAuthority }
+    "stderr" {
+      $nativeExitCode -eq 0 -and $childFailureStage -ceq "stderr"
+    }
+    "invokeFailure" {
+      $nativeExitCode -eq -1 -and $childFailureStage -ceq "processInvoke"
+    }
+    default { $false }
+  }
   $outputReasonValid = if ($failure -ceq "output") {
-    @("nativeExit", "stderr", "invokeFailure") -ccontains $outputReason -and
     $phaseBatchAuthority -and $cleanup -ceq "completed" -and
-    $rootPidZero -and $jobActive -eq 0
-  } else { $outputReason -ceq "none" }
+    $rootPidZero -and $jobActive -eq 0 -and $outputTupleValid
+  } else {
+    $outputReason -ceq "none" -and $nativeExitCode -eq -1 -and
+    $childFailureStage -ceq "none"
+  }
   $expectedRequestedCount = if (
       $deviceCount -ge 1 -and $currentBatch -ge 0 -and
       $currentBatch -lt $totalBatches) {
@@ -2266,6 +2294,7 @@ function ConvertFrom-VirtualDisplayDiagnosticToken([string]$Token) {
     "preCreateIdentitySha256", "postCreateIdentitySha256",
     "postCreateIdentityState", "postCreateIdentityReason",
     "inventoryStage", "inventoryFailureStage", "inventoryOutputReason",
+    "inventoryNativeExitCode", "inventoryChildFailureStage",
     "inventoryCoverageStage",
     "inventoryCoverageReason", "inventoryRequestedCount",
     "inventoryReturnedCount", "inventoryDeviceCount",
@@ -2372,6 +2401,12 @@ function ConvertFrom-VirtualDisplayDiagnosticToken([string]$Token) {
       $document.inventoryOutputReason -isnot [string] -or
       @("none", "nativeExit", "stderr", "invokeFailure") -cnotcontains
         [string]$document.inventoryOutputReason -or
+      $document.inventoryNativeExitCode -isnot [int] -or
+      $document.inventoryChildFailureStage -isnot [string] -or
+      @("none", "inputValidation", "validationMode", "validationQuota",
+        "requestIdentity", "responseIdentity", "propertyQuery",
+        "hostFailure", "stderr", "processInvoke") -cnotcontains
+          [string]$document.inventoryChildFailureStage -or
       $document.inventoryCoverageStage -isnot [string] -or
       @("none", "rowCount", "rowIdentity", "batchCoverage") -cnotcontains
         [string]$document.inventoryCoverageStage -or
@@ -2473,6 +2508,7 @@ function Read-VirtualDisplayDiagnostic {
     "preCreateIdentitySha256", "postCreateIdentitySha256",
     "postCreateIdentityState", "postCreateIdentityReason",
     "inventoryStage", "inventoryFailureStage", "inventoryOutputReason",
+    "inventoryNativeExitCode", "inventoryChildFailureStage",
     "inventoryCoverageStage",
     "inventoryCoverageReason", "inventoryRequestedCount",
     "inventoryReturnedCount", "inventoryDeviceCount",
@@ -2581,6 +2617,12 @@ function Read-VirtualDisplayDiagnostic {
       $document.inventoryOutputReason -isnot [string] -or
       @("none", "nativeExit", "stderr", "invokeFailure") -cnotcontains
         [string]$document.inventoryOutputReason -or
+      $document.inventoryNativeExitCode -isnot [int] -or
+      $document.inventoryChildFailureStage -isnot [string] -or
+      @("none", "inputValidation", "validationMode", "validationQuota",
+        "requestIdentity", "responseIdentity", "propertyQuery",
+        "hostFailure", "stderr", "processInvoke") -cnotcontains
+          [string]$document.inventoryChildFailureStage -or
       $document.inventoryCoverageStage -isnot [string] -or
       @("none", "rowCount", "rowIdentity", "batchCoverage") -cnotcontains
         [string]$document.inventoryCoverageStage -or
@@ -2657,6 +2699,8 @@ $script:virtualDisplaySecondaryCompleted = $false
 $script:virtualDisplayInventoryStage = "notAttempted"
 $script:virtualDisplayInventoryFailureStage = "none"
 $script:virtualDisplayInventoryOutputReason = "none"
+$script:virtualDisplayInventoryNativeExitCode = -1
+$script:virtualDisplayInventoryChildFailureStage = "none"
 $script:virtualDisplayInventoryCoverageStage = "none"
 $script:virtualDisplayInventoryCoverageReason = "none"
 $script:virtualDisplayInventoryRequestedCount = -1
@@ -4824,6 +4868,8 @@ function Invoke-VirtualDisplayPropertyBatchProcess(
     [Math]::Max(100, [int]($TotalMilliseconds / 3)))
   $remaining = $TotalMilliseconds - [int]$TotalClock.ElapsedMilliseconds
   $script:virtualDisplayChunkFailureStage = "none"
+  $script:virtualDisplayChunkNativeExitCode = -1
+  $script:virtualDisplayChunkChildFailureStage = "none"
   $script:virtualDisplayChunkCoverageStage = "none"
   $script:virtualDisplayChunkCoverageReason = "none"
   $script:virtualDisplayChunkRequestedCount = -1
@@ -4855,6 +4901,8 @@ $p=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("__PAYLOAD__"))|C
 if($p.schemaVersion-ne 1-or$p.keyName-notin @("DEVPKEY_Device_HardwareIds","DEVPKEY_Device_DriverInfPath")-or$p.instanceIds-isnot[array]-or$p.instanceIds.Count-lt 1-or$p.instanceIds.Count-gt 32){exit 91}
 if($p.validationMode-eq"hang"){Start-Sleep -Seconds 60;exit 92}
 if($p.validationMode-eq"quota"){exit 94}
+if($p.validationMode-eq"hostNegative"){exit -532462766}
+if($p.validationMode-eq"hostHigh"){exit 70000}
 if($p.validationMode-eq"outputInvalid"){[Console]::Error.Write("invalid");exit 0}
 if($p.validationMode-eq"encodingInvalid"){[Console]::OpenStandardOutput().WriteByte(255);exit 0}
 if($p.validationMode-eq"tupleInvalid"){[Console]::Out.Write("{}");exit 0}
@@ -4862,7 +4910,7 @@ if($p.validationMode-ne"none" -and $p.validationMode-ne"fixture"){exit 93}
 if($p.validationMode-eq"fixture"){
   $actual=@($p.instanceIds|Select-Object -First ([Math]::Max(1,[int]($p.instanceIds.Count/2)))|ForEach-Object{[pscustomobject]@{InstanceId=[string]$_;Data=$(if($p.keyName-eq"DEVPKEY_Device_HardwareIds"){@("validation\other")}else{""})}})
 }else{
-  $actual=@(Get-PnpDeviceProperty -InstanceId ([string[]]$p.instanceIds) -KeyName ([string]$p.keyName) -ErrorAction Stop)
+  try{$actual=@(Get-PnpDeviceProperty -InstanceId ([string[]]$p.instanceIds) -KeyName ([string]$p.keyName) -ErrorAction Stop)}catch{exit 97}
 }
   $requested=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
   foreach($id in $p.instanceIds){if([string]::IsNullOrWhiteSpace([string]$id)-or-not $requested.Add([string]$id)){exit 95}}
@@ -4998,6 +5046,31 @@ if($p.validationMode-eq"fixture"){
     }
     if ($TotalClock.ElapsedMilliseconds -ge $TotalMilliseconds -or
         $job.ExitCode -ne 0 -or $stderr.Length -ne 0) {
+      if ($job.ExitCode -ne 0) {
+        $rawChildExitCode = [int]$job.ExitCode
+        $script:virtualDisplayChunkNativeExitCode = switch ($rawChildExitCode) {
+          91 { 91 }
+          93 { 93 }
+          94 { 94 }
+          95 { 95 }
+          96 { 96 }
+          97 { 97 }
+          default { 98 }
+        }
+        $script:virtualDisplayChunkChildFailureStage = switch (
+            $rawChildExitCode) {
+          91 { "inputValidation" }
+          93 { "validationMode" }
+          94 { "validationQuota" }
+          95 { "requestIdentity" }
+          96 { "responseIdentity" }
+          97 { "propertyQuery" }
+          default { "hostFailure" }
+        }
+      } elseif ($stderr.Length -ne 0) {
+        $script:virtualDisplayChunkNativeExitCode = 0
+        $script:virtualDisplayChunkChildFailureStage = "stderr"
+      }
       $script:virtualDisplayChunkFailureStage = if (
         $TotalClock.ElapsedMilliseconds -ge $TotalMilliseconds) {
           "deadline"
@@ -5038,6 +5111,7 @@ if($p.validationMode-eq"fixture"){
     }
     if ($script:virtualDisplayChunkFailureStage -ceq "none") {
       $script:virtualDisplayChunkFailureStage = "invoke"
+      $script:virtualDisplayChunkChildFailureStage = "processInvoke"
     }
     if ($null -ne $job) {
       $script:virtualDisplayChunkCleanupState = if (
@@ -5207,7 +5281,7 @@ function Invoke-VirtualDisplayChunkedInventoryValidation(
         "postLoopDeadline",
         "startAssign", "startResume",
         "startRetain", "outputInvalid", "invokeOutput",
-        "encodingInvalid", "tupleInvalid") -or
+        "hostNegative", "hostHigh", "encodingInvalid", "tupleInvalid") -or
       $fixture.failureBatchIndex -isnot [int] -or
       [int]$fixture.failureBatchIndex -lt 0 -or
       $fixture.deadlineMilliseconds -isnot [int] -or
@@ -5227,6 +5301,8 @@ function Invoke-VirtualDisplayChunkedInventoryValidation(
   }
   $script:virtualDisplayChunkCleanupState = "notRequired"
   $script:virtualDisplayChunkRootPidZero = $true
+  $script:virtualDisplayChunkNativeExitCode = -1
+  $script:virtualDisplayChunkChildFailureStage = "none"
   $script:virtualDisplayChunkJobActiveProcesses = 0
   $script:virtualDisplayChunkFailureStage = "none"
   $script:virtualDisplayChunkCoverageStage = "none"
@@ -5247,6 +5323,8 @@ function Invoke-VirtualDisplayChunkedInventoryValidation(
     if ($applyFault -and
         [string]$fixture.failureMode -ceq "invokeOutput") {
       $script:virtualDisplayChunkFailureStage = "invoke"
+      $script:virtualDisplayChunkNativeExitCode = -1
+      $script:virtualDisplayChunkChildFailureStage = "processInvoke"
       $script:virtualDisplayChunkCleanupState = "completed"
       $script:virtualDisplayChunkRootPidZero = $true
       $script:virtualDisplayChunkJobActiveProcesses = 0
@@ -5262,7 +5340,8 @@ function Invoke-VirtualDisplayChunkedInventoryValidation(
         "startAssign", "startResume", "startRetain")) {
       [string]$fixture.failureMode
     } elseif ($applyFault -and [string]$fixture.failureMode -cin @(
-        "outputInvalid", "encodingInvalid", "tupleInvalid")) {
+        "outputInvalid", "hostNegative", "hostHigh",
+        "encodingInvalid", "tupleInvalid")) {
       [string]$fixture.failureMode
     } else { "fixture" }
     $rows = [Collections.Generic.List[object]]::new()
@@ -5378,6 +5457,9 @@ function Invoke-VirtualDisplayChunkedInventoryValidation(
         "invoke" { "invokeFailure" }
         default { "none" }
       })
+      nativeExitCode = [int]$script:virtualDisplayChunkNativeExitCode
+      childFailureStage =
+        [string]$script:virtualDisplayChunkChildFailureStage
       coverageStage = [string]$script:virtualDisplayChunkCoverageStage
       coverageReason = [string]$script:virtualDisplayChunkCoverageReason
       requestedCount = [int]$script:virtualDisplayChunkRequestedCount
@@ -5412,6 +5494,9 @@ function Invoke-VirtualDisplayChunkedInventoryValidation(
         "invoke" { "invokeFailure" }
         default { "none" }
       })
+      nativeExitCode = [int]$script:virtualDisplayChunkNativeExitCode
+      childFailureStage =
+        [string]$script:virtualDisplayChunkChildFailureStage
       coverageStage = [string]$script:virtualDisplayChunkCoverageStage
       coverageReason = [string]$script:virtualDisplayChunkCoverageReason
       requestedCount = [int]$script:virtualDisplayChunkRequestedCount
@@ -5534,6 +5619,8 @@ function Set-VirtualDisplayInventoryDiagnostic([bool]$Succeeded) {
     $script:virtualDisplayInventoryStage = "completed"
     $script:virtualDisplayInventoryFailureStage = "none"
     $script:virtualDisplayInventoryOutputReason = "none"
+    $script:virtualDisplayInventoryNativeExitCode = -1
+    $script:virtualDisplayInventoryChildFailureStage = "none"
     $script:virtualDisplayInventoryCoverageStage = "none"
     $script:virtualDisplayInventoryCoverageReason = "none"
     $script:virtualDisplayInventoryRequestedCount = -1
@@ -5577,6 +5664,15 @@ function Set-VirtualDisplayInventoryDiagnostic([bool]$Succeeded) {
       default { throw "virtualDisplayDiagnosticInvalid" }
     }
   } else { "none" }
+  if ([string]$script:virtualDisplayInventoryFailureStage -ceq "output") {
+    $script:virtualDisplayInventoryNativeExitCode =
+      [int]$script:virtualDisplayChunkNativeExitCode
+    $script:virtualDisplayInventoryChildFailureStage =
+      [string]$script:virtualDisplayChunkChildFailureStage
+  } else {
+    $script:virtualDisplayInventoryNativeExitCode = -1
+    $script:virtualDisplayInventoryChildFailureStage = "none"
+  }
   if ($script:virtualDisplayInventoryFailureStage -ceq "coverage") {
     $script:virtualDisplayInventoryCoverageStage =
       [string]$script:virtualDisplayChunkCoverageStage
@@ -6885,6 +6981,8 @@ try {
           inventoryStage = "hardwareIds"
           inventoryFailureStage = "output"
           inventoryOutputReason = "nativeExit"
+          inventoryNativeExitCode = 94
+          inventoryChildFailureStage = "validationQuota"
           inventoryDeviceCount = 369
           inventoryCurrentBatchIndex = 0
           inventoryTotalBatchCount = 12
@@ -6900,6 +6998,8 @@ try {
           inventoryStage = "driverInf"
           inventoryFailureStage = "output"
           inventoryOutputReason = "nativeExit"
+          inventoryNativeExitCode = 94
+          inventoryChildFailureStage = "validationQuota"
           inventoryDeviceCount = 369
           inventoryCurrentBatchIndex = 0
           inventoryTotalBatchCount = 12
@@ -6915,11 +7015,73 @@ try {
           inventoryStage = "hardwareIds"
           inventoryFailureStage = "output"
           inventoryOutputReason = "stderr"
+          inventoryNativeExitCode = 0
+          inventoryChildFailureStage = "stderr"
           inventoryDeviceCount = 369
           inventoryCurrentBatchIndex = 5
           inventoryTotalBatchCount = 12
           inventoryHardwareBatchesCompleted = 0
           inventoryDriverBatchesCompleted = 0
+          inventoryElapsedMilliseconds = 708
+          inventoryCleanupState = "completed"
+        }
+      },
+      [ordered]@{
+        name = "inventoryNativeExitStageContradiction"
+        values = [ordered]@{
+          inventoryStage = "hardwareIds"
+          inventoryFailureStage = "output"
+          inventoryOutputReason = "nativeExit"
+          inventoryNativeExitCode = 94
+          inventoryChildFailureStage = "propertyQuery"
+          inventoryDeviceCount = 369
+          inventoryCurrentBatchIndex = 0
+          inventoryTotalBatchCount = 12
+          inventoryElapsedMilliseconds = 708
+          inventoryCleanupState = "completed"
+        }
+      },
+      [ordered]@{
+        name = "inventoryOutputNativeCodeContradiction"
+        values = [ordered]@{
+          inventoryStage = "hardwareIds"
+          inventoryFailureStage = "output"
+          inventoryOutputReason = "stderr"
+          inventoryNativeExitCode = 94
+          inventoryChildFailureStage = "validationQuota"
+          inventoryDeviceCount = 369
+          inventoryCurrentBatchIndex = 0
+          inventoryTotalBatchCount = 12
+          inventoryElapsedMilliseconds = 708
+          inventoryCleanupState = "completed"
+        }
+      },
+      [ordered]@{
+        name = "inventoryRawNegativeExitContradiction"
+        values = [ordered]@{
+          inventoryStage = "hardwareIds"
+          inventoryFailureStage = "output"
+          inventoryOutputReason = "nativeExit"
+          inventoryNativeExitCode = -532462766
+          inventoryChildFailureStage = "hostFailure"
+          inventoryDeviceCount = 369
+          inventoryCurrentBatchIndex = 0
+          inventoryTotalBatchCount = 12
+          inventoryElapsedMilliseconds = 708
+          inventoryCleanupState = "completed"
+        }
+      },
+      [ordered]@{
+        name = "inventoryRawHighExitContradiction"
+        values = [ordered]@{
+          inventoryStage = "hardwareIds"
+          inventoryFailureStage = "output"
+          inventoryOutputReason = "nativeExit"
+          inventoryNativeExitCode = 70000
+          inventoryChildFailureStage = "hostFailure"
+          inventoryDeviceCount = 369
+          inventoryCurrentBatchIndex = 0
+          inventoryTotalBatchCount = 12
           inventoryElapsedMilliseconds = 708
           inventoryCleanupState = "completed"
         }
@@ -7233,6 +7395,8 @@ try {
     $script:virtualDisplayInventoryStage = "hardwareIds"
     $script:virtualDisplayInventoryFailureStage = "coverage"
     $script:virtualDisplayInventoryOutputReason = "none"
+    $script:virtualDisplayInventoryNativeExitCode = -1
+    $script:virtualDisplayInventoryChildFailureStage = "none"
     $script:virtualDisplayInventoryCoverageStage = "rowCount"
     $script:virtualDisplayInventoryCoverageReason = "missing"
     $script:virtualDisplayInventoryRequestedCount = 32
@@ -7291,11 +7455,24 @@ try {
     }
     $inventoryLastOutcomeSha256 = Get-ByteSha256 $inventoryLastOutcomeBytes
     $inventoryOutputReasonsPersisted = 0
-    foreach ($outputReason in @("nativeExit", "stderr", "invokeFailure")) {
+    $outputPersistenceCases = @(
+      @{ name = "nativeExit"; reason = "nativeExit"; code = 94;
+        stage = "validationQuota" },
+      @{ name = "hostNegative"; reason = "nativeExit"; code = 98;
+        stage = "hostFailure" },
+      @{ name = "hostHigh"; reason = "nativeExit"; code = 98;
+        stage = "hostFailure" },
+      @{ name = "stderr"; reason = "stderr"; code = 0; stage = "stderr" },
+      @{ name = "invokeFailure"; reason = "invokeFailure"; code = -1;
+        stage = "processInvoke" })
+    foreach ($outputCase in $outputPersistenceCases) {
+      $outputReason = [string]$outputCase.reason
       $outputOriginal = (
         ($inventoryOriginal | ConvertTo-Json -Compress) | ConvertFrom-Json)
       $outputOriginal.inventoryFailureStage = "output"
       $outputOriginal.inventoryOutputReason = $outputReason
+      $outputOriginal.inventoryNativeExitCode = [int]$outputCase.code
+      $outputOriginal.inventoryChildFailureStage = [string]$outputCase.stage
       $outputOriginal.inventoryCoverageStage = "none"
       $outputOriginal.inventoryCoverageReason = "none"
       $outputOriginal.inventoryRequestedCount = -1
@@ -7313,6 +7490,10 @@ try {
           ConvertFrom-Json
       if ([string]$outputFile.inventoryOutputReason -cne $outputReason -or
           [string]$outputProjected.inventoryFailureStage -cne "output" -or
+          [int]$outputOutcome.virtualDisplay.inventoryNativeExitCode -ne
+            [int]$outputOriginal.inventoryNativeExitCode -or
+          [string]$outputOutcome.virtualDisplay.inventoryChildFailureStage -cne
+            [string]$outputOriginal.inventoryChildFailureStage -or
           [string]$outputOutcome.virtualDisplay.inventoryOutputReason -cne
             $outputReason -or
           [string]$outputOutcome.virtualDisplay.resultCode -cne
@@ -7323,6 +7504,8 @@ try {
     }
     $script:virtualDisplayInventoryFailureStage = "deadline"
     $script:virtualDisplayInventoryOutputReason = "none"
+    $script:virtualDisplayInventoryNativeExitCode = -1
+    $script:virtualDisplayInventoryChildFailureStage = "none"
     $script:virtualDisplayInventoryCoverageStage = "none"
     $script:virtualDisplayInventoryCoverageReason = "none"
     $script:virtualDisplayInventoryRequestedCount = -1
@@ -7380,6 +7563,10 @@ try {
         [string]$inventoryProjected.inventoryFailureStage
       inventoryOutputReason =
         [string]$inventoryProjected.inventoryOutputReason
+      inventoryNativeExitCode =
+        [int]$inventoryProjected.inventoryNativeExitCode
+      inventoryChildFailureStage =
+        [string]$inventoryProjected.inventoryChildFailureStage
       inventoryCoverageStage =
         [string]$inventoryProjected.inventoryCoverageStage
       inventoryCoverageReason =

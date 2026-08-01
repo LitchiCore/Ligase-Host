@@ -735,7 +735,15 @@ for every non-output inventory failure and never carries the native output,
 exit text, path, or device identity. Each output reason is bound to the active
 hardware-ID or driver-INF batch and its exact preceding completed-batch count;
 a driver-phase failure cannot be reported before every hardware batch is
-complete. It also records a bounded create
+complete. A nonzero child exit additionally persists only its bounded numeric
+exit code and a closed child stage (`inputValidation`, `validationMode`,
+`validationQuota`, `requestIdentity`, `responseIdentity`, `propertyQuery`, or
+`hostFailure`). Unknown nonzero signed or high-bit child statuses are normalized
+at the producer boundary to the fixed safe `98` / `hostFailure` tuple; their raw
+native status is never persisted. Stderr and process-invocation failures carry their distinct
+closed stage and cannot be cross-spliced with a native exit. No stderr text,
+command line, executable path, device identity, or exception is stored. It
+also records a bounded create
 provenance tuple: the invocation count (zero or one), a fresh invocation-ID
 SHA-256, the pre-create identity-set hash, and a closed post-create snapshot
 state/reason. A completed post-create snapshot carries its real identity-set
