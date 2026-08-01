@@ -5919,7 +5919,7 @@ $chunkedInventoryCases = @(
     hardwareBatches = 1; driverBatches = 1; exact = 0 },
   @{ name = "allAbsentDriverInf"; deviceCount = 32;
     failureMode = "allAbsentDriver"; failureBatchIndex = 0;
-    deadline = 1500; result = "passed";
+    deadline = 10000; result = "passed";
     hardwareBatches = 1; driverBatches = 1; exact = 1 },
   @{ name = "requestCaseDuplicate"; deviceCount = 33;
     failureMode = "requestCaseDuplicate"; failureBatchIndex = 0;

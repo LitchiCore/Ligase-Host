@@ -1914,6 +1914,11 @@ public sealed class FreshInstallPackagingTests
             "failureMode = \"allAbsentHardware\"");
         StringAssert.Contains(runtimeHarness,
             "failureMode = \"allAbsentDriver\"");
+        Assert.AreEqual(1,
+            System.Text.RegularExpressions.Regex.Matches(runtimeHarness,
+                "failureMode = \"allAbsentDriver\";\\s*" +
+                "failureBatchIndex = 0;\\s*" +
+                "deadline = 10000; result = \"passed\"").Count);
         StringAssert.Contains(runtimeHarness,
             "failureMode = \"requestCaseDuplicate\"");
         StringAssert.Contains(runtimeHarness,
