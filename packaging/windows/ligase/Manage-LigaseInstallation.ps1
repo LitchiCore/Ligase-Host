@@ -1978,6 +1978,10 @@ function New-VirtualDisplayDiagnostic([string]$ResultCode, [bool]$Success) {
       [int]$script:virtualDisplayInventoryResponseCaseOnlyDuplicateCount
     inventoryResponseDataRelation =
       [string]$script:virtualDisplayInventoryResponseDataRelation
+    inventoryResponseInvalidReason =
+      [string]$script:virtualDisplayInventoryResponseInvalidReason
+    inventoryResponseInvalidCount =
+      [int]$script:virtualDisplayInventoryResponseInvalidCount
     inventoryDeviceCount = [int]$script:virtualDisplayInventoryDeviceCount
     inventoryCurrentBatchIndex =
       [int]$script:virtualDisplayInventoryCurrentBatchIndex
@@ -2147,6 +2151,8 @@ function Assert-VirtualDisplayInventoryDiagnosticCorrelation($Document) {
     [int]$Document.inventoryResponseDuplicateMaxMultiplicity
   $responseCaseOnly = [int]$Document.inventoryResponseCaseOnlyDuplicateCount
   $responseRelation = [string]$Document.inventoryResponseDataRelation
+  $responseInvalidReason = [string]$Document.inventoryResponseInvalidReason
+  $responseInvalidCount = [int]$Document.inventoryResponseInvalidCount
   $deviceCount = [int]$Document.inventoryDeviceCount
   $currentBatch = [int]$Document.inventoryCurrentBatchIndex
   $totalBatches = [int]$Document.inventoryTotalBatchCount
@@ -2226,7 +2232,8 @@ function Assert-VirtualDisplayInventoryDiagnosticCorrelation($Document) {
     $responseRequested -eq -1 -and $responseReturned -eq -1 -and
     $responseOrdinal -eq -1 -and $responseOrdinalIgnoreCase -eq -1 -and
     $responseGroups -eq 0 -and $responseMultiplicity -eq 0 -and
-    $responseCaseOnly -eq 0 -and $responseRelation -ceq "none")
+    $responseCaseOnly -eq 0 -and $responseRelation -ceq "none" -and
+    $responseInvalidReason -ceq "none" -and $responseInvalidCount -eq 0)
   $responseStatsShape = (
     $responseRequested -eq $expectedRequestedCount -and
     $responseReturned -ge 0 -and $responseReturned -le 64 -and
@@ -2237,15 +2244,24 @@ function Assert-VirtualDisplayInventoryDiagnosticCorrelation($Document) {
       $responseGroups -le $responseOrdinalIgnoreCase -and
     $responseMultiplicity -ge 0 -and
       $responseMultiplicity -le $responseReturned -and
-    $responseCaseOnly -ge 0 -and $responseCaseOnly -le $responseGroups)
+    $responseCaseOnly -ge 0 -and $responseCaseOnly -le $responseGroups -and
+    $responseInvalidCount -ge 0 -and
+      $responseInvalidCount -le $responseReturned)
   $responseStatsValid = if (
       $failure -ceq "output" -and $outputReason -ceq "nativeExit" -and
       $nativeExitCode -in @(101, 103)) {
     $phaseBatchAuthority -and $responseStatsShape -and
-    (($nativeExitCode -eq 101 -and $responseRelation -ceq "invalid") -or
+    (($nativeExitCode -eq 101 -and $responseRelation -ceq "invalid" -and
+        @("empty", "missingProperty", "wrongType", "rowShape",
+          "escapingInvalid", "canonicalInvalid", "propertyStateInvalid",
+          "absentDataInvalid", "hardwareIdsDataInvalid",
+          "driverInfDataInvalid", "mixed") -ccontains
+            $responseInvalidReason -and $responseInvalidCount -ge 1) -or
       ($nativeExitCode -eq 103 -and
         $responseRelation -ceq "conflicting" -and
-        $responseGroups -ge 1 -and $responseMultiplicity -ge 2))
+        $responseGroups -ge 1 -and $responseMultiplicity -ge 2 -and
+        $responseInvalidReason -ceq "none" -and
+        $responseInvalidCount -eq 0))
   } else { $responseStatsDefault }
   $coverageFailure = if ($failure -ceq "coverage") {
     $phaseBatchAuthority -and
@@ -2358,7 +2374,8 @@ function ConvertFrom-VirtualDisplayDiagnosticToken([string]$Token) {
     "inventoryResponseDuplicateGroupCount",
     "inventoryResponseDuplicateMaxMultiplicity",
     "inventoryResponseCaseOnlyDuplicateCount",
-    "inventoryResponseDataRelation", "inventoryDeviceCount",
+    "inventoryResponseDataRelation", "inventoryResponseInvalidReason",
+    "inventoryResponseInvalidCount", "inventoryDeviceCount",
     "inventoryCurrentBatchIndex", "inventoryTotalBatchCount",
     "inventoryHardwareBatchesCompleted", "inventoryDriverBatchesCompleted",
     "inventoryElapsedMilliseconds", "inventoryRunBudgetMilliseconds",
@@ -2486,6 +2503,8 @@ function ConvertFrom-VirtualDisplayDiagnosticToken([string]$Token) {
       $document.inventoryResponseDuplicateGroupCount -isnot [int] -or
       $document.inventoryResponseDuplicateMaxMultiplicity -isnot [int] -or
       $document.inventoryResponseCaseOnlyDuplicateCount -isnot [int] -or
+      $document.inventoryResponseInvalidReason -isnot [string] -or
+      $document.inventoryResponseInvalidCount -isnot [int] -or
       $document.inventoryResponseDataRelation -isnot [string] -or
       @("none", "identical", "conflicting", "invalid") -cnotcontains
         [string]$document.inventoryResponseDataRelation -or
@@ -2591,7 +2610,8 @@ function Read-VirtualDisplayDiagnostic {
     "inventoryResponseDuplicateGroupCount",
     "inventoryResponseDuplicateMaxMultiplicity",
     "inventoryResponseCaseOnlyDuplicateCount",
-    "inventoryResponseDataRelation", "inventoryDeviceCount",
+    "inventoryResponseDataRelation", "inventoryResponseInvalidReason",
+    "inventoryResponseInvalidCount", "inventoryDeviceCount",
     "inventoryCurrentBatchIndex", "inventoryTotalBatchCount",
     "inventoryHardwareBatchesCompleted", "inventoryDriverBatchesCompleted",
     "inventoryElapsedMilliseconds", "inventoryRunBudgetMilliseconds",
@@ -2721,6 +2741,8 @@ function Read-VirtualDisplayDiagnostic {
       $document.inventoryResponseDuplicateGroupCount -isnot [int] -or
       $document.inventoryResponseDuplicateMaxMultiplicity -isnot [int] -or
       $document.inventoryResponseCaseOnlyDuplicateCount -isnot [int] -or
+      $document.inventoryResponseInvalidReason -isnot [string] -or
+      $document.inventoryResponseInvalidCount -isnot [int] -or
       $document.inventoryResponseDataRelation -isnot [string] -or
       @("none", "identical", "conflicting", "invalid") -cnotcontains
         [string]$document.inventoryResponseDataRelation -or
@@ -2805,6 +2827,8 @@ $script:virtualDisplayInventoryResponseDuplicateGroupCount = 0
 $script:virtualDisplayInventoryResponseDuplicateMaxMultiplicity = 0
 $script:virtualDisplayInventoryResponseCaseOnlyDuplicateCount = 0
 $script:virtualDisplayInventoryResponseDataRelation = "none"
+$script:virtualDisplayInventoryResponseInvalidReason = "none"
+$script:virtualDisplayInventoryResponseInvalidCount = 0
 $script:virtualDisplayInventoryDeviceCount = -1
 $script:virtualDisplayInventoryCurrentBatchIndex = -1
 $script:virtualDisplayInventoryTotalBatchCount = 0
@@ -4962,11 +4986,13 @@ function Set-VirtualDisplayChunkDuplicateStats($Stats) {
     "schemaVersion", "requestedCount", "returnedRowCount",
     "uniqueOrdinalCount", "uniqueOrdinalIgnoreCaseCount",
     "duplicateGroupCount", "maxMultiplicity", "caseOnlyDuplicateCount",
-    "dataRelation") "virtualDisplayPropertyDuplicateStats"
+    "dataRelation", "identityInvalidReason", "identityInvalidCount") `
+    "virtualDisplayPropertyDuplicateStats"
   foreach ($name in @(
       "schemaVersion", "requestedCount", "returnedRowCount",
       "uniqueOrdinalCount", "uniqueOrdinalIgnoreCaseCount",
-      "duplicateGroupCount", "maxMultiplicity", "caseOnlyDuplicateCount")) {
+      "duplicateGroupCount", "maxMultiplicity", "caseOnlyDuplicateCount",
+      "identityInvalidCount")) {
     if ($Stats.$name -isnot [int]) { throw "virtualDisplayReadbackFailed" }
   }
   $requested = [int]$Stats.requestedCount
@@ -4977,6 +5003,8 @@ function Set-VirtualDisplayChunkDuplicateStats($Stats) {
   $multiplicity = [int]$Stats.maxMultiplicity
   $caseOnly = [int]$Stats.caseOnlyDuplicateCount
   $relation = [string]$Stats.dataRelation
+  $invalidReason = [string]$Stats.identityInvalidReason
+  $invalidCount = [int]$Stats.identityInvalidCount
   $valid = (
     [int]$Stats.schemaVersion -eq 1 -and
     $requested -ge 1 -and $requested -le 32 -and
@@ -4988,6 +5016,16 @@ function Set-VirtualDisplayChunkDuplicateStats($Stats) {
     $multiplicity -ge 0 -and $multiplicity -le $returned -and
     $caseOnly -ge 0 -and $caseOnly -le $groups -and
     @("none", "identical", "conflicting", "invalid") -ccontains $relation -and
+    @("none", "empty", "missingProperty", "wrongType", "rowShape",
+      "escapingInvalid", "canonicalInvalid", "propertyStateInvalid",
+      "absentDataInvalid", "hardwareIdsDataInvalid",
+      "driverInfDataInvalid", "mixed") -ccontains
+        $invalidReason -and
+    $invalidCount -ge 0 -and $invalidCount -le $returned -and
+    (($relation -ceq "invalid" -and $invalidReason -cne "none" -and
+        $invalidCount -ge 1) -or
+      ($relation -cne "invalid" -and $invalidReason -ceq "none" -and
+        $invalidCount -eq 0)) -and
     ($relation -ceq "invalid" -or
       ($returned -eq 0 -and $multiplicity -eq 0) -or
       ($returned -gt 0 -and $multiplicity -ge 1)) -and
@@ -5006,6 +5044,8 @@ function Set-VirtualDisplayChunkDuplicateStats($Stats) {
   $script:virtualDisplayChunkDuplicateMaxMultiplicity = $multiplicity
   $script:virtualDisplayChunkDuplicateCaseOnlyCount = $caseOnly
   $script:virtualDisplayChunkDuplicateDataRelation = $relation
+  $script:virtualDisplayChunkIdentityInvalidReason = $invalidReason
+  $script:virtualDisplayChunkIdentityInvalidCount = $invalidCount
 }
 
 function Invoke-VirtualDisplayPropertyBatchProcess(
@@ -5033,6 +5073,8 @@ function Invoke-VirtualDisplayPropertyBatchProcess(
   $script:virtualDisplayChunkDuplicateMaxMultiplicity = 0
   $script:virtualDisplayChunkDuplicateCaseOnlyCount = 0
   $script:virtualDisplayChunkDuplicateDataRelation = "none"
+  $script:virtualDisplayChunkIdentityInvalidReason = "none"
+  $script:virtualDisplayChunkIdentityInvalidCount = 0
   $startFault = switch ($ValidationMode) {
     "startAssign" { "assign" }
     "startResume" { "resume" }
@@ -5065,7 +5107,7 @@ if($p.validationMode-eq"hostHigh"){exit 70000}
 if($p.validationMode-eq"outputInvalid"){[Console]::Error.Write("invalid");exit 0}
 if($p.validationMode-eq"encodingInvalid"){[Console]::OpenStandardOutput().WriteByte(255);exit 0}
 if($p.validationMode-eq"tupleInvalid"){[Console]::Out.Write("{}");exit 0}
-if($p.validationMode-notin @("none","fixture","caseCanonical","mixedAbsent","allAbsent","responseExtra","responseDuplicate","responseExactDuplicate","responseEquivalentMultiValue","responseDuplicateElementEquivalent","responseConflict","responseStateConflict","responseDelimiterConflict","responseOrderConflict","responseLengthConflict","responseInvalid","responsePrefix","responseSuffix","responseEscaping")){exit 93}
+if($p.validationMode-notin @("none","fixture","caseCanonical","mixedAbsent","allAbsent","responseExtra","responseDuplicate","responseExactDuplicate","responseEquivalentMultiValue","responseDuplicateElementEquivalent","responseConflict","responseStateConflict","responseDelimiterConflict","responseOrderConflict","responseLengthConflict","responseInvalid","responseMissingIdentity","responseWrongTypeIdentity","responseRowShape","responseCanonicalInvalid","responsePropertyStateInvalid","responseAbsentDataInvalid","responseHardwareIdsDataInvalid","responseDriverInfDataInvalid","responsePrefix","responseSuffix","responseEscaping")){exit 93}
 if($p.validationMode-ne"none"){
   $actual=@($p.instanceIds|ForEach-Object{[pscustomobject]@{InstanceId=[string]$_;Data=$(if($p.keyName-eq"DEVPKEY_Device_HardwareIds"){@("validation\other")}else{""})}})
   if($p.validationMode-eq"caseCanonical"){$actual=@($actual|ForEach-Object{[pscustomobject]@{InstanceId=([string]$_.InstanceId).ToLowerInvariant();Data=$_.Data}})}
@@ -5082,6 +5124,14 @@ if($p.validationMode-ne"none"){
   if($p.validationMode-eq"mixedAbsent"){$actual=@($actual|Select-Object -First ($actual.Count-1))}
   if($p.validationMode-eq"allAbsent"){$actual=@()}
   if($p.validationMode-eq"responseInvalid"){$actual[0].InstanceId=""}
+  if($p.validationMode-eq"responseMissingIdentity"){$actual[0]=[pscustomobject]@{Data=$actual[0].Data}}
+  if($p.validationMode-eq"responseWrongTypeIdentity"){$actual[0].InstanceId=7}
+  if($p.validationMode-eq"responseRowShape"){$actual[0]=$null}
+  if($p.validationMode-eq"responseCanonicalInvalid"){$actual[0].InstanceId=" "+[string]$actual[0].InstanceId}
+  if($p.validationMode-eq"responsePropertyStateInvalid"){$actual[0]|Add-Member -NotePropertyName PropertyState -NotePropertyValue "invalid"}
+  if($p.validationMode-eq"responseAbsentDataInvalid"){$actual[0]|Add-Member -NotePropertyName PropertyState -NotePropertyValue "absent";$actual[0].Data="unexpected"}
+  if($p.validationMode-eq"responseHardwareIdsDataInvalid"){$actual[0].Data=@()}
+  if($p.validationMode-eq"responseDriverInfDataInvalid"){$actual[0].Data=""}
   if($p.validationMode-eq"responsePrefix"){$actual[0].InstanceId="X"+[string]$actual[0].InstanceId}
   if($p.validationMode-eq"responseSuffix"){$actual[0].InstanceId=[string]$actual[0].InstanceId+"X"}
   if($p.validationMode-eq"responseEscaping"){$actual[0].InstanceId=([string]$actual[0].InstanceId).Replace("\","/")}
@@ -5092,12 +5142,16 @@ if($p.validationMode-ne"none"){
   foreach($id in $p.instanceIds){if([string]::IsNullOrWhiteSpace([string]$id)){exit 102};if(-not $requested.Add([string]$id)){exit 95}}
   $ordinal=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
   $groups=[Collections.Generic.Dictionary[string,object]]::new([StringComparer]::OrdinalIgnoreCase)
-  $stats=[ordered]@{schemaVersion=1;requestedCount=$p.instanceIds.Count;returnedRowCount=$actual.Count;uniqueOrdinalCount=0;uniqueOrdinalIgnoreCaseCount=0;duplicateGroupCount=0;maxMultiplicity=0;caseOnlyDuplicateCount=0;dataRelation="none"}
-  foreach($row in $actual){$id=[string]$row.InstanceId;if([string]::IsNullOrWhiteSpace($id)){$stats.dataRelation="invalid";[Console]::Out.Write(($stats|ConvertTo-Json -Compress));exit 101};if(-not $requested.Contains($id)){exit 96};[void]$ordinal.Add($id);if(-not $groups.ContainsKey($id)){$groups.Add($id,[Collections.Generic.List[object]]::new())};$groups[$id].Add($row)}
+  $stats=[ordered]@{schemaVersion=1;requestedCount=$p.instanceIds.Count;returnedRowCount=$actual.Count;uniqueOrdinalCount=0;uniqueOrdinalIgnoreCaseCount=0;duplicateGroupCount=0;maxMultiplicity=0;caseOnlyDuplicateCount=0;dataRelation="none";identityInvalidReason="none";identityInvalidCount=0}
+  $validRows=[Collections.Generic.List[object]]::new();$invalidKinds=[Collections.Generic.List[string]]::new()
+  foreach($row in $actual){$reason="none";if($null-eq$row-or$row-is[string]-or$row.GetType().IsPrimitive){$reason="rowShape"}elseif($row.PSObject.Properties.Name-cnotcontains"InstanceId"){$reason="missingProperty"}elseif($row.InstanceId-isnot[string]){$reason="wrongType"}else{$id=[string]$row.InstanceId;if([string]::IsNullOrWhiteSpace($id)){$reason="empty"}elseif($id.Contains("/")){$reason="escapingInvalid"}elseif($id-cne$id.Trim()){$reason="canonicalInvalid"}}
+    if($reason-cne"none"){$invalidKinds.Add($reason);continue};$validRows.Add($row)}
+  foreach($row in $validRows){$id=[string]$row.InstanceId;if(-not $requested.Contains($id)){exit 96};[void]$ordinal.Add($id);if(-not $groups.ContainsKey($id)){$groups.Add($id,[Collections.Generic.List[object]]::new())};$groups[$id].Add($row)}
   $stats.uniqueOrdinalCount=$ordinal.Count;$stats.uniqueOrdinalIgnoreCaseCount=$groups.Count
+  if($invalidKinds.Count-gt0){$kinds=@($invalidKinds|Select-Object -Unique);$stats.dataRelation="invalid";$stats.identityInvalidReason=$(if($kinds.Count-eq1){$kinds[0]}else{"mixed"});$stats.identityInvalidCount=$invalidKinds.Count;[Console]::Out.Write(($stats|ConvertTo-Json -Compress));exit 101}
   $byId=[Collections.Generic.Dictionary[string,object]]::new([StringComparer]::OrdinalIgnoreCase)
   foreach($entry in $groups.GetEnumerator()){$items=@($entry.Value);$stats.maxMultiplicity=[Math]::Max($stats.maxMultiplicity,$items.Count);if($items.Count-gt1){$stats.duplicateGroupCount++;$caseSet=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal);foreach($item in $items){[void]$caseSet.Add([string]$item.InstanceId)};if($caseSet.Count-gt1){$stats.caseOnlyDuplicateCount++}}
-    $canonical=@();$states=@();$normalizedRows=@();foreach($item in $items){$state=if($item.PSObject.Properties.Name-ccontains"PropertyState"){[string]$item.PropertyState}else{"present"};if($state-cnotin@("present","absent")){$stats.dataRelation="invalid";[Console]::Out.Write(($stats|ConvertTo-Json -Compress));exit 101};if($state-ceq"absent"){if($null-ne$item.Data){$stats.dataRelation="invalid";[Console]::Out.Write(($stats|ConvertTo-Json -Compress));exit 101};$canonical+="absent";$normalizedRows+=,$null;$states+="absent"}elseif($p.keyName-eq"DEVPKEY_Device_HardwareIds"){$values=@($item.Data);if($values.Count-lt1-or@($values|Where-Object{$_-isnot[string]-or[string]::IsNullOrWhiteSpace([string]$_)}).Count-ne0){$stats.dataRelation="invalid";[Console]::Out.Write(($stats|ConvertTo-Json -Compress));exit 101};$normalized=[string[]]@($values|ForEach-Object{([string]$_).ToUpperInvariant()});$canonical+=(ConvertTo-Json -InputObject $normalized -Compress);$normalizedRows+=,$normalized;$states+="present"}else{$value=[string]$item.Data;if([string]::IsNullOrWhiteSpace($value)){$stats.dataRelation="invalid";[Console]::Out.Write(($stats|ConvertTo-Json -Compress));exit 101};$normalized=$value.ToLowerInvariant();$canonical+=(ConvertTo-Json -InputObject $normalized.ToUpperInvariant() -Compress);$normalizedRows+=,$normalized;$states+="present"}}
+    $canonical=@();$states=@();$normalizedRows=@();foreach($item in $items){$state=if($item.PSObject.Properties.Name-ccontains"PropertyState"){[string]$item.PropertyState}else{"present"};if($state-cnotin@("present","absent")){$stats.dataRelation="invalid";$stats.identityInvalidReason="propertyStateInvalid";$stats.identityInvalidCount=1;[Console]::Out.Write(($stats|ConvertTo-Json -Compress));exit 101};if($state-ceq"absent"){if($null-ne$item.Data){$stats.dataRelation="invalid";$stats.identityInvalidReason="absentDataInvalid";$stats.identityInvalidCount=1;[Console]::Out.Write(($stats|ConvertTo-Json -Compress));exit 101};$canonical+="absent";$normalizedRows+=,$null;$states+="absent"}elseif($p.keyName-eq"DEVPKEY_Device_HardwareIds"){$values=@($item.Data);if($values.Count-lt1-or@($values|Where-Object{$_-isnot[string]-or[string]::IsNullOrWhiteSpace([string]$_)}).Count-ne0){$stats.dataRelation="invalid";$stats.identityInvalidReason="hardwareIdsDataInvalid";$stats.identityInvalidCount=1;[Console]::Out.Write(($stats|ConvertTo-Json -Compress));exit 101};$normalized=[string[]]@($values|ForEach-Object{([string]$_).ToUpperInvariant()});$canonical+=(ConvertTo-Json -InputObject $normalized -Compress);$normalizedRows+=,$normalized;$states+="present"}else{$value=[string]$item.Data;if([string]::IsNullOrWhiteSpace($value)){$stats.dataRelation="invalid";$stats.identityInvalidReason="driverInfDataInvalid";$stats.identityInvalidCount=1;[Console]::Out.Write(($stats|ConvertTo-Json -Compress));exit 101};$normalized=$value.ToLowerInvariant();$canonical+=(ConvertTo-Json -InputObject $normalized.ToUpperInvariant() -Compress);$normalizedRows+=,$normalized;$states+="present"}}
     if(@($canonical|Select-Object -Unique).Count-ne1){$stats.dataRelation="conflicting";[Console]::Out.Write(($stats|ConvertTo-Json -Compress));exit 103};if($items.Count-gt1){$stats.dataRelation="identical"};if($states[0]-ceq"absent"){$byId.Add($entry.Key,[pscustomobject]@{State="absent";Data=$null})}elseif($p.keyName-eq"DEVPKEY_Device_HardwareIds"){$byId.Add($entry.Key,[pscustomobject]@{State="present";Data=[string[]]@($normalizedRows[0])})}else{$byId.Add($entry.Key,[pscustomobject]@{State="present";Data=[string]$normalizedRows[0]})}}
   $rows=@($p.instanceIds|ForEach-Object{$id=[string]$_;if($byId.ContainsKey($id)){$value=$byId[$id];[ordered]@{InstanceId=$id;PropertyState=$value.State;Data=$value.Data}}else{[ordered]@{InstanceId=$id;PropertyState="absent";Data=$null}}})
 $envelope=[ordered]@{schemaVersion=1;rows=$rows;stats=$stats}
@@ -5505,7 +5559,11 @@ function Invoke-VirtualDisplayChunkedInventoryValidation(
         "responseConflict", "responseStateConflict",
         "responseDelimiterConflict", "responseOrderConflict",
         "responseLengthConflict",
-        "responseInvalid", "responsePrefix",
+        "responseInvalid", "responseMissingIdentity",
+        "responseWrongTypeIdentity", "responseRowShape",
+        "responseCanonicalInvalid", "responsePropertyStateInvalid",
+        "responseAbsentDataInvalid", "responseHardwareIdsDataInvalid",
+        "responseDriverInfDataInvalid", "responsePrefix",
         "responseSuffix", "responseEscaping", "requestCaseDuplicate",
         "requestInvalid") -or
       $fixture.failureBatchIndex -isnot [int] -or
@@ -5543,6 +5601,8 @@ function Invoke-VirtualDisplayChunkedInventoryValidation(
   $script:virtualDisplayChunkDuplicateMaxMultiplicity = 0
   $script:virtualDisplayChunkDuplicateCaseOnlyCount = 0
   $script:virtualDisplayChunkDuplicateDataRelation = "none"
+  $script:virtualDisplayChunkIdentityInvalidReason = "none"
+  $script:virtualDisplayChunkIdentityInvalidCount = 0
   $provider = {
     param([string[]]$Batch, [string]$KeyName)
     $isHardware = $KeyName -ceq "DEVPKEY_Device_HardwareIds"
@@ -5552,7 +5612,10 @@ function Invoke-VirtualDisplayChunkedInventoryValidation(
     } else { [int]$state.driverCalls - 1 }
     $state.maxBatchSize = [Math]::Max(
       [int]$state.maxBatchSize, $Batch.Count)
-    $applyFault = $isHardware -and
+    $driverOnlyFault = [string]$fixture.failureMode -ceq
+      "responseDriverInfDataInvalid"
+    $applyFault = (($isHardware -and -not $driverOnlyFault) -or
+        (-not $isHardware -and $driverOnlyFault)) -and
       $callIndex -eq [int]$fixture.failureBatchIndex
     if ($applyFault -and
         [string]$fixture.failureMode -ceq "invokeOutput") {
@@ -5583,7 +5646,11 @@ function Invoke-VirtualDisplayChunkedInventoryValidation(
         "responseConflict", "responseStateConflict",
         "responseDelimiterConflict", "responseOrderConflict",
         "responseLengthConflict",
-        "responseInvalid", "responsePrefix", "responseSuffix",
+        "responseInvalid", "responseMissingIdentity",
+        "responseWrongTypeIdentity", "responseRowShape",
+        "responseCanonicalInvalid", "responsePropertyStateInvalid",
+        "responseAbsentDataInvalid", "responseHardwareIdsDataInvalid",
+        "responseDriverInfDataInvalid", "responsePrefix", "responseSuffix",
         "responseEscaping")) {
       if ([string]$fixture.failureMode -ceq "allAbsentHardware") {
         "allAbsent"
@@ -5764,6 +5831,10 @@ function Invoke-VirtualDisplayChunkedInventoryValidation(
         [int]$script:virtualDisplayChunkDuplicateCaseOnlyCount
       duplicateDataRelation =
         [string]$script:virtualDisplayChunkDuplicateDataRelation
+      identityInvalidReason =
+        [string]$script:virtualDisplayChunkIdentityInvalidReason
+      identityInvalidCount =
+        [int]$script:virtualDisplayChunkIdentityInvalidCount
     }
   } catch {
     return [ordered]@{
@@ -5819,6 +5890,10 @@ function Invoke-VirtualDisplayChunkedInventoryValidation(
         [int]$script:virtualDisplayChunkDuplicateCaseOnlyCount
       duplicateDataRelation =
         [string]$script:virtualDisplayChunkDuplicateDataRelation
+      identityInvalidReason =
+        [string]$script:virtualDisplayChunkIdentityInvalidReason
+      identityInvalidCount =
+        [int]$script:virtualDisplayChunkIdentityInvalidCount
     }
   }
 }
@@ -5951,6 +6026,8 @@ function Set-VirtualDisplayInventoryDiagnostic([bool]$Succeeded) {
     $script:virtualDisplayInventoryResponseDuplicateMaxMultiplicity = 0
     $script:virtualDisplayInventoryResponseCaseOnlyDuplicateCount = 0
     $script:virtualDisplayInventoryResponseDataRelation = "none"
+    $script:virtualDisplayInventoryResponseInvalidReason = "none"
+    $script:virtualDisplayInventoryResponseInvalidCount = 0
     return
   }
   $script:virtualDisplayInventoryFailureStage = switch (
@@ -6032,6 +6109,10 @@ function Set-VirtualDisplayInventoryDiagnostic([bool]$Succeeded) {
       [int]$script:virtualDisplayChunkDuplicateCaseOnlyCount
     $script:virtualDisplayInventoryResponseDataRelation =
       [string]$script:virtualDisplayChunkDuplicateDataRelation
+    $script:virtualDisplayInventoryResponseInvalidReason =
+      [string]$script:virtualDisplayChunkIdentityInvalidReason
+    $script:virtualDisplayInventoryResponseInvalidCount =
+      [int]$script:virtualDisplayChunkIdentityInvalidCount
   } else {
     $script:virtualDisplayInventoryResponseRequestedCount = -1
     $script:virtualDisplayInventoryResponseReturnedRowCount = -1
@@ -6041,6 +6122,8 @@ function Set-VirtualDisplayInventoryDiagnostic([bool]$Succeeded) {
     $script:virtualDisplayInventoryResponseDuplicateMaxMultiplicity = 0
     $script:virtualDisplayInventoryResponseCaseOnlyDuplicateCount = 0
     $script:virtualDisplayInventoryResponseDataRelation = "none"
+    $script:virtualDisplayInventoryResponseInvalidReason = "none"
+    $script:virtualDisplayInventoryResponseInvalidCount = 0
   }
   $script:virtualDisplayInventoryFailureLatched = $true
 }
@@ -7546,6 +7629,56 @@ try {
           inventoryResponseCaseOnlyDuplicateCount = 1
           inventoryResponseDataRelation = "conflicting"
         }
+      },
+      [ordered]@{
+        name = "inventoryInvalidReasonMissingContradiction"
+        values = [ordered]@{
+          inventoryStage = "hardwareIds"
+          inventoryFailureStage = "output"
+          inventoryOutputReason = "nativeExit"
+          inventoryNativeExitCode = 101
+          inventoryChildFailureStage = "responseIdentityInvalid"
+          inventoryDeviceCount = 369
+          inventoryCurrentBatchIndex = 0
+          inventoryTotalBatchCount = 12
+          inventoryElapsedMilliseconds = 708
+          inventoryCleanupState = "completed"
+          inventoryResponseRequestedCount = 32
+          inventoryResponseReturnedRowCount = 32
+          inventoryResponseUniqueOrdinalCount = 31
+          inventoryResponseUniqueOrdinalIgnoreCaseCount = 31
+          inventoryResponseDuplicateGroupCount = 0
+          inventoryResponseDuplicateMaxMultiplicity = 1
+          inventoryResponseCaseOnlyDuplicateCount = 0
+          inventoryResponseDataRelation = "invalid"
+          inventoryResponseInvalidReason = "none"
+          inventoryResponseInvalidCount = 0
+        }
+      },
+      [ordered]@{
+        name = "inventoryConflictCarriesInvalidReasonContradiction"
+        values = [ordered]@{
+          inventoryStage = "hardwareIds"
+          inventoryFailureStage = "output"
+          inventoryOutputReason = "nativeExit"
+          inventoryNativeExitCode = 103
+          inventoryChildFailureStage = "responseIdentityConflict"
+          inventoryDeviceCount = 369
+          inventoryCurrentBatchIndex = 0
+          inventoryTotalBatchCount = 12
+          inventoryElapsedMilliseconds = 708
+          inventoryCleanupState = "completed"
+          inventoryResponseRequestedCount = 32
+          inventoryResponseReturnedRowCount = 33
+          inventoryResponseUniqueOrdinalCount = 32
+          inventoryResponseUniqueOrdinalIgnoreCaseCount = 32
+          inventoryResponseDuplicateGroupCount = 1
+          inventoryResponseDuplicateMaxMultiplicity = 2
+          inventoryResponseCaseOnlyDuplicateCount = 0
+          inventoryResponseDataRelation = "conflicting"
+          inventoryResponseInvalidReason = "empty"
+          inventoryResponseInvalidCount = 1
+        }
       })
     $crossSpliceRejected = 0
     foreach ($crossCase in $crossSpliceCases) {
@@ -7932,7 +8065,8 @@ try {
       @{ name = "responseConflict"; reason = "nativeExit"; code = 103;
         stage = "responseIdentityConflict"; relation = "conflicting" },
       @{ name = "responseInvalid"; reason = "nativeExit"; code = 101;
-        stage = "responseIdentityInvalid"; relation = "invalid" },
+        stage = "responseIdentityInvalid"; relation = "invalid";
+        invalidReason = "empty"; invalidCount = 1 },
       @{ name = "stderr"; reason = "stderr"; code = 0; stage = "stderr" },
       @{ name = "invokeFailure"; reason = "invokeFailure"; code = -1;
         stage = "processInvoke" })
@@ -7950,14 +8084,28 @@ try {
       $outputOriginal.inventoryReturnedCount = -1
       if ($outputCase.ContainsKey("relation")) {
         $outputOriginal.inventoryResponseRequestedCount = 32
-        $outputOriginal.inventoryResponseReturnedRowCount = 33
-        $outputOriginal.inventoryResponseUniqueOrdinalCount = 33
-        $outputOriginal.inventoryResponseUniqueOrdinalIgnoreCaseCount = 32
-        $outputOriginal.inventoryResponseDuplicateGroupCount = 1
-        $outputOriginal.inventoryResponseDuplicateMaxMultiplicity = 2
-        $outputOriginal.inventoryResponseCaseOnlyDuplicateCount = 1
+        $isInvalidResponse =
+          [string]$outputCase.relation -ceq "invalid"
+        $outputOriginal.inventoryResponseReturnedRowCount = if (
+          $isInvalidResponse) { 32 } else { 33 }
+        $outputOriginal.inventoryResponseUniqueOrdinalCount = if (
+          $isInvalidResponse) { 31 } else { 33 }
+        $outputOriginal.inventoryResponseUniqueOrdinalIgnoreCaseCount = if (
+          $isInvalidResponse) { 31 } else { 32 }
+        $outputOriginal.inventoryResponseDuplicateGroupCount = if (
+          $isInvalidResponse) { 0 } else { 1 }
+        $outputOriginal.inventoryResponseDuplicateMaxMultiplicity = if (
+          $isInvalidResponse) { 1 } else { 2 }
+        $outputOriginal.inventoryResponseCaseOnlyDuplicateCount = if (
+          $isInvalidResponse) { 0 } else { 1 }
         $outputOriginal.inventoryResponseDataRelation =
           [string]$outputCase.relation
+        if ($outputCase.ContainsKey("invalidReason")) {
+          $outputOriginal.inventoryResponseInvalidReason =
+            [string]$outputCase.invalidReason
+          $outputOriginal.inventoryResponseInvalidCount =
+            [int]$outputCase.invalidCount
+        }
       }
       $outputToken = ConvertTo-VirtualDisplayDiagnosticToken $outputOriginal
       $outputProjected = ConvertFrom-VirtualDisplayDiagnosticToken $outputToken

@@ -1942,6 +1942,28 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(runtimeHarness, "failureMode = \"responseSuffix\"");
         StringAssert.Contains(runtimeHarness,
             "failureMode = \"responseEscaping\"");
+        StringAssert.Contains(runtimeHarness,
+            "failureMode = \"responseMissingIdentity\"");
+        StringAssert.Contains(runtimeHarness,
+            "failureMode = \"responseWrongTypeIdentity\"");
+        StringAssert.Contains(runtimeHarness,
+            "failureMode = \"responseRowShape\"");
+        StringAssert.Contains(runtimeHarness,
+            "failureMode = \"responseCanonicalInvalid\"");
+        StringAssert.Contains(runtimeHarness,
+            "failureMode = \"responsePropertyStateInvalid\"");
+        StringAssert.Contains(runtimeHarness,
+            "failureMode = \"responseAbsentDataInvalid\"");
+        StringAssert.Contains(runtimeHarness,
+            "failureMode = \"responseHardwareIdsDataInvalid\"");
+        StringAssert.Contains(runtimeHarness,
+            "failureMode = \"responseDriverInfDataInvalid\"");
+        StringAssert.Contains(management, "identityInvalidReason");
+        StringAssert.Contains(management, "identityInvalidCount");
+        StringAssert.Contains(management,
+            "inventoryInvalidReasonMissingContradiction");
+        StringAssert.Contains(management,
+            "inventoryConflictCarriesInvalidReasonContradiction");
         StringAssert.Contains(runtimeHarness, "failureMode = \"hostNegative\"");
         StringAssert.Contains(runtimeHarness, "failureMode = \"hostHigh\"");
         StringAssert.Contains(management,

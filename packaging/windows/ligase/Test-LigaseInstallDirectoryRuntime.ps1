@@ -6010,7 +6010,64 @@ $chunkedInventoryCases = @(
     deadline = 1500; result = "failed";
     hardwareBatches = 1; driverBatches = 0; exact = -1;
     outputReason = "nativeExit"; nativeExitCode = 101;
-    childFailureStage = "responseIdentityInvalid" },
+    childFailureStage = "responseIdentityInvalid";
+    invalidReason = "empty"; invalidCount = 1 },
+  @{ name = "responseMissingIdentity"; deviceCount = 33;
+    failureMode = "responseMissingIdentity"; failureBatchIndex = 0;
+    deadline = 1500; result = "failed";
+    hardwareBatches = 1; driverBatches = 0; exact = -1;
+    outputReason = "nativeExit"; nativeExitCode = 101;
+    childFailureStage = "responseIdentityInvalid";
+    invalidReason = "missingProperty"; invalidCount = 1 },
+  @{ name = "responseWrongTypeIdentity"; deviceCount = 33;
+    failureMode = "responseWrongTypeIdentity"; failureBatchIndex = 0;
+    deadline = 1500; result = "failed";
+    hardwareBatches = 1; driverBatches = 0; exact = -1;
+    outputReason = "nativeExit"; nativeExitCode = 101;
+    childFailureStage = "responseIdentityInvalid";
+    invalidReason = "wrongType"; invalidCount = 1 },
+  @{ name = "responseRowShape"; deviceCount = 33;
+    failureMode = "responseRowShape"; failureBatchIndex = 0;
+    deadline = 1500; result = "failed";
+    hardwareBatches = 1; driverBatches = 0; exact = -1;
+    outputReason = "nativeExit"; nativeExitCode = 101;
+    childFailureStage = "responseIdentityInvalid";
+    invalidReason = "rowShape"; invalidCount = 1 },
+  @{ name = "responseCanonicalInvalid"; deviceCount = 33;
+    failureMode = "responseCanonicalInvalid"; failureBatchIndex = 0;
+    deadline = 1500; result = "failed";
+    hardwareBatches = 1; driverBatches = 0; exact = -1;
+    outputReason = "nativeExit"; nativeExitCode = 101;
+    childFailureStage = "responseIdentityInvalid";
+    invalidReason = "canonicalInvalid"; invalidCount = 1 },
+  @{ name = "responsePropertyStateInvalid"; deviceCount = 33;
+    failureMode = "responsePropertyStateInvalid"; failureBatchIndex = 0;
+    deadline = 1500; result = "failed";
+    hardwareBatches = 1; driverBatches = 0; exact = -1;
+    outputReason = "nativeExit"; nativeExitCode = 101;
+    childFailureStage = "responseIdentityInvalid";
+    invalidReason = "propertyStateInvalid"; invalidCount = 1 },
+  @{ name = "responseAbsentDataInvalid"; deviceCount = 33;
+    failureMode = "responseAbsentDataInvalid"; failureBatchIndex = 0;
+    deadline = 1500; result = "failed";
+    hardwareBatches = 1; driverBatches = 0; exact = -1;
+    outputReason = "nativeExit"; nativeExitCode = 101;
+    childFailureStage = "responseIdentityInvalid";
+    invalidReason = "absentDataInvalid"; invalidCount = 1 },
+  @{ name = "responseHardwareIdsDataInvalid"; deviceCount = 33;
+    failureMode = "responseHardwareIdsDataInvalid"; failureBatchIndex = 0;
+    deadline = 1500; result = "failed";
+    hardwareBatches = 1; driverBatches = 0; exact = -1;
+    outputReason = "nativeExit"; nativeExitCode = 101;
+    childFailureStage = "responseIdentityInvalid";
+    invalidReason = "hardwareIdsDataInvalid"; invalidCount = 1 },
+  @{ name = "responseDriverInfDataInvalid"; deviceCount = 33;
+    failureMode = "responseDriverInfDataInvalid"; failureBatchIndex = 0;
+    deadline = 1500; result = "failed";
+    hardwareBatches = 2; driverBatches = 1; exact = -1;
+    outputReason = "nativeExit"; nativeExitCode = 101;
+    childFailureStage = "responseIdentityInvalid";
+    invalidReason = "driverInfDataInvalid"; invalidCount = 1 },
   @{ name = "responsePrefix"; deviceCount = 33;
     failureMode = "responsePrefix"; failureBatchIndex = 0;
     deadline = 1500; result = "failed";
@@ -6027,8 +6084,9 @@ $chunkedInventoryCases = @(
     failureMode = "responseEscaping"; failureBatchIndex = 0;
     deadline = 1500; result = "failed";
     hardwareBatches = 1; driverBatches = 0; exact = -1;
-    outputReason = "nativeExit"; nativeExitCode = 96;
-    childFailureStage = "responseIdentityUnknown" },
+    outputReason = "nativeExit"; nativeExitCode = 101;
+    childFailureStage = "responseIdentityInvalid";
+    invalidReason = "escapingInvalid"; invalidCount = 1 },
   @{ name = "quota"; deviceCount = 369; failureMode = "quota";
     failureBatchIndex = 0; deadline = 10000; result = "failed";
     hardwareBatches = 1; driverBatches = 0; exact = -1;
@@ -6202,6 +6260,13 @@ foreach ($case in $chunkedInventoryCases) {
       [int]$projection.duplicateReturnedRowCount -ne 33)) {
     throw "virtualDisplayChunkedInventoryDuplicateStatsFailed:$($case.name)"
   }
+  if ($case.ContainsKey("invalidReason") -and (
+      [string]$projection.identityInvalidReason -cne
+        [string]$case.invalidReason -or
+      [int]$projection.identityInvalidCount -ne [int]$case.invalidCount -or
+      [string]$projection.duplicateDataRelation -cne "invalid")) {
+    throw "virtualDisplayChunkedInventoryInvalidStatsFailed:$($case.name)"
+  }
   if ($case.ContainsKey("multiValueCount") -and (
       [int]$projection.multiValueOutputCount -ne
         [int]$case.multiValueCount -or
@@ -6239,6 +6304,8 @@ foreach ($case in $chunkedInventoryCases) {
     duplicateMaxMultiplicity = [int]$projection.duplicateMaxMultiplicity
     caseOnlyDuplicateCount = [int]$projection.caseOnlyDuplicateCount
     duplicateDataRelation = [string]$projection.duplicateDataRelation
+    identityInvalidReason = [string]$projection.identityInvalidReason
+    identityInvalidCount = [int]$projection.identityInvalidCount
     outputReason = [string]$projection.outputReason
     nativeExitCode = [int]$projection.nativeExitCode
     childFailureStage = [string]$projection.childFailureStage
@@ -6581,7 +6648,7 @@ $diagnosticProjection = [string]$diagnosticRaw | ConvertFrom-Json
 if ([string]$diagnosticProjection.code -cne
       "virtualDisplayDiagnosticProjectionValidated" -or
     -not [bool]$diagnosticProjection.success -or
-    [int]$diagnosticProjection.crossSpliceRejected -ne 35 -or
+    [int]$diagnosticProjection.crossSpliceRejected -ne 37 -or
     -not [bool]$diagnosticProjection.primaryWriteFailed -or
     [string]$diagnosticProjection.resultCode -cne
       "virtualDisplayReadbackFailed" -or

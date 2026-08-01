@@ -755,7 +755,12 @@ diagnostic persists only bounded counts (Ordinal and ordinal-ignore-case unique
 counts, duplicate groups, maximum multiplicity, case-only groups) plus the
 closed `none|identical|conflicting|invalid` relation; it never persists an
 identity or property value. Conflicting present/absent state or canonical data,
-unknown identity, malformed shape, and fuzzy identity remain fail-closed; no
+unknown identity, malformed shape, and fuzzy identity remain fail-closed. An
+invalid response additionally persists only a bounded invalid-row count and the
+closed reason `empty|missingProperty|wrongType|rowShape|escapingInvalid|canonicalInvalid|propertyStateInvalid|absentDataInvalid|hardwareIdsDataInvalid|driverInfDataInvalid|mixed`;
+it never persists the rejected identity, property data, path, output, or
+exception. The token and file consumers bind that reason/count to child exit
+101 and reject it on conflicting or successful response tuples; no
 first- or last-row choice is authoritative. Successful output preserves the
 original requested spelling. A requested identity omitted by `Get-PnpDeviceProperty`
 is normalized to exactly one `absent` row with null data; it is property absence,
