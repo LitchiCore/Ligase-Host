@@ -1729,6 +1729,7 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(management, "postCreateIdentityReason");
         StringAssert.Contains(management, "presentDeviceCount");
         StringAssert.Contains(management, "inventoryFailureStage");
+        StringAssert.Contains(management, "inventoryOutputReason");
         StringAssert.Contains(management, "inventoryCoverageStage");
         StringAssert.Contains(management, "inventoryCoverageReason");
         StringAssert.Contains(management, "inventoryRequestedCount");
@@ -1846,6 +1847,23 @@ public sealed class FreshInstallPackagingTests
             "\"inventoryCleanupContradiction\"");
         StringAssert.Contains(management,
             "\"inventoryCompletedCleanupContradiction\"");
+        StringAssert.Contains(management,
+            "\"inventoryOutputReasonMissingContradiction\"");
+        StringAssert.Contains(management,
+            "\"inventoryOutputReasonCrossSpliceContradiction\"");
+        StringAssert.Contains(management,
+            "\"inventoryOutputCleanupContradiction\"");
+        StringAssert.Contains(management,
+            "\"inventoryOutputDriverBeforeHardwareContradiction\"");
+        StringAssert.Contains(management,
+            "\"inventoryOutputHardwareProgressContradiction\"");
+        StringAssert.Contains(management, "$phaseBatchAuthority = (");
+        StringAssert.Contains(runtimeHarness, "outputReason = \"nativeExit\"");
+        StringAssert.Contains(runtimeHarness, "outputReason = \"stderr\"");
+        StringAssert.Contains(runtimeHarness,
+            "outputReason = \"invokeFailure\"");
+        StringAssert.Contains(runtimeHarness,
+            "inventoryOutputReasonsPersisted -ne 3");
         StringAssert.Contains(management,
             "Assert-VirtualDisplayInventoryDiagnosticCorrelation");
         StringAssert.Contains(management, "$createProvenanceValid =");

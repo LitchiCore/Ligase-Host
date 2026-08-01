@@ -729,7 +729,13 @@ Trusted-runner start, output, UTF-8/JSON decode, tuple, coverage, deadline, and
 cleanup failures are cross-field correlated. No raw output, executable path,
 device identity, or exception text is persisted, and an inventory failure
 keeps terminal count unknown without replacing the primary remove-readback
-result. It also records a bounded create
+result. The closed inventory output reason distinguishes a nonzero native
+child exit, non-empty stderr, and an invocation/output failure; it is `none`
+for every non-output inventory failure and never carries the native output,
+exit text, path, or device identity. Each output reason is bound to the active
+hardware-ID or driver-INF batch and its exact preceding completed-batch count;
+a driver-phase failure cannot be reported before every hardware batch is
+complete. It also records a bounded create
 provenance tuple: the invocation count (zero or one), a fresh invocation-ID
 SHA-256, the pre-create identity-set hash, and a closed post-create snapshot
 state/reason. A completed post-create snapshot carries its real identity-set
