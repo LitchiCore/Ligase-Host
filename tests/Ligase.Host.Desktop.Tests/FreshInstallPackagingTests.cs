@@ -1788,6 +1788,14 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(management, "finalizePreReadStderrClosed");
         StringAssert.Contains(management,
             "Assert-VirtualDisplayFinalizePreReadCorrelation");
+        StringAssert.Contains(management,
+            "Freeze-InstallerEvidencePrimary $script:virtualDisplayDiagnostic");
+        StringAssert.Contains(management,
+            "function Write-InstallerEvidenceLastResort");
+        StringAssert.Contains(management,
+            "secondaryWriterState = \"failed\"");
+        StringAssert.Contains(management,
+            "persistenceState = \"persistenceUnavailable\"");
         var finalizeActionIndex = management.IndexOf(
             "if ($Action -eq \"FinalizeInstall\") {",
             StringComparison.Ordinal);
@@ -1807,6 +1815,15 @@ public sealed class FreshInstallPackagingTests
             "Finalize must consume an existing primary diagnostic before fresh helper readback.");
         StringAssert.Contains(finalizeAction,
             "Set-VirtualDisplayFinalizePreReadAuthority $virtualDisplay");
+        var freezePrimaryIndex = finalizeAction.IndexOf(
+            "Freeze-InstallerEvidencePrimary $script:virtualDisplayDiagnostic",
+            StringComparison.Ordinal);
+        var evidenceWriteIndex = finalizeAction.IndexOf(
+            "$null = Write-InstallerEvidence",
+            freezePrimaryIndex, StringComparison.Ordinal);
+        Assert.IsTrue(freezePrimaryIndex >= 0 &&
+            evidenceWriteIndex > freezePrimaryIndex,
+            "Finalize must freeze the primary safe tuple before evidence writes.");
         StringAssert.Contains(finalizeAction,
             "$script:finalFailedField = \"virtualDisplay\"");
         var productionSnapshotIndex = management.IndexOf(
@@ -1970,6 +1987,13 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(runtimeHarness, "finalizePreReadReason");
         StringAssert.Contains(runtimeHarness, "finalizePreReadStdoutClosed");
         StringAssert.Contains(runtimeHarness, "finalizePreReadStderrClosed");
+        StringAssert.Contains(runtimeHarness,
+            "installerEvidenceSecondaryFailureValidated");
+        StringAssert.Contains(runtimeHarness, "writerFaultsPassed -ne 7");
+        StringAssert.Contains(runtimeHarness, "parseFaultsPassed -ne 2");
+        StringAssert.Contains(runtimeHarness,
+            "secondaryCrossSpliceRejected -ne 3");
+        StringAssert.Contains(runtimeHarness, "persistenceUnavailable");
         StringAssert.Contains(runtimeHarness,
             "virtualDisplayTerminalReadbackCases");
         StringAssert.Contains(runtimeHarness, "\"oneUnbound\"");

@@ -6510,6 +6510,52 @@ if ([string]$diagnosticProjection.code -cne
   throw "virtualDisplayDiagnosticProjectionFixtureAssertionFailed"
 }
 
+$evidenceSecondaryRoot = Join-Path $root "installer-evidence-secondary-failure"
+New-Item -ItemType Directory -Path $evidenceSecondaryRoot | Out-Null
+[IO.File]::WriteAllText(
+  (Join-Path $evidenceSecondaryRoot "ligase-install-manifest.json"),
+  ([ordered]@{
+    schemaVersion = 1
+    sourceHead = "0000000000000000000000000000000000000000"
+  } | ConvertTo-Json -Compress),
+  [Text.UTF8Encoding]::new($false))
+$previousHarness = $env:LIGASE_INSTALL_VALIDATION_HARNESS
+try {
+  $env:LIGASE_INSTALL_VALIDATION_HARNESS = "1"
+  $evidenceSecondaryRaw = @(& $readbackPowerShell -NoProfile `
+    -NonInteractive -ExecutionPolicy Bypass -File $managementScript `
+    -Action ValidateInstallerEvidenceSecondaryFailure `
+    -InstallDirectory $evidenceSecondaryRoot `
+    -ValidationRoot $evidenceSecondaryRoot)
+} finally {
+  if ($null -eq $previousHarness) {
+    Remove-Item Env:LIGASE_INSTALL_VALIDATION_HARNESS `
+      -ErrorAction SilentlyContinue
+  } else {
+    $env:LIGASE_INSTALL_VALIDATION_HARNESS = $previousHarness
+  }
+}
+if ($LASTEXITCODE -ne 0 -or @($evidenceSecondaryRaw).Count -ne 1) {
+  throw "installerEvidenceSecondaryFailureFixtureFailed"
+}
+$evidenceSecondaryProjection =
+  [string]$evidenceSecondaryRaw | ConvertFrom-Json
+if ([string]$evidenceSecondaryProjection.code -cne
+      "installerEvidenceSecondaryFailureValidated" -or
+    -not [bool]$evidenceSecondaryProjection.success -or
+    [int]$evidenceSecondaryProjection.writerFaultsPassed -ne 7 -or
+    [int]$evidenceSecondaryProjection.parseFaultsPassed -ne 2 -or
+    [int]$evidenceSecondaryProjection.secondaryCrossSpliceRejected -ne 3 -or
+    -not [bool]$evidenceSecondaryProjection.persistenceUnavailable -or
+    [string]$evidenceSecondaryProjection.primaryResultCode -cne
+      "virtualDisplayReadbackFailed" -or
+    [int]$evidenceSecondaryProjection.finalOutcomeCount -ne 0 -or
+    [int]$evidenceSecondaryProjection.tempResidueCount -ne 0 -or
+    [int]$evidenceSecondaryProjection.processStartCount -ne 0 -or
+    [bool]$evidenceSecondaryProjection.systemMutation) {
+  throw "installerEvidenceSecondaryFailureFixtureAssertionFailed"
+}
+
 [ordered]@{
   code = "installDirectoryRuntimeHarnessPassed"
   cases = $results
@@ -6523,6 +6569,7 @@ if ([string]$diagnosticProjection.code -cne
   virtualDisplayNativeInventoryHelperCases = $inventoryHelperResults
   virtualDisplayNativeInventoryInvocationCases =
     $nativeInventoryInvocationResults
+  installerEvidenceSecondaryFailure = $evidenceSecondaryProjection
   virtualDisplayTrustedTool = $trustedToolProjection
   virtualDisplayRemovalCases = $virtualDisplayRemovalResults
   virtualDisplayTerminalReadbackCases =

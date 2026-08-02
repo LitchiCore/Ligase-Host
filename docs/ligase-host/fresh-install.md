@@ -773,6 +773,19 @@ pipe, output, UTF-8/JSON/schema, SetupAPI-result, or cleanup failure is written
 with `failedField=virtualDisplay`; it cannot bypass the last-outcome writer or
 replace an earlier primary failure. These fields never contain raw output,
 executable paths, argv, device IDs, or exception text.
+Before any final evidence write, Finalize freezes the validated primary tuple
+in memory. Correlation, serialization, temporary-file creation/write, atomic
+move, final readback, or hash failure is recorded separately as the closed
+`secondaryWriter` state/reason and never clears or rewrites the primary. The
+normal writer uses a unique same-directory write-through temporary file,
+atomic replace/move, byte readback, and SHA-256 readback. If it fails, a smaller
+independent last-resort writer consumes the already-frozen primary JSON and
+writes only safe primary and secondary persistence authority; it does not
+rerun the failing correlation or serialization path. If both writers fail,
+the terminal wire result is explicitly `persistenceUnavailable` and does not
+claim that a typed last-outcome exists. D-only behavior gates cover token/file
+consumer failures and every writer stage, require one final outcome when the
+last-resort succeeds, and require zero temporary-file residue.
 
 The ownership marker then uses a same-directory
 write-through temporary file, byte and ACL readback, and an atomic replace or

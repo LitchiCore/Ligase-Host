@@ -17,6 +17,7 @@ param(
     "ValidateVirtualDisplayTerminalReadback",
     "ValidateVirtualDisplayTrustedPnPUtil",
     "ValidateVirtualDisplayDiagnosticProjection",
+    "ValidateInstallerEvidenceSecondaryFailure",
     "ValidateVirtualDisplayInstallerProcess",
     "ValidateVirtualDisplayMarkerTransaction",
     "UninstallVirtualDisplay",
@@ -203,6 +204,11 @@ $script:transactionRecoveryAction = "none"
 $script:transactionCreated = $false
 $script:finalFailedField = "none"
 $script:virtualDisplayDiagnostic = $null
+$script:frozenInstallerEvidencePrimary = $null
+$script:frozenInstallerEvidencePrimaryJson = $null
+$script:secondaryWriterState = "notRequired"
+$script:secondaryWriterReason = "none"
+$script:secondaryWriterPersistence = "standard"
 $script:finalComponents = [ordered]@{
   artifacts = "pending"
   bootstrap = "pending"
@@ -4364,15 +4370,155 @@ function Remove-InstallTransaction {
   $script:transactionReadbackReason = "none"
 }
 
-function Write-InstallerEvidence {
+function Test-InstallerEvidenceFaultAllowed {
+  return ($Action -ceq "ValidateInstallerEvidenceSecondaryFailure" -and
+    $env:LIGASE_INSTALL_VALIDATION_HARNESS -ceq "1" -and
+    -not [string]::IsNullOrWhiteSpace($ValidationRoot) -and
+    [IO.Path]::GetFullPath($ValidationRoot) -ceq $installRoot -and
+    [IO.Path]::GetPathRoot($installRoot) -ceq "D:\")
+}
+
+function Invoke-InstallerEvidenceFault([string]$Stage) {
+  if ((Test-InstallerEvidenceFaultAllowed) -and
+      [string]$env:LIGASE_INSTALLER_EVIDENCE_WRITER_FAILURE -ceq $Stage) {
+    throw "installerEvidenceWriterFault"
+  }
+}
+
+function Freeze-InstallerEvidencePrimary($Diagnostic) {
+  if ($null -eq $Diagnostic) {
+    throw "installerEvidencePrimaryUnavailable"
+  }
+  Assert-VirtualDisplayDiagnosticCorrelation $Diagnostic
+  $json = $Diagnostic | ConvertTo-Json -Depth 8 -Compress
+  $readback = $json | ConvertFrom-Json
+  Assert-VirtualDisplayDiagnosticCorrelation $readback
+  $script:frozenInstallerEvidencePrimary = $readback
+  $script:frozenInstallerEvidencePrimaryJson = $json
+}
+
+function Get-InstallerEvidenceWriterReason([string]$Stage) {
+  if ($Stage -in @(
+      "correlation", "serialization", "tempCreate", "tempWrite",
+      "atomicMove", "readback", "hash", "acl", "projection")) {
+    return $Stage
+  }
+  return "unavailable"
+}
+
+function Assert-InstallerEvidenceSecondaryWriterCorrelation($Document) {
+  $state = [string]$Document.secondaryWriter.state
+  $reason = [string]$Document.secondaryWriter.reason
+  $persistence = [string]$Document.secondaryWriter.persistence
+  $knownReasons = @(
+    "correlation", "serialization", "tempCreate", "tempWrite",
+    "atomicMove", "readback", "hash", "acl", "projection", "unavailable")
+  $valid = if ($state -ceq "notRequired") {
+    $reason -ceq "none" -and $persistence -ceq "standard"
+  } elseif ($state -ceq "failed") {
+    $knownReasons -ccontains $reason -and $persistence -ceq "lastResort"
+  } else { $false }
+  if (-not $valid) { throw "installerEvidenceSecondaryWriterInvalid" }
+}
+
+function Write-InstallerEvidenceLastResort {
+  if ($null -eq $script:frozenInstallerEvidencePrimary -or
+      [string]::IsNullOrWhiteSpace(
+        [string]$script:frozenInstallerEvidencePrimaryJson)) {
+    throw "installerEvidencePrimaryUnavailable"
+  }
+  $path = Get-InstallerEvidencePath
+  $directory = Split-Path -Parent $path
+  if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
+    [IO.Directory]::CreateDirectory($directory) | Out-Null
+  }
+  $sourceHead = Get-EvidenceSourceHead
+  $timestamp = [DateTime]::UtcNow.ToString(
+    "yyyy-MM-ddTHH:mm:ss.fffZ",
+    [Globalization.CultureInfo]::InvariantCulture)
+  $primaryJson = [string]$script:frozenInstallerEvidencePrimaryJson
+  $reason = [string]$script:secondaryWriterReason
+  $json = '{"schemaVersion":1,"candidateSourceHead":"' + $sourceHead +
+    '","phase":"failed","success":false,' +
+    '"resultCode":"installationFinalReadbackFailed",' +
+    '"failedField":"virtualDisplay","virtualDisplay":' + $primaryJson +
+    ',"secondaryWriter":{"state":"failed","reason":"' + $reason +
+    '","persistence":"lastResort"},' +
+    '"persistenceState":"lastResort","timestampUtc":"' + $timestamp + '"}'
+  $bytes = [Text.UTF8Encoding]::new($false).GetBytes($json)
+  $temporary = Join-Path $directory (
+    ".last-outcome-last-resort-" + [Guid]::NewGuid().ToString("N") + ".tmp")
+  $backup = Join-Path $directory (
+    ".last-outcome-backup-" + [Guid]::NewGuid().ToString("N") + ".tmp")
+  try {
+    if ((Test-InstallerEvidenceFaultAllowed) -and
+        [string]$env:LIGASE_INSTALLER_LAST_RESORT_FAILURE -ceq "temp") {
+      throw "installerEvidencePersistenceUnavailable"
+    }
+    [IO.File]::WriteAllBytes($temporary, $bytes)
+    if ((Test-InstallerEvidenceFaultAllowed) -and
+        [string]$env:LIGASE_INSTALLER_LAST_RESORT_FAILURE -ceq "atomic") {
+      throw "installerEvidencePersistenceUnavailable"
+    }
+    if (Test-Path -LiteralPath $path -PathType Leaf) {
+      [IO.File]::Replace($temporary, $path, $backup, $true)
+      Remove-Item -LiteralPath $backup -Force
+    } else {
+      [IO.File]::Move($temporary, $path)
+    }
+    if ((Test-InstallerEvidenceFaultAllowed) -and
+        [string]$env:LIGASE_INSTALLER_LAST_RESORT_FAILURE -ceq "readback") {
+      throw "installerEvidencePersistenceUnavailable"
+    }
+    $actual = [IO.File]::ReadAllBytes($path)
+    if (-not (Test-ExactBytes $bytes $actual)) {
+      throw "installerEvidencePersistenceUnavailable"
+    }
+    $document = [Text.UTF8Encoding]::new($false, $true).GetString($actual) |
+      ConvertFrom-Json
+    Assert-InstallerEvidenceSecondaryWriterCorrelation $document
+    if ([string]$document.failedField -cne "virtualDisplay" -or
+        [string]$document.secondaryWriter.state -cne "failed" -or
+        [string]$document.secondaryWriter.reason -cne $reason -or
+        [string]$document.secondaryWriter.persistence -cne "lastResort" -or
+        [string]$document.virtualDisplay.resultCode -cne
+          [string]$script:frozenInstallerEvidencePrimary.resultCode) {
+      throw "installerEvidencePersistenceUnavailable"
+    }
+    $script:secondaryWriterPersistence = "lastResort"
+    return $document
+  } finally {
+    if (Test-Path -LiteralPath $temporary) {
+      Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
+    }
+    if (Test-Path -LiteralPath $backup) {
+      Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
+    }
+  }
+}
+
+function Write-InstallerEvidenceStandard {
+  $script:installerEvidenceWriterStage = "projection"
   $evidencePath = Get-InstallerEvidencePath
   $evidenceDirectory = Split-Path -Parent $evidencePath
   if (-not (Test-Path -LiteralPath $evidenceDirectory -PathType Container)) {
     New-Item -ItemType Directory -Path $evidenceDirectory -Force | Out-Null
   }
-  if ($Action -ne "ValidateVirtualDisplayDiagnosticProjection") {
+  if ($Action -notin @(
+      "ValidateVirtualDisplayDiagnosticProjection",
+      "ValidateInstallerEvidenceSecondaryFailure")) {
+    $script:installerEvidenceWriterStage = "acl"
     Set-SecureDataRootAcl $evidenceDirectory
   }
+  $primary = if ($null -ne $script:frozenInstallerEvidencePrimary) {
+    $script:frozenInstallerEvidencePrimary
+  } else { $script:virtualDisplayDiagnostic }
+  if ($null -ne $primary) {
+    $script:installerEvidenceWriterStage = "correlation"
+    Invoke-InstallerEvidenceFault "correlation"
+    Assert-VirtualDisplayDiagnosticCorrelation $primary
+  }
+  $script:installerEvidenceWriterStage = "projection"
   $document = [ordered]@{
     schemaVersion = 1
     candidateSourceHead = Get-EvidenceSourceHead
@@ -4453,10 +4599,15 @@ function Write-InstallerEvidence {
       $EvidenceFailedField
     }
     components = $script:finalComponents
-    virtualDisplay = if ($null -eq $script:virtualDisplayDiagnostic) {
+    virtualDisplay = if ($null -eq $primary) {
       $null
     } else {
-      $script:virtualDisplayDiagnostic
+      $primary
+    }
+    secondaryWriter = [ordered]@{
+      state = $script:secondaryWriterState
+      reason = $script:secondaryWriterReason
+      persistence = $script:secondaryWriterPersistence
     }
     rollback = [ordered]@{
       state = $EvidenceRollback
@@ -4473,17 +4624,76 @@ function Write-InstallerEvidence {
       "yyyy-MM-ddTHH:mm:ss.fffZ",
       [Globalization.CultureInfo]::InvariantCulture)
   }
-  $temporary = "$evidencePath.tmp"
+  Assert-InstallerEvidenceSecondaryWriterCorrelation $document
+  $script:installerEvidenceWriterStage = "serialization"
+  Invoke-InstallerEvidenceFault "serialization"
+  $bytes = [Text.UTF8Encoding]::new($false).GetBytes(
+    ($document | ConvertTo-Json -Depth 8 -Compress))
+  $temporary = Join-Path $evidenceDirectory (
+    ".last-outcome-" + [Guid]::NewGuid().ToString("N") + ".tmp")
+  $backup = Join-Path $evidenceDirectory (
+    ".last-outcome-backup-" + [Guid]::NewGuid().ToString("N") + ".tmp")
   try {
-    [IO.File]::WriteAllText(
-      $temporary,
-      ($document | ConvertTo-Json -Depth 8 -Compress),
-      [Text.UTF8Encoding]::new($false))
-    Move-Item -LiteralPath $temporary -Destination $evidencePath -Force
+    $script:installerEvidenceWriterStage = "tempCreate"
+    Invoke-InstallerEvidenceFault "tempCreate"
+    $stream = [IO.FileStream]::new(
+      $temporary, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write,
+      [IO.FileShare]::None, 4096, [IO.FileOptions]::WriteThrough)
+    try {
+      $script:installerEvidenceWriterStage = "tempWrite"
+      Invoke-InstallerEvidenceFault "tempWrite"
+      $stream.Write($bytes, 0, $bytes.Length)
+      $stream.Flush($true)
+    } finally {
+      $stream.Dispose()
+    }
+    $script:installerEvidenceWriterStage = "atomicMove"
+    Invoke-InstallerEvidenceFault "atomicMove"
+    if (Test-Path -LiteralPath $evidencePath -PathType Leaf) {
+      [IO.File]::Replace($temporary, $evidencePath, $backup, $true)
+      Remove-Item -LiteralPath $backup -Force
+    } else {
+      [IO.File]::Move($temporary, $evidencePath)
+    }
+    $script:installerEvidenceWriterStage = "readback"
+    Invoke-InstallerEvidenceFault "readback"
+    $actual = [IO.File]::ReadAllBytes($evidencePath)
+    if (-not (Test-ExactBytes $bytes $actual)) {
+      throw "installerEvidenceReadbackFailed"
+    }
+    $script:installerEvidenceWriterStage = "hash"
+    Invoke-InstallerEvidenceFault "hash"
+    if ((Get-ByteSha256 $bytes) -cne (Get-ByteSha256 $actual)) {
+      throw "installerEvidenceHashFailed"
+    }
   } finally {
-    Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
+    if (Test-Path -LiteralPath $temporary) {
+      Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
+    }
+    if (Test-Path -LiteralPath $backup) {
+      Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
+    }
   }
   return $document
+}
+
+function Write-InstallerEvidence {
+  try {
+    $script:secondaryWriterState = "notRequired"
+    $script:secondaryWriterReason = "none"
+    $script:secondaryWriterPersistence = "standard"
+    return Write-InstallerEvidenceStandard
+  } catch {
+    if ($null -eq $script:frozenInstallerEvidencePrimary -and
+        $null -ne $script:virtualDisplayDiagnostic) {
+      Freeze-InstallerEvidencePrimary $script:virtualDisplayDiagnostic
+    }
+    $script:secondaryWriterState = "failed"
+    $script:secondaryWriterReason = Get-InstallerEvidenceWriterReason (
+      [string]$script:installerEvidenceWriterStage)
+    $script:secondaryWriterPersistence = "lastResort"
+    return Write-InstallerEvidenceLastResort
+  }
 }
 
 function Read-Manifest {
@@ -6652,6 +6862,207 @@ try {
     } | ConvertTo-Json -Compress))
     exit 0
   }
+  if ($Action -eq "ValidateInstallerEvidenceSecondaryFailure") {
+    $fullValidationRoot = [IO.Path]::GetFullPath($ValidationRoot)
+    if (-not (Test-InstallerEvidenceFaultAllowed) -or
+        $fullValidationRoot -cne $installRoot) {
+      throw "installerEvidenceValidationUnavailable"
+    }
+    $script:virtualDisplayInstallStage = "completed"
+    $script:virtualDisplayReadbackCode = "virtualDisplayDeviceCountInvalid"
+    $script:virtualDisplayChildExit = 0
+    $script:virtualDisplayRemoveExit = 0
+    $script:virtualDisplayRemoveCount = 2
+    $script:virtualDisplayProcessCleanup = "completed"
+    $script:virtualDisplayMarkerStage = "notAttempted"
+    $script:virtualDisplayObservedDeviceCount = 2
+    $script:virtualDisplayPresentDeviceCount = 2
+    $script:virtualDisplayUniqueDeviceIdsSha256 =
+      "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    $script:virtualDisplayDriverBindingVerified = $false
+    $script:virtualDisplayFallbackAttempted = $true
+    $script:virtualDisplayFallbackExitCode = 5
+    $script:virtualDisplayFallbackStage = "tupleValidation"
+    $script:virtualDisplayFallbackReason = "nativeFailure"
+    $script:virtualDisplayDeviceRecovery = "failed"
+    $script:virtualDisplayResidualState = "multiple"
+    $script:virtualDisplayCompensation = "completed"
+    $script:virtualDisplayCompensationFailureReason = "none"
+    $script:virtualDisplayTerminalReadbackState = "completed"
+    $script:virtualDisplayTerminalReadbackReason = "none"
+    $script:virtualDisplayCreateInvocationCount = 0
+    $script:virtualDisplayCreateInvocationIdSha256 =
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    $script:virtualDisplayPreCreateIdentitySha256 =
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    $script:virtualDisplayPostCreateIdentitySha256 =
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    $script:virtualDisplayPostCreateIdentityState = "notAttempted"
+    $script:virtualDisplayPostCreateIdentityReason = "none"
+    $script:virtualDisplayDiagnostic = New-VirtualDisplayDiagnostic (
+      "virtualDisplayReadbackFailed") $false
+    $script:finalFailedField = "virtualDisplay"
+    $script:finalComponents.virtualDisplay = "failed"
+    $EvidencePhase = "failed"
+    $EvidenceSuccess = "false"
+    $EvidenceResultCode = "installationFinalReadbackFailed"
+    $EvidenceFailedField = "virtualDisplay"
+    $EvidenceHelperExit = 0
+    $EvidenceRollback = "completed"
+    $evidencePath = Get-InstallerEvidencePath
+    $writerReasons = @(
+      "correlation", "serialization", "tempCreate", "tempWrite",
+      "atomicMove", "readback", "hash")
+    $writerFaultsPassed = 0
+    $writerFaultResults = @()
+    foreach ($reason in $writerReasons) {
+      if (Test-Path -LiteralPath $evidencePath) {
+        Remove-Item -LiteralPath $evidencePath -Force
+      }
+      $script:frozenInstallerEvidencePrimary = $null
+      $script:frozenInstallerEvidencePrimaryJson = $null
+      Freeze-InstallerEvidencePrimary $script:virtualDisplayDiagnostic
+      $env:LIGASE_INSTALLER_EVIDENCE_WRITER_FAILURE = $reason
+      $document = Write-InstallerEvidence
+      Remove-Item Env:\LIGASE_INSTALLER_EVIDENCE_WRITER_FAILURE
+      $readback = [IO.File]::ReadAllText(
+        $evidencePath, [Text.UTF8Encoding]::new($false, $true)) |
+          ConvertFrom-Json
+      $tempResidue = @(
+        Get-ChildItem -LiteralPath $fullValidationRoot -Force -Filter (
+          ".last-outcome-*.tmp")).Count
+      if ([string]$document.failedField -cne "virtualDisplay" -or
+          [string]$readback.virtualDisplay.resultCode -cne
+            [string]$script:virtualDisplayDiagnostic.resultCode -or
+          [string]$readback.secondaryWriter.state -cne "failed" -or
+          [string]$readback.secondaryWriter.reason -cne $reason -or
+          [string]$readback.secondaryWriter.persistence -cne "lastResort" -or
+          [string]$readback.persistenceState -cne "lastResort" -or
+          $tempResidue -ne 0) {
+        throw "installerEvidenceSecondaryFailureProjectionInvalid"
+      }
+      $writerFaultResults += [ordered]@{
+        reason = $reason
+        primaryResultCode = [string]$readback.virtualDisplay.resultCode
+        secondaryState = [string]$readback.secondaryWriter.state
+        persistence = [string]$readback.secondaryWriter.persistence
+        outcomeSha256 = Get-ByteSha256 ([IO.File]::ReadAllBytes($evidencePath))
+        tempResidueCount = $tempResidue
+      }
+      $writerFaultsPassed++
+    }
+    $secondaryCrossSpliceRejected = 0
+    $validSecondaryOutcome = [IO.File]::ReadAllText(
+      $evidencePath, [Text.UTF8Encoding]::new($false, $true)) |
+        ConvertFrom-Json
+    foreach ($values in @(
+        @{ state = "notRequired"; reason = "hash"; persistence = "standard" },
+        @{ state = "failed"; reason = "none"; persistence = "lastResort" },
+        @{ state = "failed"; reason = "readback"; persistence = "standard" })) {
+      $cross = ($validSecondaryOutcome | ConvertTo-Json -Depth 8 -Compress) |
+        ConvertFrom-Json
+      $cross.secondaryWriter.state = [string]$values.state
+      $cross.secondaryWriter.reason = [string]$values.reason
+      $cross.secondaryWriter.persistence = [string]$values.persistence
+      $rejected = $false
+      try { Assert-InstallerEvidenceSecondaryWriterCorrelation $cross } catch {
+        $rejected = [string]$_.Exception.Message -ceq
+          "installerEvidenceSecondaryWriterInvalid"
+      }
+      if (-not $rejected) {
+        throw "installerEvidenceSecondaryFailureProjectionInvalid"
+      }
+      $secondaryCrossSpliceRejected++
+    }
+    $parseFaultsPassed = 0
+    foreach ($parseCase in @("token", "file")) {
+      $script:virtualDisplayDiagnostic = $null
+      try {
+        if ($parseCase -ceq "token") {
+          $null = ConvertFrom-VirtualDisplayDiagnosticToken "not-a-token"
+        } else {
+          [IO.File]::WriteAllText(
+            (Get-VirtualDisplayDiagnosticPath), "{not-json",
+            [Text.UTF8Encoding]::new($false))
+          $null = Read-VirtualDisplayDiagnostic
+        }
+      } catch {
+        $script:virtualDisplayReadbackCode = "virtualDisplayReadbackFailed"
+        $script:virtualDisplayFinalizePreReadStage = "failed"
+        $script:virtualDisplayFinalizePreReadReason = "schema"
+        $script:virtualDisplayFinalizePreReadCleanupState = "completed"
+        $script:virtualDisplayFinalizePreReadRootPidZero = $true
+        $script:virtualDisplayFinalizePreReadJobActiveProcesses = 0
+        $script:virtualDisplayFinalizePreReadStdoutClosed = $true
+        $script:virtualDisplayFinalizePreReadStderrClosed = $true
+        $script:virtualDisplayFinalizePreReadDeviceCount = -1
+        $script:virtualDisplayFinalizePreReadPresentDeviceCount = -1
+        $script:virtualDisplayFinalizePreReadIdentitySha256 =
+          "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        $script:virtualDisplayFinalizePreReadDriverBindingVerified = $false
+        $script:virtualDisplayDiagnostic = New-VirtualDisplayDiagnostic (
+          "virtualDisplayReadbackFailed") $false
+      }
+      $script:frozenInstallerEvidencePrimary = $null
+      $script:frozenInstallerEvidencePrimaryJson = $null
+      Freeze-InstallerEvidencePrimary $script:virtualDisplayDiagnostic
+      $null = Write-InstallerEvidence
+      $parseOutcome = [IO.File]::ReadAllText(
+        $evidencePath, [Text.UTF8Encoding]::new($false, $true)) |
+          ConvertFrom-Json
+      if ([string]$parseOutcome.failedField -cne "virtualDisplay" -or
+          [string]$parseOutcome.virtualDisplay.finalizePreReadReason -cne
+            "schema" -or
+          [string]$parseOutcome.secondaryWriter.state -cne "notRequired") {
+        throw "installerEvidenceSecondaryFailureProjectionInvalid"
+      }
+      $parseFaultsPassed++
+    }
+    if (Test-Path -LiteralPath $evidencePath) {
+      Remove-Item -LiteralPath $evidencePath -Force
+    }
+    $script:frozenInstallerEvidencePrimary = $null
+    $script:frozenInstallerEvidencePrimaryJson = $null
+    Freeze-InstallerEvidencePrimary $script:virtualDisplayDiagnostic
+    $env:LIGASE_INSTALLER_EVIDENCE_WRITER_FAILURE = "serialization"
+    $env:LIGASE_INSTALLER_LAST_RESORT_FAILURE = "temp"
+    $persistenceUnavailable = $false
+    try { $null = Write-InstallerEvidence } catch {
+      $persistenceUnavailable =
+        [string]$_.Exception.Message -ceq
+          "installerEvidencePersistenceUnavailable"
+    } finally {
+      Remove-Item Env:\LIGASE_INSTALLER_EVIDENCE_WRITER_FAILURE `
+        -ErrorAction SilentlyContinue
+      Remove-Item Env:\LIGASE_INSTALLER_LAST_RESORT_FAILURE `
+        -ErrorAction SilentlyContinue
+    }
+    $finalTempResidue = @(
+      Get-ChildItem -LiteralPath $fullValidationRoot -Force -Filter (
+        ".last-outcome-*.tmp")).Count
+    if (-not $persistenceUnavailable -or
+        (Test-Path -LiteralPath $evidencePath) -or
+        $finalTempResidue -ne 0) {
+      throw "installerEvidencePersistenceUnavailableProjectionInvalid"
+    }
+    [Console]::Out.WriteLine(([ordered]@{
+      code = "installerEvidenceSecondaryFailureValidated"
+      success = $true
+      writerFaultsPassed = $writerFaultsPassed
+      writerFaultResults = $writerFaultResults
+      parseFaultsPassed = $parseFaultsPassed
+      secondaryCrossSpliceRejected = $secondaryCrossSpliceRejected
+      persistenceUnavailable = $persistenceUnavailable
+      primaryResultCode =
+        [string]$script:frozenInstallerEvidencePrimary.resultCode
+      finalOutcomeCount = @(Get-ChildItem -LiteralPath $fullValidationRoot `
+        -Force -Filter "last-outcome.json").Count
+      tempResidueCount = $finalTempResidue
+      processStartCount = 0
+      systemMutation = $false
+    } | ConvertTo-Json -Compress))
+    exit 0
+  }
   if ($Action -eq "ValidateVirtualDisplayDiagnosticProjection") {
     $fullValidationRoot = [IO.Path]::GetFullPath($ValidationRoot)
     if ($env:LIGASE_INSTALL_VALIDATION_HARNESS -cne "1" -or
@@ -7976,6 +8387,25 @@ try {
       })
       exit 0
     } catch {
+      if ($null -eq $script:virtualDisplayDiagnostic) {
+        $script:virtualDisplayReadbackCode = "virtualDisplayReadbackFailed"
+        $script:virtualDisplayFinalizePreReadStage = "failed"
+        $script:virtualDisplayFinalizePreReadReason = "schema"
+        $script:virtualDisplayFinalizePreReadCleanupState = "completed"
+        $script:virtualDisplayFinalizePreReadRootPidZero = $true
+        $script:virtualDisplayFinalizePreReadJobActiveProcesses = 0
+        $script:virtualDisplayFinalizePreReadStdoutClosed = $true
+        $script:virtualDisplayFinalizePreReadStderrClosed = $true
+        $script:virtualDisplayFinalizePreReadDeviceCount = -1
+        $script:virtualDisplayFinalizePreReadPresentDeviceCount = -1
+        $script:virtualDisplayFinalizePreReadIdentitySha256 =
+          "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        $script:virtualDisplayFinalizePreReadDriverBindingVerified = $false
+        $script:virtualDisplayDiagnostic = New-VirtualDisplayDiagnostic (
+          "virtualDisplayReadbackFailed") $false
+      }
+      $script:finalFailedField = "virtualDisplay"
+      $script:finalComponents.virtualDisplay = "failed"
       if ($script:firewallAppliedByTransaction -and
           -not $script:firewallWasConfigured) {
         try {
@@ -8017,6 +8447,7 @@ try {
           "empty"
         } else { "nonEmpty" }
       } else { "absent" }
+      Freeze-InstallerEvidencePrimary $script:virtualDisplayDiagnostic
       $null = Write-InstallerEvidence
       Write-Outcome "installationFinalReadbackFailed" $false
       exit 10
@@ -8617,6 +9048,14 @@ try {
   exit 0
 } catch {
   $originalMessage = [string]$_.Exception.Message
+  if ($Action -eq "ValidateInstallerEvidenceSecondaryFailure") {
+    Write-Outcome "installerEvidenceSecondaryFailureValidationFailed" $false @{
+      failure = $originalMessage
+      writerStage = [string]$script:installerEvidenceWriterStage
+      secondaryReason = [string]$script:secondaryWriterReason
+    }
+    exit 10
+  }
   if ($Action -eq "Install") {
     if ($script:firewallAppliedByTransaction -and
         -not $script:firewallWasConfigured) {
@@ -8832,6 +9271,29 @@ try {
       # independently validated by FinalizeInstall before last-outcome writes.
     }
     [Console]::Out.WriteLine($diagnosticToken)
+    exit 10
+  }
+  if ($Action -eq "FinalizeInstall" -and
+      $null -ne $script:frozenInstallerEvidencePrimary) {
+    try {
+      $document = Write-InstallerEvidenceLastResort
+      Write-Outcome $code $false @{
+        failedField = "virtualDisplay"
+        primaryResultCode = [string]$document.virtualDisplay.resultCode
+        secondaryWriterState = "failed"
+        secondaryWriterReason = [string]$script:secondaryWriterReason
+        persistenceState = "lastResort"
+      }
+    } catch {
+      Write-Outcome $code $false @{
+        failedField = "virtualDisplay"
+        primaryResultCode =
+          [string]$script:frozenInstallerEvidencePrimary.resultCode
+        secondaryWriterState = "failed"
+        secondaryWriterReason = [string]$script:secondaryWriterReason
+        persistenceState = "persistenceUnavailable"
+      }
+    }
     exit 10
   }
   Write-Outcome $code $false
