@@ -1781,6 +1781,11 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(management, "inventoryJobActiveProcesses");
         StringAssert.Contains(management, "finalizePreReadStage");
         StringAssert.Contains(management, "finalizePreReadReason");
+        StringAssert.Contains(management, "finalizePreReadSchemaReason");
+        StringAssert.Contains(management, "finalizePreReadSchemaCount");
+        StringAssert.Contains(management, "duplicateProperty");
+        StringAssert.Contains(management, "missingProperty");
+        StringAssert.Contains(management, "unknownProperty");
         StringAssert.Contains(management, "finalizePreReadCleanupState");
         StringAssert.Contains(management, "finalizePreReadRootPidZero");
         StringAssert.Contains(management, "finalizePreReadJobActiveProcesses");
@@ -1985,6 +1990,16 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(runtimeHarness, "crossSpliceRejected");
         StringAssert.Contains(runtimeHarness, "finalizePreReadStage");
         StringAssert.Contains(runtimeHarness, "finalizePreReadReason");
+        StringAssert.Contains(runtimeHarness,
+            "LIGASE_VDISPLAY_INVENTORY_SCHEMA_BEHAVIOR");
+        StringAssert.Contains(runtimeHarness,
+            "virtualDisplayNativeSchemaCaseFailed");
+        StringAssert.Contains(runtimeHarness, "recordCountNull");
+        StringAssert.Contains(runtimeHarness, "recordCountEmpty");
+        StringAssert.Contains(runtimeHarness, "recordCountLimit");
+        StringAssert.Contains(runtimeHarness, "schemaVersion");
+        StringAssert.Contains(runtimeHarness, "schemaVersionNonempty");
+        StringAssert.Contains(runtimeHarness, "zeroDevices");
         StringAssert.Contains(runtimeHarness, "finalizePreReadStdoutClosed");
         StringAssert.Contains(runtimeHarness, "finalizePreReadStderrClosed");
         StringAssert.Contains(runtimeHarness,
@@ -1993,6 +2008,12 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(runtimeHarness, "parseFaultsPassed -ne 2");
         StringAssert.Contains(runtimeHarness,
             "secondaryCrossSpliceRejected -ne 3");
+        StringAssert.Contains(runtimeHarness,
+            "schemaSubreasonCasesPassed -ne 9");
+        StringAssert.Contains(runtimeHarness,
+            "schemaCountCrossSpliceRejected -ne 4");
+        StringAssert.Contains(runtimeHarness,
+            "virtualDisplayWriterFaultsPassed -ne 9");
         StringAssert.Contains(runtimeHarness, "persistenceUnavailable");
         StringAssert.Contains(runtimeHarness,
             "virtualDisplayTerminalReadbackCases");

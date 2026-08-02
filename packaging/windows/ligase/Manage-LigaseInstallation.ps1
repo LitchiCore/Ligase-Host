@@ -1502,6 +1502,8 @@ function Invoke-VirtualDisplayInventoryHelper {
   $script:virtualDisplayNativeInventoryJobActiveProcesses = 0
   $script:virtualDisplayNativeInventoryStdoutClosed = $false
   $script:virtualDisplayNativeInventoryStderrClosed = $false
+  $script:virtualDisplayNativeInventorySchemaReason = "none"
+  $script:virtualDisplayNativeInventorySchemaCount = 0
   $totalClock = [Diagnostics.Stopwatch]::StartNew()
   $helper = Get-VirtualDisplayInventoryHelperPath
   $commandLine = '"' + $helper + '" --inventory'
@@ -1679,33 +1681,133 @@ function Invoke-VirtualDisplayInventoryHelper {
       $stdout = [Text.UTF8Encoding]::new($false, $true).GetString(
         $stdoutBytes, 0, $stdoutLength)
     } catch { throw "virtualDisplayReadbackFailed" }
+    if ($Action -ceq "ValidateVirtualDisplayNativeInventoryHelper" -and
+        -not [string]::IsNullOrWhiteSpace(
+          [string]$env:LIGASE_VDISPLAY_INVENTORY_SCHEMA_BEHAVIOR)) {
+      $stdout = switch ([string]$env:LIGASE_VDISPLAY_INVENTORY_SCHEMA_BEHAVIOR) {
+        "missingProperty" { '{"schemaVersion":1,"state":"available"}' }
+        "unknownProperty" { '{"schemaVersion":1,"state":"available","devices":[],"extra":0}' }
+        "duplicateProperty" { '{"schemaVersion":1,"state":"available","devices":[],"devices":[]}' }
+        "recordCount" { '[{"schemaVersion":1,"state":"available","devices":[]},{"schemaVersion":1,"state":"available","devices":[]}]' }
+        "recordCountNull" { 'null' }
+        "recordCountEmpty" { '[]' }
+        "recordCountLimit" {
+          $validationDevices = @(0..16 | ForEach-Object {
+            [ordered]@{
+              instanceId = "ROOT\DISPLAY\$($_.ToString('D4'))"
+              present = $false
+              status = "Unknown"
+              driverInf = ""
+            }
+          })
+          ([ordered]@{
+            schemaVersion = 1
+            state = "available"
+            devices = $validationDevices
+          } | ConvertTo-Json -Compress -Depth 4)
+        }
+        "zeroDevices" { '{"schemaVersion":1,"state":"available","devices":[]}' }
+        "schemaVersion" { '{"schemaVersion":2,"state":"available","devices":[]}' }
+        "schemaVersionNonempty" { '{"schemaVersion":2,"state":"available","devices":[{"instanceId":"ROOT\\DISPLAY\\0000","present":false,"status":"Unknown","driverInf":""}]}' }
+        "type" { '{"schemaVersion":"1","state":"available","devices":[]}' }
+        "enum" { '{"schemaVersion":1,"state":"invalid","devices":[]}' }
+        "identity" { '{"schemaVersion":1,"state":"available","devices":[{"instanceId":"ROOT\\DISPLAY\\0000","present":true,"status":"OK","driverInf":"oem1.inf"},{"instanceId":"root\\display\\0000","present":true,"status":"OK","driverInf":"oem1.inf"}]}' }
+        default { throw "virtualDisplayValidationUnavailable" }
+      }
+    }
     $script:virtualDisplayNativeInventoryFailureReason = "json"
     if (-not [LigaseStrictJson]::HasUniqueProperties($stdout)) {
+      $script:virtualDisplayNativeInventoryValidationStage = "schema"
+      $script:virtualDisplayNativeInventoryFailureReason = "schema"
+      $script:virtualDisplayNativeInventorySchemaReason = "duplicateProperty"
+      $script:virtualDisplayNativeInventorySchemaCount = 1
+      throw "virtualDisplayReadbackFailed"
+    }
+    try { $document = $stdout | ConvertFrom-Json } catch {
       throw "virtualDisplayReadbackFailed"
     }
     $script:virtualDisplayNativeInventoryValidationStage = "schema"
     $script:virtualDisplayNativeInventoryFailureReason = "schema"
-    $document = $stdout | ConvertFrom-Json
-    Assert-ClosedProperties $document @("schemaVersion", "state", "devices") (
-      "virtualDisplayInventory")
+    if ($null -eq $document -or $document -is [array]) {
+      $script:virtualDisplayNativeInventorySchemaReason = "recordCount"
+      $script:virtualDisplayNativeInventorySchemaCount = if (
+          $null -eq $document -or @($document).Count -eq 0) {
+        1
+      } else { @($document).Count }
+      throw "virtualDisplayReadbackFailed"
+    }
+    $topNames = @($document.PSObject.Properties.Name)
+    $missingTop = @(@("schemaVersion", "state", "devices") | Where-Object {
+      $topNames -cnotcontains $_ })
+    $unknownTop = @($topNames | Where-Object {
+      @("schemaVersion", "state", "devices") -cnotcontains $_ })
+    if ($missingTop.Count -gt 0) {
+      $script:virtualDisplayNativeInventorySchemaReason = "missingProperty"
+      $script:virtualDisplayNativeInventorySchemaCount = $missingTop.Count
+      throw "virtualDisplayReadbackFailed"
+    }
+    if ($unknownTop.Count -gt 0) {
+      $script:virtualDisplayNativeInventorySchemaReason = "unknownProperty"
+      $script:virtualDisplayNativeInventorySchemaCount = $unknownTop.Count
+      throw "virtualDisplayReadbackFailed"
+    }
+    if ($document.schemaVersion -isnot [int] -or
+        $document.state -isnot [string] -or $document.devices -isnot [array]) {
+      $script:virtualDisplayNativeInventorySchemaReason = "type"
+      $script:virtualDisplayNativeInventorySchemaCount = 1
+      throw "virtualDisplayReadbackFailed"
+    }
     if ($document.schemaVersion -ne 1 -or
-        [string]$document.state -cne "available" -or
-        $document.devices -isnot [array] -or $document.devices.Count -gt 16) {
-      $script:virtualDisplayNativeInventoryFailureReason = "result"
+        [string]$document.state -cne "available") {
+      $script:virtualDisplayNativeInventorySchemaReason = if (
+          $document.schemaVersion -ne 1) { "schemaVersion" } else { "enum" }
+      $script:virtualDisplayNativeInventorySchemaCount = 1
+      throw "virtualDisplayReadbackFailed"
+    }
+    if ($document.devices.Count -gt 16) {
+      $script:virtualDisplayNativeInventorySchemaReason = "recordCount"
+      $script:virtualDisplayNativeInventorySchemaCount = @($document.devices).Count
       throw "virtualDisplayReadbackFailed"
     }
     $seen = [Collections.Generic.HashSet[string]]::new(
       [StringComparer]::OrdinalIgnoreCase)
     foreach ($device in @($document.devices)) {
-      Assert-ClosedProperties $device @(
-        "instanceId", "present", "status", "driverInf") (
-          "virtualDisplayInventoryDevice")
+      if ($null -eq $device -or $device -is [array]) {
+        $script:virtualDisplayNativeInventorySchemaReason = "type"
+        $script:virtualDisplayNativeInventorySchemaCount = 1
+        throw "virtualDisplayReadbackFailed"
+      }
+      $deviceNames = @($device.PSObject.Properties.Name)
+      $missingDevice = @(@("instanceId", "present", "status", "driverInf") |
+        Where-Object { $deviceNames -cnotcontains $_ })
+      $unknownDevice = @($deviceNames | Where-Object {
+        @("instanceId", "present", "status", "driverInf") -cnotcontains $_ })
+      if ($missingDevice.Count -gt 0) {
+        $script:virtualDisplayNativeInventorySchemaReason = "missingProperty"
+        $script:virtualDisplayNativeInventorySchemaCount = $missingDevice.Count
+        throw "virtualDisplayReadbackFailed"
+      }
+      if ($unknownDevice.Count -gt 0) {
+        $script:virtualDisplayNativeInventorySchemaReason = "unknownProperty"
+        $script:virtualDisplayNativeInventorySchemaCount = $unknownDevice.Count
+        throw "virtualDisplayReadbackFailed"
+      }
+      if ($device.instanceId -isnot [string] -or
+          $device.present -isnot [bool] -or $device.status -isnot [string] -or
+          $device.driverInf -isnot [string]) {
+        $script:virtualDisplayNativeInventorySchemaReason = "type"
+        $script:virtualDisplayNativeInventorySchemaCount = 1
+        throw "virtualDisplayReadbackFailed"
+      }
+      if ([string]$device.status -cnotin @("OK", "Problem", "Unknown")) {
+        $script:virtualDisplayNativeInventorySchemaReason = "enum"
+        $script:virtualDisplayNativeInventorySchemaCount = 1
+        throw "virtualDisplayReadbackFailed"
+      }
       if ([string]::IsNullOrWhiteSpace([string]$device.instanceId) -or
-          $device.present -isnot [bool] -or
-          [string]$device.status -cnotin @("OK", "Problem", "Unknown") -or
-          $device.driverInf -isnot [string] -or
           -not $seen.Add([string]$device.instanceId)) {
-        $script:virtualDisplayNativeInventoryFailureReason = "result"
+        $script:virtualDisplayNativeInventorySchemaReason = "identity"
+        $script:virtualDisplayNativeInventorySchemaCount = 1
         throw "virtualDisplayReadbackFailed"
       }
     }
@@ -2279,6 +2381,10 @@ function New-VirtualDisplayDiagnostic([string]$ResultCode, [bool]$Success) {
       [int]$script:virtualDisplayInventoryJobActiveProcesses
     finalizePreReadStage = [string]$script:virtualDisplayFinalizePreReadStage
     finalizePreReadReason = [string]$script:virtualDisplayFinalizePreReadReason
+    finalizePreReadSchemaReason =
+      [string]$script:virtualDisplayFinalizePreReadSchemaReason
+    finalizePreReadSchemaCount =
+      [int]$script:virtualDisplayFinalizePreReadSchemaCount
     finalizePreReadCleanupState =
       [string]$script:virtualDisplayFinalizePreReadCleanupState
     finalizePreReadRootPidZero =
@@ -2432,6 +2538,8 @@ function Assert-VirtualDisplayFinalizePreReadCorrelation($Document) {
     "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
   $stage = [string]$Document.finalizePreReadStage
   $reason = [string]$Document.finalizePreReadReason
+  $schemaReason = [string]$Document.finalizePreReadSchemaReason
+  $schemaCount = [int]$Document.finalizePreReadSchemaCount
   $cleanup = [string]$Document.finalizePreReadCleanupState
   $rootPidZero = [bool]$Document.finalizePreReadRootPidZero
   $jobActive = [int]$Document.finalizePreReadJobActiveProcesses
@@ -2443,14 +2551,16 @@ function Assert-VirtualDisplayFinalizePreReadCorrelation($Document) {
   $binding = [bool]$Document.finalizePreReadDriverBindingVerified
   $valid = switch ($stage) {
     "notAttempted" {
-      $reason -ceq "none" -and $cleanup -ceq "notRequired" -and
+      $reason -ceq "none" -and $schemaReason -ceq "none" -and
+      $schemaCount -eq 0 -and $cleanup -ceq "notRequired" -and
       $rootPidZero -and $jobActive -eq 0 -and
       -not $stdoutClosed -and -not $stderrClosed -and
       $count -eq -1 -and $present -eq -1 -and
       $identitySha -ceq $emptyIdentitySha -and -not $binding
     }
     "completed" {
-      $reason -ceq "none" -and $cleanup -ceq "completed" -and
+      $reason -ceq "none" -and $schemaReason -ceq "none" -and
+      $schemaCount -eq 0 -and $cleanup -ceq "completed" -and
       $rootPidZero -and $jobActive -eq 0 -and
       $stdoutClosed -and $stderrClosed -and
       $count -ge 0 -and $count -le 16 -and
@@ -2462,6 +2572,16 @@ function Assert-VirtualDisplayFinalizePreReadCorrelation($Document) {
     }
     "failed" {
       $reason -cne "none" -and $count -eq -1 -and $present -eq -1 -and
+      $(if ($reason -ceq "schema") {
+        $(switch ($schemaReason) {
+          { $_ -in @("missingProperty", "unknownProperty", "recordCount") } {
+            $schemaCount -ge 1
+          }
+          { $_ -in @("duplicateProperty", "type", "enum", "schemaVersion",
+                "crossField", "identity") } { $schemaCount -eq 1 }
+          default { $false }
+        })
+      } else { $schemaReason -ceq "none" -and $schemaCount -eq 0 }) -and
       $identitySha -ceq $emptyIdentitySha -and -not $binding -and
       $(if ($reason -ceq "resolve") {
         $cleanup -ceq "notRequired" -and $rootPidZero -and
@@ -2730,6 +2850,7 @@ function ConvertFrom-VirtualDisplayDiagnosticToken([string]$Token) {
     "inventoryHardCapMilliseconds", "inventoryCleanupState",
     "inventoryRootPidZero", "inventoryJobActiveProcesses",
     "finalizePreReadStage", "finalizePreReadReason",
+    "finalizePreReadSchemaReason", "finalizePreReadSchemaCount",
     "finalizePreReadCleanupState", "finalizePreReadRootPidZero",
     "finalizePreReadJobActiveProcesses", "finalizePreReadStdoutClosed",
     "finalizePreReadStderrClosed", "finalizePreReadDeviceCount",
@@ -2880,6 +3001,13 @@ function ConvertFrom-VirtualDisplayDiagnosticToken([string]$Token) {
       @("none", "resolve", "start", "timeout", "overflow", "pipe",
         "nativeExit", "stderr", "utf8", "json", "schema", "result",
         "cleanup") -cnotcontains [string]$document.finalizePreReadReason -or
+      $document.finalizePreReadSchemaReason -isnot [string] -or
+      @("none", "missingProperty", "unknownProperty", "duplicateProperty",
+        "recordCount", "type", "enum", "schemaVersion", "crossField",
+        "identity") -cnotcontains
+          [string]$document.finalizePreReadSchemaReason -or
+      $document.finalizePreReadSchemaCount -isnot [int] -or
+      [int]$document.finalizePreReadSchemaCount -lt 0 -or
       $document.finalizePreReadCleanupState -isnot [string] -or
       @("notRequired", "completed", "failed") -cnotcontains
         [string]$document.finalizePreReadCleanupState -or
@@ -2918,32 +3046,85 @@ function Write-VirtualDisplayDiagnostic($Document) {
   if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
     New-Item -ItemType Directory -Path $directory -Force | Out-Null
   }
-  Set-SecureDataRootAcl $directory
+  if ($Action -ne "ValidateInstallerEvidenceSecondaryFailure") {
+    Set-SecureDataRootAcl $directory
+  }
   $raw = $Document | ConvertTo-Json -Compress
   $bytes = [Text.UTF8Encoding]::new($false).GetBytes($raw)
   $temporary = Join-Path $directory (
     ".virtual-display-outcome-" + [Guid]::NewGuid().ToString("N") + ".tmp")
-  $stream = [IO.File]::Open(
-    $temporary, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write,
-    [IO.FileShare]::None, 4096, [IO.FileOptions]::WriteThrough)
+  $backup = Join-Path $directory (
+    ".virtual-display-outcome-backup-" + [Guid]::NewGuid().ToString("N") +
+      ".tmp")
+  $stream = $null
   try {
-    $stream.Write($bytes, 0, $bytes.Length)
-    $stream.Flush($true)
-  } finally {
-    $stream.Dispose()
-  }
-  try {
+    Invoke-VirtualDisplayDiagnosticWriterFault "tempCreate"
+    $stream = [IO.FileStream]::new(
+      $temporary, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write,
+      [IO.FileShare]::None, 4096, [IO.FileOptions]::WriteThrough)
+    Invoke-VirtualDisplayDiagnosticWriterFault "tempOpen"
+    try {
+      Invoke-VirtualDisplayDiagnosticWriterFault "tempWrite"
+      $stream.Write($bytes, 0, $bytes.Length)
+      Invoke-VirtualDisplayDiagnosticWriterFault "flush"
+      $stream.Flush($true)
+    } finally {
+      Close-VirtualDisplayDiagnosticStream ([ref]$stream)
+    }
+    Invoke-VirtualDisplayDiagnosticWriterFault "close"
+    Invoke-VirtualDisplayDiagnosticWriterFault "atomicReplace"
     if (Test-Path -LiteralPath $path -PathType Leaf) {
-      [IO.File]::Replace($temporary, $path, $null, $true)
+      [IO.File]::Replace($temporary, $path, $backup, $true)
+      Remove-Item -LiteralPath $backup -Force
     } else {
       [IO.File]::Move($temporary, $path)
     }
+    Invoke-VirtualDisplayDiagnosticWriterFault "readback"
     $readback = [IO.File]::ReadAllBytes($path)
     if (-not (Test-ExactBytes $bytes $readback)) {
       throw "virtualDisplayDiagnosticUnavailable"
     }
+    Invoke-VirtualDisplayDiagnosticWriterFault "hash"
+    if ((Get-ByteSha256 $bytes) -cne (Get-ByteSha256 $readback)) {
+      throw "virtualDisplayDiagnosticUnavailable"
+    }
   } finally {
-    Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
+    $cleanupFailed = $false
+    if ($null -ne $stream) {
+      try { $stream.Dispose() } catch { $cleanupFailed = $true } finally {
+        $stream = $null
+      }
+    }
+    foreach ($cleanupPath in @($temporary, $backup)) {
+      try {
+        Remove-Item -LiteralPath $cleanupPath -Force -ErrorAction Stop
+      } catch {
+        if (Test-Path -LiteralPath $cleanupPath) { $cleanupFailed = $true }
+      }
+    }
+    if ($cleanupFailed) { throw "virtualDisplayDiagnosticUnavailable" }
+  }
+}
+
+function Close-VirtualDisplayDiagnosticStream([ref]$Stream) {
+  if ($null -eq $Stream.Value) { return }
+  $closeFailed = $false
+  try {
+    Invoke-VirtualDisplayDiagnosticWriterFault "dispose"
+    $Stream.Value.Dispose()
+  } catch {
+    $closeFailed = $true
+    try { $Stream.Value.Dispose() } catch { $closeFailed = $true }
+  } finally {
+    $Stream.Value = $null
+  }
+  if ($closeFailed) { throw "virtualDisplayDiagnosticUnavailable" }
+}
+
+function Invoke-VirtualDisplayDiagnosticWriterFault([string]$Stage) {
+  if ((Test-InstallerEvidenceFaultAllowed) -and
+      [string]$env:LIGASE_VDISPLAY_DIAGNOSTIC_WRITER_FAILURE -ceq $Stage) {
+    throw "virtualDisplayDiagnosticUnavailable"
   }
 }
 
@@ -2992,6 +3173,7 @@ function Read-VirtualDisplayDiagnostic {
     "inventoryHardCapMilliseconds", "inventoryCleanupState",
     "inventoryRootPidZero", "inventoryJobActiveProcesses",
     "finalizePreReadStage", "finalizePreReadReason",
+    "finalizePreReadSchemaReason", "finalizePreReadSchemaCount",
     "finalizePreReadCleanupState", "finalizePreReadRootPidZero",
     "finalizePreReadJobActiveProcesses", "finalizePreReadStdoutClosed",
     "finalizePreReadStderrClosed", "finalizePreReadDeviceCount",
@@ -3144,6 +3326,13 @@ function Read-VirtualDisplayDiagnostic {
       @("none", "resolve", "start", "timeout", "overflow", "pipe",
         "nativeExit", "stderr", "utf8", "json", "schema", "result",
         "cleanup") -cnotcontains [string]$document.finalizePreReadReason -or
+      $document.finalizePreReadSchemaReason -isnot [string] -or
+      @("none", "missingProperty", "unknownProperty", "duplicateProperty",
+        "recordCount", "type", "enum", "schemaVersion", "crossField",
+        "identity") -cnotcontains
+          [string]$document.finalizePreReadSchemaReason -or
+      $document.finalizePreReadSchemaCount -isnot [int] -or
+      [int]$document.finalizePreReadSchemaCount -lt 0 -or
       $document.finalizePreReadCleanupState -isnot [string] -or
       @("notRequired", "completed", "failed") -cnotcontains
         [string]$document.finalizePreReadCleanupState -or
@@ -3243,6 +3432,8 @@ $script:virtualDisplayInventoryJobActiveProcesses = 0
 $script:virtualDisplayInventoryFailureLatched = $false
 $script:virtualDisplayFinalizePreReadStage = "notAttempted"
 $script:virtualDisplayFinalizePreReadReason = "none"
+$script:virtualDisplayFinalizePreReadSchemaReason = "none"
+$script:virtualDisplayFinalizePreReadSchemaCount = 0
 $script:virtualDisplayFinalizePreReadCleanupState = "notRequired"
 $script:virtualDisplayFinalizePreReadRootPidZero = $true
 $script:virtualDisplayFinalizePreReadJobActiveProcesses = 0
@@ -5902,6 +6093,14 @@ function Set-VirtualDisplayFinalizePreReadAuthority($Display) {
   $script:virtualDisplayFinalizePreReadReason = if ($failed) {
     $reason
   } else { "none" }
+  $script:virtualDisplayFinalizePreReadSchemaReason = if (
+      $failed -and $reason -ceq "schema") {
+    [string]$script:virtualDisplayNativeInventorySchemaReason
+  } else { "none" }
+  $script:virtualDisplayFinalizePreReadSchemaCount = if (
+      $failed -and $reason -ceq "schema") {
+    [int]$script:virtualDisplayNativeInventorySchemaCount
+  } else { 0 }
   $script:virtualDisplayFinalizePreReadCleanupState =
     [string]$script:virtualDisplayNativeInventoryCleanupState
   $script:virtualDisplayFinalizePreReadRootPidZero =
@@ -5932,6 +6131,10 @@ function Set-VirtualDisplayFinalizePreReadAuthority($Display) {
       $script:virtualDisplayFinalizePreReadStage
     $script:virtualDisplayDiagnostic.finalizePreReadReason =
       $script:virtualDisplayFinalizePreReadReason
+    $script:virtualDisplayDiagnostic.finalizePreReadSchemaReason =
+      $script:virtualDisplayFinalizePreReadSchemaReason
+    $script:virtualDisplayDiagnostic.finalizePreReadSchemaCount =
+      $script:virtualDisplayFinalizePreReadSchemaCount
     $script:virtualDisplayDiagnostic.finalizePreReadCleanupState =
       $script:virtualDisplayFinalizePreReadCleanupState
     $script:virtualDisplayDiagnostic.finalizePreReadRootPidZero =
@@ -6708,6 +6911,8 @@ try {
           $script:virtualDisplayNativeInventoryValidationStderrLength
         stdoutClosed = $script:virtualDisplayNativeInventoryStdoutClosed
         stderrClosed = $script:virtualDisplayNativeInventoryStderrClosed
+        schemaReason = $script:virtualDisplayNativeInventorySchemaReason
+        schemaCount = $script:virtualDisplayNativeInventorySchemaCount
       }
       [Console]::Out.WriteLine(($result | ConvertTo-Json -Compress))
       exit 0
@@ -6728,6 +6933,8 @@ try {
           $script:virtualDisplayNativeInventoryValidationStderrLength
         stdoutClosed = $script:virtualDisplayNativeInventoryStdoutClosed
         stderrClosed = $script:virtualDisplayNativeInventoryStderrClosed
+        schemaReason = $script:virtualDisplayNativeInventorySchemaReason
+        schemaCount = $script:virtualDisplayNativeInventorySchemaCount
       }
       [Console]::Out.WriteLine(($result | ConvertTo-Json -Compress))
       exit 18
@@ -6990,6 +7197,8 @@ try {
         $script:virtualDisplayReadbackCode = "virtualDisplayReadbackFailed"
         $script:virtualDisplayFinalizePreReadStage = "failed"
         $script:virtualDisplayFinalizePreReadReason = "schema"
+        $script:virtualDisplayFinalizePreReadSchemaReason = "crossField"
+        $script:virtualDisplayFinalizePreReadSchemaCount = 1
         $script:virtualDisplayFinalizePreReadCleanupState = "completed"
         $script:virtualDisplayFinalizePreReadRootPidZero = $true
         $script:virtualDisplayFinalizePreReadJobActiveProcesses = 0
@@ -7017,6 +7226,130 @@ try {
         throw "installerEvidenceSecondaryFailureProjectionInvalid"
       }
       $parseFaultsPassed++
+    }
+    $schemaSubreasonCasesPassed = 0
+    foreach ($schemaReason in @(
+        "missingProperty", "unknownProperty", "duplicateProperty",
+        "recordCount", "type", "enum", "schemaVersion", "crossField",
+        "identity")) {
+      $script:virtualDisplayFinalizePreReadStage = "failed"
+      $script:virtualDisplayFinalizePreReadReason = "schema"
+      $script:virtualDisplayFinalizePreReadSchemaReason = $schemaReason
+      $script:virtualDisplayFinalizePreReadSchemaCount = 1
+      $script:virtualDisplayFinalizePreReadCleanupState = "completed"
+      $script:virtualDisplayFinalizePreReadRootPidZero = $true
+      $script:virtualDisplayFinalizePreReadJobActiveProcesses = 0
+      $script:virtualDisplayFinalizePreReadStdoutClosed = $true
+      $script:virtualDisplayFinalizePreReadStderrClosed = $true
+      $script:virtualDisplayFinalizePreReadDeviceCount = -1
+      $script:virtualDisplayFinalizePreReadPresentDeviceCount = -1
+      $script:virtualDisplayFinalizePreReadIdentitySha256 =
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      $script:virtualDisplayFinalizePreReadDriverBindingVerified = $false
+      $schemaOriginal = New-VirtualDisplayDiagnostic (
+        "virtualDisplayReadbackFailed") $false
+      $schemaToken = ConvertTo-VirtualDisplayDiagnosticToken $schemaOriginal
+      $schemaTokenReadback = ConvertFrom-VirtualDisplayDiagnosticToken $schemaToken
+      Write-VirtualDisplayDiagnostic $schemaOriginal
+      $schemaFileReadback = Read-VirtualDisplayDiagnostic
+      foreach ($readback in @($schemaTokenReadback, $schemaFileReadback)) {
+        if ([string]$readback.finalizePreReadReason -cne "schema" -or
+            [string]$readback.finalizePreReadSchemaReason -cne $schemaReason -or
+            [int]$readback.finalizePreReadSchemaCount -ne 1) {
+          throw "virtualDisplaySchemaSubreasonProjectionInvalid"
+        }
+      }
+      $script:virtualDisplayDiagnostic = $schemaOriginal
+      $script:frozenInstallerEvidencePrimary = $null
+      $script:frozenInstallerEvidencePrimaryJson = $null
+      Freeze-InstallerEvidencePrimary $schemaOriginal
+      $null = Write-InstallerEvidence
+      $schemaOutcome = [IO.File]::ReadAllText(
+        $evidencePath, [Text.UTF8Encoding]::new($false, $true)) |
+          ConvertFrom-Json
+      if ([string]$schemaOutcome.failedField -cne "virtualDisplay" -or
+          [string]$schemaOutcome.virtualDisplay.finalizePreReadSchemaReason -cne
+            $schemaReason -or
+          [string]$schemaOutcome.secondaryWriter.state -cne "notRequired") {
+        throw "virtualDisplaySchemaSubreasonOutcomeInvalid"
+      }
+      $schemaSubreasonCasesPassed++
+    }
+    $schemaCountCrossSpliceRejected = 0
+    foreach ($schemaCountCross in @(
+        @{ reason = "recordCount"; count = 0 },
+        @{ reason = "schemaVersion"; count = 2 })) {
+      foreach ($consumer in @("token", "file")) {
+        $cross = ($schemaOriginal | ConvertTo-Json -Depth 8 -Compress) |
+          ConvertFrom-Json
+        $cross.finalizePreReadSchemaReason = [string]$schemaCountCross.reason
+        $cross.finalizePreReadSchemaCount = [int]$schemaCountCross.count
+        $rejected = $false
+        try {
+          if ($consumer -ceq "token") {
+            $null = ConvertFrom-VirtualDisplayDiagnosticToken (
+              ConvertTo-VirtualDisplayDiagnosticToken $cross)
+          } else {
+            Write-VirtualDisplayDiagnostic $cross
+            $null = Read-VirtualDisplayDiagnostic
+          }
+        } catch {
+          $rejected = [string]$_.Exception.Message -ceq
+            "virtualDisplayDiagnosticInvalid"
+        }
+        if (-not $rejected) {
+          throw "virtualDisplaySchemaCountCrossSpliceAccepted"
+        }
+        $schemaCountCrossSpliceRejected++
+      }
+    }
+    $virtualDisplayWriterFaultsPassed = 0
+    foreach ($writerStage in @(
+        "tempCreate", "tempOpen", "tempWrite", "flush", "dispose", "close",
+        "atomicReplace", "readback", "hash")) {
+      Write-VirtualDisplayDiagnostic $schemaOriginal
+      $writerTargetBefore = [IO.File]::ReadAllBytes(
+        (Get-VirtualDisplayDiagnosticPath))
+      $env:LIGASE_VDISPLAY_DIAGNOSTIC_WRITER_FAILURE = $writerStage
+      $writerRejected = $false
+      try { Write-VirtualDisplayDiagnostic $schemaOriginal } catch {
+        $writerRejected = [string]$_.Exception.Message -ceq
+          "virtualDisplayDiagnosticUnavailable"
+      } finally {
+        Remove-Item Env:\LIGASE_VDISPLAY_DIAGNOSTIC_WRITER_FAILURE `
+          -ErrorAction SilentlyContinue
+      }
+      $writerTempResidue = @(
+        Get-ChildItem -LiteralPath $fullValidationRoot -Force | Where-Object {
+          $_.Name -like ".virtual-display-outcome-*.tmp" -or
+          $_.Name -like ".virtual-display-outcome-backup-*.tmp"
+        }).Count
+      $writerPrimary = Read-VirtualDisplayDiagnostic
+      $writerTargetAfter = [IO.File]::ReadAllBytes(
+        (Get-VirtualDisplayDiagnosticPath))
+      if (-not $writerRejected -or $writerTempResidue -ne 0 -or
+          -not (Test-ExactBytes $writerTargetBefore $writerTargetAfter) -or
+          [string]$writerPrimary.resultCode -cne
+            [string]$schemaOriginal.resultCode -or
+          [string]$writerPrimary.finalizePreReadSchemaReason -cne
+            [string]$schemaOriginal.finalizePreReadSchemaReason) {
+        throw "virtualDisplayDiagnosticWriterFaultProjectionInvalid"
+      }
+      $script:virtualDisplayDiagnostic = $schemaOriginal
+      $script:frozenInstallerEvidencePrimary = $null
+      $script:frozenInstallerEvidencePrimaryJson = $null
+      Freeze-InstallerEvidencePrimary $schemaOriginal
+      $null = Write-InstallerEvidence
+      $writerOutcome = [IO.File]::ReadAllText(
+        $evidencePath, [Text.UTF8Encoding]::new($false, $true)) |
+          ConvertFrom-Json
+      if ([string]$writerOutcome.failedField -cne "virtualDisplay" -or
+          [string]$writerOutcome.virtualDisplay.resultCode -cne
+            [string]$schemaOriginal.resultCode -or
+          [string]$writerOutcome.secondaryWriter.state -cne "notRequired") {
+        throw "virtualDisplayDiagnosticWriterOutcomeInvalid"
+      }
+      $virtualDisplayWriterFaultsPassed++
     }
     if (Test-Path -LiteralPath $evidencePath) {
       Remove-Item -LiteralPath $evidencePath -Force
@@ -7051,6 +7384,9 @@ try {
       writerFaultsPassed = $writerFaultsPassed
       writerFaultResults = $writerFaultResults
       parseFaultsPassed = $parseFaultsPassed
+      schemaSubreasonCasesPassed = $schemaSubreasonCasesPassed
+      schemaCountCrossSpliceRejected = $schemaCountCrossSpliceRejected
+      virtualDisplayWriterFaultsPassed = $virtualDisplayWriterFaultsPassed
       secondaryCrossSpliceRejected = $secondaryCrossSpliceRejected
       persistenceUnavailable = $persistenceUnavailable
       primaryResultCode =
@@ -8391,6 +8727,8 @@ try {
         $script:virtualDisplayReadbackCode = "virtualDisplayReadbackFailed"
         $script:virtualDisplayFinalizePreReadStage = "failed"
         $script:virtualDisplayFinalizePreReadReason = "schema"
+        $script:virtualDisplayFinalizePreReadSchemaReason = "crossField"
+        $script:virtualDisplayFinalizePreReadSchemaCount = 1
         $script:virtualDisplayFinalizePreReadCleanupState = "completed"
         $script:virtualDisplayFinalizePreReadRootPidZero = $true
         $script:virtualDisplayFinalizePreReadJobActiveProcesses = 0

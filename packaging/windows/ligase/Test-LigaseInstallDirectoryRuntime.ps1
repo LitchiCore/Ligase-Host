@@ -3261,6 +3261,7 @@ $savedNativeHarness = [string]$env:LIGASE_INSTALL_VALIDATION_HARNESS
 $savedNativeValidation = [string]$env:LIGASE_VDISPLAY_INVENTORY_HELPER_VALIDATION
 $savedHelperPath = [string]$env:LIGASE_VDISPLAY_INVENTORY_HELPER_PATH
 $savedHelperBehavior = [string]$env:LIGASE_VDISPLAY_INVENTORY_HELPER_BEHAVIOR
+$savedSchemaBehavior = [string]$env:LIGASE_VDISPLAY_INVENTORY_SCHEMA_BEHAVIOR
 try {
   $env:LIGASE_INSTALL_VALIDATION_HARNESS = "1"
   $env:LIGASE_VDISPLAY_INVENTORY_HELPER_VALIDATION = "1"
@@ -3309,6 +3310,90 @@ try {
       stderrClosed = [bool]$result.stderrClosed
     }
   }
+  Remove-Item Env:\LIGASE_VDISPLAY_INVENTORY_HELPER_BEHAVIOR `
+    -ErrorAction SilentlyContinue
+  foreach ($schemaCase in @(
+      @{ behavior = "missingProperty"; reason = "missingProperty"; count = 1 },
+      @{ behavior = "unknownProperty"; reason = "unknownProperty"; count = 1 },
+      @{ behavior = "duplicateProperty"; reason = "duplicateProperty"; count = 1 },
+      @{ behavior = "recordCount"; reason = "recordCount"; count = 2 },
+      @{ behavior = "recordCountNull"; reason = "recordCount"; count = 1 },
+      @{ behavior = "recordCountEmpty"; reason = "recordCount"; count = 1 },
+      @{ behavior = "recordCountLimit"; reason = "recordCount"; count = 17 },
+      @{ behavior = "schemaVersion"; reason = "schemaVersion"; count = 1 },
+      @{ behavior = "schemaVersionNonempty"; reason = "schemaVersion"; count = 1 },
+      @{ behavior = "type"; reason = "type"; count = 1 },
+      @{ behavior = "enum"; reason = "enum"; count = 1 },
+      @{ behavior = "identity"; reason = "identity"; count = 1 })) {
+    $schemaBehavior = [string]$schemaCase.behavior
+    $env:LIGASE_VDISPLAY_INVENTORY_SCHEMA_BEHAVIOR = $schemaBehavior
+    $raw = @(& (Join-Path $env:SystemRoot (
+          "System32\WindowsPowerShell\v1.0\powershell.exe")) `
+      -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+      -File $managementScript `
+      -Action ValidateVirtualDisplayNativeInventoryHelper `
+      -InstallDirectory $inventoryFixtureRoot)
+    $nativeExit = $LASTEXITCODE
+    if ($raw.Count -ne 1 -or $nativeExit -ne 18) {
+      throw "virtualDisplayNativeSchemaCaseUnavailable:$schemaBehavior"
+    }
+    $result = $raw[0] | ConvertFrom-Json
+    if ([string]$result.state -cne "failed" -or
+        [string]$result.validationStage -cne "schema" -or
+        [string]$result.schemaReason -cne [string]$schemaCase.reason -or
+        [int]$result.schemaCount -ne [int]$schemaCase.count -or
+        [string]$result.cleanupState -cne "completed" -or
+        -not [bool]$result.rootPidZero -or
+        [int]$result.jobActiveProcesses -ne 0 -or
+        -not [bool]$result.stdoutClosed -or
+        -not [bool]$result.stderrClosed) {
+      throw "virtualDisplayNativeSchemaCaseFailed:$schemaBehavior"
+    }
+    $nativeInventoryInvocationResults += [ordered]@{
+      name = "schema-$schemaBehavior"
+      state = [string]$result.state
+      schemaReason = [string]$result.schemaReason
+      schemaCount = [int]$result.schemaCount
+      cleanupState = [string]$result.cleanupState
+      rootPidZero = [bool]$result.rootPidZero
+      jobActiveProcesses = [int]$result.jobActiveProcesses
+      stdoutClosed = [bool]$result.stdoutClosed
+      stderrClosed = [bool]$result.stderrClosed
+    }
+  }
+  $env:LIGASE_VDISPLAY_INVENTORY_SCHEMA_BEHAVIOR = "zeroDevices"
+  $zeroRaw = @(& (Join-Path $env:SystemRoot (
+        "System32\WindowsPowerShell\v1.0\powershell.exe")) `
+    -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+    -File $managementScript `
+    -Action ValidateVirtualDisplayNativeInventoryHelper `
+    -InstallDirectory $inventoryFixtureRoot)
+  if ($LASTEXITCODE -ne 0 -or $zeroRaw.Count -ne 1) {
+    throw "virtualDisplayNativeZeroSchemaCaseUnavailable"
+  }
+  $zeroResult = $zeroRaw[0] | ConvertFrom-Json
+  if ([string]$zeroResult.state -cne "available" -or
+      [int]$zeroResult.matchingDeviceCount -ne 0 -or
+      [string]$zeroResult.schemaReason -cne "none" -or
+      [int]$zeroResult.schemaCount -ne 0 -or
+      [string]$zeroResult.cleanupState -cne "completed" -or
+      -not [bool]$zeroResult.rootPidZero -or
+      [int]$zeroResult.jobActiveProcesses -ne 0 -or
+      -not [bool]$zeroResult.stdoutClosed -or
+      -not [bool]$zeroResult.stderrClosed) {
+    throw "virtualDisplayNativeZeroSchemaCaseFailed"
+  }
+  $nativeInventoryInvocationResults += [ordered]@{
+    name = "schema-zeroDevices"
+    state = [string]$zeroResult.state
+    schemaReason = [string]$zeroResult.schemaReason
+    schemaCount = [int]$zeroResult.schemaCount
+    cleanupState = [string]$zeroResult.cleanupState
+    rootPidZero = [bool]$zeroResult.rootPidZero
+    jobActiveProcesses = [int]$zeroResult.jobActiveProcesses
+    stdoutClosed = [bool]$zeroResult.stdoutClosed
+    stderrClosed = [bool]$zeroResult.stderrClosed
+  }
 } finally {
   if ([string]::IsNullOrEmpty($savedNativeHarness)) {
     Remove-Item Env:\LIGASE_INSTALL_VALIDATION_HARNESS `
@@ -3328,6 +3413,12 @@ try {
     Remove-Item Env:\LIGASE_VDISPLAY_INVENTORY_HELPER_BEHAVIOR `
       -ErrorAction SilentlyContinue
   } else { $env:LIGASE_VDISPLAY_INVENTORY_HELPER_BEHAVIOR = $savedHelperBehavior }
+  if ([string]::IsNullOrEmpty($savedSchemaBehavior)) {
+    Remove-Item Env:\LIGASE_VDISPLAY_INVENTORY_SCHEMA_BEHAVIOR `
+      -ErrorAction SilentlyContinue
+  } else {
+    $env:LIGASE_VDISPLAY_INVENTORY_SCHEMA_BEHAVIOR = $savedSchemaBehavior
+  }
 }
 $boundedInstallRoot = Join-Path $combinationRoot "bounded-helper-install"
 $boundedDeployment = Join-Path $boundedInstallRoot "Deployment"
@@ -6545,6 +6636,9 @@ if ([string]$evidenceSecondaryProjection.code -cne
     -not [bool]$evidenceSecondaryProjection.success -or
     [int]$evidenceSecondaryProjection.writerFaultsPassed -ne 7 -or
     [int]$evidenceSecondaryProjection.parseFaultsPassed -ne 2 -or
+    [int]$evidenceSecondaryProjection.schemaSubreasonCasesPassed -ne 9 -or
+    [int]$evidenceSecondaryProjection.schemaCountCrossSpliceRejected -ne 4 -or
+    [int]$evidenceSecondaryProjection.virtualDisplayWriterFaultsPassed -ne 9 -or
     [int]$evidenceSecondaryProjection.secondaryCrossSpliceRejected -ne 3 -or
     -not [bool]$evidenceSecondaryProjection.persistenceUnavailable -or
     [string]$evidenceSecondaryProjection.primaryResultCode -cne

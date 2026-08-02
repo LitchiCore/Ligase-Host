@@ -773,6 +773,17 @@ pipe, output, UTF-8/JSON/schema, SetupAPI-result, or cleanup failure is written
 with `failedField=virtualDisplay`; it cannot bypass the last-outcome writer or
 replace an earlier primary failure. These fields never contain raw output,
 executable paths, argv, device IDs, or exception text.
+When the closed reason is `schema`, `finalizePreReadSchemaReason` and
+`finalizePreReadSchemaCount` distinguish missing, unknown, or duplicate
+properties, record-count, type, enum, schema-version, cross-field, or identity failures without
+persisting the rejected JSON or any device value. The count is the safe number
+of closed-schema violations; a top-level null, an empty record set, or a schema
+version mismatch is always counted as at least one violation.
+The D-only evidence gate injects actual diagnostic-writer failures at temporary
+create/open, write, flush, dispose failure/retry, close, atomic replace,
+readback, and hash; every
+branch must preserve the existing target bytes and frozen primary and leave no
+temporary or backup file.
 Before any final evidence write, Finalize freezes the validated primary tuple
 in memory. Correlation, serialization, temporary-file creation/write, atomic
 move, final readback, or hash failure is recorded separately as the closed
