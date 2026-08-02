@@ -765,6 +765,14 @@ diagnostics are rejected before they can reach `last-outcome.json`.
 duplicate-device count or other failed UI retains the first closed
 virtual-display authority for later readback. A secondary persistence failure
 never replaces that original result code.
+Finalize consumes and validates that existing token or file before performing
+its fresh SetupAPI-helper readback. The fresh readback has a separate closed
+`finalizePreRead*` authority for safe stage/reason, cleanup, root/job-zero,
+dual-pipe closure, and count/hash/binding projection. A helper start, timeout,
+pipe, output, UTF-8/JSON/schema, SetupAPI-result, or cleanup failure is written
+with `failedField=virtualDisplay`; it cannot bypass the last-outcome writer or
+replace an earlier primary failure. These fields never contain raw output,
+executable paths, argv, device IDs, or exception text.
 
 The ownership marker then uses a same-directory
 write-through temporary file, byte and ACL readback, and an atomic replace or

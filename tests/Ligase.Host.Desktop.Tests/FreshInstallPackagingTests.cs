@@ -1779,6 +1779,36 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(management, "inventoryCleanupState");
         StringAssert.Contains(management, "inventoryRootPidZero");
         StringAssert.Contains(management, "inventoryJobActiveProcesses");
+        StringAssert.Contains(management, "finalizePreReadStage");
+        StringAssert.Contains(management, "finalizePreReadReason");
+        StringAssert.Contains(management, "finalizePreReadCleanupState");
+        StringAssert.Contains(management, "finalizePreReadRootPidZero");
+        StringAssert.Contains(management, "finalizePreReadJobActiveProcesses");
+        StringAssert.Contains(management, "finalizePreReadStdoutClosed");
+        StringAssert.Contains(management, "finalizePreReadStderrClosed");
+        StringAssert.Contains(management,
+            "Assert-VirtualDisplayFinalizePreReadCorrelation");
+        var finalizeActionIndex = management.IndexOf(
+            "if ($Action -eq \"FinalizeInstall\") {",
+            StringComparison.Ordinal);
+        var finalizeActionEnd = management.IndexOf(
+            "if ($Action -eq \"InstallVirtualDisplay\") {",
+            finalizeActionIndex, StringComparison.Ordinal);
+        var finalizeAction = management.Substring(
+            finalizeActionIndex, finalizeActionEnd - finalizeActionIndex);
+        var diagnosticConsumeIndex = finalizeAction.IndexOf(
+            "ConvertFrom-VirtualDisplayDiagnosticToken",
+            StringComparison.Ordinal);
+        var freshReadbackIndex = finalizeAction.IndexOf(
+            "$virtualDisplay = Get-VirtualDisplay",
+            StringComparison.Ordinal);
+        Assert.IsTrue(diagnosticConsumeIndex >= 0 &&
+            freshReadbackIndex > diagnosticConsumeIndex,
+            "Finalize must consume an existing primary diagnostic before fresh helper readback.");
+        StringAssert.Contains(finalizeAction,
+            "Set-VirtualDisplayFinalizePreReadAuthority $virtualDisplay");
+        StringAssert.Contains(finalizeAction,
+            "$script:finalFailedField = \"virtualDisplay\"");
         var productionSnapshotIndex = management.IndexOf(
             "function Get-VirtualDisplaySnapshot", StringComparison.Ordinal);
         var productionSnapshotEnd = management.IndexOf(
@@ -1936,6 +1966,10 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(management,
             "LIGASE_VIRTUAL_DISPLAY_FORCE_MARKER_CHANGED");
         StringAssert.Contains(runtimeHarness, "crossSpliceRejected");
+        StringAssert.Contains(runtimeHarness, "finalizePreReadStage");
+        StringAssert.Contains(runtimeHarness, "finalizePreReadReason");
+        StringAssert.Contains(runtimeHarness, "finalizePreReadStdoutClosed");
+        StringAssert.Contains(runtimeHarness, "finalizePreReadStderrClosed");
         StringAssert.Contains(runtimeHarness,
             "virtualDisplayTerminalReadbackCases");
         StringAssert.Contains(runtimeHarness, "\"oneUnbound\"");
@@ -2183,6 +2217,7 @@ public sealed class FreshInstallPackagingTests
                 "runnerCleanupState", "rootPidZero", "descendantPidZero",
                 "jobActiveProcesses", "runnerElapsedMilliseconds",
                 "runBudgetMilliseconds", "cleanupReserveMilliseconds",
+                "externalCleanupReserveMilliseconds",
                 "outerElapsedMilliseconds", "outerHardCapMilliseconds",
                 "code", "success",
                 "firstCleanupProven", "authorityRetained", "retainedPid",
@@ -2205,7 +2240,11 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(
             secondaryInvocation,
             "$DotNet $argumentListRunner --bounded-capture");
-        StringAssert.Contains(secondaryInvocation, "7000 3500 8192");
+        StringAssert.Contains(secondaryInvocation, "7000 3000 8192");
+        StringAssert.Contains(runtimeHarness,
+            "externalCleanupReserveMilliseconds = [int64]500");
+        StringAssert.Contains(runtimeHarness,
+            "$runnerElapsedMilliseconds -gt 10500");
         Assert.IsFalse(
             secondaryInvocation.Contains(
                 "& powershell.exe", StringComparison.Ordinal));

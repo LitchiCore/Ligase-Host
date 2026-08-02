@@ -5,7 +5,8 @@ param(
   [Parameter(Mandatory)]
   [string] $OutputRoot,
   [string] $DotNet = "dotnet.exe",
-  [ValidateSet("all","secondaryWaitFailure")]
+  [ValidateSet(
+    "all","secondaryTerminateFailure","secondaryWaitFailure")]
   [string] $InstallerProcessCaseFilter = "all",
   [switch] $StopAfterInstallerProcessCases
 )
@@ -394,7 +395,18 @@ if (args[0] == "--bounded-capture")
         readTask, cleanupDeadline) != cleanupDeadline;
     var exited = false;
     try { exited = processBounded.HasExited; } catch { }
-    var actualJobEmpty = nativeBounded.ActiveProcessCount() == 0;
+    var activeProcessCount = nativeBounded.ActiveProcessCount();
+    while (activeProcessCount != 0 &&
+           deadline.ElapsedMilliseconds < hardCapMs)
+    {
+        var pollRemaining = Math.Max(
+            0, hardCapMs - (int)deadline.ElapsedMilliseconds);
+        if (pollRemaining == 0)
+            break;
+        await Task.Delay(Math.Min(10, pollRemaining));
+        activeProcessCount = nativeBounded.ActiveProcessCount();
+    }
+    var actualJobEmpty = activeProcessCount == 0;
     var jobEmpty = fault == "accountingFault" ? false : actualJobEmpty;
     var cleanupCompleted =
         waitCompleted && readsCompleted && exited && jobEmpty;
@@ -422,8 +434,7 @@ if (args[0] == "--bounded-capture")
         killAttempted,
         cleanupCompleted,
         jobEmpty,
-        jobActiveProcesses = actualJobEmpty
-            ? 0 : nativeBounded.ActiveProcessCount(),
+        jobActiveProcesses = activeProcessCount,
         pid = exited && actualJobEmpty ? 0 : pid,
         elapsedMilliseconds = deadline.ElapsedMilliseconds,
         hardCapMilliseconds = hardCapMs,
@@ -5244,6 +5255,7 @@ function Test-SecondaryContainmentCaseEvidence([string]$Raw) {
     "timedOut","runnerCleanupState","rootPidZero","descendantPidZero",
     "jobActiveProcesses","runnerElapsedMilliseconds",
     "runBudgetMilliseconds","cleanupReserveMilliseconds",
+    "externalCleanupReserveMilliseconds",
     "outerElapsedMilliseconds","outerHardCapMilliseconds","code","success",
     "firstCleanupProven","authorityRetained","retainedPid",
     "secondaryContainmentAttempted","secondaryContainmentCompleted",
@@ -5292,7 +5304,8 @@ function Test-SecondaryContainmentCaseEvidence([string]$Raw) {
     [int64]$value.jobActiveProcesses -ge 0 -and
     [int64]$value.runnerElapsedMilliseconds -ge 0 -and
     [int64]$value.runBudgetMilliseconds -eq 7000 -and
-    [int64]$value.cleanupReserveMilliseconds -eq 3500 -and
+    [int64]$value.cleanupReserveMilliseconds -eq 3000 -and
+    [int64]$value.externalCleanupReserveMilliseconds -eq 500 -and
     [int64]$value.outerElapsedMilliseconds -ge 0 -and
     [int64]$value.outerHardCapMilliseconds -eq 10500 -and
     $value.success -is [bool] -and
@@ -5388,7 +5401,7 @@ foreach ($untrustedCase in $installerProcessCases) {
     $env:LIGASE_VDISPLAY_SENTINEL = $sentinel
     if ($caseIsSecondary) {
       $raw = @(& $DotNet $argumentListRunner --bounded-capture `
-        7000 3500 8192 none powershell.exe `
+        7000 3000 8192 none powershell.exe `
         -NoLogo -NoProfile -ExecutionPolicy Bypass `
         -File $managementScript `
         -Action ValidateVirtualDisplayInstallerProcess `
@@ -5662,7 +5675,8 @@ foreach ($untrustedCase in $installerProcessCases) {
       jobActiveProcesses = $runnerJobActiveProcesses
       runnerElapsedMilliseconds = $runnerElapsedMilliseconds
       runBudgetMilliseconds = [int64]7000
-      cleanupReserveMilliseconds = [int64]3500
+      cleanupReserveMilliseconds = [int64]3000
+      externalCleanupReserveMilliseconds = [int64]500
       outerElapsedMilliseconds = [int64]$outerClock.ElapsedMilliseconds
       outerHardCapMilliseconds = [int64]10500
       code = [string]$projection.code
@@ -5698,7 +5712,7 @@ foreach ($untrustedCase in $installerProcessCases) {
       elseif ([bool]$runnerEnvelope.timedOut -or
           [bool]$runnerEnvelope.overflow -or
           [bool]$runnerEnvelope.pipeFault) { "runnerOutput" }
-      elseif ([int64]$runnerEnvelope.hardCapMilliseconds -ne 10500 -or
+      elseif ([int64]$runnerEnvelope.hardCapMilliseconds -ne 10000 -or
           $runnerElapsedMilliseconds -gt 10500) { "runBudget" }
       elseif (-not $caseUsesExternalCleanup -and (
           -not $runnerCleanupCompleted -or
@@ -6391,7 +6405,7 @@ $diagnosticProjection = [string]$diagnosticRaw | ConvertFrom-Json
 if ([string]$diagnosticProjection.code -cne
       "virtualDisplayDiagnosticProjectionValidated" -or
     -not [bool]$diagnosticProjection.success -or
-    [int]$diagnosticProjection.crossSpliceRejected -ne 37 -or
+    [int]$diagnosticProjection.crossSpliceRejected -ne 39 -or
     -not [bool]$diagnosticProjection.primaryWriteFailed -or
     [string]$diagnosticProjection.resultCode -cne
       "virtualDisplayReadbackFailed" -or
@@ -6480,6 +6494,18 @@ if ([string]$diagnosticProjection.code -cne
     [string]$diagnosticProjection.postLoopDeadlineCoverageStage -cne
       "none" -or
     [string]$diagnosticProjection.postLoopDeadlineLastOutcomeSha256 -cnotmatch
+      '^[0-9a-f]{64}$' -or
+    [string]$diagnosticProjection.finalizePreReadStage -cne "failed" -or
+    [string]$diagnosticProjection.finalizePreReadReason -cne "timeout" -or
+    [string]$diagnosticProjection.finalizePreReadCleanupState -cne
+      "completed" -or
+    -not [bool]$diagnosticProjection.finalizePreReadRootPidZero -or
+    [int]$diagnosticProjection.finalizePreReadJobActiveProcesses -ne 0 -or
+    -not [bool]$diagnosticProjection.finalizePreReadStdoutClosed -or
+    -not [bool]$diagnosticProjection.finalizePreReadStderrClosed -or
+    [string]$diagnosticProjection.finalizePreReadPrimaryResultCode -cne
+      "virtualDisplayReadbackFailed" -or
+    [string]$diagnosticProjection.finalizePreReadLastOutcomeSha256 -cnotmatch
       '^[0-9a-f]{64}$') {
   throw "virtualDisplayDiagnosticProjectionFixtureAssertionFailed"
 }
