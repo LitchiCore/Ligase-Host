@@ -7319,22 +7319,24 @@ try {
     $diagnosticPath = Get-VirtualDisplayDiagnosticPath
     $selectionBase = ($script:virtualDisplayDiagnostic |
       ConvertTo-Json -Depth 8 -Compress) | ConvertFrom-Json
+    $selectionEarlierUtc = [DateTime]::UtcNow.AddSeconds(-10).ToString("O")
+    $selectionLaterUtc = [DateTime]::UtcNow.AddSeconds(-5).ToString("O")
     foreach ($selectionCase in @(
-        @{ name = "earlierFile"; file = "2026-08-03T06:29:24.0000000Z";
-          token = "2026-08-03T06:29:29.0000000Z"; invalidToken = $false;
-          expected = "2026-08-03T06:29:24.0000000Z" },
-        @{ name = "earlierToken"; file = "2026-08-03T06:29:29.0000000Z";
-          token = "2026-08-03T06:29:24.0000000Z"; invalidToken = $false;
-          expected = "2026-08-03T06:29:24.0000000Z" },
+        @{ name = "earlierFile"; file = $selectionEarlierUtc;
+          token = $selectionLaterUtc; invalidToken = $false;
+          expected = $selectionEarlierUtc },
+        @{ name = "earlierToken"; file = $selectionLaterUtc;
+          token = $selectionEarlierUtc; invalidToken = $false;
+          expected = $selectionEarlierUtc },
         @{ name = "invalidTokenValidFile";
-          file = "2026-08-03T06:29:24.0000000Z";
-          token = "2026-08-03T06:29:29.0000000Z"; invalidToken = $true;
-          expected = "2026-08-03T06:29:24.0000000Z";
+          file = $selectionEarlierUtc;
+          token = $selectionLaterUtc; invalidToken = $true;
+          expected = $selectionEarlierUtc;
           expectedSource = "file" },
         @{ name = "equalTimestampFileTie";
-          file = "2026-08-03T06:29:24.0000000Z";
-          token = "2026-08-03T06:29:24.0000000Z"; invalidToken = $false;
-          expected = "2026-08-03T06:29:24.0000000Z";
+          file = $selectionEarlierUtc;
+          token = $selectionEarlierUtc; invalidToken = $false;
+          expected = $selectionEarlierUtc;
           expectedSource = "file" })) {
       $filePrimary = ($selectionBase | ConvertTo-Json -Depth 8 -Compress) |
         ConvertFrom-Json

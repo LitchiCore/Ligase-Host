@@ -1830,10 +1830,31 @@ public sealed class FreshInstallPackagingTests
             "frozenInstallerEvidenceSecondaryReadback");
         StringAssert.Contains(management,
             "primarySelectionCasesPassed");
+        StringAssert.Contains(management,
+            "$selectionEarlierUtc = [DateTime]::UtcNow.AddSeconds(-10).ToString(\"O\")");
+        StringAssert.Contains(management,
+            "$selectionLaterUtc = [DateTime]::UtcNow.AddSeconds(-5).ToString(\"O\")");
+        Assert.IsFalse(management.Contains(
+            "2026-08-03T06:29:24.0000000Z", StringComparison.Ordinal));
         StringAssert.Contains(runtimeHarness,
             "primarySelectionCasesPassed -ne 4");
         StringAssert.Contains(runtimeHarness,
             "primarySelectionCrossSpliceRejected -ne 6");
+        Assert.IsTrue(
+            System.Text.RegularExpressions.Regex.IsMatch(
+                runtimeHarness,
+                @"\$readinessLate\s*=\s*Wait-HarnessReadiness[\s\S]*?" +
+                @"-TimeoutMilliseconds\s+5000\s+`\s*" +
+                @"-QuietMilliseconds\s+1500\s+`\s*" +
+                @"-QuietWindowMutation\s+\$lateWriterMutation",
+                System.Text.RegularExpressions.RegexOptions.CultureInvariant),
+            "The late-writer fixture must deterministically mutate inside its bounded quiet window.");
+        StringAssert.Contains(runtimeHarness,
+            "$TimeoutMilliseconds - [int]$timer.ElapsedMilliseconds");
+        StringAssert.Contains(runtimeHarness,
+            "$timer.ElapsedMilliseconds -ge $TimeoutMilliseconds");
+        StringAssert.Contains(runtimeHarness,
+            "[int]$readinessLate.elapsedMilliseconds -gt 5000");
         StringAssert.Contains(finalizeAction,
             "Freeze-InstallerEvidenceSecondaryReadback");
         StringAssert.Contains(finalizeAction,

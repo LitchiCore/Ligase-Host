@@ -2169,7 +2169,8 @@ function Wait-HarnessReadiness(
   [bool]$ShouldSucceed,
   [int]$NativeExitCode,
   [int]$TimeoutMilliseconds = 20000,
-  [int]$QuietMilliseconds = 250
+  [int]$QuietMilliseconds = 250,
+  [scriptblock]$QuietWindowMutation = $null
 ) {
   $timer = [Diagnostics.Stopwatch]::StartNew()
   $diagnosticLines = @()
@@ -2209,7 +2210,16 @@ function Wait-HarnessReadiness(
           $closedCountReached) {
         $firstFingerprint =
           "$($closedDiagnostic.identity)|$($closedResult.identity)"
-        Start-Sleep -Milliseconds $QuietMilliseconds
+        if ($null -ne $QuietWindowMutation) {
+          & $QuietWindowMutation
+          $QuietWindowMutation = $null
+        }
+        $remainingMilliseconds =
+          $TimeoutMilliseconds - [int]$timer.ElapsedMilliseconds
+        if ($remainingMilliseconds -le 0) { break }
+        Start-Sleep -Milliseconds (
+          [Math]::Min($QuietMilliseconds, $remainingMilliseconds))
+        if ($timer.ElapsedMilliseconds -ge $TimeoutMilliseconds) { break }
         $secondDiagnostic = Read-ClosedTextLines $DiagnosticPath
         $secondResult = Read-ClosedResultState $ResultPath
         $secondResultStateAllowed = if ($ShouldSucceed) {
@@ -2442,19 +2452,23 @@ $readinessLateResult = Join-Path $readinessLateWriterRoot "result.txt"
   $readinessLateResult,
   @("one", "two", "three", "four"),
   [Text.UTF8Encoding]::new($false))
-$lateWriter = [LigaseReadinessProbe]::ScheduleAppend(
-  $readinessLateDiagnostic,
-  100,
-  "five`n")
+$lateWriterMutation = {
+  [IO.File]::AppendAllText(
+    $readinessLateDiagnostic,
+    "five`n",
+    [Text.UTF8Encoding]::new($false))
+}
 $readinessLate = Wait-HarnessReadiness `
   -DiagnosticPath $readinessLateDiagnostic `
   -ResultPath $readinessLateResult `
   -ShouldSucceed $true `
   -NativeExitCode 0 `
-  -TimeoutMilliseconds 2000
-$lateWriter.Join()
+  -TimeoutMilliseconds 5000 `
+  -QuietMilliseconds 1500 `
+  -QuietWindowMutation $lateWriterMutation
 if ($readinessLate.timedOut -or
-    @($readinessLate.diagnosticLines).Count -ne 5) {
+    @($readinessLate.diagnosticLines).Count -ne 5 -or
+    [int]$readinessLate.elapsedMilliseconds -gt 5000) {
   throw "harnessReadinessLateWriterAccepted"
 }
 
