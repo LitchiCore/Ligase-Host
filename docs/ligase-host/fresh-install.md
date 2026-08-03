@@ -776,6 +776,16 @@ pipe, output, UTF-8/JSON/schema, SetupAPI-result, or cleanup failure is written
 with `failedField=virtualDisplay`; it cannot bypass the last-outcome writer or
 replace an earlier primary failure. These fields never contain raw output,
 executable paths, argv, device IDs, or exception text.
+Before manifest, artifact, transaction, or helper reads, Finalize also writes a
+minimal same-directory atomic `finalize-handoff.json`. Its closed state moves
+through `entered`, primary absent/failed/selected and frozen, fresh-readback,
+writer-started, and completed (or persistence-unavailable) authority. A valid
+token/file primary is frozen and projected into `last-outcome.json` before any
+later product readback can fail. The handoff contains only state/source/reason
+enums and timestamps; it never contains raw output, paths, device identities,
+or exception text. Standard and last-resort outcome consumers validate the
+same state/selection correlation, so a later failure cannot leave only an
+older `integrationStarted` projection once a closed primary exists.
 The same secondary object records the closed existing-primary selection
 state/source/reason. In particular, an invalid token with a valid file is
 `selected/file/tokenInvalid`; impossible source/reason cross-splices are

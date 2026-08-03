@@ -6650,6 +6650,9 @@ if ([string]$evidenceSecondaryProjection.code -cne
     -not [bool]$evidenceSecondaryProjection.success -or
     [int]$evidenceSecondaryProjection.primarySelectionCasesPassed -ne 4 -or
     [int]$evidenceSecondaryProjection.primarySelectionCrossSpliceRejected -ne 6 -or
+    [int]$evidenceSecondaryProjection.finalizeHandoffCasesPassed -ne 9 -or
+    [int]$evidenceSecondaryProjection.finalizeHandoffCrossSpliceRejected -ne 4 -or
+    [int]$evidenceSecondaryProjection.finalizeValidationAuthorityCasesPassed -ne 9 -or
     [int]$evidenceSecondaryProjection.writerFaultsPassed -ne 7 -or
     [int]$evidenceSecondaryProjection.parseFaultsPassed -ne 2 -or
     [int]$evidenceSecondaryProjection.schemaSubreasonCasesPassed -ne 9 -or
@@ -6666,8 +6669,79 @@ if ([string]$evidenceSecondaryProjection.code -cne
   throw "installerEvidenceSecondaryFailureFixtureAssertionFailed"
 }
 
+$finalizeEntryCasesPassed = 0
+foreach ($entryMode in @("stopAfterFreeze", "failAfterFreeze")) {
+  $entryRoot = Join-Path $root ("finalize-entry-handoff-" + $entryMode)
+  New-Item -ItemType Directory -Path $entryRoot | Out-Null
+  Copy-Item -LiteralPath (
+    Join-Path $evidenceSecondaryRoot "ligase-install-manifest.json") `
+    -Destination $entryRoot
+  Copy-Item -LiteralPath (
+    Join-Path $evidenceSecondaryRoot "virtual-display-outcome.json") `
+    -Destination $entryRoot
+  $previousFinalizeValidation = $env:LIGASE_FINALIZE_HANDOFF_VALIDATION
+  $previousFinalizeStop = $env:LIGASE_FINALIZE_HANDOFF_STOP_AFTER_FREEZE
+  $previousFinalizeFail = $env:LIGASE_FINALIZE_HANDOFF_FAIL_AFTER_FREEZE
+  try {
+    $env:LIGASE_INSTALL_VALIDATION_HARNESS = "1"
+    $env:LIGASE_FINALIZE_HANDOFF_VALIDATION = "1"
+    if ($entryMode -ceq "stopAfterFreeze") {
+      $env:LIGASE_FINALIZE_HANDOFF_STOP_AFTER_FREEZE = "1"
+      Remove-Item Env:LIGASE_FINALIZE_HANDOFF_FAIL_AFTER_FREEZE `
+        -ErrorAction SilentlyContinue
+    } else {
+      $env:LIGASE_FINALIZE_HANDOFF_FAIL_AFTER_FREEZE = "1"
+      Remove-Item Env:LIGASE_FINALIZE_HANDOFF_STOP_AFTER_FREEZE `
+        -ErrorAction SilentlyContinue
+    }
+    $entryRaw = @(& $readbackPowerShell -NoProfile -NonInteractive `
+      -ExecutionPolicy Bypass -File $managementScript `
+      -Action FinalizeInstall -InstallDirectory $entryRoot `
+      -ValidationRoot $entryRoot -VirtualDisplaySelected `
+      -VirtualDisplayOutcome failed)
+  } finally {
+    foreach ($restore in @(
+        @{ name = "LIGASE_FINALIZE_HANDOFF_VALIDATION";
+          value = $previousFinalizeValidation },
+        @{ name = "LIGASE_FINALIZE_HANDOFF_STOP_AFTER_FREEZE";
+          value = $previousFinalizeStop },
+        @{ name = "LIGASE_FINALIZE_HANDOFF_FAIL_AFTER_FREEZE";
+          value = $previousFinalizeFail })) {
+      if ($null -eq $restore.value) {
+        Remove-Item ("Env:" + $restore.name) -ErrorAction SilentlyContinue
+      } else { Set-Item ("Env:" + $restore.name) $restore.value }
+    }
+  }
+  if (@($entryRaw).Count -ne 1) { throw "finalizeEntryHandoffFixtureFailed" }
+  $entryProjection = [string]$entryRaw | ConvertFrom-Json
+  $entryOutcome = [IO.File]::ReadAllText(
+    (Join-Path $entryRoot "last-outcome.json"),
+    [Text.UTF8Encoding]::new($false, $true)) | ConvertFrom-Json
+  if ($entryMode -ceq "stopAfterFreeze") {
+    if ($LASTEXITCODE -ne 0 -or
+        [string]$entryProjection.code -cne "finalizeEntryHandoffValidated" -or
+        [string]$entryProjection.handoff.state -cne "frozenPrimary") {
+      throw "finalizeEntryHandoffFixtureFailed"
+    }
+  } elseif ($LASTEXITCODE -ne 10 -or
+      [string]$entryOutcome.failedField -cne "virtualDisplay" -or
+      [string]$entryOutcome.virtualDisplay.resultCode -cne
+        "virtualDisplayReadbackFailed" -or
+      [string]$entryOutcome.finalizeHandoff.state -cne "completed" -or
+      [string]$entryOutcome.persistenceState -cne "lastResort") {
+    throw "finalizeEntryHandoffFixtureFailed"
+  }
+  if (@(Get-ChildItem -LiteralPath $entryRoot -Force | Where-Object {
+      $_.Name -like ".finalize-handoff-*.tmp" -or
+      $_.Name -like ".last-outcome-*.tmp" }).Count -ne 0) {
+    throw "finalizeEntryHandoffFixtureFailed"
+  }
+  $finalizeEntryCasesPassed++
+}
+
 [ordered]@{
   code = "installDirectoryRuntimeHarnessPassed"
+  finalizeEntryCasesPassed = $finalizeEntryCasesPassed
   cases = $results
   finalizationStackCases = $finalizationStackResults
   shortcutCases = $shortcutResults

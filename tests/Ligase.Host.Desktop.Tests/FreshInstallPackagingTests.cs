@@ -1796,13 +1796,41 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(management,
             "Freeze-InstallerEvidencePrimary $script:virtualDisplayDiagnostic");
         StringAssert.Contains(management,
+            "function Write-FinalizeHandoff");
+        StringAssert.Contains(management,
+            "$script:finalizeHandoffState = \"entered\"");
+        StringAssert.Contains(management,
+            "$script:finalizeHandoffState = \"frozenPrimary\"");
+        StringAssert.Contains(management,
+            "$script:finalizeHandoffState = \"freshStarted\"");
+        StringAssert.Contains(management,
+            "$script:finalizeHandoffState = \"writerStarted\"");
+        StringAssert.Contains(management,
+            "$script:finalizeHandoffState = \"completed\"");
+        StringAssert.Contains(management,
+            "$script:finalizeHandoffState = \"persistenceUnavailable\"");
+        StringAssert.Contains(management,
+            "Assert-FinalizeHandoffCorrelation");
+        StringAssert.Contains(management,
+            "function Test-FinalizeHandoffValidationAuthority");
+        StringAssert.Contains(management,
+            "$validationFull -ceq $installFull");
+        StringAssert.Contains(management,
+            "Test-FinalizeHandoffValidationAllowed");
+        StringAssert.Contains(management,
+            "-not (Test-FinalizeHandoffValidationAllowed)) {");
+        Assert.IsFalse(management.Contains(
+            "$Action -ceq \"FinalizeInstall\" -and\r\n" +
+            "      $env:LIGASE_INSTALL_VALIDATION_HARNESS -ceq \"1\" -and\r\n" +
+            "      $env:LIGASE_FINALIZE_HANDOFF_VALIDATION -ceq \"1\")) {"));
+        StringAssert.Contains(management,
             "function Write-InstallerEvidenceLastResort");
         StringAssert.Contains(management,
             "secondaryWriterState = \"failed\"");
         StringAssert.Contains(management,
             "persistenceState = \"persistenceUnavailable\"");
         var finalizeActionIndex = management.IndexOf(
-            "if ($Action -eq \"FinalizeInstall\") {",
+            "$script:finalizeHandoffState = \"entered\"",
             StringComparison.Ordinal);
         var finalizeActionEnd = management.IndexOf(
             "if ($Action -eq \"InstallVirtualDisplay\") {",
@@ -1840,6 +1868,20 @@ public sealed class FreshInstallPackagingTests
             "primarySelectionCasesPassed -ne 4");
         StringAssert.Contains(runtimeHarness,
             "primarySelectionCrossSpliceRejected -ne 6");
+        StringAssert.Contains(runtimeHarness,
+            "finalizeHandoffCasesPassed -ne 9");
+        StringAssert.Contains(runtimeHarness,
+            "finalizeHandoffCrossSpliceRejected -ne 4");
+        StringAssert.Contains(runtimeHarness,
+            "finalizeValidationAuthorityCasesPassed -ne 9");
+        StringAssert.Contains(runtimeHarness,
+            "$finalizeEntryCasesPassed++");
+        StringAssert.Contains(runtimeHarness,
+            "-Action FinalizeInstall -InstallDirectory $entryRoot");
+        StringAssert.Contains(runtimeHarness,
+            "LIGASE_FINALIZE_HANDOFF_FAIL_AFTER_FREEZE");
+        StringAssert.Contains(runtimeHarness,
+            "virtualDisplay.resultCode -cne");
         Assert.IsTrue(
             System.Text.RegularExpressions.Regex.IsMatch(
                 runtimeHarness,

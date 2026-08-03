@@ -211,6 +211,8 @@ $script:frozenInstallerEvidenceSecondaryReadbackJson = $null
 $script:existingPrimarySelectionState = "absent"
 $script:existingPrimarySelectionSource = "none"
 $script:existingPrimarySelectionReason = "none"
+$script:finalizeHandoffState = "notInvoked"
+$script:finalizeHandoffEntryWriteFailed = $false
 $script:secondaryWriterState = "notRequired"
 $script:secondaryWriterReason = "none"
 $script:secondaryWriterPersistence = "standard"
@@ -1422,8 +1424,39 @@ function Get-EvidenceSourceHead {
   return $sourceHead
 }
 
+function Test-FinalizeHandoffValidationAuthority(
+  [string]$ActionValue,
+  [string]$HarnessValue,
+  [string]$FinalizeValidationValue,
+  [string]$ValidationRootValue,
+  [string]$InstallRootValue
+) {
+  if ($ActionValue -cne "FinalizeInstall" -or
+      $HarnessValue -cne "1" -or
+      $FinalizeValidationValue -cne "1" -or
+      [string]::IsNullOrWhiteSpace($ValidationRootValue)) {
+    return $false
+  }
+  try {
+    $validationFull = [IO.Path]::GetFullPath($ValidationRootValue)
+    $installFull = [IO.Path]::GetFullPath($InstallRootValue)
+    return $validationFull -ceq $installFull -and
+      [IO.Path]::GetPathRoot($installFull) -ceq "D:\"
+  } catch { return $false }
+}
+
+function Test-FinalizeHandoffValidationAllowed {
+  return Test-FinalizeHandoffValidationAuthority $Action (
+    [string]$env:LIGASE_INSTALL_VALIDATION_HARNESS) (
+    [string]$env:LIGASE_FINALIZE_HANDOFF_VALIDATION) $ValidationRoot $installRoot
+}
+
 function Get-InstallerEvidencePath {
-  if ($Action -eq "ValidateVirtualDisplayDiagnosticProjection" -and
+  $validationEvidenceAction = $Action -in @(
+        "ValidateVirtualDisplayDiagnosticProjection",
+        "ValidateInstallerEvidenceSecondaryFailure") -or
+    (Test-FinalizeHandoffValidationAllowed)
+  if ($validationEvidenceAction -and
       $env:LIGASE_INSTALL_VALIDATION_HARNESS -ceq "1" -and
       -not [string]::IsNullOrWhiteSpace($ValidationRoot) -and
       [IO.Path]::GetFullPath($ValidationRoot) -ceq $installRoot -and
@@ -4229,8 +4262,8 @@ function Invoke-VirtualDisplayRemovalValidation([string]$Root) {
       $snapshotProvider $removeInvoker $fallbackInvoker `
       ([int]$case.settleMilliseconds) `
       ([int]$case.totalMilliseconds)
-  } catch {
-    $code = [string]$_.Exception.Message
+} catch {
+  $code = [string]$_.Exception.Message
     $success = $false
     $removed = [int]$script:virtualDisplayRemoveCount
   }
@@ -4593,6 +4626,120 @@ function Freeze-InstallerEvidencePrimary($Diagnostic) {
   $script:frozenInstallerEvidencePrimaryJson = $json
 }
 
+function Get-FinalizeHandoffProjection {
+  return [ordered]@{
+    state = [string]$script:finalizeHandoffState
+    existingPrimaryState = [string]$script:existingPrimarySelectionState
+    existingPrimarySource = [string]$script:existingPrimarySelectionSource
+    existingPrimaryReason = [string]$script:existingPrimarySelectionReason
+  }
+}
+
+function Assert-FinalizeHandoffCorrelation($Document) {
+  $expectedProperties = @(
+    "state", "existingPrimaryState", "existingPrimarySource",
+    "existingPrimaryReason")
+  $actualProperties = if ($Document -is [Collections.IDictionary]) {
+    @($Document.Keys)
+  } else { @($Document.PSObject.Properties.Name) }
+  if ($actualProperties.Count -ne $expectedProperties.Count -or
+      @($actualProperties | Where-Object {
+        $expectedProperties -cnotcontains [string]$_ }).Count -ne 0) {
+    throw "installerEvidenceFinalizeHandoffInvalid"
+  }
+  $state = [string]$Document.state
+  $selectionState = [string]$Document.existingPrimaryState
+  $source = [string]$Document.existingPrimarySource
+  $reason = [string]$Document.existingPrimaryReason
+  $selectionValid = if ($selectionState -ceq "selected") {
+    $source -in @("token", "file") -and ($reason -ceq "none" -or
+      ($reason -ceq "tokenInvalid" -and $source -ceq "file") -or
+      ($reason -ceq "fileInvalid" -and $source -ceq "token"))
+  } elseif ($selectionState -ceq "absent") {
+    $source -ceq "none" -and $reason -ceq "none"
+  } elseif ($selectionState -ceq "failed") {
+    $source -ceq "none" -and $reason -in @(
+      "tokenInvalid", "fileInvalid", "bothInvalid")
+  } else { $false }
+  $stateValid = if ($state -in @("notInvoked", "entered")) {
+    $selectionState -ceq "absent" -and $source -ceq "none" -and
+      $reason -ceq "none"
+  } elseif ($state -ceq "primaryAbsent") {
+    $selectionState -ceq "absent"
+  } elseif ($state -ceq "primaryFailed") {
+    $selectionState -ceq "failed"
+  } elseif ($state -in @(
+      "primarySelected", "frozenPrimary", "freshStarted", "writerStarted",
+      "completed", "persistenceUnavailable")) {
+    $selectionState -ceq "selected"
+  } else { $false }
+  if (-not $selectionValid -or -not $stateValid) {
+    throw "installerEvidenceFinalizeHandoffInvalid"
+  }
+}
+
+function Get-FinalizeHandoffPath {
+  return Join-Path (Split-Path -Parent (Get-InstallerEvidencePath)) (
+    "finalize-handoff.json")
+}
+
+function Write-FinalizeHandoff {
+  $projection = Get-FinalizeHandoffProjection
+  Assert-FinalizeHandoffCorrelation $projection
+  $path = Get-FinalizeHandoffPath
+  $directory = Split-Path -Parent $path
+  if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
+    [IO.Directory]::CreateDirectory($directory) | Out-Null
+  }
+  if (-not (Test-FinalizeHandoffValidationAllowed) -and
+      $Action -notin @(
+        "ValidateVirtualDisplayDiagnosticProjection",
+        "ValidateInstallerEvidenceSecondaryFailure")) {
+    Set-SecureDataRootAcl $directory
+  }
+  $document = [ordered]@{
+    schemaVersion = 1
+    handoff = $projection
+    writtenUtc = [DateTime]::UtcNow.ToString("O")
+  }
+  $bytes = [Text.UTF8Encoding]::new($false).GetBytes(
+    ($document | ConvertTo-Json -Depth 4 -Compress))
+  $temporary = Join-Path $directory (
+    ".finalize-handoff-" + [Guid]::NewGuid().ToString("N") + ".tmp")
+  $backup = Join-Path $directory (
+    ".finalize-handoff-backup-" + [Guid]::NewGuid().ToString("N") + ".tmp")
+  try {
+    [IO.File]::WriteAllBytes($temporary, $bytes)
+    if (Test-Path -LiteralPath $path -PathType Leaf) {
+      [IO.File]::Replace($temporary, $path, $backup, $true)
+      Remove-Item -LiteralPath $backup -Force
+    } else {
+      [IO.File]::Move($temporary, $path)
+    }
+    $actual = [IO.File]::ReadAllBytes($path)
+    if (-not (Test-ExactBytes $bytes $actual)) {
+      throw "installerEvidenceFinalizeHandoffUnavailable"
+    }
+    $readback = [Text.UTF8Encoding]::new($false, $true).GetString($actual) |
+      ConvertFrom-Json
+    Assert-ClosedProperties $readback @(
+      "schemaVersion", "handoff", "writtenUtc") "finalizeHandoff"
+    if ($readback.schemaVersion -ne 1 -or
+        [string]$readback.writtenUtc -notmatch '^\d{4}-\d{2}-\d{2}T' ) {
+      throw "installerEvidenceFinalizeHandoffUnavailable"
+    }
+    Assert-FinalizeHandoffCorrelation $readback.handoff
+    return $readback
+  } finally {
+    if (Test-Path -LiteralPath $temporary) {
+      Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
+    }
+    if (Test-Path -LiteralPath $backup) {
+      Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
+    }
+  }
+}
+
 function Select-VirtualDisplayExistingPrimary([string]$Token) {
   $candidates = @()
   $tokenPresent = -not [string]::IsNullOrWhiteSpace($Token)
@@ -4622,6 +4769,10 @@ function Select-VirtualDisplayExistingPrimary([string]$Token) {
     } elseif ($tokenInvalid) { "tokenInvalid" }
     elseif ($fileInvalid) { "fileInvalid" }
     else { "none" }
+    $script:finalizeHandoffState = if (
+      $script:existingPrimarySelectionState -ceq "failed") {
+      "primaryFailed"
+    } else { "primaryAbsent" }
     return $null
   }
   $selected = @($candidates | Sort-Object -Property @(
@@ -4638,6 +4789,7 @@ function Select-VirtualDisplayExistingPrimary([string]$Token) {
   $script:existingPrimarySelectionReason = if ($tokenInvalid) { "tokenInvalid" }
     elseif ($fileInvalid) { "fileInvalid" }
     else { "none" }
+  $script:finalizeHandoffState = "primarySelected"
   return $selected.document
 }
 
@@ -4822,6 +4974,8 @@ function Write-InstallerEvidenceLastResort {
     ',"secondaryReadback":' + $secondaryReadbackJson +
     ',"secondaryWriter":{"state":"failed","reason":"' + $reason +
     '","persistence":"lastResort"},' +
+    '"finalizeHandoff":' + ((Get-FinalizeHandoffProjection |
+      ConvertTo-Json -Compress)) + ',' +
     '"persistenceState":"lastResort","timestampUtc":"' + $timestamp + '"}'
   $bytes = [Text.UTF8Encoding]::new($false).GetBytes($json)
   $temporary = Join-Path $directory (
@@ -4855,6 +5009,7 @@ function Write-InstallerEvidenceLastResort {
     $document = [Text.UTF8Encoding]::new($false, $true).GetString($actual) |
       ConvertFrom-Json
     Assert-InstallerEvidenceSecondaryWriterCorrelation $document
+    Assert-FinalizeHandoffCorrelation $document.finalizeHandoff
     Assert-InstallerEvidenceSecondaryReadbackCorrelation (
       $document.secondaryReadback)
     if ([string]$document.failedField -cne "virtualDisplay" -or
@@ -4886,7 +5041,8 @@ function Write-InstallerEvidenceStandard {
   }
   if ($Action -notin @(
       "ValidateVirtualDisplayDiagnosticProjection",
-      "ValidateInstallerEvidenceSecondaryFailure")) {
+      "ValidateInstallerEvidenceSecondaryFailure") -and
+      -not (Test-FinalizeHandoffValidationAllowed)) {
     $script:installerEvidenceWriterStage = "acl"
     Set-SecureDataRootAcl $evidenceDirectory
   }
@@ -4990,6 +5146,7 @@ function Write-InstallerEvidenceStandard {
       reason = $script:secondaryWriterReason
       persistence = $script:secondaryWriterPersistence
     }
+    finalizeHandoff = Get-FinalizeHandoffProjection
     rollback = [ordered]@{
       state = $EvidenceRollback
       shortcut = $script:shortcutRollbackResult
@@ -5006,6 +5163,7 @@ function Write-InstallerEvidenceStandard {
       [Globalization.CultureInfo]::InvariantCulture)
   }
   Assert-InstallerEvidenceSecondaryWriterCorrelation $document
+  Assert-FinalizeHandoffCorrelation $document.finalizeHandoff
   if ($null -ne $document.secondaryReadback) {
     Assert-InstallerEvidenceSecondaryReadbackCorrelation (
       $document.secondaryReadback)
@@ -5076,6 +5234,10 @@ function Write-InstallerEvidence {
     if ($null -eq $script:frozenInstallerEvidencePrimary -and
         $null -ne $script:virtualDisplayDiagnostic) {
       Freeze-InstallerEvidencePrimary $script:virtualDisplayDiagnostic
+    }
+    if ($null -ne $script:frozenInstallerEvidencePrimary -and
+        $null -eq $script:frozenInstallerEvidenceSecondaryReadback) {
+      Freeze-InstallerEvidenceSecondaryReadback
     }
     $script:secondaryWriterState = "failed"
     $script:secondaryWriterReason = Get-InstallerEvidenceWriterReason (
@@ -6999,6 +7161,67 @@ try {
     Write-Outcome "installerBusy" $false
     exit 20
   }
+  if ($Action -ceq "FinalizeInstall") {
+    $EvidencePhase = "finalReadback"
+    $EvidenceSuccess = "false"
+    $EvidenceResultCode = "installationFinalReadbackFailed"
+    $EvidenceHelperExit = 0
+    $script:finalizeHandoffState = "entered"
+    # This minimal handoff has no manifest/helper dependency and is persisted
+    # before existing-primary parsing or any fresh/product readback.
+    try { $null = Write-FinalizeHandoff } catch {
+      $script:finalizeHandoffEntryWriteFailed = $true
+    }
+    if ($VirtualDisplaySelected) {
+      $script:virtualDisplayDiagnostic =
+        Select-VirtualDisplayExistingPrimary $VirtualDisplayDiagnosticToken
+      if ($null -ne $script:virtualDisplayDiagnostic) {
+        $script:finalizeHandoffState = "primarySelected"
+        Freeze-InstallerEvidencePrimary $script:virtualDisplayDiagnostic
+        $script:finalizeHandoffState = "frozenPrimary"
+      } elseif ($script:existingPrimarySelectionState -ceq "failed") {
+        $script:finalizeHandoffState = "primaryFailed"
+      } else {
+        $script:finalizeHandoffState = "primaryAbsent"
+      }
+      # A closed primary is now present in both its original token/file and the
+      # final evidence handoff before any later readback can fail.
+      try { $null = Write-FinalizeHandoff } catch {
+        $script:finalizeHandoffEntryWriteFailed = $true
+        if ($null -ne $script:frozenInstallerEvidencePrimary) {
+          $script:finalizeHandoffState = "persistenceUnavailable"
+        }
+      }
+      $null = Write-InstallerEvidenceStandard
+    } else {
+      $script:finalizeHandoffState = "primaryAbsent"
+      try { $null = Write-FinalizeHandoff } catch {
+        $script:finalizeHandoffEntryWriteFailed = $true
+      }
+      $null = Write-InstallerEvidenceStandard
+    }
+    if (Test-FinalizeHandoffValidationAllowed) {
+      if ($env:LIGASE_FINALIZE_HANDOFF_FAIL_AFTER_FREEZE -ceq "1") {
+        throw "artifactReadbackFailed"
+      }
+      if ($env:LIGASE_FINALIZE_HANDOFF_STOP_AFTER_FREEZE -ceq "1") {
+        [Console]::Out.WriteLine(([ordered]@{
+          code = "finalizeEntryHandoffValidated"
+          success = $true
+          handoff = Get-FinalizeHandoffProjection
+          primaryResultCode = if (
+            $null -eq $script:frozenInstallerEvidencePrimary) {
+            $null
+          } else {
+            [string]$script:frozenInstallerEvidencePrimary.resultCode
+          }
+          processStartCount = 0
+          systemMutation = $false
+        } | ConvertTo-Json -Depth 4 -Compress))
+        exit 0
+      }
+    }
+  }
   if ($Action -eq "RecordEvidence") {
     if ($EvidenceResultCode -notmatch '^[a-z][A-Za-z0-9]{0,63}$') {
       throw "installerEvidenceInvalid"
@@ -7273,6 +7496,37 @@ try {
         $fullValidationRoot -cne $installRoot) {
       throw "installerEvidenceValidationUnavailable"
     }
+    $finalizeValidationAuthorityCasesPassed = 0
+    if (-not (Test-FinalizeHandoffValidationAuthority "FinalizeInstall" "1" "1" (
+          $fullValidationRoot) $installRoot)) {
+      throw "installerEvidenceValidationUnavailable"
+    }
+    $finalizeValidationAuthorityCasesPassed++
+    foreach ($authorityCase in @(
+        @{ action = "FinalizeInstall"; harness = "1"; validation = "1";
+          root = "" },
+        @{ action = "FinalizeInstall"; harness = "1"; validation = "1";
+          root = (Split-Path -Parent $fullValidationRoot) },
+        @{ action = "FinalizeInstall"; harness = "1"; validation = "1";
+          root = (Join-Path $fullValidationRoot "child") },
+        @{ action = "FinalizeInstall"; harness = "1"; validation = "1";
+          root = ($fullValidationRoot + "-adjacent") },
+        @{ action = "FinalizeInstall"; harness = "1"; validation = "1";
+          root = $fullValidationRoot.ToUpperInvariant() },
+        @{ action = "Readback"; harness = "1"; validation = "1";
+          root = $fullValidationRoot },
+        @{ action = "FinalizeInstall"; harness = "0"; validation = "1";
+          root = $fullValidationRoot },
+        @{ action = "FinalizeInstall"; harness = "1"; validation = "0";
+          root = $fullValidationRoot })) {
+      if (Test-FinalizeHandoffValidationAuthority (
+          [string]$authorityCase.action) ([string]$authorityCase.harness) (
+          [string]$authorityCase.validation) ([string]$authorityCase.root) (
+          $installRoot)) {
+        throw "installerEvidenceValidationUnavailable"
+      }
+      $finalizeValidationAuthorityCasesPassed++
+    }
     $script:virtualDisplayInstallStage = "completed"
     $script:virtualDisplayReadbackCode = "virtualDisplayDeviceCountInvalid"
     $script:virtualDisplayChildExit = 0
@@ -7375,6 +7629,57 @@ try {
     $script:frozenInstallerEvidenceSecondaryReadback = $null
     $script:frozenInstallerEvidenceSecondaryReadbackJson = $null
     Freeze-InstallerEvidencePrimary $selectedPrimary
+    $finalizeHandoffCasesPassed = 0
+    foreach ($handoffCase in @(
+        @{ state = "entered"; selection = "absent"; source = "none";
+          reason = "none" },
+        @{ state = "primaryAbsent"; selection = "absent"; source = "none";
+          reason = "none" },
+        @{ state = "primaryFailed"; selection = "failed"; source = "none";
+          reason = "bothInvalid" },
+        @{ state = "primarySelected"; selection = "selected"; source = "file";
+          reason = "tokenInvalid" },
+        @{ state = "frozenPrimary"; selection = "selected"; source = "file";
+          reason = "tokenInvalid" },
+        @{ state = "freshStarted"; selection = "selected"; source = "file";
+          reason = "tokenInvalid" },
+        @{ state = "writerStarted"; selection = "selected"; source = "file";
+          reason = "tokenInvalid" },
+        @{ state = "completed"; selection = "selected"; source = "file";
+          reason = "tokenInvalid" },
+        @{ state = "persistenceUnavailable"; selection = "selected";
+          source = "file"; reason = "tokenInvalid" })) {
+      $script:finalizeHandoffState = [string]$handoffCase.state
+      $script:existingPrimarySelectionState = [string]$handoffCase.selection
+      $script:existingPrimarySelectionSource = [string]$handoffCase.source
+      $script:existingPrimarySelectionReason = [string]$handoffCase.reason
+      $handoffReadback = Write-FinalizeHandoff
+      Assert-FinalizeHandoffCorrelation $handoffReadback.handoff
+      $finalizeHandoffCasesPassed++
+    }
+    $finalizeHandoffCrossSpliceRejected = 0
+    foreach ($handoffCross in @(
+        @{ state = "entered"; existingPrimaryState = "selected";
+          existingPrimarySource = "file"; existingPrimaryReason = "none" },
+        @{ state = "frozenPrimary"; existingPrimaryState = "absent";
+          existingPrimarySource = "none"; existingPrimaryReason = "none" },
+        @{ state = "primaryFailed"; existingPrimaryState = "failed";
+          existingPrimarySource = "file";
+          existingPrimaryReason = "tokenInvalid" },
+        @{ state = "completed"; existingPrimaryState = "selected";
+          existingPrimarySource = "token";
+          existingPrimaryReason = "tokenInvalid" })) {
+      $rejected = $false
+      try { Assert-FinalizeHandoffCorrelation ([pscustomobject]$handoffCross) }
+      catch { $rejected = [string]$_.Exception.Message -ceq
+          "installerEvidenceFinalizeHandoffInvalid" }
+      if (-not $rejected) { throw "installerEvidenceFinalizeHandoffInvalid" }
+      $finalizeHandoffCrossSpliceRejected++
+    }
+    $script:finalizeHandoffState = "frozenPrimary"
+    $script:existingPrimarySelectionState = "selected"
+    $script:existingPrimarySelectionSource = "file"
+    $script:existingPrimarySelectionReason = "tokenInvalid"
     $script:virtualDisplayFinalizePreReadStage = "failed"
     $script:virtualDisplayFinalizePreReadReason = "schema"
     $script:virtualDisplayFinalizePreReadSchemaReason = "crossField"
@@ -7706,6 +8011,11 @@ try {
       primarySelectionCasesPassed = $primarySelectionCasesPassed
       primarySelectionCrossSpliceRejected =
         $primarySelectionCrossSpliceRejected
+      finalizeHandoffCasesPassed = $finalizeHandoffCasesPassed
+      finalizeHandoffCrossSpliceRejected =
+        $finalizeHandoffCrossSpliceRejected
+      finalizeValidationAuthorityCasesPassed =
+        $finalizeValidationAuthorityCasesPassed
       writerFaultsPassed = $writerFaultsPassed
       writerFaultResults = $writerFaultResults
       parseFaultsPassed = $parseFaultsPassed
@@ -9001,11 +9311,8 @@ try {
         throw "installTransactionInvalid"
       }
       if ($VirtualDisplaySelected) {
-        $script:virtualDisplayDiagnostic =
-          Select-VirtualDisplayExistingPrimary $VirtualDisplayDiagnosticToken
-        if ($null -ne $script:virtualDisplayDiagnostic) {
-          Freeze-InstallerEvidencePrimary $script:virtualDisplayDiagnostic
-        }
+        $script:finalizeHandoffState = "freshStarted"
+        $null = Write-FinalizeHandoff
         $virtualDisplay = Get-VirtualDisplay
         Set-VirtualDisplayFinalizePreReadAuthority $virtualDisplay
         if ($null -eq $script:virtualDisplayDiagnostic -and
@@ -9039,7 +9346,12 @@ try {
       if ($null -ne $script:frozenInstallerEvidencePrimary) {
         Freeze-InstallerEvidenceSecondaryReadback
       }
+      $script:finalizeHandoffState = "writerStarted"
+      $null = Write-FinalizeHandoff
       $null = Write-InstallerEvidence
+      $script:finalizeHandoffState = "completed"
+      $null = Write-FinalizeHandoff
+      $null = Write-InstallerEvidenceStandard
       # NSIS intentionally performs a byte-exact final success comparison.
       # Windows PowerShell does not preserve ordinary hashtable insertion
       # order, so keep this terminal projection explicitly ordered.
@@ -9115,7 +9427,12 @@ try {
         Freeze-InstallerEvidencePrimary $script:virtualDisplayDiagnostic
       }
       Freeze-InstallerEvidenceSecondaryReadback
+      $script:finalizeHandoffState = "writerStarted"
+      $null = Write-FinalizeHandoff
       $null = Write-InstallerEvidence
+      $script:finalizeHandoffState = "completed"
+      $null = Write-FinalizeHandoff
+      $null = Write-InstallerEvidenceStandard
       Write-Outcome "installationFinalReadbackFailed" $false
       exit 10
     }
@@ -9943,7 +10260,33 @@ try {
   if ($Action -eq "FinalizeInstall" -and
       $null -ne $script:frozenInstallerEvidencePrimary) {
     try {
+      if ($null -eq $script:frozenInstallerEvidenceSecondaryReadback) {
+        $script:virtualDisplayFinalizePreReadStage = "failed"
+        $script:virtualDisplayFinalizePreReadReason = "schema"
+        $script:virtualDisplayFinalizePreReadSchemaReason = "crossField"
+        $script:virtualDisplayFinalizePreReadSchemaCount = 1
+        $script:virtualDisplayFinalizePreReadCleanupState = "completed"
+        $script:virtualDisplayFinalizePreReadRootPidZero = $true
+        $script:virtualDisplayFinalizePreReadJobActiveProcesses = 0
+        $script:virtualDisplayFinalizePreReadStdoutClosed = $true
+        $script:virtualDisplayFinalizePreReadStderrClosed = $true
+        $script:virtualDisplayFinalizePreReadDeviceCount = -1
+        $script:virtualDisplayFinalizePreReadPresentDeviceCount = -1
+        $script:virtualDisplayFinalizePreReadIdentitySha256 =
+          "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        $script:virtualDisplayFinalizePreReadDriverBindingVerified = $false
+        Freeze-InstallerEvidenceSecondaryReadback
+      }
+      $script:finalizeHandoffState = "writerStarted"
+      $script:secondaryWriterState = "failed"
+      if ($script:secondaryWriterReason -ceq "none") {
+        $script:secondaryWriterReason = "projection"
+      }
+      $script:secondaryWriterPersistence = "lastResort"
+      try { $null = Write-FinalizeHandoff } catch {}
+      $script:finalizeHandoffState = "completed"
       $document = Write-InstallerEvidenceLastResort
+      try { $null = Write-FinalizeHandoff } catch {}
       Write-Outcome $code $false @{
         failedField = "virtualDisplay"
         primaryResultCode = [string]$document.virtualDisplay.resultCode
@@ -9952,6 +10295,8 @@ try {
         persistenceState = "lastResort"
       }
     } catch {
+      $script:finalizeHandoffState = "persistenceUnavailable"
+      try { $null = Write-FinalizeHandoff } catch {}
       Write-Outcome $code $false @{
         failedField = "virtualDisplay"
         primaryResultCode =
