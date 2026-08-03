@@ -1810,7 +1810,7 @@ public sealed class FreshInstallPackagingTests
         var finalizeAction = management.Substring(
             finalizeActionIndex, finalizeActionEnd - finalizeActionIndex);
         var diagnosticConsumeIndex = finalizeAction.IndexOf(
-            "ConvertFrom-VirtualDisplayDiagnosticToken",
+            "Select-VirtualDisplayExistingPrimary $VirtualDisplayDiagnosticToken",
             StringComparison.Ordinal);
         var freshReadbackIndex = finalizeAction.IndexOf(
             "$virtualDisplay = Get-VirtualDisplay",
@@ -1818,6 +1818,24 @@ public sealed class FreshInstallPackagingTests
         Assert.IsTrue(diagnosticConsumeIndex >= 0 &&
             freshReadbackIndex > diagnosticConsumeIndex,
             "Finalize must consume an existing primary diagnostic before fresh helper readback.");
+        var earlyFreezeIndex = finalizeAction.IndexOf(
+            "Freeze-InstallerEvidencePrimary $script:virtualDisplayDiagnostic",
+            diagnosticConsumeIndex, StringComparison.Ordinal);
+        Assert.IsTrue(earlyFreezeIndex > diagnosticConsumeIndex &&
+            earlyFreezeIndex < freshReadbackIndex,
+            "Finalize must freeze the selected existing primary before fresh helper readback.");
+        StringAssert.Contains(management,
+            "function Select-VirtualDisplayExistingPrimary");
+        StringAssert.Contains(management,
+            "frozenInstallerEvidenceSecondaryReadback");
+        StringAssert.Contains(management,
+            "primarySelectionCasesPassed");
+        StringAssert.Contains(runtimeHarness,
+            "primarySelectionCasesPassed -ne 4");
+        StringAssert.Contains(runtimeHarness,
+            "primarySelectionCrossSpliceRejected -ne 6");
+        StringAssert.Contains(finalizeAction,
+            "Freeze-InstallerEvidenceSecondaryReadback");
         StringAssert.Contains(finalizeAction,
             "Set-VirtualDisplayFinalizePreReadAuthority $virtualDisplay");
         var freezePrimaryIndex = finalizeAction.IndexOf(

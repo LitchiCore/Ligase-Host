@@ -765,14 +765,21 @@ diagnostics are rejected before they can reach `last-outcome.json`.
 duplicate-device count or other failed UI retains the first closed
 virtual-display authority for later readback. A secondary persistence failure
 never replaces that original result code.
-Finalize consumes and validates that existing token or file before performing
-its fresh SetupAPI-helper readback. The fresh readback has a separate closed
-`finalizePreRead*` authority for safe stage/reason, cleanup, root/job-zero,
+Finalize independently parses the existing token and file, chooses the oldest
+valid `writtenUtc` authority (with the file winning an exact timestamp tie),
+and freezes it before performing its fresh SetupAPI-helper readback. An invalid
+token cannot suppress a valid file, and a later valid transport cannot replace
+an earlier closed primary. The fresh readback is projected separately as the
+top-level `secondaryReadback` authority for safe stage/reason, cleanup, root/job-zero,
 dual-pipe closure, and count/hash/binding projection. A helper start, timeout,
 pipe, output, UTF-8/JSON/schema, SetupAPI-result, or cleanup failure is written
 with `failedField=virtualDisplay`; it cannot bypass the last-outcome writer or
 replace an earlier primary failure. These fields never contain raw output,
 executable paths, argv, device IDs, or exception text.
+The same secondary object records the closed existing-primary selection
+state/source/reason. In particular, an invalid token with a valid file is
+`selected/file/tokenInvalid`; impossible source/reason cross-splices are
+rejected by both standard and last-resort evidence consumers.
 When the closed reason is `schema`, `finalizePreReadSchemaReason` and
 `finalizePreReadSchemaCount` distinguish missing, unknown, or duplicate
 properties, record-count, type, enum, schema-version, cross-field, or identity failures without

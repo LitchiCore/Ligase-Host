@@ -206,6 +206,11 @@ $script:finalFailedField = "none"
 $script:virtualDisplayDiagnostic = $null
 $script:frozenInstallerEvidencePrimary = $null
 $script:frozenInstallerEvidencePrimaryJson = $null
+$script:frozenInstallerEvidenceSecondaryReadback = $null
+$script:frozenInstallerEvidenceSecondaryReadbackJson = $null
+$script:existingPrimarySelectionState = "absent"
+$script:existingPrimarySelectionSource = "none"
+$script:existingPrimarySelectionReason = "none"
 $script:secondaryWriterState = "notRequired"
 $script:secondaryWriterReason = "none"
 $script:secondaryWriterPersistence = "standard"
@@ -4588,6 +4593,117 @@ function Freeze-InstallerEvidencePrimary($Diagnostic) {
   $script:frozenInstallerEvidencePrimaryJson = $json
 }
 
+function Select-VirtualDisplayExistingPrimary([string]$Token) {
+  $candidates = @()
+  $tokenPresent = -not [string]::IsNullOrWhiteSpace($Token)
+  $filePresent = Test-Path -LiteralPath (
+    Get-VirtualDisplayDiagnosticPath) -PathType Leaf
+  $tokenInvalid = $false
+  $fileInvalid = $false
+  if ($tokenPresent) {
+    try {
+      $document = ConvertFrom-VirtualDisplayDiagnosticToken $Token
+      $candidates += [pscustomobject]@{ source = "token"; document = $document }
+    } catch { $tokenInvalid = $true }
+  }
+  if ($filePresent) {
+    try {
+      $document = Read-VirtualDisplayDiagnostic
+      $candidates += [pscustomobject]@{ source = "file"; document = $document }
+    } catch { $fileInvalid = $true }
+  }
+  if ($candidates.Count -eq 0) {
+    $script:existingPrimarySelectionState = if ($tokenPresent -or $filePresent) {
+      "failed"
+    } else { "absent" }
+    $script:existingPrimarySelectionSource = "none"
+    $script:existingPrimarySelectionReason = if ($tokenInvalid -and $fileInvalid) {
+      "bothInvalid"
+    } elseif ($tokenInvalid) { "tokenInvalid" }
+    elseif ($fileInvalid) { "fileInvalid" }
+    else { "none" }
+    return $null
+  }
+  $selected = @($candidates | Sort-Object -Property @(
+      @{ Expression = {
+          [DateTime]::Parse(
+            [string]$_.document.writtenUtc,
+            [Globalization.CultureInfo]::InvariantCulture,
+            [Globalization.DateTimeStyles]::RoundtripKind)
+        }; Ascending = $true },
+      @{ Expression = { if ($_.source -ceq "file") { 0 } else { 1 } };
+        Ascending = $true }) | Select-Object -First 1)[0]
+  $script:existingPrimarySelectionState = "selected"
+  $script:existingPrimarySelectionSource = [string]$selected.source
+  $script:existingPrimarySelectionReason = if ($tokenInvalid) { "tokenInvalid" }
+    elseif ($fileInvalid) { "fileInvalid" }
+    else { "none" }
+  return $selected.document
+}
+
+function Freeze-InstallerEvidenceSecondaryReadback {
+  if ($null -eq $script:frozenInstallerEvidencePrimary) {
+    throw "installerEvidencePrimaryUnavailable"
+  }
+  $projection = ([string]$script:frozenInstallerEvidencePrimaryJson |
+    ConvertFrom-Json)
+  $projection.finalizePreReadStage = [string]$script:virtualDisplayFinalizePreReadStage
+  $projection.finalizePreReadReason = [string]$script:virtualDisplayFinalizePreReadReason
+  $projection.finalizePreReadSchemaReason = [string]$script:virtualDisplayFinalizePreReadSchemaReason
+  $projection.finalizePreReadSchemaCount = [int]$script:virtualDisplayFinalizePreReadSchemaCount
+  $projection.finalizePreReadCleanupState = [string]$script:virtualDisplayFinalizePreReadCleanupState
+  $projection.finalizePreReadRootPidZero = [bool]$script:virtualDisplayFinalizePreReadRootPidZero
+  $projection.finalizePreReadJobActiveProcesses = [int]$script:virtualDisplayFinalizePreReadJobActiveProcesses
+  $projection.finalizePreReadStdoutClosed = [bool]$script:virtualDisplayFinalizePreReadStdoutClosed
+  $projection.finalizePreReadStderrClosed = [bool]$script:virtualDisplayFinalizePreReadStderrClosed
+  $projection.finalizePreReadDeviceCount = [int]$script:virtualDisplayFinalizePreReadDeviceCount
+  $projection.finalizePreReadPresentDeviceCount = [int]$script:virtualDisplayFinalizePreReadPresentDeviceCount
+  $projection.finalizePreReadIdentitySha256 = [string]$script:virtualDisplayFinalizePreReadIdentitySha256
+  $projection.finalizePreReadDriverBindingVerified = [bool]$script:virtualDisplayFinalizePreReadDriverBindingVerified
+  Assert-VirtualDisplayDiagnosticCorrelation $projection
+  $selectionState = [string]$script:existingPrimarySelectionState
+  $selectionSource = [string]$script:existingPrimarySelectionSource
+  $selectionReason = [string]$script:existingPrimarySelectionReason
+  $selectionValid = if ($selectionState -ceq "selected") {
+    $selectionSource -in @("token", "file") -and (
+      $selectionReason -ceq "none" -or
+      ($selectionReason -ceq "tokenInvalid" -and
+        $selectionSource -ceq "file") -or
+      ($selectionReason -ceq "fileInvalid" -and
+        $selectionSource -ceq "token"))
+  } elseif ($selectionState -ceq "absent") {
+    $selectionSource -ceq "none" -and $selectionReason -ceq "none"
+  } elseif ($selectionState -ceq "failed") {
+    $selectionSource -ceq "none" -and $selectionReason -in @(
+      "tokenInvalid", "fileInvalid", "bothInvalid")
+  } else { $false }
+  if (-not $selectionValid) {
+    throw "installerEvidencePrimarySelectionInvalid"
+  }
+  $secondary = [pscustomobject][ordered]@{
+    existingPrimaryState = $selectionState
+    existingPrimarySource = $selectionSource
+    existingPrimaryReason = $selectionReason
+    stage = [string]$projection.finalizePreReadStage
+    reason = [string]$projection.finalizePreReadReason
+    schemaReason = [string]$projection.finalizePreReadSchemaReason
+    schemaCount = [int]$projection.finalizePreReadSchemaCount
+    cleanupState = [string]$projection.finalizePreReadCleanupState
+    rootPidZero = [bool]$projection.finalizePreReadRootPidZero
+    jobActiveProcesses = [int]$projection.finalizePreReadJobActiveProcesses
+    stdoutClosed = [bool]$projection.finalizePreReadStdoutClosed
+    stderrClosed = [bool]$projection.finalizePreReadStderrClosed
+    deviceCount = [int]$projection.finalizePreReadDeviceCount
+    presentDeviceCount = [int]$projection.finalizePreReadPresentDeviceCount
+    identitySha256 = [string]$projection.finalizePreReadIdentitySha256
+    driverBindingVerified = [bool]$projection.finalizePreReadDriverBindingVerified
+  }
+  Assert-InstallerEvidenceSecondaryReadbackCorrelation $secondary
+  $script:frozenInstallerEvidenceSecondaryReadback = $secondary
+  $script:frozenInstallerEvidenceSecondaryReadbackJson =
+    $secondary | ConvertTo-Json -Compress
+}
+
 function Get-InstallerEvidenceWriterReason([string]$Stage) {
   if ($Stage -in @(
       "correlation", "serialization", "tempCreate", "tempWrite",
@@ -4612,6 +4728,71 @@ function Assert-InstallerEvidenceSecondaryWriterCorrelation($Document) {
   if (-not $valid) { throw "installerEvidenceSecondaryWriterInvalid" }
 }
 
+function Assert-InstallerEvidenceSecondaryReadbackCorrelation($Document) {
+  $expectedNames = @(
+    "existingPrimaryState", "existingPrimarySource", "existingPrimaryReason",
+    "stage", "reason", "schemaReason", "schemaCount", "cleanupState",
+    "rootPidZero", "jobActiveProcesses", "stdoutClosed", "stderrClosed",
+    "deviceCount", "presentDeviceCount", "identitySha256",
+    "driverBindingVerified")
+  $actualNames = @($Document.PSObject.Properties.Name)
+  if (@($actualNames).Count -ne $expectedNames.Count -or
+      @($actualNames | Where-Object { $expectedNames -cnotcontains $_ }).Count -ne 0 -or
+      @($expectedNames | Where-Object { $actualNames -cnotcontains $_ }).Count -ne 0 -or
+      $Document.existingPrimaryState -isnot [string] -or
+      $Document.existingPrimarySource -isnot [string] -or
+      $Document.existingPrimaryReason -isnot [string] -or
+      $Document.stage -isnot [string] -or $Document.reason -isnot [string] -or
+      $Document.schemaReason -isnot [string] -or
+      $Document.schemaCount -isnot [int] -or
+      $Document.cleanupState -isnot [string] -or
+      $Document.rootPidZero -isnot [bool] -or
+      $Document.jobActiveProcesses -isnot [int] -or
+      $Document.stdoutClosed -isnot [bool] -or
+      $Document.stderrClosed -isnot [bool] -or
+      $Document.deviceCount -isnot [int] -or
+      $Document.presentDeviceCount -isnot [int] -or
+      $Document.identitySha256 -isnot [string] -or
+      $Document.driverBindingVerified -isnot [bool]) {
+    throw "installerEvidenceSecondaryReadbackInvalid"
+  }
+  $state = [string]$Document.existingPrimaryState
+  $source = [string]$Document.existingPrimarySource
+  $reason = [string]$Document.existingPrimaryReason
+  $valid = if ($state -ceq "selected") {
+    $source -in @("token", "file") -and (
+      $reason -ceq "none" -or
+      ($reason -ceq "tokenInvalid" -and $source -ceq "file") -or
+      ($reason -ceq "fileInvalid" -and $source -ceq "token"))
+  } elseif ($state -ceq "absent") {
+    $source -ceq "none" -and $reason -ceq "none"
+  } elseif ($state -ceq "failed") {
+    $source -ceq "none" -and $reason -in @(
+      "tokenInvalid", "fileInvalid", "bothInvalid")
+  } else { $false }
+  if (-not $valid) { throw "installerEvidenceSecondaryReadbackInvalid" }
+  $preRead = [pscustomobject]@{
+    finalizePreReadStage = $Document.stage
+    finalizePreReadReason = $Document.reason
+    finalizePreReadSchemaReason = $Document.schemaReason
+    finalizePreReadSchemaCount = $Document.schemaCount
+    finalizePreReadCleanupState = $Document.cleanupState
+    finalizePreReadRootPidZero = $Document.rootPidZero
+    finalizePreReadJobActiveProcesses = $Document.jobActiveProcesses
+    finalizePreReadStdoutClosed = $Document.stdoutClosed
+    finalizePreReadStderrClosed = $Document.stderrClosed
+    finalizePreReadDeviceCount = $Document.deviceCount
+    finalizePreReadPresentDeviceCount = $Document.presentDeviceCount
+    finalizePreReadIdentitySha256 = $Document.identitySha256
+    finalizePreReadDriverBindingVerified = $Document.driverBindingVerified
+  }
+  try {
+    Assert-VirtualDisplayFinalizePreReadCorrelation $preRead
+  } catch {
+    throw "installerEvidenceSecondaryReadbackInvalid"
+  }
+}
+
 function Write-InstallerEvidenceLastResort {
   if ($null -eq $script:frozenInstallerEvidencePrimary -or
       [string]::IsNullOrWhiteSpace(
@@ -4628,11 +4809,17 @@ function Write-InstallerEvidenceLastResort {
     "yyyy-MM-ddTHH:mm:ss.fffZ",
     [Globalization.CultureInfo]::InvariantCulture)
   $primaryJson = [string]$script:frozenInstallerEvidencePrimaryJson
+  $secondaryReadbackJson =
+    [string]$script:frozenInstallerEvidenceSecondaryReadbackJson
+  if ([string]::IsNullOrWhiteSpace($secondaryReadbackJson)) {
+    throw "installerEvidenceSecondaryReadbackUnavailable"
+  }
   $reason = [string]$script:secondaryWriterReason
   $json = '{"schemaVersion":1,"candidateSourceHead":"' + $sourceHead +
     '","phase":"failed","success":false,' +
     '"resultCode":"installationFinalReadbackFailed",' +
     '"failedField":"virtualDisplay","virtualDisplay":' + $primaryJson +
+    ',"secondaryReadback":' + $secondaryReadbackJson +
     ',"secondaryWriter":{"state":"failed","reason":"' + $reason +
     '","persistence":"lastResort"},' +
     '"persistenceState":"lastResort","timestampUtc":"' + $timestamp + '"}'
@@ -4668,6 +4855,8 @@ function Write-InstallerEvidenceLastResort {
     $document = [Text.UTF8Encoding]::new($false, $true).GetString($actual) |
       ConvertFrom-Json
     Assert-InstallerEvidenceSecondaryWriterCorrelation $document
+    Assert-InstallerEvidenceSecondaryReadbackCorrelation (
+      $document.secondaryReadback)
     if ([string]$document.failedField -cne "virtualDisplay" -or
         [string]$document.secondaryWriter.state -cne "failed" -or
         [string]$document.secondaryWriter.reason -cne $reason -or
@@ -4795,6 +4984,7 @@ function Write-InstallerEvidenceStandard {
     } else {
       $primary
     }
+    secondaryReadback = $script:frozenInstallerEvidenceSecondaryReadback
     secondaryWriter = [ordered]@{
       state = $script:secondaryWriterState
       reason = $script:secondaryWriterReason
@@ -4816,6 +5006,10 @@ function Write-InstallerEvidenceStandard {
       [Globalization.CultureInfo]::InvariantCulture)
   }
   Assert-InstallerEvidenceSecondaryWriterCorrelation $document
+  if ($null -ne $document.secondaryReadback) {
+    Assert-InstallerEvidenceSecondaryReadbackCorrelation (
+      $document.secondaryReadback)
+  }
   $script:installerEvidenceWriterStage = "serialization"
   Invoke-InstallerEvidenceFault "serialization"
   $bytes = [Text.UTF8Encoding]::new($false).GetBytes(
@@ -4870,6 +5064,10 @@ function Write-InstallerEvidenceStandard {
 
 function Write-InstallerEvidence {
   try {
+    if ($null -ne $script:frozenInstallerEvidencePrimary -and
+        $null -eq $script:frozenInstallerEvidenceSecondaryReadback) {
+      Freeze-InstallerEvidenceSecondaryReadback
+    }
     $script:secondaryWriterState = "notRequired"
     $script:secondaryWriterReason = "none"
     $script:secondaryWriterPersistence = "standard"
@@ -7117,6 +7315,128 @@ try {
     $EvidenceHelperExit = 0
     $EvidenceRollback = "completed"
     $evidencePath = Get-InstallerEvidencePath
+    $primarySelectionCasesPassed = 0
+    $diagnosticPath = Get-VirtualDisplayDiagnosticPath
+    $selectionBase = ($script:virtualDisplayDiagnostic |
+      ConvertTo-Json -Depth 8 -Compress) | ConvertFrom-Json
+    foreach ($selectionCase in @(
+        @{ name = "earlierFile"; file = "2026-08-03T06:29:24.0000000Z";
+          token = "2026-08-03T06:29:29.0000000Z"; invalidToken = $false;
+          expected = "2026-08-03T06:29:24.0000000Z" },
+        @{ name = "earlierToken"; file = "2026-08-03T06:29:29.0000000Z";
+          token = "2026-08-03T06:29:24.0000000Z"; invalidToken = $false;
+          expected = "2026-08-03T06:29:24.0000000Z" },
+        @{ name = "invalidTokenValidFile";
+          file = "2026-08-03T06:29:24.0000000Z";
+          token = "2026-08-03T06:29:29.0000000Z"; invalidToken = $true;
+          expected = "2026-08-03T06:29:24.0000000Z";
+          expectedSource = "file" },
+        @{ name = "equalTimestampFileTie";
+          file = "2026-08-03T06:29:24.0000000Z";
+          token = "2026-08-03T06:29:24.0000000Z"; invalidToken = $false;
+          expected = "2026-08-03T06:29:24.0000000Z";
+          expectedSource = "file" })) {
+      $filePrimary = ($selectionBase | ConvertTo-Json -Depth 8 -Compress) |
+        ConvertFrom-Json
+      $filePrimary.writtenUtc = [string]$selectionCase.file
+      Write-VirtualDisplayDiagnostic $filePrimary
+      $token = if ([bool]$selectionCase.invalidToken) { "not-a-token" } else {
+        $tokenPrimary = ($selectionBase | ConvertTo-Json -Depth 8 -Compress) |
+          ConvertFrom-Json
+        $tokenPrimary.writtenUtc = [string]$selectionCase.token
+        ConvertTo-VirtualDisplayDiagnosticToken $tokenPrimary
+      }
+      $selected = Select-VirtualDisplayExistingPrimary $token
+      $expectedSource = if ($selectionCase.ContainsKey("expectedSource")) {
+        [string]$selectionCase.expectedSource
+      } elseif ([string]$selectionCase.name -ceq "earlierToken") {
+        "token"
+      } else { "file" }
+      if ($null -eq $selected -or [string]$selected.writtenUtc -cne
+          [string]$selectionCase.expected -or
+          [string]$script:existingPrimarySelectionSource -cne $expectedSource) {
+        throw "installerEvidencePrimarySelectionInvalid"
+      }
+      $expectedSelectionReason = if ([bool]$selectionCase.invalidToken) {
+        "tokenInvalid"
+      } else { "none" }
+      if ([string]$script:existingPrimarySelectionState -cne "selected" -or
+          [string]$script:existingPrimarySelectionReason -cne
+            $expectedSelectionReason) {
+        throw "installerEvidencePrimarySelectionInvalid"
+      }
+      $primarySelectionCasesPassed++
+    }
+    $selectedPrimary = Select-VirtualDisplayExistingPrimary "not-a-token"
+    $script:frozenInstallerEvidencePrimary = $null
+    $script:frozenInstallerEvidencePrimaryJson = $null
+    $script:frozenInstallerEvidenceSecondaryReadback = $null
+    $script:frozenInstallerEvidenceSecondaryReadbackJson = $null
+    Freeze-InstallerEvidencePrimary $selectedPrimary
+    $script:virtualDisplayFinalizePreReadStage = "failed"
+    $script:virtualDisplayFinalizePreReadReason = "schema"
+    $script:virtualDisplayFinalizePreReadSchemaReason = "crossField"
+    $script:virtualDisplayFinalizePreReadSchemaCount = 1
+    $script:virtualDisplayFinalizePreReadCleanupState = "completed"
+    $script:virtualDisplayFinalizePreReadRootPidZero = $true
+    $script:virtualDisplayFinalizePreReadJobActiveProcesses = 0
+    $script:virtualDisplayFinalizePreReadStdoutClosed = $true
+    $script:virtualDisplayFinalizePreReadStderrClosed = $true
+    $script:virtualDisplayFinalizePreReadDeviceCount = -1
+    $script:virtualDisplayFinalizePreReadPresentDeviceCount = -1
+    $script:virtualDisplayFinalizePreReadIdentitySha256 =
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    $script:virtualDisplayFinalizePreReadDriverBindingVerified = $false
+    Freeze-InstallerEvidenceSecondaryReadback
+    $precedenceOutcome = Write-InstallerEvidence
+    if ([string]$precedenceOutcome.virtualDisplay.writtenUtc -cne
+          [string]$selectedPrimary.writtenUtc -or
+        [string]$precedenceOutcome.secondaryReadback.stage -cne "failed" -or
+        [string]$precedenceOutcome.secondaryReadback.reason -cne "schema" -or
+        [string]$precedenceOutcome.secondaryReadback.schemaReason -cne
+          "crossField" -or
+        [int]$precedenceOutcome.secondaryReadback.schemaCount -ne 1 -or
+        [string]$precedenceOutcome.secondaryReadback.existingPrimaryState -cne
+          "selected" -or
+        [string]$precedenceOutcome.secondaryReadback.existingPrimarySource -cne
+          "file" -or
+        [string]$precedenceOutcome.secondaryReadback.existingPrimaryReason -cne
+          "tokenInvalid" -or
+        [string]$precedenceOutcome.secondaryWriter.state -cne "notRequired") {
+      throw "installerEvidencePrimaryPrecedenceInvalid"
+    }
+    $primarySelectionCrossSpliceRejected = 0
+    foreach ($crossValues in @(
+        @{ existingPrimaryState = "selected";
+          existingPrimarySource = "token";
+          existingPrimaryReason = "tokenInvalid" },
+        @{ existingPrimaryState = "absent";
+          existingPrimarySource = "file"; existingPrimaryReason = "none" },
+        @{ existingPrimaryState = "failed";
+          existingPrimarySource = "none"; existingPrimaryReason = "none" },
+        @{ schemaReason = "none"; schemaCount = 1 },
+        @{ cleanupState = "failed"; rootPidZero = $false;
+          jobActiveProcesses = -1; stdoutClosed = $true;
+          stderrClosed = $true },
+        @{ deviceCount = 1; presentDeviceCount = 0;
+          identitySha256 =
+            "1111111111111111111111111111111111111111111111111111111111111111";
+          driverBindingVerified = $true })) {
+      $cross = ($precedenceOutcome.secondaryReadback |
+        ConvertTo-Json -Compress) | ConvertFrom-Json
+      foreach ($name in $crossValues.Keys) {
+        $cross.$name = $crossValues[$name]
+      }
+      $rejected = $false
+      try {
+        Assert-InstallerEvidenceSecondaryReadbackCorrelation $cross
+      } catch {
+        $rejected = [string]$_.Exception.Message -ceq
+          "installerEvidenceSecondaryReadbackInvalid"
+      }
+      if (-not $rejected) { throw "installerEvidencePrimarySelectionInvalid" }
+      $primarySelectionCrossSpliceRejected++
+    }
     $writerReasons = @(
       "correlation", "serialization", "tempCreate", "tempWrite",
       "atomicMove", "readback", "hash")
@@ -7381,6 +7701,9 @@ try {
     [Console]::Out.WriteLine(([ordered]@{
       code = "installerEvidenceSecondaryFailureValidated"
       success = $true
+      primarySelectionCasesPassed = $primarySelectionCasesPassed
+      primarySelectionCrossSpliceRejected =
+        $primarySelectionCrossSpliceRejected
       writerFaultsPassed = $writerFaultsPassed
       writerFaultResults = $writerFaultResults
       parseFaultsPassed = $parseFaultsPassed
@@ -8676,14 +8999,11 @@ try {
         throw "installTransactionInvalid"
       }
       if ($VirtualDisplaySelected) {
-        $script:virtualDisplayDiagnostic = if (-not (
-            [string]::IsNullOrWhiteSpace($VirtualDisplayDiagnosticToken))) {
-          ConvertFrom-VirtualDisplayDiagnosticToken (
-            $VirtualDisplayDiagnosticToken)
-        } elseif (Test-Path -LiteralPath (
-            Get-VirtualDisplayDiagnosticPath) -PathType Leaf) {
-          Read-VirtualDisplayDiagnostic
-        } else { $null }
+        $script:virtualDisplayDiagnostic =
+          Select-VirtualDisplayExistingPrimary $VirtualDisplayDiagnosticToken
+        if ($null -ne $script:virtualDisplayDiagnostic) {
+          Freeze-InstallerEvidencePrimary $script:virtualDisplayDiagnostic
+        }
         $virtualDisplay = Get-VirtualDisplay
         Set-VirtualDisplayFinalizePreReadAuthority $virtualDisplay
         if ($null -eq $script:virtualDisplayDiagnostic -and
@@ -8692,6 +9012,7 @@ try {
           $script:virtualDisplayDiagnostic = New-VirtualDisplayDiagnostic (
             "virtualDisplayReadbackFailed") $false
           Set-VirtualDisplayFinalizePreReadAuthority $virtualDisplay
+          Freeze-InstallerEvidencePrimary $script:virtualDisplayDiagnostic
         }
         if ($script:virtualDisplayFinalizePreReadStage -ceq "failed") {
           $script:finalFailedField = "virtualDisplay"
@@ -8713,6 +9034,9 @@ try {
       $EvidenceDataRootResidue = "nonEmpty"
       $script:shortcutRollback = $null
       Remove-InstallTransaction
+      if ($null -ne $script:frozenInstallerEvidencePrimary) {
+        Freeze-InstallerEvidenceSecondaryReadback
+      }
       $null = Write-InstallerEvidence
       # NSIS intentionally performs a byte-exact final success comparison.
       # Windows PowerShell does not preserve ordinary hashtable insertion
@@ -8785,7 +9109,10 @@ try {
           "empty"
         } else { "nonEmpty" }
       } else { "absent" }
-      Freeze-InstallerEvidencePrimary $script:virtualDisplayDiagnostic
+      if ($null -eq $script:frozenInstallerEvidencePrimary) {
+        Freeze-InstallerEvidencePrimary $script:virtualDisplayDiagnostic
+      }
+      Freeze-InstallerEvidenceSecondaryReadback
       $null = Write-InstallerEvidence
       Write-Outcome "installationFinalReadbackFailed" $false
       exit 10

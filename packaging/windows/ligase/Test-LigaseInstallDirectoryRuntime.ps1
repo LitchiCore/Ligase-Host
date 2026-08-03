@@ -6634,6 +6634,8 @@ $evidenceSecondaryProjection =
 if ([string]$evidenceSecondaryProjection.code -cne
       "installerEvidenceSecondaryFailureValidated" -or
     -not [bool]$evidenceSecondaryProjection.success -or
+    [int]$evidenceSecondaryProjection.primarySelectionCasesPassed -ne 4 -or
+    [int]$evidenceSecondaryProjection.primarySelectionCrossSpliceRejected -ne 6 -or
     [int]$evidenceSecondaryProjection.writerFaultsPassed -ne 7 -or
     [int]$evidenceSecondaryProjection.parseFaultsPassed -ne 2 -or
     [int]$evidenceSecondaryProjection.schemaSubreasonCasesPassed -ne 9 -or
