@@ -3244,6 +3244,65 @@ try {
       result = "passed"
       matchingDeviceCount = @($projection.devices).Count
     }
+    if ([string]$inventoryCase.name -ceq "present") {
+      $device = @($projection.devices)[0]
+      $request = [ordered]@{
+        schemaVersion = 1
+        inventoryNonce = [string]$projection.inventoryNonce
+        inventoryEpochSha256 = [string]$projection.inventoryEpochSha256
+        instanceId = [string]$device.instanceId
+        instanceIdSha256 = [string]$device.instanceIdSha256
+        removalAuthoritySha256 = [string]$device.removalAuthoritySha256
+      }
+      $requestBytes = [Text.UTF8Encoding]::new($false).GetBytes(
+        ($request | ConvertTo-Json -Compress))
+      $requestToken = [Convert]::ToBase64String($requestBytes).TrimEnd('=').
+        Replace('+', '-').Replace('/', '_')
+      $removeOutput = @(& $inventoryHelper --validate-remove-fixture (
+          $fixturePath) $requestToken)
+      if ($LASTEXITCODE -ne 0 -or $removeOutput.Count -ne 1) {
+        throw "virtualDisplayInventoryHelperRemovalFixtureFailed"
+      }
+      $removeProjection = $removeOutput[0] | ConvertFrom-Json
+      if ([string]$removeProjection.state -cne "removed" -or
+          [string]$removeProjection.instanceIdSha256 -cne
+            [string]$device.instanceIdSha256 -or
+          [string]$removeProjection.priorInventoryEpochSha256 -cne
+            [string]$projection.inventoryEpochSha256 -or
+          [int]$removeProjection.nativeCode -ne 0) {
+        throw "virtualDisplayInventoryHelperRemovalProjectionFailed"
+      }
+      $inventoryHelperResults += [ordered]@{
+        name = "exactRemovalAuthority"
+        result = "passed"
+        matchingDeviceCount = 1
+      }
+      foreach ($drift in @("epoch", "instanceHash", "authority", "instance")) {
+        $invalid = ($request | ConvertTo-Json -Compress) | ConvertFrom-Json
+        switch ($drift) {
+          "epoch" { $invalid.inventoryEpochSha256 = "0" * 64 }
+          "instanceHash" { $invalid.instanceIdSha256 = "0" * 64 }
+          "authority" { $invalid.removalAuthoritySha256 = "0" * 64 }
+          "instance" { $invalid.instanceId = "ROOT\DISPLAY\9999" }
+        }
+        $invalidBytes = [Text.UTF8Encoding]::new($false).GetBytes(
+          ($invalid | ConvertTo-Json -Compress))
+        $invalidToken = [Convert]::ToBase64String($invalidBytes).TrimEnd('=').
+          Replace('+', '-').Replace('/', '_')
+        $invalidOutput = @(& $inventoryHelper --validate-remove-fixture (
+            $fixturePath) $invalidToken)
+        if ($LASTEXITCODE -ne 20 -or $invalidOutput.Count -ne 1 -or
+            [string](($invalidOutput[0] | ConvertFrom-Json).code) -cne
+              "removalAuthorityInvalid") {
+          throw "virtualDisplayInventoryHelperRemovalDriftAccepted:$drift"
+        }
+        $inventoryHelperResults += [ordered]@{
+          name = "exactRemovalReject-$drift"
+          result = "passed"
+          matchingDeviceCount = -1
+        }
+      }
+    }
   }
   $duplicateFixture = Join-Path $inventoryFixtureRoot "duplicate-identity.json"
   [ordered]@{schemaVersion=1;nodes=@(
@@ -4991,7 +5050,6 @@ if "%LIGASE_VDISPLAY_PROCESS_BEHAVIOR%"=="exit21" echo LIGASE_VDISPLAY_V1^|stage
 if "%LIGASE_VDISPLAY_PROCESS_BEHAVIOR%"=="exit22" echo LIGASE_VDISPLAY_V1^|stage=certificatePublisher^|nativeExit=5&exit /b 22
 if "%LIGASE_VDISPLAY_PROCESS_BEHAVIOR%"=="exit23" echo LIGASE_VDISPLAY_V1^|stage=deviceCreate^|nativeExit=87^|removeExit=0^|removeCount=0&exit /b 23
 if "%LIGASE_VDISPLAY_PROCESS_BEHAVIOR%"=="exit24" echo LIGASE_VDISPLAY_V1^|stage=driverPackageInstall^|nativeExit=5^|removeExit=0^|removeCount=0&exit /b 24
-if "%LIGASE_VDISPLAY_PROCESS_BEHAVIOR%"=="exit25" echo LIGASE_VDISPLAY_V1^|stage=deviceRemove^|nativeExit=16^|removeExit=0^|removeCount=16&exit /b 25
 if "%LIGASE_VDISPLAY_PROCESS_BEHAVIOR%"=="malformed" echo not-json&exit /b 0
 if "%LIGASE_VDISPLAY_PROCESS_BEHAVIOR%"=="extra" echo LIGASE_VDISPLAY_V1^|stage=completed^|nativeExit=0^|removeExit=0^|removeCount=0&echo extra&exit /b 0
 if "%LIGASE_VDISPLAY_PROCESS_BEHAVIOR%"=="cross" echo LIGASE_VDISPLAY_V1^|stage=deviceCreate^|nativeExit=5^|removeExit=0^|removeCount=0&exit /b 24
@@ -5206,8 +5264,6 @@ $installerProcessCases = @(
      code = "virtualDisplayDeviceCreateFailed"; success = $false },
   @{ schema = "directV1"; name = "exit24";
      code = "virtualDisplayDriverPackageInstallFailed"; success = $false },
-  @{ schema = "directV1"; name = "exit25";
-     code = "virtualDisplayDeviceRemoveFailed"; success = $false },
   @{ schema = "directV1"; name = "malformed";
      code = "virtualDisplayInstallerOutputInvalid"; success = $false },
   @{ schema = "directV1"; name = "extra";
@@ -6174,105 +6230,40 @@ foreach ($case in $readbackCases) {
   }
 }
 
-$trustedToolRoot = Join-Path $root "virtual-display-trusted-tool"
-New-Item -ItemType Directory -Path $trustedToolRoot | Out-Null
-$previousHarness = $env:LIGASE_INSTALL_VALIDATION_HARNESS
-$previousTrustedToolRoot =
-  $env:LIGASE_VIRTUAL_DISPLAY_TRUSTED_TOOL_VALIDATION_ROOT
-try {
-  $env:LIGASE_INSTALL_VALIDATION_HARNESS = "1"
-  $env:LIGASE_VIRTUAL_DISPLAY_TRUSTED_TOOL_VALIDATION_ROOT = $trustedToolRoot
-  $trustedToolRaw = @(& $readbackPowerShell -NoProfile -NonInteractive `
-    -ExecutionPolicy Bypass -File $managementScript `
-    -Action ValidateVirtualDisplayTrustedPnPUtil `
-    -InstallDirectory $trustedToolRoot -ValidationRoot $trustedToolRoot)
-} finally {
-  if ($null -eq $previousHarness) {
-    Remove-Item Env:LIGASE_INSTALL_VALIDATION_HARNESS `
-      -ErrorAction SilentlyContinue
-  } else { $env:LIGASE_INSTALL_VALIDATION_HARNESS = $previousHarness }
-  if ($null -eq $previousTrustedToolRoot) {
-    Remove-Item Env:LIGASE_VIRTUAL_DISPLAY_TRUSTED_TOOL_VALIDATION_ROOT `
-      -ErrorAction SilentlyContinue
-  } else {
-    $env:LIGASE_VIRTUAL_DISPLAY_TRUSTED_TOOL_VALIDATION_ROOT =
-      $previousTrustedToolRoot
-  }
-}
-if ($LASTEXITCODE -ne 0 -or @($trustedToolRaw).Count -ne 1) {
-  throw "virtualDisplayTrustedToolFixtureFailed"
-}
-$trustedToolProjection = [string]$trustedToolRaw | ConvertFrom-Json
-if ([string]$trustedToolProjection.code -cne
-      "virtualDisplayTrustedToolValidated" -or
-    -not [bool]$trustedToolProjection.success -or
-    [string]$trustedToolProjection.leaf -cne "pnputil.exe" -or
-    [string]$trustedToolProjection.pathSha256 -cnotmatch '^[0-9a-f]{64}$' -or
-    -not [bool]$trustedToolProjection.systemRootIgnored -or
-    -not [bool]$trustedToolProjection.pathIgnored -or
-    [int]$trustedToolProjection.processStartCount -ne 0 -or
-    -not [bool]$trustedToolProjection.environmentRestored) {
-  throw "virtualDisplayTrustedToolFixtureAssertionFailed"
-}
-
 $virtualDisplayRemovalResults = @()
 $removalCases = @(
-  @{ name = "stableZero"; counts = @(0); exits = @(); fallback = @(); fault = "none"; readbackFaultAt = -1; success = $true
+  @{ name = "stableZero"; counts = @(0); native = @(); fault = "none"; readbackFaultAt = -1; success = $true
     code = "virtualDisplayRemoved"; removed = 0; final = 0 },
-  @{ name = "transientZeroToTwo"; counts = @(0, 2); exits = @(); fallback = @(); fault = "none"; readbackFaultAt = -1; success = $false
+  @{ name = "transientZeroToTwo"; counts = @(0, 2); native = @(); fault = "none"; readbackFaultAt = -1; success = $false
     code = "virtualDisplayDeviceZeroProofFailed"; removed = 0; final = 2 },
   @{ name = "zeroIdentityEpochDrift"; counts = @(0, 0); epochs = @(
-      ("1" * 64), ("2" * 64)); exits = @(); fallback = @(); fault = "none"; readbackFaultAt = -1; success = $false
+      ("1" * 64), ("2" * 64)); native = @(); fault = "none"; readbackFaultAt = -1; success = $false
     code = "virtualDisplayDeviceZeroProofFailed"; removed = 0; final = 0 },
   @{ name = "lastZeroSampleCrossesDeadline"; counts = @(0, 0, 0)
-    delays = @(0, 0, 180); total = 250; exits = @(); fallback = @()
+    delays = @(0, 0, 180); total = 250; native = @()
     fault = "none"; readbackFaultAt = -1; success = $false
     code = "virtualDisplayDeviceZeroProofFailed"; removed = 0; final = 0 },
-  @{ name = "one"; counts = @(1, 0); exits = @(0); fallback = @(); fault = "none"; readbackFaultAt = -1; success = $true
+  @{ name = "nativeOne"; counts = @(1, 0); native = @(0); fault = "none"; readbackFaultAt = -1; success = $true
     code = "virtualDisplayRemoved"; removed = 1; final = 0 },
-  @{ name = "two"; counts = @(2, 1, 1, 0); exits = @(0, 0); fallback = @(); fault = "none"; readbackFaultAt = -1; success = $true
+  @{ name = "nativeRebootRequired"; counts = @(1, 0); native = @(0)
+    reboots = @($true); fault = "none"; readbackFaultAt = -1; success = $true
+    code = "virtualDisplayRemoved"; removed = 1; final = 0 },
+  @{ name = "nativeTwo"; counts = @(2, 1, 1, 0); native = @(0, 0); fault = "none"; readbackFaultAt = -1; success = $true
     code = "virtualDisplayRemoved"; removed = 2; final = 0 },
-  @{ name = "exit6Fallback"; counts = @(2, 1, 1, 0); exits = @(0, 6)
-    fallback = @(0); fault = "none"; readbackFaultAt = -1; success = $true; code = "virtualDisplayRemoved"
-    removed = 2; final = 0 },
-  @{ name = "exit6FallbackFailed"; counts = @(1); exits = @(6)
-    fallback = @(5); fault = "none"; readbackFaultAt = -1; success = $false
-    code = "virtualDisplayDeviceRemoveFallbackFailed"; removed = 0; final = 1 },
-  @{ name = "fallbackTimeoutPreTuple"; counts = @(1); exits = @(6)
-    fallback = @(); fault = "timeout"; readbackFaultAt = -1; success = $false
+  @{ name = "nativeAuthorityFailed"; counts = @(1); native = @()
+    fault = "authority"; readbackFaultAt = -1; success = $false
     code = "virtualDisplayDeviceRemoveFallbackFailed"; removed = 0; final = 1
-    fallbackStage = "processInvoke"; fallbackReason = "timeout" },
-  @{ name = "fallbackOutputPreTuple"; counts = @(1); exits = @(6)
-    fallback = @(); fault = "output"; readbackFaultAt = -1; success = $false
+    fallbackStage = "tupleValidation"; fallbackReason = "tupleInvalid" },
+  @{ name = "nativeApiFailed"; counts = @(1); native = @(21)
+    fault = "none"; readbackFaultAt = -1; success = $false
     code = "virtualDisplayDeviceRemoveFallbackFailed"; removed = 0; final = 1
-    fallbackStage = "processInvoke"; fallbackReason = "outputInvalid" },
-  @{ name = "fallbackEncodingPreTuple"; counts = @(1); exits = @(6)
-    fallback = @(); fault = "encoding"; readbackFaultAt = -1; success = $false
-    code = "virtualDisplayDeviceRemoveFallbackFailed"; removed = 0; final = 1
-    fallbackStage = "processInvoke"; fallbackReason = "encodingInvalid" },
-  @{ name = "fallbackOverflowPreTuple"; counts = @(1); exits = @(6)
-    fallback = @(); fault = "overflow"; readbackFaultAt = -1; success = $false
-    code = "virtualDisplayDeviceRemoveFallbackFailed"; removed = 0; final = 1
-    fallbackStage = "processInvoke"; fallbackReason = "outputOverflow" },
-  @{ name = "fallbackUnavailablePreTuple"; counts = @(1); exits = @(6)
-    fallback = @(); fault = "unavailable"; readbackFaultAt = -1; success = $false
-    code = "virtualDisplayDeviceRemoveFallbackFailed"; removed = 0; final = 1
-    fallbackStage = "processInvoke"; fallbackReason = "outputUnavailable" },
-  @{ name = "fallbackCleanupPreTuple"; counts = @(1); exits = @(6)
-    fallback = @(); fault = "cleanup"; readbackFaultAt = -1; success = $false
-    code = "virtualDisplayDeviceRemoveFallbackFailed"; removed = 0; final = 1
-    fallbackStage = "processInvoke"; fallbackReason = "processStartOrCleanup" },
-  @{ name = "fallbackTrustedToolPreTuple"; counts = @(1); exits = @(6)
-    fallback = @(); fault = "trustedTool"; readbackFaultAt = -1; success = $false
-    code = "virtualDisplayDeviceRemoveFallbackFailed"; removed = 0; final = 1
-    fallbackStage = "trustedToolResolve"
-    fallbackReason = "trustedToolUnavailable" },
-  @{ name = "postRemoveReadbackFailure"; counts = @(1); exits = @(0)
-    fallback = @(); fault = "none"; readbackFaultAt = 1; success = $false
+    fallbackStage = "tupleValidation"; fallbackReason = "nativeFailure" },
+  @{ name = "postRemoveReadbackFailure"; counts = @(1); native = @(0)
+    fault = "none"; readbackFaultAt = 1; success = $false
     code = "virtualDisplayDeviceRemoveReadbackFailed"; removed = 0; final = 1 },
-  @{ name = "settleProgress"; counts = @(1, 1, 0); exits = @(0); fallback = @(); fault = "none"; readbackFaultAt = -1
+  @{ name = "settleProgress"; counts = @(1, 1, 0); native = @(0); fault = "none"; readbackFaultAt = -1
     success = $true; code = "virtualDisplayRemoved"; removed = 1; final = 0 },
-  @{ name = "settleTimeout"; counts = @(1); exits = @(0); fallback = @(); fault = "none"; readbackFaultAt = -1; success = $false
+  @{ name = "settleTimeout"; counts = @(1); native = @(0); fault = "none"; readbackFaultAt = -1; success = $false
     code = "virtualDisplayDeviceRemoveSettleFailed"; removed = 0; final = 1 }
 )
 foreach ($case in $removalCases) {
@@ -6283,9 +6274,11 @@ foreach ($case in $removalCases) {
     ([ordered]@{
       schemaVersion = 1
       counts = @($case.counts)
-      removeExits = @($case.exits)
-      fallbackExits = @($case.fallback)
-      fallbackFault = [string]$case.fault
+      nativeExits = @($case.native)
+      nativeReboots = @(
+        if ($case.ContainsKey("reboots")) { @($case.reboots) }
+        else { @($case.native | ForEach-Object { $false }) })
+      nativeFault = [string]$case.fault
       readbackFaultAt = [int]$case.readbackFaultAt
       settleMilliseconds = 200
       totalMilliseconds = if ($case.ContainsKey("total")) {
@@ -6340,9 +6333,8 @@ foreach ($case in $removalCases) {
       [int]$projection.observedDeviceCount -ne [int]$case.final) {
     throw "virtualDisplayRemovalFixtureAssertionFailed:$($case.name)"
   }
-  if ([string]$case.name -like "fallback*PreTuple" -and (
+  if ([string]$case.name -ceq "nativeAuthorityFailed" -and (
       [int]$projection.fallbackExitCode -ne -1 -or
-      [int]$projection.removeExitCode -ne 6 -or
       [string]$projection.deviceRecovery -cne "failed" -or
       [string]$projection.residualDeviceState -cne "exactOneBound" -or
       [string]$projection.fallbackStage -cne
@@ -6351,8 +6343,10 @@ foreach ($case in $removalCases) {
         [string]$case.fallbackReason)) {
     throw "virtualDisplayRemovalFixtureAssertionFailed:$($case.name)"
   }
-  if ([string]$case.name -ceq "exit6FallbackFailed" -and
-      [int]$projection.fallbackExitCode -ne 5) {
+  if ([string]$case.name -ceq "nativeApiFailed" -and (
+      [int]$projection.fallbackExitCode -ne 21 -or
+      [string]$projection.fallbackStage -cne "tupleValidation" -or
+      [string]$projection.fallbackReason -cne "nativeFailure")) {
     throw "virtualDisplayRemovalFixtureAssertionFailed:$($case.name)"
   }
   if ([string]$case.name -ceq "postRemoveReadbackFailure" -and (
@@ -6363,8 +6357,7 @@ foreach ($case in $removalCases) {
   if ([string]$case.name -in @(
       "transientZeroToTwo", "zeroIdentityEpochDrift",
       "lastZeroSampleCrossesDeadline") -and (
-      [int]$projection.removeCalls -ne 0 -or
-      [int]$projection.fallbackCalls -ne 0 -or
+      [int]$projection.nativeRemoveCalls -ne 0 -or
       [string]$projection.deviceRecovery -cne "failed")) {
     throw "virtualDisplayRemovalFixtureAssertionFailed:$($case.name)"
   }
@@ -6372,8 +6365,7 @@ foreach ($case in $removalCases) {
     name = [string]$case.name
     code = [string]$projection.code
     success = [bool]$projection.success
-    removeCalls = [int]$projection.removeCalls
-    fallbackCalls = [int]$projection.fallbackCalls
+    nativeRemoveCalls = [int]$projection.nativeRemoveCalls
     removeCount = [int]$projection.removeCount
     fallbackExitCode = [int]$projection.fallbackExitCode
     fallbackStage = [string]$projection.fallbackStage
@@ -6760,7 +6752,6 @@ foreach ($entryMode in @("stopAfterFreeze", "failAfterFreeze")) {
   virtualDisplayNativeInventoryInvocationCases =
     $nativeInventoryInvocationResults
   installerEvidenceSecondaryFailure = $evidenceSecondaryProjection
-  virtualDisplayTrustedTool = $trustedToolProjection
   virtualDisplayRemovalCases = $virtualDisplayRemovalResults
   virtualDisplayTerminalReadbackCases =
     $virtualDisplayTerminalReadbackResults

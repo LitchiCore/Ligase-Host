@@ -648,28 +648,34 @@ as owned by that installer execution and after confirming that no dependent
 driver remains.
 An `install.bat` exit code of zero is provisional rather than success
 authority. Repair removes matching device nodes with a bounded loop before
-creating a replacement. Each removal is followed by a bounded enumeration
-readback, and creation is permitted only after that readback proves the
-matching device count is zero. A single zero snapshot is never sufficient:
+creating a replacement. Removal is owned by the pinned native inventory helper,
+not by nefcon or localized command output. The helper first performs a fresh
+all-devnode exact-hardware-ID inventory and returns a random nonce, the sorted
+identity-set epoch hash, and per-node identity and removal-authority hashes.
+The removal verb accepts only one complete request derived from that same
+inventory. It re-inventories before mutation and rejects an unknown, stale,
+duplicated, case-drifted, or hash-mismatched identity. The native operation uses
+the Windows 7+ `DiUninstallDevice` API; the application does not call
+`SetupDiRemoveDevice` directly. Its strict result contains only the prior epoch
+hash, instance hash, native status and `rebootRequired`, never the raw instance
+identity.
+
+Each native removal is followed by a bounded fresh helper readback, and
+creation is permitted only after that readback proves the total matching device
+count strictly decreased and eventually reached zero. A successful native call
+or `rebootRequired` is not removal authority by itself. A single zero snapshot
+is never sufficient:
 the helper requires at least three zero snapshots spanning a bounded settle
 window, with the same sorted unique-identity-set SHA-256 throughout. A
 nonzero count, readback uncertainty, identity epoch drift, or total-deadline
 expiry during this proof is closed
-`virtualDisplayDeviceZeroProofFailed`; creation is not attempted. A nefcon
-removal exit of 6, or any other
-nonzero exit, is a typed removal failure and is never interpreted as “no
-devices remain.” When and only when that exit is 6, repair may use the
-system `PnPUtil /remove-device` fallback for one instance identity taken from
-the immediately preceding exact-hardware-ID enumeration. The identity must
-match the closed ROOT display-instance form; it is passed as typed argv, never
-persisted, and the executable is resolved by the elevated owner through
-`GetSystemDirectoryW` with canonical, non-reparse, handle-final-path identity
-checks rather than `SystemRoot`, `PATH`, or caller input. The fallback is still
-provisional until a fresh enumeration
-proves the count decreased. A fallback failure is closed
-`virtualDisplayDeviceRemoveFallbackFailed` and preserves the original nefcon
-exit and residual identity-set hash; its own exit is `-1` until a complete
-strict child tuple exists. Failure to read the count after mutation is closed
+`virtualDisplayDeviceZeroProofFailed`; creation is not attempted. Nefcon remains
+limited to the package's create/install operation and is not a removal
+authority. There is no PnPUtil text fallback. A native helper rejection or
+failure is closed `virtualDisplayDeviceRemoveFallbackFailed` in the existing
+diagnostic wire vocabulary and preserves the last proven residual identity-set
+hash; localized stdout is never parsed as success authority. Failure to read
+the count after mutation is closed
 `virtualDisplayDeviceRemoveReadbackFailed`; failure to observe monotonic
 progress within the settle or total deadline is
 `virtualDisplayDeviceRemoveSettleFailed`. Before writing the ownership marker or

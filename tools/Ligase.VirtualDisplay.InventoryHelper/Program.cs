@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 
@@ -17,9 +18,17 @@ internal static class Program
         new("A8B865DD-2E3D-4094-AD97-E593A70C75D6");
     private const uint DevpkeyDeviceDriverInfPathPid = 5;
 
-    private sealed record Device(
-        string InstanceId, bool Present, string Status, string DriverInf);
-    private sealed record Result(int SchemaVersion, string State, Device[] Devices);
+    private sealed record Device(string InstanceId, bool Present, string Status,
+        string DriverInf, string InstanceIdSha256,
+        string RemovalAuthoritySha256);
+    private sealed record Result(int SchemaVersion, string State,
+        string InventoryNonce, string InventoryEpochSha256, Device[] Devices);
+    private sealed record RemoveRequest(int SchemaVersion, string InventoryNonce,
+        string InventoryEpochSha256, string InstanceId, string InstanceIdSha256,
+        string RemovalAuthoritySha256);
+    private sealed record RemoveResult(int SchemaVersion, string State,
+        string InstanceIdSha256, string PriorInventoryEpochSha256,
+        bool RebootRequired, int NativeCode);
     private sealed record ValidationNode(
         string InstanceId, string[] HardwareIds, bool Present,
         string Status, string DriverInf);
@@ -31,6 +40,10 @@ internal static class Program
         {
             if (args.Length == 2 && args[0] == "--validate-fixture")
                 return RunValidationFixture(args[1]);
+            if (args.Length == 3 && args[0] == "--validate-remove-fixture")
+                return RunValidationRemoveFixture(args[1], args[2]);
+            if (args.Length == 2 && args[0] == "--remove-exact")
+                return RemoveExact(args[1]);
             if (args.Length != 1 || args[0] != "--inventory")
                 return Fail("inputInvalid", 10);
             if (IsValidationEnabled())
@@ -73,7 +86,7 @@ internal static class Program
             var devices = EnumerateMatches(present);
             if (devices.Count > 16)
                 return Fail("resultInvalid", 13);
-            Write(new Result(1, "available", devices.ToArray()));
+            Write(CreateResult(devices));
             return 0;
         }
         catch (Win32Exception)
@@ -122,17 +135,158 @@ internal static class Program
                         TargetHardwareId)))
                 continue;
             devices.Add(new Device(node.InstanceId, node.Present,
-                node.Status, node.DriverInf));
+                node.Status, node.DriverInf, string.Empty, string.Empty));
         }
         if (devices.Count > 16)
             return Fail("resultInvalid", 13);
-        Write(new Result(1, "available", devices
-            .OrderBy(itemValue => itemValue.InstanceId,
-                StringComparer.OrdinalIgnoreCase)
-            .ThenBy(itemValue => itemValue.InstanceId, StringComparer.Ordinal)
-            .ToArray()));
+        Write(CreateResult(devices));
         return 0;
     }
+
+    private static int RunValidationRemoveFixture(string path, string encoded)
+    {
+        if (!IsValidationEnabled())
+            return Fail("validationUnavailable", 14);
+        var fullPath = Path.GetFullPath(path);
+        if (!string.Equals(Path.GetPathRoot(fullPath), "D:\\",
+                StringComparison.OrdinalIgnoreCase))
+            return Fail("validationUnavailable", 14);
+        var fixture = JsonSerializer.Deserialize<ValidationFixture>(
+            File.ReadAllText(fullPath, new UTF8Encoding(false, true)),
+            JsonOptions());
+        if (fixture?.Nodes is null)
+            return Fail("validationInvalid", 15);
+        var devices = fixture.Nodes.Where(node => node.HardwareIds.Any(value =>
+                StringComparer.OrdinalIgnoreCase.Equals(value, TargetHardwareId)))
+            .Select(node => new Device(node.InstanceId, node.Present, node.Status,
+                node.DriverInf, string.Empty, string.Empty)).ToList();
+        return ValidateAndWriteRemoval(encoded, devices);
+    }
+
+    private static int RemoveExact(string encoded)
+    {
+        var request = DecodeRemoveRequest(encoded);
+        var devices = EnumerateMatches(EnumerateInstanceIds(
+            DigcfAllClasses | DigcfPresent));
+        var validation = ValidateRemoval(request, devices);
+        if (validation is null)
+            return Fail("removalAuthorityInvalid", 20);
+        using var set = SafeDeviceInfoSet.Open(DigcfAllClasses);
+        foreach (var infoValue in set.Enumerate())
+        {
+            var info = infoValue;
+            var instanceId = ReadInstanceId(set.Handle, ref info);
+            if (!StringComparer.OrdinalIgnoreCase.Equals(
+                    instanceId, request.InstanceId))
+                continue;
+            var ids = ReadMultiString(set.Handle, ref info, SpdrpHardwareId);
+            if (!ids.Any(value => StringComparer.OrdinalIgnoreCase.Equals(
+                    value, TargetHardwareId)))
+                return Fail("removalAuthorityInvalid", 20);
+            if (!DiUninstallDevice(IntPtr.Zero, set.Handle, ref info, 0,
+                    out var rebootRequired))
+                return Fail("removeFailed", 21);
+            Write(new RemoveResult(1, "removed", request.InstanceIdSha256,
+                request.InventoryEpochSha256, rebootRequired, 0));
+            return 0;
+        }
+        return Fail("removalAuthorityInvalid", 20);
+    }
+
+    private static int ValidateAndWriteRemoval(string encoded,
+        List<Device> devices)
+    {
+        var request = DecodeRemoveRequest(encoded);
+        var validation = ValidateRemoval(request, devices);
+        if (validation is null)
+            return Fail("removalAuthorityInvalid", 20);
+        Write(new RemoveResult(1, "removed", request.InstanceIdSha256,
+            request.InventoryEpochSha256, false, 0));
+        return 0;
+    }
+
+    private static RemoveRequest DecodeRemoveRequest(string encoded)
+    {
+        if (encoded.Length is < 16 or > 4096 ||
+            encoded.Any(ch => !char.IsAsciiLetterOrDigit(ch) && ch is not '-' and not '_'))
+            throw new InvalidDataException();
+        var padded = encoded.Replace('-', '+').Replace('_', '/');
+        padded += new string('=', (4 - padded.Length % 4) % 4);
+        var bytes = Convert.FromBase64String(padded);
+        var raw = new UTF8Encoding(false, true).GetString(bytes);
+        using var document = JsonDocument.Parse(raw);
+        var properties = document.RootElement.EnumerateObject().ToArray();
+        var expected = new[] { "schemaVersion", "inventoryNonce",
+            "inventoryEpochSha256", "instanceId", "instanceIdSha256",
+            "removalAuthoritySha256" };
+        if (properties.Length != expected.Length ||
+            properties.Select(item => item.Name).Distinct(StringComparer.Ordinal)
+                .Count() != expected.Length ||
+            expected.Any(name => properties.All(item => item.Name != name)))
+            throw new InvalidDataException();
+        return JsonSerializer.Deserialize<RemoveRequest>(raw, JsonOptions()) ??
+            throw new InvalidDataException();
+    }
+
+    private static Device? ValidateRemoval(RemoveRequest request,
+        List<Device> source)
+    {
+        if (request.SchemaVersion != 1 ||
+            !IsLowerHex(request.InventoryNonce, 32) ||
+            !IsLowerHex(request.InventoryEpochSha256, 64) ||
+            !IsLowerHex(request.InstanceIdSha256, 64) ||
+            !IsLowerHex(request.RemovalAuthoritySha256, 64) ||
+            string.IsNullOrWhiteSpace(request.InstanceId))
+            return null;
+        var inventory = CreateResult(source, request.InventoryNonce);
+        if (!StringComparer.Ordinal.Equals(inventory.InventoryEpochSha256,
+                request.InventoryEpochSha256))
+            return null;
+        var matches = inventory.Devices.Where(device =>
+            StringComparer.OrdinalIgnoreCase.Equals(
+                device.InstanceId, request.InstanceId)).ToArray();
+        if (matches.Length != 1)
+            return null;
+        var match = matches[0];
+        return StringComparer.Ordinal.Equals(match.InstanceId, request.InstanceId) &&
+            StringComparer.Ordinal.Equals(match.InstanceIdSha256,
+                request.InstanceIdSha256) &&
+            StringComparer.Ordinal.Equals(match.RemovalAuthoritySha256,
+                request.RemovalAuthoritySha256) ? match : null;
+    }
+
+    private static Result CreateResult(List<Device> source, string? nonce = null)
+    {
+        nonce ??= Convert.ToHexString(RandomNumberGenerator.GetBytes(16))
+            .ToLowerInvariant();
+        var ordered = source.OrderBy(item => item.InstanceId,
+                StringComparer.OrdinalIgnoreCase)
+            .ThenBy(item => item.InstanceId, StringComparer.Ordinal).ToArray();
+        var epochPayload = JsonSerializer.Serialize(ordered.Select(item => new
+        {
+            instanceId = item.InstanceId.ToUpperInvariant(), item.Present,
+            item.Status, item.DriverInf
+        }));
+        var epoch = Sha256(epochPayload);
+        var devices = ordered.Select(item =>
+        {
+            var instanceHash = Sha256(item.InstanceId.ToUpperInvariant());
+            var authority = Sha256(nonce + "\n" + epoch + "\n" + instanceHash);
+            return new Device(item.InstanceId, item.Present, item.Status,
+                item.DriverInf, instanceHash, authority);
+        }).ToArray();
+        return new Result(1, "available", nonce, epoch, devices);
+    }
+
+    private static string Sha256(string value) => Convert.ToHexString(
+        SHA256.HashData(Encoding.UTF8.GetBytes(value))).ToLowerInvariant();
+    private static bool IsLowerHex(string value, int length) =>
+        value.Length == length && value.All(ch => ch is >= '0' and <= '9' or >= 'a' and <= 'f');
+    private static JsonSerializerOptions JsonOptions() => new()
+    {
+        PropertyNameCaseInsensitive = false,
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+    };
 
     private static bool IsValidationEnabled() =>
         Environment.GetEnvironmentVariable(
@@ -157,7 +311,8 @@ internal static class Program
             var isPresent = present.Contains(instanceId);
             var status = ReadStatus(info.DevInst, isPresent);
             var driverInf = ReadDriverInf(set.Handle, ref info);
-            result.Add(new Device(instanceId, isPresent, status, driverInf));
+            result.Add(new Device(instanceId, isPresent, status, driverInf,
+                string.Empty, string.Empty));
         }
         return result
             .OrderBy(item => item.InstanceId, StringComparer.OrdinalIgnoreCase)
@@ -258,6 +413,9 @@ internal static class Program
     private static void Write(Result result) =>
         Console.Out.WriteLine(JsonSerializer.Serialize(result,
             new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase }));
+    private static void Write(RemoveResult result) =>
+        Console.Out.WriteLine(JsonSerializer.Serialize(result,
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase }));
 
     [StructLayout(LayoutKind.Sequential)]
     private struct SpDevinfoData
@@ -329,6 +487,10 @@ internal static class Program
         byte[]? buffer, uint size, out uint required, uint flags);
     [DllImport("setupapi.dll", SetLastError = true)]
     private static extern bool SetupDiDestroyDeviceInfoList(IntPtr set);
+    [DllImport("newdev.dll", SetLastError = true)]
+    private static extern bool DiUninstallDevice(IntPtr hwndParent,
+        IntPtr deviceInfoSet, ref SpDevinfoData deviceInfoData, uint flags,
+        [MarshalAs(UnmanagedType.Bool)] out bool needReboot);
     [DllImport("cfgmgr32.dll")]
     private static extern uint CM_Get_DevNode_Status(out uint status,
         out uint problemNumber, uint devInst, uint flags);

@@ -14,8 +14,6 @@ if not exist "%NEFCON%" (
   exit /b 20
 )
 
-if "%ACTION%"=="removeOne" goto remove_one_device
-if "%ACTION%"=="removeInstance" goto remove_instance
 if not "%ACTION%"=="install" (
   echo LIGASE_VDISPLAY_V1^|stage=toolValidation^|nativeExit=87
   popd
@@ -39,35 +37,6 @@ if not "%STEP_EXIT%"=="0" (
 )
 
 goto create_device
-
-:remove_one_device
-"%NEFCON%" --remove-device-node --hardware-id root\sudomaker\sudovda --class-guid "4D36E968-E325-11CE-BFC1-08002BE10318" >nul 2>&1
-set "REMOVE_EXIT=%ERRORLEVEL%"
-if not "%REMOVE_EXIT%"=="0" (
-  echo LIGASE_VDISPLAY_V1^|stage=deviceRemove^|nativeExit=%REMOVE_EXIT%^|removeExit=%REMOVE_EXIT%^|removeCount=0
-  popd
-  exit /b 25
-)
-echo LIGASE_VDISPLAY_V1^|stage=deviceRemove^|nativeExit=0^|removeExit=0^|removeCount=1
-popd
-exit /b 0
-
-:remove_instance
-if not exist "%LIGASE_VDISPLAY_PNPUTIL%" (
-  echo LIGASE_VDISPLAY_V1^|stage=deviceRemoveFallback^|nativeExit=2^|removeExit=2^|removeCount=0
-  popd
-  exit /b 26
-)
-"%LIGASE_VDISPLAY_PNPUTIL%" /remove-device "%LIGASE_VDISPLAY_INSTANCE_ID%" >nul 2>&1
-set "REMOVE_EXIT=%ERRORLEVEL%"
-if not "%REMOVE_EXIT%"=="0" (
-  echo LIGASE_VDISPLAY_V1^|stage=deviceRemoveFallback^|nativeExit=%REMOVE_EXIT%^|removeExit=%REMOVE_EXIT%^|removeCount=0
-  popd
-  exit /b 26
-)
-echo LIGASE_VDISPLAY_V1^|stage=deviceRemoveFallback^|nativeExit=0^|removeExit=0^|removeCount=1
-popd
-exit /b 0
 
 :create_device
 "%NEFCON%" --create-device-node --class-name Display --class-guid "4D36E968-E325-11CE-BFC1-08002BE10318" --hardware-id root\sudomaker\sudovda >nul 2>&1
