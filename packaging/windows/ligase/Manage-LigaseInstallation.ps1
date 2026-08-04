@@ -13,6 +13,7 @@ param(
     "InstallVirtualDisplay",
     "ValidateVirtualDisplayReadback",
     "ValidateVirtualDisplayNativeInventoryHelper",
+    "ValidateVirtualDisplayNativeRemovalRunner",
     "ValidateVirtualDisplayRemovalReconciliation",
     "ValidateVirtualDisplayTerminalReadback",
     "ValidateVirtualDisplayDiagnosticProjection",
@@ -1449,12 +1450,23 @@ function Get-InstallTransactionHelperPath {
 }
 
 function Get-VirtualDisplayInventoryHelperPath {
-  if ($Action -ceq "ValidateVirtualDisplayNativeInventoryHelper" -and
+  if ($Action -in @(
+        "ValidateVirtualDisplayNativeInventoryHelper",
+        "ValidateVirtualDisplayNativeRemovalRunner") -and
       $env:LIGASE_INSTALL_VALIDATION_HARNESS -ceq "1" -and
       $env:LIGASE_VDISPLAY_INVENTORY_HELPER_VALIDATION -ceq "1") {
     $validationPath = [IO.Path]::GetFullPath(
       [string]$env:LIGASE_VDISPLAY_INVENTORY_HELPER_PATH)
-    if (-not $validationPath.StartsWith(
+    $removalRunnerAuthorityValid =
+      $Action -cne "ValidateVirtualDisplayNativeRemovalRunner" -or (
+        -not [string]::IsNullOrWhiteSpace($ValidationRoot) -and
+        [IO.Path]::GetFullPath($ValidationRoot) -ceq $installRoot -and
+        [IO.Path]::GetPathRoot($installRoot) -ceq "D:\" -and
+        $validationPath.StartsWith(
+          $installRoot.TrimEnd('\') + '\',
+          [StringComparison]::Ordinal))
+    if (-not $removalRunnerAuthorityValid -or
+        -not $validationPath.StartsWith(
           "D:\", [StringComparison]::OrdinalIgnoreCase) -or
         -not (Test-Path -LiteralPath $validationPath -PathType Leaf) -or
         [bool]((Get-Item -LiteralPath $validationPath -Force).Attributes -band
@@ -1484,7 +1496,9 @@ function Get-VirtualDisplayInventoryHelperPath {
   return $path
 }
 
-function Invoke-VirtualDisplayInventoryHelper([string]$RemovalRequestToken = "") {
+function Invoke-VirtualDisplayInventoryHelper(
+    [string]$RemovalRequestToken = "",
+    [string]$RemovalValidationFixturePath = "") {
   $script:virtualDisplayNativeInventoryValidationStage = "resolve"
   $script:virtualDisplayNativeInventoryFailureReason = "resolve"
   $script:virtualDisplayNativeInventoryValidationExitCode = -1
@@ -1500,6 +1514,26 @@ function Invoke-VirtualDisplayInventoryHelper([string]$RemovalRequestToken = "")
   $helper = Get-VirtualDisplayInventoryHelperPath
   $commandLine = if ([string]::IsNullOrWhiteSpace($RemovalRequestToken)) {
     '"' + $helper + '" --inventory'
+  } elseif (-not [string]::IsNullOrWhiteSpace(
+        $RemovalValidationFixturePath)) {
+    $fixture = [IO.Path]::GetFullPath($RemovalValidationFixturePath)
+    $validationRootFull = [IO.Path]::GetFullPath($ValidationRoot)
+    if ($Action -cne "ValidateVirtualDisplayNativeRemovalRunner" -or
+        $env:LIGASE_INSTALL_VALIDATION_HARNESS -cne "1" -or
+        $env:LIGASE_VDISPLAY_INVENTORY_HELPER_VALIDATION -cne "1" -or
+        $validationRootFull -cne $installRoot -or
+        [IO.Path]::GetPathRoot($validationRootFull) -cne "D:\" -or
+        -not $fixture.StartsWith(
+          $validationRootFull.TrimEnd('\') + '\',
+          [StringComparison]::Ordinal) -or
+        -not (Test-Path -LiteralPath $fixture -PathType Leaf) -or
+        [bool]((Get-Item -LiteralPath $fixture -Force).Attributes -band
+          [IO.FileAttributes]::ReparsePoint) -or
+        $RemovalRequestToken -cnotmatch '^[A-Za-z0-9_-]{16,4096}$') {
+      throw "virtualDisplayDeviceRemoveFallbackFailed"
+    }
+    '"' + $helper + '" --validate-remove-fixture "' +
+      $fixture + '" ' + $RemovalRequestToken
   } elseif ($RemovalRequestToken -cmatch '^[A-Za-z0-9_-]{16,4096}$') {
     '"' + $helper + '" --remove-exact ' + $RemovalRequestToken
   } else { throw "virtualDisplayDeviceRemoveFallbackFailed" }
@@ -1507,10 +1541,15 @@ function Invoke-VirtualDisplayInventoryHelper([string]$RemovalRequestToken = "")
   try {
     $script:virtualDisplayNativeInventoryValidationStage = "start"
     $script:virtualDisplayNativeInventoryFailureReason = "start"
-    $startFault = if (
-        $Action -ceq "ValidateVirtualDisplayNativeInventoryHelper" -and
-        $env:LIGASE_VDISPLAY_INVENTORY_HELPER_BEHAVIOR -ceq "startRetain") {
-      "retain"
+    $startFault = if ($Action -in @(
+        "ValidateVirtualDisplayNativeInventoryHelper",
+        "ValidateVirtualDisplayNativeRemovalRunner")) {
+      switch ([string]$env:LIGASE_VDISPLAY_INVENTORY_HELPER_BEHAVIOR) {
+        "startAssign" { "assign" }
+        "startResume" { "resume" }
+        "startRetain" { "retain" }
+        default { "none" }
+      }
     } else { "none" }
     $startCleanup = [Math]::Max(1, [Math]::Min(1000,
       10000 - [int]$totalClock.ElapsedMilliseconds))
@@ -1557,7 +1596,9 @@ function Invoke-VirtualDisplayInventoryHelper([string]$RemovalRequestToken = "")
       $stdoutBuffer, 0, $stdoutBuffer.Length)
     $stderrTask = $job.StandardError.ReadAsync(
       $stderrBuffer, 0, $stderrBuffer.Length)
-    if ($Action -ceq "ValidateVirtualDisplayNativeInventoryHelper" -and
+    if ($Action -in @(
+          "ValidateVirtualDisplayNativeInventoryHelper",
+          "ValidateVirtualDisplayNativeRemovalRunner") -and
         $env:LIGASE_VDISPLAY_INVENTORY_HELPER_BEHAVIOR -ceq "pipeFault") {
       $stdoutTask = [Threading.Tasks.Task[int]]::FromException(
         [IO.IOException]::new("closedValidationPipeFault"))
@@ -1761,6 +1802,8 @@ function Invoke-VirtualDisplayInventoryHelper([string]$RemovalRequestToken = "")
             '^[0-9a-f]{64}$' -or [int]$document.nativeCode -ne 0) {
         throw "virtualDisplayDeviceRemoveFallbackFailed"
       }
+      $script:virtualDisplayNativeInventoryValidationStage = "completed"
+      $script:virtualDisplayNativeInventoryFailureReason = "none"
       return $document
     }
     $script:virtualDisplayNativeInventoryValidationStage = "schema"
@@ -2360,6 +2403,19 @@ function New-VirtualDisplayDiagnostic([string]$ResultCode, [bool]$Success) {
     fallbackExitCode = [int]$script:virtualDisplayFallbackExitCode
     fallbackStage = [string]$script:virtualDisplayFallbackStage
     fallbackReason = [string]$script:virtualDisplayFallbackReason
+    removalRunner = [pscustomobject][ordered]@{
+      state = [string]$script:virtualDisplayRemovalRunnerState
+      stage = [string]$script:virtualDisplayRemovalRunnerStage
+      reason = [string]$script:virtualDisplayRemovalRunnerReason
+      cleanupState = [string]$script:virtualDisplayRemovalRunnerCleanupState
+      rootPidZero = [bool]$script:virtualDisplayRemovalRunnerRootPidZero
+      descendantPidZero =
+        [bool]$script:virtualDisplayRemovalRunnerDescendantPidZero
+      jobActiveProcesses =
+        [int]$script:virtualDisplayRemovalRunnerJobActiveProcesses
+      stdoutClosed = [bool]$script:virtualDisplayRemovalRunnerStdoutClosed
+      stderrClosed = [bool]$script:virtualDisplayRemovalRunnerStderrClosed
+    }
     deviceRecovery = [string]$script:virtualDisplayDeviceRecovery
     residualDeviceState = [string]$script:virtualDisplayResidualState
     compensationState = [string]$script:virtualDisplayCompensation
@@ -2462,6 +2518,114 @@ function New-VirtualDisplayDiagnostic([string]$ResultCode, [bool]$Success) {
     finalizePreReadDriverBindingVerified =
       [bool]$script:virtualDisplayFinalizePreReadDriverBindingVerified
   }
+}
+
+function Assert-VirtualDisplayRemovalRunnerCorrelation($Document) {
+  $runner = $Document.removalRunner
+  Assert-ClosedProperties $runner @(
+    "state", "stage", "reason", "cleanupState", "rootPidZero",
+    "descendantPidZero", "jobActiveProcesses", "stdoutClosed",
+    "stderrClosed") "virtualDisplayRemovalRunner"
+  if ($runner.state -isnot [string] -or
+      @("notAttempted", "completed", "failed") -cnotcontains
+        [string]$runner.state -or
+      $runner.stage -isnot [string] -or
+      @("notAttempted", "tokenEncode", "helperResolve", "jobStart",
+        "startCleanup", "capture", "exit", "decode", "schema",
+        "completed") -cnotcontains [string]$runner.stage -or
+      $runner.reason -isnot [string] -or
+      @("none", "tokenEncode", "helperResolve", "jobStart",
+        "startCleanup", "timeout", "outputOverflow", "pipe",
+        "nativeExit", "stderr", "encodingInvalid", "jsonInvalid",
+        "schemaInvalid", "captureInvalid") -cnotcontains
+          [string]$runner.reason -or
+      $runner.cleanupState -isnot [string] -or
+      @("notRequired", "completed", "failed") -cnotcontains
+        [string]$runner.cleanupState -or
+      $runner.rootPidZero -isnot [bool] -or
+      $runner.descendantPidZero -isnot [bool] -or
+      $runner.jobActiveProcesses -isnot [int] -or
+      $runner.stdoutClosed -isnot [bool] -or
+      $runner.stderrClosed -isnot [bool]) {
+    throw "virtualDisplayDiagnosticInvalid"
+  }
+  $closed = [string]$runner.cleanupState -ceq "completed" -and
+    [bool]$runner.rootPidZero -and [bool]$runner.descendantPidZero -and
+    [int]$runner.jobActiveProcesses -eq 0 -and
+    [bool]$runner.stdoutClosed -and [bool]$runner.stderrClosed
+  $valid = switch ([string]$runner.state) {
+    "notAttempted" {
+      -not [bool]$Document.fallbackAttempted -and
+      [string]$runner.stage -ceq "notAttempted" -and
+      [string]$runner.reason -ceq "none" -and
+      [string]$runner.cleanupState -ceq "notRequired" -and
+      [bool]$runner.rootPidZero -and [bool]$runner.descendantPidZero -and
+      [int]$runner.jobActiveProcesses -eq 0 -and
+      -not [bool]$runner.stdoutClosed -and
+      -not [bool]$runner.stderrClosed
+    }
+    "completed" {
+      [bool]$Document.fallbackAttempted -and
+      [string]$runner.stage -ceq "completed" -and
+      [string]$runner.reason -ceq "none" -and $closed
+    }
+    "failed" {
+      [bool]$Document.fallbackAttempted -and
+      [string]$runner.stage -notin @("notAttempted", "completed") -and
+      [string]$runner.reason -cne "none" -and (
+        (([string]$runner.stage -in @("tokenEncode", "helperResolve")) -and
+          [string]$runner.cleanupState -ceq "notRequired" -and
+          [bool]$runner.rootPidZero -and
+          [bool]$runner.descendantPidZero -and
+          [int]$runner.jobActiveProcesses -eq 0 -and
+          -not [bool]$runner.stdoutClosed -and
+          -not [bool]$runner.stderrClosed) -or
+        (([string]$runner.stage -notin @("tokenEncode", "helperResolve")) -and
+          ($closed -or ([string]$runner.cleanupState -ceq "failed" -and
+            -not [bool]$runner.rootPidZero -and
+            -not [bool]$runner.descendantPidZero -and
+            [int]$runner.jobActiveProcesses -eq -1))))
+    }
+    default { $false }
+  }
+  if (-not $valid) { throw "virtualDisplayDiagnosticInvalid" }
+  $outerValid = switch ([string]$runner.state) {
+    "notAttempted" {
+      -not [bool]$Document.fallbackAttempted -and
+      [int]$Document.fallbackExitCode -eq -1 -and
+      [string]$Document.fallbackStage -ceq "notAttempted" -and
+      [string]$Document.fallbackReason -ceq "none" -and
+      [int]$Document.childExitCode -ne 26
+    }
+    "failed" {
+      $expectedReason = if (
+          [string]$runner.stage -ceq "capture" -and
+          [string]$runner.reason -ceq "captureInvalid") {
+        "outputInvalid"
+      } else { "processStartOrCleanup" }
+      [bool]$Document.fallbackAttempted -and
+      [int]$Document.fallbackExitCode -eq -1 -and
+      [string]$Document.fallbackStage -ceq "processInvoke" -and
+      [string]$Document.fallbackReason -ceq $expectedReason -and
+      [int]$Document.childExitCode -in $(if (
+          $expectedReason -ceq "outputInvalid") { @(25, 26) } else { @(26) })
+    }
+    "completed" {
+      [bool]$Document.fallbackAttempted -and (
+        ([int]$Document.fallbackExitCode -eq 0 -and
+          [string]$Document.fallbackStage -ceq "completed" -and
+          [string]$Document.fallbackReason -ceq "none" -and
+          [int]$Document.childExitCode -ne 26) -or
+        ([string]$Document.fallbackStage -ceq "tupleValidation" -and
+          [int]$Document.childExitCode -eq 26 -and (
+            ([string]$Document.fallbackReason -ceq "nativeFailure" -and
+              [int]$Document.fallbackExitCode -gt 0) -or
+            ([string]$Document.fallbackReason -ceq "tupleInvalid" -and
+              [int]$Document.fallbackExitCode -in @(-1, 20)))))
+    }
+    default { $false }
+  }
+  if (-not $outerValid) { throw "virtualDisplayDiagnosticInvalid" }
 }
 
 function Assert-VirtualDisplayDiagnosticCorrelation($Document) {
@@ -2589,6 +2753,7 @@ function Assert-VirtualDisplayDiagnosticCorrelation($Document) {
   }
   Assert-VirtualDisplayInventoryDiagnosticCorrelation $Document
   Assert-VirtualDisplayFinalizePreReadCorrelation $Document
+  Assert-VirtualDisplayRemovalRunnerCorrelation $Document
 }
 
 function Assert-VirtualDisplayFinalizePreReadCorrelation($Document) {
@@ -2849,7 +3014,7 @@ function ConvertTo-VirtualDisplayDiagnosticToken($Document) {
 }
 
 function ConvertFrom-VirtualDisplayDiagnosticToken([string]$Token) {
-  if ($Token -notmatch '^vd1\.([A-Za-z0-9_-]{1,4096})\.([0-9a-f]{64})$') {
+  if ($Token -notmatch '^vd1\.([A-Za-z0-9_-]{1,6144})\.([0-9a-f]{64})$') {
     throw "virtualDisplayDiagnosticInvalid"
   }
   $expectedSha = $Matches[2]
@@ -2877,7 +3042,7 @@ function ConvertFrom-VirtualDisplayDiagnosticToken([string]$Token) {
     "markerStage", "observedDeviceCount", "presentDeviceCount",
     "uniqueDeviceIdsSha256",
     "driverBindingVerified", "fallbackAttempted", "fallbackExitCode",
-    "fallbackStage", "fallbackReason",
+    "fallbackStage", "fallbackReason", "removalRunner",
     "deviceRecovery", "residualDeviceState",
     "compensationState", "compensationFailureReason",
     "terminalReadbackState", "terminalReadbackReason",
@@ -2965,6 +3130,7 @@ function ConvertFrom-VirtualDisplayDiagnosticToken([string]$Token) {
         "outputUnavailable",
         "tupleInvalid", "nativeFailure", "unknown") -cnotcontains
           [string]$document.fallbackReason -or
+      $document.removalRunner -isnot [pscustomobject] -or
       $document.deviceRecovery -isnot [string] -or
       @("notAttempted", "inProgress", "completed", "failed") -cnotcontains
         [string]$document.deviceRecovery -or
@@ -3200,7 +3366,7 @@ function Read-VirtualDisplayDiagnostic {
     "markerStage", "observedDeviceCount", "presentDeviceCount",
     "uniqueDeviceIdsSha256",
     "driverBindingVerified", "fallbackAttempted", "fallbackExitCode",
-    "fallbackStage", "fallbackReason",
+    "fallbackStage", "fallbackReason", "removalRunner",
     "deviceRecovery", "residualDeviceState",
     "compensationState", "compensationFailureReason",
     "terminalReadbackState", "terminalReadbackReason",
@@ -3290,6 +3456,7 @@ function Read-VirtualDisplayDiagnostic {
         "outputUnavailable",
         "tupleInvalid", "nativeFailure", "unknown") -cnotcontains
           [string]$document.fallbackReason -or
+      $document.removalRunner -isnot [pscustomobject] -or
       $document.deviceRecovery -isnot [string] -or
       @("notAttempted", "inProgress", "completed", "failed") -cnotcontains
         [string]$document.deviceRecovery -or
@@ -3435,6 +3602,15 @@ $script:virtualDisplayFallbackAttempted = $false
 $script:virtualDisplayFallbackExitCode = -1
 $script:virtualDisplayFallbackStage = "notAttempted"
 $script:virtualDisplayFallbackReason = "none"
+$script:virtualDisplayRemovalRunnerState = "notAttempted"
+$script:virtualDisplayRemovalRunnerStage = "notAttempted"
+$script:virtualDisplayRemovalRunnerReason = "none"
+$script:virtualDisplayRemovalRunnerCleanupState = "notRequired"
+$script:virtualDisplayRemovalRunnerRootPidZero = $true
+$script:virtualDisplayRemovalRunnerDescendantPidZero = $true
+$script:virtualDisplayRemovalRunnerJobActiveProcesses = 0
+$script:virtualDisplayRemovalRunnerStdoutClosed = $false
+$script:virtualDisplayRemovalRunnerStderrClosed = $false
 $script:virtualDisplayDeviceRecovery = "notAttempted"
 $script:virtualDisplayResidualState = "unknown"
 $script:virtualDisplayCompensation = "notRequired"
@@ -3953,7 +4129,12 @@ function Invoke-VirtualDisplayRemovalReconciliation(
       $script:virtualDisplayFallbackReason = "none"
     } catch {
       if ([string]$script:virtualDisplayFallbackReason -ceq "unknown") {
-        $script:virtualDisplayFallbackReason = "processStartOrCleanup"
+        $script:virtualDisplayFallbackReason = if (
+            [string]$script:virtualDisplayRemovalRunnerStage -ceq "capture" -and
+            [string]$script:virtualDisplayRemovalRunnerReason -ceq
+              "captureInvalid") {
+          "outputInvalid"
+        } else { "processStartOrCleanup" }
       }
       $script:virtualDisplayChildExit = 26
       $script:virtualDisplayRemoveExit = -1
@@ -6260,6 +6441,61 @@ function New-VirtualDisplayState(
   return $result
 }
 
+function Set-VirtualDisplayRemovalRunnerAuthority {
+  $nativeStage = [string]$script:virtualDisplayNativeInventoryValidationStage
+  $nativeReason = [string]$script:virtualDisplayNativeInventoryFailureReason
+  $stage = switch ($nativeStage) {
+    "resolve" { "helperResolve" }
+    "start" {
+      if ($nativeReason -ceq "cleanup" -or
+          [LigaseJobProcess]::SecondaryCompleted) { "startCleanup" }
+      else { "jobStart" }
+    }
+    "capture" { "capture" }
+    "exit" { "exit" }
+    "decode" { "decode" }
+    "schema" { "schema" }
+    "completed" { "completed" }
+    default { "capture" }
+  }
+  $reason = switch ($nativeReason) {
+    "none" { "none" }
+    "resolve" { "helperResolve" }
+    "start" {
+      if ([LigaseJobProcess]::SecondaryCompleted) { "startCleanup" }
+      else { "jobStart" }
+    }
+    "cleanup" { "startCleanup" }
+    "timeout" { "timeout" }
+    "overflow" { "outputOverflow" }
+    "pipe" { "pipe" }
+    "nativeExit" { "nativeExit" }
+    "stderr" { "stderr" }
+    "utf8" { "encodingInvalid" }
+    "json" { "jsonInvalid" }
+    "schema" { "schemaInvalid" }
+    default { "captureInvalid" }
+  }
+  $script:virtualDisplayRemovalRunnerState = if (
+      $stage -ceq "completed" -and $reason -ceq "none") {
+    "completed"
+  } else { "failed" }
+  $script:virtualDisplayRemovalRunnerStage = $stage
+  $script:virtualDisplayRemovalRunnerReason = $reason
+  $script:virtualDisplayRemovalRunnerCleanupState =
+    [string]$script:virtualDisplayNativeInventoryCleanupState
+  $script:virtualDisplayRemovalRunnerRootPidZero =
+    [bool]$script:virtualDisplayNativeInventoryRootPidZero
+  $script:virtualDisplayRemovalRunnerJobActiveProcesses =
+    [int]$script:virtualDisplayNativeInventoryJobActiveProcesses
+  $script:virtualDisplayRemovalRunnerDescendantPidZero =
+    [int]$script:virtualDisplayNativeInventoryJobActiveProcesses -eq 0
+  $script:virtualDisplayRemovalRunnerStdoutClosed =
+    [bool]$script:virtualDisplayNativeInventoryStdoutClosed
+  $script:virtualDisplayRemovalRunnerStderrClosed =
+    [bool]$script:virtualDisplayNativeInventoryStderrClosed
+}
+
 function ConvertTo-VirtualDisplayRemovalRequestToken($Authority) {
   $properties = @($Authority.PSObject.Properties.Name)
   $expected = @("instanceId", "instanceIdSha256", "removalAuthoritySha256",
@@ -6285,6 +6521,29 @@ function ConvertTo-VirtualDisplayRemovalRequestToken($Authority) {
     ($request | ConvertTo-Json -Compress))
   return [Convert]::ToBase64String($bytes).TrimEnd('=').
     Replace('+', '-').Replace('/', '_')
+}
+
+function Invoke-VirtualDisplayNativeRemoval(
+    $Authority, [string]$ValidationFixturePath = "") {
+  $script:virtualDisplayRemovalRunnerState = "failed"
+  $script:virtualDisplayRemovalRunnerStage = "tokenEncode"
+  $script:virtualDisplayRemovalRunnerReason = "tokenEncode"
+  $script:virtualDisplayRemovalRunnerCleanupState = "notRequired"
+  $script:virtualDisplayRemovalRunnerRootPidZero = $true
+  $script:virtualDisplayRemovalRunnerDescendantPidZero = $true
+  $script:virtualDisplayRemovalRunnerJobActiveProcesses = 0
+  $script:virtualDisplayRemovalRunnerStdoutClosed = $false
+  $script:virtualDisplayRemovalRunnerStderrClosed = $false
+  $requestToken = ConvertTo-VirtualDisplayRemovalRequestToken $Authority
+  try {
+    $result = Invoke-VirtualDisplayInventoryHelper $requestToken (
+      $ValidationFixturePath)
+    Set-VirtualDisplayRemovalRunnerAuthority
+    return $result
+  } catch {
+    Set-VirtualDisplayRemovalRunnerAuthority
+    throw
+  }
 }
 
 function Get-VirtualDisplay([switch]$IncludeRemovalAuthority) {
@@ -7251,6 +7510,89 @@ try {
       (Get-VirtualDisplay) | ConvertTo-Json -Compress))
     exit 0
   }
+  if ($Action -eq "ValidateVirtualDisplayNativeRemovalRunner") {
+    $validationRootFull = [IO.Path]::GetFullPath($ValidationRoot)
+    $helperFull = [IO.Path]::GetFullPath(
+      [string]$env:LIGASE_VDISPLAY_INVENTORY_HELPER_PATH)
+    if ($env:LIGASE_INSTALL_VALIDATION_HARNESS -cne "1" -or
+        $env:LIGASE_VDISPLAY_INVENTORY_HELPER_VALIDATION -cne "1" -or
+        $validationRootFull -cne $installRoot -or
+        [IO.Path]::GetPathRoot($validationRootFull) -cne "D:\" -or
+        -not $helperFull.StartsWith(
+          $validationRootFull.TrimEnd('\') + '\',
+          [StringComparison]::Ordinal)) {
+      throw "virtualDisplayValidationUnavailable"
+    }
+    $authorityPath = Join-Path $validationRootFull "removal-authority.json"
+    $fixturePath = Join-Path $validationRootFull "removal-fixture.json"
+    try {
+      $authorityRaw = [IO.File]::ReadAllText(
+        $authorityPath, [Text.UTF8Encoding]::new($false, $true))
+      if (-not [LigaseStrictJson]::HasUniqueProperties($authorityRaw)) {
+        throw "virtualDisplayValidationUnavailable"
+      }
+      $authority = $authorityRaw | ConvertFrom-Json
+      $result = Invoke-VirtualDisplayNativeRemoval $authority $fixturePath
+      $projection = [ordered]@{
+        schemaVersion = 1
+        state = "removed"
+        instanceIdSha256 = [string]$result.instanceIdSha256
+        priorInventoryEpochSha256 =
+          [string]$result.priorInventoryEpochSha256
+        rebootRequired = [bool]$result.rebootRequired
+        nativeCode = [int]$result.nativeCode
+        removalRunner = [ordered]@{
+          state = [string]$script:virtualDisplayRemovalRunnerState
+          stage = [string]$script:virtualDisplayRemovalRunnerStage
+          reason = [string]$script:virtualDisplayRemovalRunnerReason
+          cleanupState =
+            [string]$script:virtualDisplayRemovalRunnerCleanupState
+          rootPidZero =
+            [bool]$script:virtualDisplayRemovalRunnerRootPidZero
+          descendantPidZero =
+            [bool]$script:virtualDisplayRemovalRunnerDescendantPidZero
+          jobActiveProcesses =
+            [int]$script:virtualDisplayRemovalRunnerJobActiveProcesses
+          stdoutClosed =
+            [bool]$script:virtualDisplayRemovalRunnerStdoutClosed
+          stderrClosed =
+            [bool]$script:virtualDisplayRemovalRunnerStderrClosed
+        }
+      }
+      [Console]::Out.WriteLine(($projection | ConvertTo-Json -Compress))
+      exit 0
+    } catch {
+      $projection = [ordered]@{
+        schemaVersion = 1
+        state = "failed"
+        instanceIdSha256 =
+          "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        priorInventoryEpochSha256 =
+          "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        rebootRequired = $false
+        nativeCode = -1
+        removalRunner = [ordered]@{
+          state = [string]$script:virtualDisplayRemovalRunnerState
+          stage = [string]$script:virtualDisplayRemovalRunnerStage
+          reason = [string]$script:virtualDisplayRemovalRunnerReason
+          cleanupState =
+            [string]$script:virtualDisplayRemovalRunnerCleanupState
+          rootPidZero =
+            [bool]$script:virtualDisplayRemovalRunnerRootPidZero
+          descendantPidZero =
+            [bool]$script:virtualDisplayRemovalRunnerDescendantPidZero
+          jobActiveProcesses =
+            [int]$script:virtualDisplayRemovalRunnerJobActiveProcesses
+          stdoutClosed =
+            [bool]$script:virtualDisplayRemovalRunnerStdoutClosed
+          stderrClosed =
+            [bool]$script:virtualDisplayRemovalRunnerStderrClosed
+        }
+      }
+      [Console]::Out.WriteLine(($projection | ConvertTo-Json -Compress))
+      exit 18
+    }
+  }
   if ($Action -eq "ValidateVirtualDisplayNativeInventoryHelper") {
     try {
       $projection = @(Invoke-VirtualDisplayInventoryHelper)
@@ -7432,9 +7774,18 @@ try {
       "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
     $script:virtualDisplayDriverBindingVerified = $false
     $script:virtualDisplayFallbackAttempted = $true
-    $script:virtualDisplayFallbackExitCode = 5
-    $script:virtualDisplayFallbackStage = "tupleValidation"
-    $script:virtualDisplayFallbackReason = "nativeFailure"
+    $script:virtualDisplayFallbackExitCode = 0
+    $script:virtualDisplayFallbackStage = "completed"
+    $script:virtualDisplayFallbackReason = "none"
+    $script:virtualDisplayRemovalRunnerState = "completed"
+    $script:virtualDisplayRemovalRunnerStage = "completed"
+    $script:virtualDisplayRemovalRunnerReason = "none"
+    $script:virtualDisplayRemovalRunnerCleanupState = "completed"
+    $script:virtualDisplayRemovalRunnerRootPidZero = $true
+    $script:virtualDisplayRemovalRunnerDescendantPidZero = $true
+    $script:virtualDisplayRemovalRunnerJobActiveProcesses = 0
+    $script:virtualDisplayRemovalRunnerStdoutClosed = $true
+    $script:virtualDisplayRemovalRunnerStderrClosed = $true
     $script:virtualDisplayDeviceRecovery = "failed"
     $script:virtualDisplayResidualState = "multiple"
     $script:virtualDisplayCompensation = "completed"
@@ -7536,6 +7887,15 @@ try {
     $actualPrimary.fallbackExitCode = -1
     $actualPrimary.fallbackStage = "processInvoke"
     $actualPrimary.fallbackReason = "outputInvalid"
+    $actualPrimary.removalRunner.state = "failed"
+    $actualPrimary.removalRunner.stage = "capture"
+    $actualPrimary.removalRunner.reason = "captureInvalid"
+    $actualPrimary.removalRunner.cleanupState = "completed"
+    $actualPrimary.removalRunner.rootPidZero = $true
+    $actualPrimary.removalRunner.descendantPidZero = $true
+    $actualPrimary.removalRunner.jobActiveProcesses = 0
+    $actualPrimary.removalRunner.stdoutClosed = $true
+    $actualPrimary.removalRunner.stderrClosed = $true
     $actualPrimary.deviceRecovery = "failed"
     $actualPrimary.residualDeviceState = "exactOneUnbound"
     $actualPrimary.compensationState = "completed"
@@ -8087,9 +8447,18 @@ try {
       "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
     $script:virtualDisplayDriverBindingVerified = $false
     $script:virtualDisplayFallbackAttempted = $true
-    $script:virtualDisplayFallbackExitCode = 5
-    $script:virtualDisplayFallbackStage = "tupleValidation"
-    $script:virtualDisplayFallbackReason = "nativeFailure"
+    $script:virtualDisplayFallbackExitCode = 0
+    $script:virtualDisplayFallbackStage = "completed"
+    $script:virtualDisplayFallbackReason = "none"
+    $script:virtualDisplayRemovalRunnerState = "completed"
+    $script:virtualDisplayRemovalRunnerStage = "completed"
+    $script:virtualDisplayRemovalRunnerReason = "none"
+    $script:virtualDisplayRemovalRunnerCleanupState = "completed"
+    $script:virtualDisplayRemovalRunnerRootPidZero = $true
+    $script:virtualDisplayRemovalRunnerDescendantPidZero = $true
+    $script:virtualDisplayRemovalRunnerJobActiveProcesses = 0
+    $script:virtualDisplayRemovalRunnerStdoutClosed = $true
+    $script:virtualDisplayRemovalRunnerStderrClosed = $true
     $script:virtualDisplayDeviceRecovery = "failed"
     $script:virtualDisplayResidualState = "multiple"
     $script:virtualDisplayCompensation = "completed"
@@ -8691,6 +9060,100 @@ try {
       }
       $crossSpliceRejected++
     }
+    foreach ($runnerValues in @(
+        @{ state = "completed"; stage = "completed"; reason = "none";
+          cleanupState = "completed"; rootPidZero = $true;
+          descendantPidZero = $false; jobActiveProcesses = 0;
+          stdoutClosed = $true; stderrClosed = $true },
+        @{ state = "failed"; stage = "capture"; reason = "timeout";
+          cleanupState = "completed"; rootPidZero = $true;
+          descendantPidZero = $true; jobActiveProcesses = 1;
+          stdoutClosed = $true; stderrClosed = $true },
+        @{ state = "failed"; stage = "helperResolve";
+          reason = "helperResolve"; cleanupState = "notRequired";
+          rootPidZero = $true; descendantPidZero = $true;
+          jobActiveProcesses = 0; stdoutClosed = $true;
+          stderrClosed = $false })) {
+      $crossDocument = (($original | ConvertTo-Json -Compress) |
+        ConvertFrom-Json)
+      foreach ($property in $runnerValues.Keys) {
+        $crossDocument.removalRunner.$property = $runnerValues[$property]
+      }
+      $crossToken = ConvertTo-VirtualDisplayDiagnosticToken $crossDocument
+      $tokenRejected = $false
+      try { $null = ConvertFrom-VirtualDisplayDiagnosticToken $crossToken }
+      catch { $tokenRejected = [string]$_.Exception.Message -ceq
+          "virtualDisplayDiagnosticInvalid" }
+      [IO.File]::WriteAllText(
+        (Get-VirtualDisplayDiagnosticPath),
+        ($crossDocument | ConvertTo-Json -Compress),
+        [Text.UTF8Encoding]::new($false))
+      $fileRejected = $false
+      try { $null = Read-VirtualDisplayDiagnostic }
+      catch { $fileRejected = [string]$_.Exception.Message -ceq
+          "virtualDisplayDiagnosticInvalid" }
+      if (-not $tokenRejected -or -not $fileRejected) {
+        throw "virtualDisplayDiagnosticProjectionInvalid"
+      }
+      $crossSpliceRejected++
+    }
+    foreach ($runnerFallbackCrossCase in @(
+        [ordered]@{
+          name = "runnerFailedOuterCompleted"
+          runner = [ordered]@{
+            state = "failed"; stage = "tokenEncode";
+            reason = "tokenEncode"; cleanupState = "notRequired";
+            rootPidZero = $true; descendantPidZero = $true;
+            jobActiveProcesses = 0; stdoutClosed = $false;
+            stderrClosed = $false
+          }
+          outer = [ordered]@{
+            fallbackAttempted = $true; fallbackExitCode = 0;
+            fallbackStage = "completed"; fallbackReason = "none";
+            childExitCode = 0
+          }
+        },
+        [ordered]@{
+          name = "runnerCompletedOuterPreTupleFailure"
+          runner = [ordered]@{
+            state = "completed"; stage = "completed"; reason = "none";
+            cleanupState = "completed"; rootPidZero = $true;
+            descendantPidZero = $true; jobActiveProcesses = 0;
+            stdoutClosed = $true; stderrClosed = $true
+          }
+          outer = [ordered]@{
+            fallbackAttempted = $true; fallbackExitCode = -1;
+            fallbackStage = "processInvoke";
+            fallbackReason = "processStartOrCleanup"; childExitCode = 26
+          }
+        })) {
+      $crossDocument = (($original | ConvertTo-Json -Compress) |
+        ConvertFrom-Json)
+      foreach ($property in $runnerFallbackCrossCase.runner.Keys) {
+        $crossDocument.removalRunner.$property =
+          $runnerFallbackCrossCase.runner[$property]
+      }
+      foreach ($property in $runnerFallbackCrossCase.outer.Keys) {
+        $crossDocument.$property = $runnerFallbackCrossCase.outer[$property]
+      }
+      $crossToken = ConvertTo-VirtualDisplayDiagnosticToken $crossDocument
+      $tokenRejected = $false
+      try { $null = ConvertFrom-VirtualDisplayDiagnosticToken $crossToken }
+      catch { $tokenRejected = [string]$_.Exception.Message -ceq
+          "virtualDisplayDiagnosticInvalid" }
+      [IO.File]::WriteAllText(
+        (Get-VirtualDisplayDiagnosticPath),
+        ($crossDocument | ConvertTo-Json -Compress),
+        [Text.UTF8Encoding]::new($false))
+      $fileRejected = $false
+      try { $null = Read-VirtualDisplayDiagnostic }
+      catch { $fileRejected = [string]$_.Exception.Message -ceq
+          "virtualDisplayDiagnosticInvalid" }
+      if (-not $tokenRejected -or -not $fileRejected) {
+        throw "virtualDisplayDiagnosticProjectionInvalid"
+      }
+      $crossSpliceRejected++
+    }
     $token = ConvertTo-VirtualDisplayDiagnosticToken $original
     $primaryWriteFailed = $false
     try { Write-VirtualDisplayDiagnostic $original } catch {
@@ -8735,6 +9198,15 @@ try {
     $script:virtualDisplayFallbackExitCode = -1
     $script:virtualDisplayFallbackStage = "notAttempted"
     $script:virtualDisplayFallbackReason = "none"
+    $script:virtualDisplayRemovalRunnerState = "notAttempted"
+    $script:virtualDisplayRemovalRunnerStage = "notAttempted"
+    $script:virtualDisplayRemovalRunnerReason = "none"
+    $script:virtualDisplayRemovalRunnerCleanupState = "notRequired"
+    $script:virtualDisplayRemovalRunnerRootPidZero = $true
+    $script:virtualDisplayRemovalRunnerDescendantPidZero = $true
+    $script:virtualDisplayRemovalRunnerJobActiveProcesses = 0
+    $script:virtualDisplayRemovalRunnerStdoutClosed = $false
+    $script:virtualDisplayRemovalRunnerStderrClosed = $false
     $script:virtualDisplayObservedDeviceCount = 1
     $script:virtualDisplayPresentDeviceCount = 1
     $script:virtualDisplayUniqueDeviceIdsSha256 =
@@ -8951,6 +9423,15 @@ try {
     $script:virtualDisplayFallbackExitCode = -1
     $script:virtualDisplayFallbackStage = "notAttempted"
     $script:virtualDisplayFallbackReason = "none"
+    $script:virtualDisplayRemovalRunnerState = "notAttempted"
+    $script:virtualDisplayRemovalRunnerStage = "notAttempted"
+    $script:virtualDisplayRemovalRunnerReason = "none"
+    $script:virtualDisplayRemovalRunnerCleanupState = "notRequired"
+    $script:virtualDisplayRemovalRunnerRootPidZero = $true
+    $script:virtualDisplayRemovalRunnerDescendantPidZero = $true
+    $script:virtualDisplayRemovalRunnerJobActiveProcesses = 0
+    $script:virtualDisplayRemovalRunnerStdoutClosed = $false
+    $script:virtualDisplayRemovalRunnerStderrClosed = $false
     $script:virtualDisplayDeviceRecovery = "notAttempted"
     $script:virtualDisplayResidualState = "unknown"
     $script:virtualDisplayCompensation = "completed"
@@ -9549,8 +10030,7 @@ try {
       $snapshotProvider = { Get-VirtualDisplay -IncludeRemovalAuthority }
       $nativeRemoveInvoker = {
         param($Authority)
-        $requestToken = ConvertTo-VirtualDisplayRemovalRequestToken $Authority
-        Invoke-VirtualDisplayInventoryHelper $requestToken
+        Invoke-VirtualDisplayNativeRemoval $Authority
       }
       $failureCode = "virtualDisplayDeviceRemoveFailed"
       try {

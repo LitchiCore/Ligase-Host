@@ -41,47 +41,19 @@ internal static class Program
             if (args.Length == 2 && args[0] == "--validate-fixture")
                 return RunValidationFixture(args[1]);
             if (args.Length == 3 && args[0] == "--validate-remove-fixture")
+            {
+                var behaviorResult = RunValidationBehavior();
+                if (behaviorResult.HasValue)
+                    return behaviorResult.Value;
                 return RunValidationRemoveFixture(args[1], args[2]);
+            }
             if (args.Length == 2 && args[0] == "--remove-exact")
                 return RemoveExact(args[1]);
             if (args.Length != 1 || args[0] != "--inventory")
                 return Fail("inputInvalid", 10);
-            if (IsValidationEnabled())
-            {
-                var behavior = Environment.GetEnvironmentVariable(
-                    "LIGASE_VDISPLAY_INVENTORY_HELPER_BEHAVIOR");
-                if (behavior == "hang")
-                    Thread.Sleep(30000);
-                if (behavior == "overflow")
-                {
-                    Console.Out.Write(new string('A', 70000));
-                    return 0;
-                }
-                if (behavior == "stderr")
-                {
-                    Console.Error.Write("closed-validation-error");
-                    return 0;
-                }
-                if (behavior is "stdoutPending" or "dualPending")
-                {
-                    Console.Out.Write("{");
-                    Console.Out.Flush();
-                    if (behavior == "stdoutPending")
-                        Thread.Sleep(30000);
-                }
-                if (behavior is "stderrPending" or "dualPending")
-                {
-                    Console.Error.Write("x");
-                    Console.Error.Flush();
-                    Thread.Sleep(30000);
-                }
-                if (behavior == "overflowPending")
-                {
-                    Console.Out.Write(new string('A', 70000));
-                    Console.Out.Flush();
-                    Thread.Sleep(30000);
-                }
-            }
+            var inventoryBehaviorResult = RunValidationBehavior();
+            if (inventoryBehaviorResult.HasValue)
+                return inventoryBehaviorResult.Value;
             var present = EnumerateInstanceIds(DigcfAllClasses | DigcfPresent);
             var devices = EnumerateMatches(present);
             if (devices.Count > 16)
@@ -97,6 +69,46 @@ internal static class Program
         {
             return Fail("inventoryInvalid", 12);
         }
+    }
+
+    private static int? RunValidationBehavior()
+    {
+        if (!IsValidationEnabled())
+            return null;
+        var behavior = Environment.GetEnvironmentVariable(
+            "LIGASE_VDISPLAY_INVENTORY_HELPER_BEHAVIOR");
+        if (behavior == "hang")
+            Thread.Sleep(30000);
+        if (behavior == "overflow")
+        {
+            Console.Out.Write(new string('A', 70000));
+            return 0;
+        }
+        if (behavior == "stderr")
+        {
+            Console.Error.Write("closed-validation-error");
+            return 0;
+        }
+        if (behavior is "stdoutPending" or "dualPending")
+        {
+            Console.Out.Write("{");
+            Console.Out.Flush();
+            if (behavior == "stdoutPending")
+                Thread.Sleep(30000);
+        }
+        if (behavior is "stderrPending" or "dualPending")
+        {
+            Console.Error.Write("x");
+            Console.Error.Flush();
+            Thread.Sleep(30000);
+        }
+        if (behavior == "overflowPending")
+        {
+            Console.Out.Write(new string('A', 70000));
+            Console.Out.Flush();
+            Thread.Sleep(30000);
+        }
+        return null;
     }
 
     private static int RunValidationFixture(string path)

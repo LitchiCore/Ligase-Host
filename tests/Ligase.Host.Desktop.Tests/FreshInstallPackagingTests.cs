@@ -1676,7 +1676,33 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(management,
             "ConvertTo-VirtualDisplayRemovalRequestToken");
         StringAssert.Contains(management,
-            "Invoke-VirtualDisplayInventoryHelper $requestToken");
+            "Invoke-VirtualDisplayNativeRemoval $Authority");
+        StringAssert.Contains(management,
+            "function Invoke-VirtualDisplayNativeRemoval");
+        StringAssert.Contains(management,
+            "\"ValidateVirtualDisplayNativeRemovalRunner\"");
+        StringAssert.Contains(management,
+            "Assert-VirtualDisplayRemovalRunnerCorrelation");
+        StringAssert.Contains(management,
+            "runnerFailedOuterCompleted");
+        StringAssert.Contains(management,
+            "runnerCompletedOuterPreTupleFailure");
+        StringAssert.Contains(management,
+            "$Document.fallbackReason -ceq $expectedReason");
+        StringAssert.Contains(runtimeHarness,
+            "crossSpliceRejected -ne 44");
+        StringAssert.Contains(management,
+            "removalRunner = [ordered]@{");
+        StringAssert.Contains(runtimeHarness,
+            "virtualDisplayNativeRemovalRunnerCases");
+        StringAssert.Contains(runtimeHarness,
+            "virtualDisplayNativeRemovalRunnerProcessResidual");
+        StringAssert.Contains(runtimeHarness,
+            "--validate-fixture $nativeRemovalFixture");
+        StringAssert.Contains(virtualDisplayInventoryHelper,
+            "RunValidationBehavior()");
+        StringAssert.Contains(virtualDisplayInventoryHelper,
+            "--validate-remove-fixture");
         StringAssert.Contains(management, "GetSystemDirectoryW");
         StringAssert.Contains(management, "GetFinalPathNameByHandleW");
         Assert.IsFalse(management.Contains(
@@ -1689,7 +1715,7 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(management, "ConvertTo-VirtualDisplayDiagnosticToken");
         StringAssert.Contains(management, "ConvertFrom-VirtualDisplayDiagnosticToken");
         StringAssert.Contains(management,
-            "[A-Za-z0-9_-]{1,4096}");
+            "[A-Za-z0-9_-]{1,6144}");
         StringAssert.Contains(management, "\"vd1.$payload.");
         StringAssert.Contains(nsis,
             "-VirtualDisplayDiagnosticToken \"$VirtualDisplayDiagnosticToken\"");

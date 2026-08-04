@@ -3329,6 +3329,209 @@ try {
     Remove-Item Env:\LIGASE_VDISPLAY_INVENTORY_HELPER_VALIDATION -ErrorAction SilentlyContinue
   } else { $env:LIGASE_VDISPLAY_INVENTORY_HELPER_VALIDATION = $savedInventoryValidation }
 }
+$nativeRemovalRunnerRoot = Join-Path $OutputRoot "native-removal-runner"
+New-Item -ItemType Directory -Path $nativeRemovalRunnerRoot -Force | Out-Null
+$nativeRemovalRunnerHelper = Join-Path $nativeRemovalRunnerRoot (
+  "Ligase.VirtualDisplay.InventoryHelper.exe")
+Copy-Item -LiteralPath $inventoryHelper -Destination $nativeRemovalRunnerHelper
+$nativeRemovalFixture = Join-Path $nativeRemovalRunnerRoot (
+  "removal-fixture.json")
+[ordered]@{schemaVersion=1;nodes=@([ordered]@{
+  instanceId="ROOT\DISPLAY\0000"
+  hardwareIds=@("ROOT\SUDOMAKER\SUDOVDA")
+  present=$true
+  status="OK"
+  driverInf=""
+})} | ConvertTo-Json -Depth 8 -Compress |
+  Set-Content -LiteralPath $nativeRemovalFixture -Encoding UTF8 -NoNewline
+$savedRemovalHarness = [string]$env:LIGASE_INSTALL_VALIDATION_HARNESS
+$savedRemovalValidation =
+  [string]$env:LIGASE_VDISPLAY_INVENTORY_HELPER_VALIDATION
+$savedRemovalHelperPath =
+  [string]$env:LIGASE_VDISPLAY_INVENTORY_HELPER_PATH
+$savedRemovalBehavior =
+  [string]$env:LIGASE_VDISPLAY_INVENTORY_HELPER_BEHAVIOR
+$env:LIGASE_INSTALL_VALIDATION_HARNESS = "1"
+$env:LIGASE_VDISPLAY_INVENTORY_HELPER_VALIDATION = "1"
+$nativeRemovalInventory = @(& $nativeRemovalRunnerHelper `
+  --validate-fixture $nativeRemovalFixture)
+if ($LASTEXITCODE -ne 0 -or $nativeRemovalInventory.Count -ne 1) {
+  throw "virtualDisplayNativeRemovalRunnerInventoryFailed"
+}
+$nativeRemovalProjection = $nativeRemovalInventory[0] | ConvertFrom-Json
+$nativeRemovalDevice = @($nativeRemovalProjection.devices)[0]
+$nativeRemovalAuthority = [ordered]@{
+  instanceId = [string]$nativeRemovalDevice.instanceId
+  instanceIdSha256 = [string]$nativeRemovalDevice.instanceIdSha256
+  removalAuthoritySha256 = [string]$nativeRemovalDevice.removalAuthoritySha256
+  inventoryNonce = [string]$nativeRemovalProjection.inventoryNonce
+  inventoryEpochSha256 = [string]$nativeRemovalProjection.inventoryEpochSha256
+}
+$nativeRemovalAuthorityPath = Join-Path $nativeRemovalRunnerRoot (
+  "removal-authority.json")
+$nativeRemovalAuthority | ConvertTo-Json -Compress |
+  Set-Content -LiteralPath $nativeRemovalAuthorityPath -Encoding UTF8 -NoNewline
+$nativeRemovalRunnerResults = @()
+try {
+  $env:LIGASE_VDISPLAY_INVENTORY_HELPER_PATH = $nativeRemovalRunnerHelper
+  $runnerCases = @(
+    [ordered]@{ name="success"; behavior=""; exit=0; state="removed";
+      stage="completed"; cleanup="completed"; pipes=$true },
+    [ordered]@{ name="jobStart"; behavior="startAssign"; exit=18;
+      state="failed"; stage="jobStart"; cleanup="completed"; pipes=$true },
+    [ordered]@{ name="startCleanup"; behavior="startRetain"; exit=18;
+      state="failed"; stage="startCleanup"; cleanup="completed"; pipes=$true },
+    [ordered]@{ name="captureTimeout"; behavior="hang"; exit=18;
+      state="failed"; stage="capture"; cleanup="completed"; pipes=$true },
+    [ordered]@{ name="captureOverflow"; behavior="overflowPending"; exit=18;
+      state="failed"; stage="capture"; cleanup="completed"; pipes=$true },
+    [ordered]@{ name="capturePipe"; behavior="pipeFault"; exit=18;
+      state="failed"; stage="capture"; cleanup="completed"; pipes=$true }
+  )
+  foreach ($runnerCase in $runnerCases) {
+    if ([string]::IsNullOrEmpty([string]$runnerCase.behavior)) {
+      Remove-Item Env:\LIGASE_VDISPLAY_INVENTORY_HELPER_BEHAVIOR `
+        -ErrorAction SilentlyContinue
+    } else {
+      $env:LIGASE_VDISPLAY_INVENTORY_HELPER_BEHAVIOR =
+        [string]$runnerCase.behavior
+    }
+    $clock = [Diagnostics.Stopwatch]::StartNew()
+    $raw = @(& (Join-Path $env:SystemRoot (
+          "System32\WindowsPowerShell\v1.0\powershell.exe")) `
+      -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+      -File $managementScript `
+      -Action ValidateVirtualDisplayNativeRemovalRunner `
+      -InstallDirectory $nativeRemovalRunnerRoot `
+      -ValidationRoot $nativeRemovalRunnerRoot)
+    $runnerExit = $LASTEXITCODE
+    $clock.Stop()
+    if ($raw.Count -ne 1 -or $runnerExit -ne [int]$runnerCase.exit -or
+        $clock.ElapsedMilliseconds -gt 11000) {
+      throw "virtualDisplayNativeRemovalRunnerUnavailable:$($runnerCase.name)"
+    }
+    $result = $raw[0] | ConvertFrom-Json
+    $runner = $result.removalRunner
+    if ([string]$result.state -cne [string]$runnerCase.state -or
+        [string]$runner.state -cne $(if ($runnerCase.exit -eq 0) {
+          "completed"
+        } else { "failed" }) -or
+        [string]$runner.stage -cne [string]$runnerCase.stage -or
+        [string]$runner.cleanupState -cne [string]$runnerCase.cleanup -or
+        -not [bool]$runner.rootPidZero -or
+        -not [bool]$runner.descendantPidZero -or
+        [int]$runner.jobActiveProcesses -ne 0 -or
+        [bool]$runner.stdoutClosed -ne [bool]$runnerCase.pipes -or
+        [bool]$runner.stderrClosed -ne [bool]$runnerCase.pipes -or
+        ($runnerCase.exit -eq 0 -and (
+          [int]$result.nativeCode -ne 0 -or
+          [string]$result.instanceIdSha256 -cne
+            [string]$nativeRemovalDevice.instanceIdSha256 -or
+          [string]$result.priorInventoryEpochSha256 -cne
+            [string]$nativeRemovalProjection.inventoryEpochSha256))) {
+      throw "virtualDisplayNativeRemovalRunnerFailed:$($runnerCase.name)"
+    }
+    $remaining = @(Get-CimInstance Win32_Process | Where-Object {
+      [string]$_.ExecutablePath -ceq $nativeRemovalRunnerHelper
+    }).Count
+    if ($remaining -ne 0) {
+      throw "virtualDisplayNativeRemovalRunnerProcessResidual:$($runnerCase.name)"
+    }
+    $nativeRemovalRunnerResults += [ordered]@{
+      name = [string]$runnerCase.name
+      state = [string]$result.state
+      runnerStage = [string]$runner.stage
+      elapsedMilliseconds = [int]$clock.ElapsedMilliseconds
+      cleanupState = [string]$runner.cleanupState
+      rootPidZero = [bool]$runner.rootPidZero
+      descendantPidZero = [bool]$runner.descendantPidZero
+      jobActiveProcesses = [int]$runner.jobActiveProcesses
+      stdoutClosed = [bool]$runner.stdoutClosed
+      stderrClosed = [bool]$runner.stderrClosed
+      processCount = $remaining
+    }
+  }
+  Remove-Item Env:\LIGASE_VDISPLAY_INVENTORY_HELPER_BEHAVIOR `
+    -ErrorAction SilentlyContinue
+  $validAuthorityBytes = [IO.File]::ReadAllBytes($nativeRemovalAuthorityPath)
+  try {
+    [IO.File]::WriteAllText($nativeRemovalAuthorityPath,
+      '{"instanceId":"ROOT\\DISPLAY\\0000"}',
+      [Text.UTF8Encoding]::new($false))
+    $raw = @(& (Join-Path $env:SystemRoot (
+          "System32\WindowsPowerShell\v1.0\powershell.exe")) `
+      -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+      -File $managementScript `
+      -Action ValidateVirtualDisplayNativeRemovalRunner `
+      -InstallDirectory $nativeRemovalRunnerRoot `
+      -ValidationRoot $nativeRemovalRunnerRoot)
+    $runnerExit = $LASTEXITCODE
+    $result = $raw[0] | ConvertFrom-Json
+    if ($runnerExit -ne 18 -or [string]$result.state -cne "failed" -or
+        [string]$result.removalRunner.stage -cne "tokenEncode" -or
+        [string]$result.removalRunner.cleanupState -cne "notRequired" -or
+        -not [bool]$result.removalRunner.rootPidZero -or
+        -not [bool]$result.removalRunner.descendantPidZero -or
+        [int]$result.removalRunner.jobActiveProcesses -ne 0 -or
+        [bool]$result.removalRunner.stdoutClosed -or
+        [bool]$result.removalRunner.stderrClosed) {
+      throw "virtualDisplayNativeRemovalRunnerTokenEncodeFailed"
+    }
+    $nativeRemovalRunnerResults += [ordered]@{
+      name="tokenEncode";state="failed";runnerStage="tokenEncode";
+      cleanupState="notRequired";rootPidZero=$true;
+      descendantPidZero=$true;jobActiveProcesses=0;stdoutClosed=$false;
+      stderrClosed=$false;processCount=0
+    }
+  } finally {
+    [IO.File]::WriteAllBytes($nativeRemovalAuthorityPath, $validAuthorityBytes)
+  }
+  $env:LIGASE_VDISPLAY_INVENTORY_HELPER_PATH = Join-Path (
+    $nativeRemovalRunnerRoot) "missing-helper.exe"
+  $raw = @(& (Join-Path $env:SystemRoot (
+        "System32\WindowsPowerShell\v1.0\powershell.exe")) `
+    -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+    -File $managementScript `
+    -Action ValidateVirtualDisplayNativeRemovalRunner `
+    -InstallDirectory $nativeRemovalRunnerRoot `
+    -ValidationRoot $nativeRemovalRunnerRoot)
+$runnerExit = $LASTEXITCODE
+$result = $raw[0] | ConvertFrom-Json
+if ($runnerExit -ne 18 -or [string]$result.state -cne "failed" -or
+      [string]$result.removalRunner.stage -cne "helperResolve" -or
+      [string]$result.removalRunner.cleanupState -cne "notRequired" -or
+      -not [bool]$result.removalRunner.rootPidZero -or
+      -not [bool]$result.removalRunner.descendantPidZero -or
+      [int]$result.removalRunner.jobActiveProcesses -ne 0 -or
+      [bool]$result.removalRunner.stdoutClosed -or
+      [bool]$result.removalRunner.stderrClosed) {
+    throw "virtualDisplayNativeRemovalRunnerResolveFailed"
+  }
+  $nativeRemovalRunnerResults += [ordered]@{
+    name="helperResolve";state="failed";runnerStage="helperResolve";
+    cleanupState="notRequired";rootPidZero=$true;descendantPidZero=$true;
+    jobActiveProcesses=0;stdoutClosed=$false;stderrClosed=$false;processCount=0
+  }
+} finally {
+  if ([string]::IsNullOrEmpty($savedRemovalHarness)) {
+    Remove-Item Env:\LIGASE_INSTALL_VALIDATION_HARNESS -ErrorAction SilentlyContinue
+  } else { $env:LIGASE_INSTALL_VALIDATION_HARNESS = $savedRemovalHarness }
+  if ([string]::IsNullOrEmpty($savedRemovalValidation)) {
+    Remove-Item Env:\LIGASE_VDISPLAY_INVENTORY_HELPER_VALIDATION `
+      -ErrorAction SilentlyContinue
+  } else {
+    $env:LIGASE_VDISPLAY_INVENTORY_HELPER_VALIDATION = $savedRemovalValidation
+  }
+  if ([string]::IsNullOrEmpty($savedRemovalHelperPath)) {
+    Remove-Item Env:\LIGASE_VDISPLAY_INVENTORY_HELPER_PATH `
+      -ErrorAction SilentlyContinue
+  } else { $env:LIGASE_VDISPLAY_INVENTORY_HELPER_PATH = $savedRemovalHelperPath }
+  if ([string]::IsNullOrEmpty($savedRemovalBehavior)) {
+    Remove-Item Env:\LIGASE_VDISPLAY_INVENTORY_HELPER_BEHAVIOR `
+      -ErrorAction SilentlyContinue
+  } else { $env:LIGASE_VDISPLAY_INVENTORY_HELPER_BEHAVIOR = $savedRemovalBehavior }
+}
+
 $nativeInventoryInvocationResults = @()
 $savedNativeHarness = [string]$env:LIGASE_INSTALL_VALIDATION_HARNESS
 $savedNativeValidation = [string]$env:LIGASE_VDISPLAY_INVENTORY_HELPER_VALIDATION
@@ -6502,7 +6705,7 @@ $diagnosticProjection = [string]$diagnosticRaw | ConvertFrom-Json
 if ([string]$diagnosticProjection.code -cne
       "virtualDisplayDiagnosticProjectionValidated" -or
     -not [bool]$diagnosticProjection.success -or
-    [int]$diagnosticProjection.crossSpliceRejected -ne 39 -or
+    [int]$diagnosticProjection.crossSpliceRejected -ne 44 -or
     -not [bool]$diagnosticProjection.primaryWriteFailed -or
     [string]$diagnosticProjection.resultCode -cne
       "virtualDisplayReadbackFailed" -or
@@ -6515,7 +6718,7 @@ if ([string]$diagnosticProjection.code -cne
     [string]$diagnosticProjection.compensationState -cne "completed" -or
     [string]$diagnosticProjection.transactionRollback -cne "completed" -or
     [int]$diagnosticProjection.tokenLength -lt 1 -or
-    [int]$diagnosticProjection.tokenLength -gt 4096 -or
+    [int]$diagnosticProjection.tokenLength -gt 6144 -or
     [string]$diagnosticProjection.tokenSha256 -cnotmatch '^[0-9a-f]{64}$' -or
     [string]$diagnosticProjection.lastOutcomeSha256 -cnotmatch
       '^[0-9a-f]{64}$' -or
@@ -6526,7 +6729,7 @@ if ([string]$diagnosticProjection.code -cne
     [int]$diagnosticProjection.removeCount -ne 16 -or
     -not [bool]$diagnosticProjection.removePrimaryWriteFailed -or
     [int]$diagnosticProjection.removeTokenLength -lt 1 -or
-    [int]$diagnosticProjection.removeTokenLength -gt 4096 -or
+    [int]$diagnosticProjection.removeTokenLength -gt 6144 -or
     [string]$diagnosticProjection.removeLastOutcomeSha256 -cnotmatch
       '^[0-9a-f]{64}$' -or
     [string]$diagnosticProjection.postCreateResultCode -cne
@@ -6751,6 +6954,7 @@ foreach ($entryMode in @("stopAfterFreeze", "failAfterFreeze")) {
   virtualDisplayNativeInventoryHelperCases = $inventoryHelperResults
   virtualDisplayNativeInventoryInvocationCases =
     $nativeInventoryInvocationResults
+  virtualDisplayNativeRemovalRunnerCases = $nativeRemovalRunnerResults
   installerEvidenceSecondaryFailure = $evidenceSecondaryProjection
   virtualDisplayRemovalCases = $virtualDisplayRemovalResults
   virtualDisplayTerminalReadbackCases =

@@ -674,7 +674,25 @@ limited to the package's create/install operation and is not a removal
 authority. There is no PnPUtil text fallback. A native helper rejection or
 failure is closed `virtualDisplayDeviceRemoveFallbackFailed` in the existing
 diagnostic wire vocabulary and preserves the last proven residual identity-set
-hash; localized stdout is never parsed as success authority. Failure to read
+hash; localized stdout is never parsed as success authority. The same
+diagnostic also carries a safe `removalRunner` authority for failures
+before a legal native result tuple exists. It distinguishes token encoding,
+pinned-helper resolution, Job start or start cleanup, bounded capture, native
+exit, UTF-8/JSON/schema validation, and completion. Cleanup is complete only
+when root and descendant processes are gone, the Job reports zero active
+processes, and both output pipes are closed; it never records argv, paths, raw
+output, exceptions, or device identities. The D-only validation harness must
+launch the pinned helper through this same runner and obtain a legal removal
+tuple, while start, cleanup, timeout, overflow, and pipe faults remain bounded
+and leave no helper process. This proves runner reachability only and does not
+perform a real device mutation or authorize an installer run.
+
+The outer fallback tuple and nested runner tuple are one authority: a
+pre-tuple runner failure must remain `processInvoke` with no fallback exit,
+whereas a completed runner can only project a validated native tuple or a
+completed removal. Token and file consumers reject any cross-spliced state.
+
+Failure to read
 the count after mutation is closed
 `virtualDisplayDeviceRemoveReadbackFailed`; failure to observe monotonic
 progress within the settle or total deadline is
