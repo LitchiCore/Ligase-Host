@@ -2794,18 +2794,13 @@ function Assert-VirtualDisplayInventoryDiagnosticCorrelation($Document) {
       $rootPidZero -and $jobActive -eq 0 -and $coverageNone -and
       $outputReasonValid)
   } elseif ($stage -ceq "completed") {
-    $successCleanup = if ($totalBatches -eq 0) {
-      $cleanup -ceq "notRequired" -and $rootPidZero -and $jobActive -eq 0
-    } else {
-      $cleanup -ceq "completed" -and $rootPidZero -and $jobActive -eq 0
-    }
     $valid = (
       $failure -ceq "none" -and $deviceCount -ge 0 -and
-      $totalBatches -eq [int][Math]::Ceiling($deviceCount / 32.0) -and
-      $hardwareCompleted -eq $totalBatches -and
-      $driverCompleted -eq $totalBatches -and $successCleanup -and
+      $totalBatches -eq 0 -and $currentBatch -eq -1 -and
+      $hardwareCompleted -eq 0 -and $driverCompleted -eq 0 -and
+      $cleanup -ceq "notRequired" -and $rootPidZero -and $jobActive -eq 0 -and
       $coverageNone -and $outputReasonValid -and
-      ($totalBatches -eq 0 -or $currentBatch -eq $totalBatches - 1))
+      $responseStatsDefault)
   } else {
     $valid = (
       @("allDevices", "hardwareIds", "driverInf") -ccontains $stage -and
@@ -7623,6 +7618,132 @@ try {
       }
       $primarySelectionCasesPassed++
     }
+    $actualPrimary = ($selectionBase | ConvertTo-Json -Depth 8 -Compress) |
+      ConvertFrom-Json
+    $actualPrimary.writtenUtc = [DateTime]::UtcNow.AddSeconds(-20).ToString("O")
+    $actualPrimary.resultCode = "virtualDisplayDeviceRemoveFallbackFailed"
+    $actualPrimary.success = $false
+    $actualPrimary.installStage = "deviceRemove"
+    $actualPrimary.readbackCode = "notAttempted"
+    $actualPrimary.childExitCode = 25
+    $actualPrimary.removeExitCode = 6
+    $actualPrimary.removeCount = 0
+    $actualPrimary.cleanupState = "notRequired"
+    $actualPrimary.markerStage = "notAttempted"
+    $actualPrimary.observedDeviceCount = 1
+    $actualPrimary.presentDeviceCount = 1
+    $actualPrimary.uniqueDeviceIdsSha256 =
+      "6e27fcc5be75a0b29741027e06ae83b1503afa139f4bba08536c9ad39ecfc249"
+    $actualPrimary.driverBindingVerified = $false
+    $actualPrimary.fallbackAttempted = $true
+    $actualPrimary.fallbackExitCode = -1
+    $actualPrimary.fallbackStage = "processInvoke"
+    $actualPrimary.fallbackReason = "outputInvalid"
+    $actualPrimary.deviceRecovery = "failed"
+    $actualPrimary.residualDeviceState = "exactOneUnbound"
+    $actualPrimary.compensationState = "completed"
+    $actualPrimary.compensationFailureReason = "none"
+    $actualPrimary.terminalReadbackState = "completed"
+    $actualPrimary.terminalReadbackReason = "none"
+    $actualPrimary.createInvocationCount = 0
+    $actualPrimary.createInvocationIdSha256 =
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    $actualPrimary.preCreateIdentitySha256 =
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    $actualPrimary.postCreateIdentitySha256 =
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    $actualPrimary.postCreateIdentityState = "notAttempted"
+    $actualPrimary.postCreateIdentityReason = "none"
+    $actualPrimary.inventoryStage = "completed"
+    $actualPrimary.inventoryFailureStage = "none"
+    $actualPrimary.inventoryOutputReason = "none"
+    $actualPrimary.inventoryNativeExitCode = -1
+    $actualPrimary.inventoryChildFailureStage = "none"
+    $actualPrimary.inventoryCoverageStage = "none"
+    $actualPrimary.inventoryCoverageReason = "none"
+    $actualPrimary.inventoryRequestedCount = -1
+    $actualPrimary.inventoryReturnedCount = -1
+    $actualPrimary.inventoryResponseRequestedCount = -1
+    $actualPrimary.inventoryResponseReturnedRowCount = -1
+    $actualPrimary.inventoryResponseUniqueOrdinalCount = -1
+    $actualPrimary.inventoryResponseUniqueOrdinalIgnoreCaseCount = -1
+    $actualPrimary.inventoryResponseDuplicateGroupCount = 0
+    $actualPrimary.inventoryResponseDuplicateMaxMultiplicity = 0
+    $actualPrimary.inventoryResponseCaseOnlyDuplicateCount = 0
+    $actualPrimary.inventoryResponseDataRelation = "none"
+    $actualPrimary.inventoryResponseInvalidReason = "none"
+    $actualPrimary.inventoryResponseInvalidCount = 0
+    $actualPrimary.inventoryDeviceCount = 1
+    $actualPrimary.inventoryCurrentBatchIndex = -1
+    $actualPrimary.inventoryTotalBatchCount = 0
+    $actualPrimary.inventoryHardwareBatchesCompleted = 0
+    $actualPrimary.inventoryDriverBatchesCompleted = 0
+    $actualPrimary.inventoryElapsedMilliseconds = 0
+    $actualPrimary.inventoryRunBudgetMilliseconds = 9000
+    $actualPrimary.inventoryHardCapMilliseconds = 10000
+    $actualPrimary.inventoryCleanupState = "notRequired"
+    $actualPrimary.inventoryRootPidZero = $true
+    $actualPrimary.inventoryJobActiveProcesses = 0
+    $actualPrimary.finalizePreReadStage = "notAttempted"
+    $actualPrimary.finalizePreReadReason = "none"
+    $actualPrimary.finalizePreReadSchemaReason = "none"
+    $actualPrimary.finalizePreReadSchemaCount = 0
+    $actualPrimary.finalizePreReadCleanupState = "notRequired"
+    $actualPrimary.finalizePreReadRootPidZero = $true
+    $actualPrimary.finalizePreReadJobActiveProcesses = 0
+    $actualPrimary.finalizePreReadStdoutClosed = $false
+    $actualPrimary.finalizePreReadStderrClosed = $false
+    $actualPrimary.finalizePreReadDeviceCount = -1
+    $actualPrimary.finalizePreReadPresentDeviceCount = -1
+    $actualPrimary.finalizePreReadIdentitySha256 =
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    $actualPrimary.finalizePreReadDriverBindingVerified = $false
+    $actualPrimaryToken = ConvertTo-VirtualDisplayDiagnosticToken $actualPrimary
+    $actualTokenReadback = ConvertFrom-VirtualDisplayDiagnosticToken (
+      $actualPrimaryToken)
+    Write-VirtualDisplayDiagnostic $actualPrimary
+    $actualFileReadback = Read-VirtualDisplayDiagnostic
+    foreach ($actualReadback in @($actualTokenReadback, $actualFileReadback)) {
+      if ([string]$actualReadback.resultCode -cne
+          "virtualDisplayDeviceRemoveFallbackFailed" -or
+          [int]$actualReadback.inventoryDeviceCount -ne 1 -or
+          [int]$actualReadback.inventoryTotalBatchCount -ne 0 -or
+          [string]$actualReadback.fallbackReason -cne "outputInvalid") {
+        throw "installerEvidenceActualPrimaryInvalid"
+      }
+    }
+    $actualPrimaryConsumersPassed = 2
+    $actualPrimaryCrossSpliceRejected = 0
+    foreach ($crossValues in @(
+        @{ inventoryTotalBatchCount = 1; inventoryCurrentBatchIndex = 0;
+          inventoryHardwareBatchesCompleted = 1;
+          inventoryDriverBatchesCompleted = 1 },
+        @{ inventoryCleanupState = "completed" },
+        @{ inventoryCurrentBatchIndex = 0 })) {
+      foreach ($consumer in @("token", "file")) {
+        $cross = ($actualPrimary | ConvertTo-Json -Depth 8 -Compress) |
+          ConvertFrom-Json
+        foreach ($name in $crossValues.Keys) {
+          $cross.$name = $crossValues[$name]
+        }
+        $rejected = $false
+        try {
+          if ($consumer -ceq "token") {
+            $null = ConvertFrom-VirtualDisplayDiagnosticToken (
+              ConvertTo-VirtualDisplayDiagnosticToken $cross)
+          } else {
+            Write-VirtualDisplayDiagnostic $cross
+            $null = Read-VirtualDisplayDiagnostic
+          }
+        } catch {
+          $rejected = [string]$_.Exception.Message -ceq
+            "virtualDisplayDiagnosticInvalid"
+        }
+        if (-not $rejected) { throw "installerEvidenceActualPrimaryInvalid" }
+        $actualPrimaryCrossSpliceRejected++
+      }
+    }
+    Write-VirtualDisplayDiagnostic $actualPrimary
     $selectedPrimary = Select-VirtualDisplayExistingPrimary "not-a-token"
     $script:frozenInstallerEvidencePrimary = $null
     $script:frozenInstallerEvidencePrimaryJson = $null
@@ -7696,7 +7817,17 @@ try {
     $script:virtualDisplayFinalizePreReadDriverBindingVerified = $false
     Freeze-InstallerEvidenceSecondaryReadback
     $precedenceOutcome = Write-InstallerEvidence
-    if ([string]$precedenceOutcome.virtualDisplay.writtenUtc -cne
+    if ([string]$precedenceOutcome.virtualDisplay.resultCode -cne
+          "virtualDisplayDeviceRemoveFallbackFailed" -or
+        [int]$precedenceOutcome.virtualDisplay.childExitCode -ne 25 -or
+        [int]$precedenceOutcome.virtualDisplay.removeExitCode -ne 6 -or
+        [string]$precedenceOutcome.virtualDisplay.fallbackStage -cne
+          "processInvoke" -or
+        [string]$precedenceOutcome.virtualDisplay.fallbackReason -cne
+          "outputInvalid" -or
+        [int]$precedenceOutcome.virtualDisplay.inventoryDeviceCount -ne 1 -or
+        [int]$precedenceOutcome.virtualDisplay.inventoryTotalBatchCount -ne 0 -or
+        [string]$precedenceOutcome.virtualDisplay.writtenUtc -cne
           [string]$selectedPrimary.writtenUtc -or
         [string]$precedenceOutcome.secondaryReadback.stage -cne "failed" -or
         [string]$precedenceOutcome.secondaryReadback.reason -cne "schema" -or
@@ -8005,10 +8136,13 @@ try {
         $finalTempResidue -ne 0) {
       throw "installerEvidencePersistenceUnavailableProjectionInvalid"
     }
+    Write-VirtualDisplayDiagnostic $actualPrimary
     [Console]::Out.WriteLine(([ordered]@{
       code = "installerEvidenceSecondaryFailureValidated"
       success = $true
       primarySelectionCasesPassed = $primarySelectionCasesPassed
+      actualPrimaryConsumersPassed = $actualPrimaryConsumersPassed
+      actualPrimaryCrossSpliceRejected = $actualPrimaryCrossSpliceRejected
       primarySelectionCrossSpliceRejected =
         $primarySelectionCrossSpliceRejected
       finalizeHandoffCasesPassed = $finalizeHandoffCasesPassed

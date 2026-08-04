@@ -1867,7 +1867,17 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(runtimeHarness,
             "primarySelectionCasesPassed -ne 4");
         StringAssert.Contains(runtimeHarness,
+            "actualPrimaryConsumersPassed -ne 2");
+        StringAssert.Contains(runtimeHarness,
+            "actualPrimaryCrossSpliceRejected -ne 6");
+        StringAssert.Contains(runtimeHarness,
             "primarySelectionCrossSpliceRejected -ne 6");
+        StringAssert.Contains(management,
+            "$actualPrimary.resultCode = \"virtualDisplayDeviceRemoveFallbackFailed\"");
+        StringAssert.Contains(management,
+            "$actualPrimary.inventoryTotalBatchCount = 0");
+        StringAssert.Contains(management,
+            "$totalBatches -eq 0 -and $currentBatch -eq -1");
         StringAssert.Contains(runtimeHarness,
             "finalizeHandoffCasesPassed -ne 9");
         StringAssert.Contains(runtimeHarness,

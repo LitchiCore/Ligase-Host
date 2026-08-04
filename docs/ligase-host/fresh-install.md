@@ -776,6 +776,11 @@ pipe, output, UTF-8/JSON/schema, SetupAPI-result, or cleanup failure is written
 with `failedField=virtualDisplay`; it cannot bypass the last-outcome writer or
 replace an earlier primary failure. These fields never contain raw output,
 executable paths, argv, device IDs, or exception text.
+The purpose-built SetupAPI helper is a single bounded inventory authority, so a
+completed inventory records zero legacy property-batch counters, a current
+batch of `-1`, and `notRequired` batch cleanup. This closed shape applies even
+when the helper returns one or more exact-HWID devices; the removed PowerShell
+chunk geometry is not used to reject an otherwise valid earlier primary.
 Before manifest, artifact, transaction, or helper reads, Finalize also writes a
 minimal same-directory atomic `finalize-handoff.json`. Its closed state moves
 through `entered`, primary absent/failed/selected and frozen, fresh-readback,

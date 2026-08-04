@@ -6649,6 +6649,8 @@ if ([string]$evidenceSecondaryProjection.code -cne
       "installerEvidenceSecondaryFailureValidated" -or
     -not [bool]$evidenceSecondaryProjection.success -or
     [int]$evidenceSecondaryProjection.primarySelectionCasesPassed -ne 4 -or
+    [int]$evidenceSecondaryProjection.actualPrimaryConsumersPassed -ne 2 -or
+    [int]$evidenceSecondaryProjection.actualPrimaryCrossSpliceRejected -ne 6 -or
     [int]$evidenceSecondaryProjection.primarySelectionCrossSpliceRejected -ne 6 -or
     [int]$evidenceSecondaryProjection.finalizeHandoffCasesPassed -ne 9 -or
     [int]$evidenceSecondaryProjection.finalizeHandoffCrossSpliceRejected -ne 4 -or
@@ -6726,7 +6728,11 @@ foreach ($entryMode in @("stopAfterFreeze", "failAfterFreeze")) {
   } elseif ($LASTEXITCODE -ne 10 -or
       [string]$entryOutcome.failedField -cne "virtualDisplay" -or
       [string]$entryOutcome.virtualDisplay.resultCode -cne
-        "virtualDisplayReadbackFailed" -or
+        "virtualDisplayDeviceRemoveFallbackFailed" -or
+      [int]$entryOutcome.virtualDisplay.childExitCode -ne 25 -or
+      [int]$entryOutcome.virtualDisplay.removeExitCode -ne 6 -or
+      [string]$entryOutcome.virtualDisplay.fallbackReason -cne
+        "outputInvalid" -or
       [string]$entryOutcome.finalizeHandoff.state -cne "completed" -or
       [string]$entryOutcome.persistenceState -cne "lastResort") {
     throw "finalizeEntryHandoffFixtureFailed"
