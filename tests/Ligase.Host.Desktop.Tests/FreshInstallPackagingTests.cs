@@ -1047,6 +1047,14 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(management, "$stdoutClosed -and $stderrClosed");
         StringAssert.Contains(management,
             "[LigaseJobProcess]::SecondaryContainment");
+        StringAssert.Contains(management,
+            "Write-VirtualDisplaySetupEvidence $setupResult");
+        StringAssert.Contains(management,
+            "Write-VirtualDisplaySetupLastResortEvidence $setupResult");
+        StringAssert.Contains(management,
+            "resultFileIdentitySha256 = [string]$script:virtualDisplayResultIdentitySha256");
+        StringAssert.Contains(management,
+            "resultFileSha256 = [string]$script:virtualDisplayResultSha256");
         StringAssert.Contains(build, "resultSchemaSha256");
         StringAssert.Contains(nsis, "-Action InstallVirtualDisplay");
         StringAssert.Contains(nsis, "-Action UninstallVirtualDisplay");
@@ -1067,6 +1075,12 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(setup, "retainedNotOwned");
         StringAssert.Contains(setup, "absentNotOwned");
         StringAssert.Contains(setup, "CleanupState = \"retained\"");
+        StringAssert.Contains(setup, "legacyStores.Length > 2");
+        StringAssert.Contains(setup, "ObserveUnownedCertificateStore");
+        StringAssert.Contains(setup,
+            "present ? \"present\" : \"absent\"");
+        Assert.IsFalse(setup.Contains(
+            "legacyStores.Length is < 1 or > 2", StringComparison.Ordinal));
 
         foreach (var retired in new[]
                  {

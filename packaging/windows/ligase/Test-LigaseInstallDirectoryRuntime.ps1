@@ -156,9 +156,9 @@ if ($contractRun.exitCode -ne 0 -or $contractRun.stderr.Length -ne 0) {
 $contractLines = @($contractRun.stdout -split "`r?`n" | Where-Object Length)
 if ($contractLines.Count -ne 1) { throw "draft2020ContractOutputInvalid" }
 $contract = $contractLines[0] | ConvertFrom-Json
-if ($contract.code -cne "rr16CertificateUninstallExitPassed" -or
+if ($contract.code -cne "legacyV1EmptyStoresAddendumPassed" -or
     [int]$contract.topLevelBranches -ne 23 -or
-    [int]$contract.positive -lt 14 -or [int]$contract.negative -lt 14 -or
+    [int]$contract.positive -lt 18 -or [int]$contract.negative -lt 20 -or
     [int]$contract.ownedHashes -ne 9) {
   throw "draft2020ContractResultInvalid"
 }
@@ -265,6 +265,53 @@ foreach ($fault in @("timeout", "overflow", "dualPipePending",
     throw "productionRunnerFaultGateFailed"
   }
   $runnerPassed++
+}
+$sequenceEnvironment = @{
+  LIGASE_INSTALL_VALIDATION_HARNESS="1"
+  LIGASE_VDISPLAY_RUNNER_VALIDATION="1"
+  LIGASE_VDISPLAY_CALLER_FIXTURE="verifiedProvisionFailure"
+}
+$provisionSequence = Invoke-Bounded "powershell.exe" @(
+  "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $manage,
+  "-Action", "InstallVirtualDisplay", "-InstallDirectory", $runnerRoot,
+  "-ValidationRoot", $runnerRoot) $sequenceEnvironment 10000
+if ($provisionSequence.exitCode -ne 20) {
+  throw "virtualDisplayOutcomePrimaryFixtureFailed"
+}
+$sequenceEnvironment.LIGASE_VDISPLAY_CALLER_FIXTURE =
+  "verifiedUninstallRecovery"
+$uninstallSequence = Invoke-Bounded "powershell.exe" @(
+  "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $manage,
+  "-Action", "UninstallVirtualDisplay", "-InstallDirectory", $runnerRoot,
+  "-ValidationRoot", $runnerRoot) $sequenceEnvironment 10000
+if ($uninstallSequence.exitCode -ne 0) {
+  throw "virtualDisplayOutcomeRecoveryFixtureFailed"
+}
+$setupOutcomePath = Join-Path $runnerRoot "last-outcome.json"
+$setupOutcomeRaw = [IO.File]::ReadAllText($setupOutcomePath)
+$setupOutcome = $setupOutcomeRaw | ConvertFrom-Json
+if ($setupOutcome.phase -cne "virtualDisplaySetup" -or
+    $setupOutcome.success -ne $false -or
+    $setupOutcome.resultCode -cne "ownershipReadFailed" -or
+    $setupOutcome.failedField -cne "virtualDisplay" -or
+    $setupOutcome.components.virtualDisplay -cne "failed" -or
+    $setupOutcome.virtualDisplaySetup.primary.operation -cne "provision" -or
+    $setupOutcome.virtualDisplaySetup.primary.code -cne "ownershipReadFailed" -or
+    $setupOutcome.virtualDisplaySetup.primary.stage -cne "readOwnership" -or
+    -not [bool]$setupOutcome.virtualDisplaySetup.primary.firstFailureFrozen -or
+    $setupOutcome.virtualDisplaySetup.recovery.operation -cne "uninstall" -or
+    $setupOutcome.virtualDisplaySetup.recovery.code -cne
+      "uninstalledLegacyPackageRetained" -or
+    $setupOutcome.virtualDisplaySetup.recovery.stage -cne "completed" -or
+    [string]$setupOutcome.virtualDisplaySetup.primary.resultFileSha256 -notmatch
+      '^[0-9a-f]{64}$' -or
+    [string]$setupOutcome.virtualDisplaySetup.recovery.resultFileSha256 -notmatch
+      '^[0-9a-f]{64}$') {
+  throw "virtualDisplayOutcomeSequenceInvalid"
+}
+if (@(Get-ChildItem -LiteralPath $runnerRoot -Force -Filter (
+    ".last-outcome-*.tmp")).Count -ne 0) {
+  throw "virtualDisplayOutcomeTemporaryResidue"
 }
 $runnerProcesses = @(Get-CimInstance Win32_Process | Where-Object {
   [string]$_.ExecutablePath -ceq $runnerHelper })

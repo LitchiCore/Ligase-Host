@@ -79,6 +79,22 @@ const uninstallShared=(root='addedByLigase',publisher='notOwned')=>{
   return {schemaVersion:1,operation:'uninstall',operationIdsSha256:[op],sourceHead:'3'.repeat(40),helperSha256:h,packageSha256:'4'.repeat(64),state:'completed',code:'uninstalledSharedPackageRetained',stage:'completed',firstFailureFrozen:false,writtenUtc:'2026-08-08T00:00:00Z',migration:{state:'v2Read',source:'v2',packageOwnership:'notOwned',certificateOwnership:hasOwned?'owned':'notOwned'},ownershipAcquisition:{state:'none',source:'none'},certificateStores:stores(root,publisher,{historical:true,cleanup}),inventory:{state:'proven',nodes:[],uniqueSetSha256:z,residual:'zero'},removal:{state:'completed',removed:[{nativeCode:0,rebootRequired:false,strictDecrease:true}],terminal:'completed',nativeCode:0,rebootRequired:false},zeroProof:{state:'completed',samples:[{zero:true},{zero:true},{zero:true}],windowMilliseconds:3,epochStable:true},trust:hasOwned?{state:'completed',code:'removed',ownership:'owned'}:{state:'verified',code:'absentNotOwned',ownership:'notOwned'},package:{state:'verified',code:'retainedNotOwned',ownership:'notOwned'},create:component('notRequired','none'),marker:{state:'completed',code:'removed',ownership:'owned'},compensation:{state:'notRequired',code:'none'},execution:{elapsedMilliseconds:10,hardCapMilliseconds:120000,resultFileState:'verified'}};
 };
 const uninstallAllNotOwnedPresent=()=>{const v=uninstallShared('notOwned','notOwned');v.trust={state:'verified',code:'retainedNotOwned',ownership:'notOwned'};return v;};
+const v1EmptyProvision=()=>{
+  const v=installed('notOwned','notOwned');
+  v.migration={state:'v1Upgraded',source:'v1',packageOwnership:'addedByLigase',certificateOwnership:'notOwned'};
+  return v;
+};
+const v1EmptyUninstall=(packagePresent=false,certificatePresent=true)=>{
+  const v=uninstallShared('notOwned','notOwned');
+  v.code='uninstalledLegacyPackageRetained';
+  v.migration={state:'v1Read',source:'v1',packageOwnership:'legacyUnknown',certificateOwnership:'notOwned'};
+  v.certificateStores=stores('notOwned','notOwned',{cleanup:'retained'});
+  if(!certificatePresent) for(const value of v.certificateStores.entries){value.preState='absent';value.readback='absent';}
+  v.package=packagePresent?{state:'verified',code:'retainedLegacyUnknown',ownership:'legacyUnknown'}:
+    {state:'verified',code:'absentNotOwned',ownership:'notOwned'};
+  v.trust={state:'verified',code:'retainedNotOwned',ownership:'notOwned'};
+  return v;
+};
 const ownershipReadFailed=(operation='provision',source='unknown',reason='unreadable')=>{
   const uninstall=operation==='uninstall';
   return {schemaVersion:1,operation,operationIdsSha256:[op],sourceHead:'3'.repeat(40),helperSha256:h,packageSha256:'4'.repeat(64),state:'failed',code:'ownershipReadFailed',stage:uninstall?'cleanupOwnership':'readOwnership',firstFailureFrozen:true,writtenUtc:'2026-08-08T00:00:00Z',migration:{state:'failed',source,packageOwnership:'unknown',certificateOwnership:'unknown'},ownershipAcquisition:{state:'none',source:'none'},ownershipReadFailure:{state:'failed',reason,count:1,source,resourceMutationCount:0},certificateStores:{state:'unavailable',entries:[],ownedCount:-1,ownershipSetSha256:z},inventory:uninstall?{state:'proven',nodes:[],uniqueSetSha256:z,residual:'zero'}:{state:'proven',nodes:[{present:true,bound:false}],uniqueSetSha256:h,residual:'exactOneUnbound'},removal:{state:'notRequired',removed:[],terminal:'none',nativeCode:-1,rebootRequired:false},zeroProof:uninstall?{state:'completed',samples:[{zero:true},{zero:true},{zero:true}],windowMilliseconds:3,epochStable:true}:{state:'notAttempted',samples:[],windowMilliseconds:0,epochStable:false},trust:component(),package:component(),create:component(uninstall?'notRequired':'notAttempted','none'),marker:{state:'failed',code:reason==='conflict'?'conflict':'readbackFailure',ownership:'unknown'},compensation:{state:'notRequired',code:'none'},execution:{elapsedMilliseconds:10,hardCapMilliseconds:120000,resultFileState:'verified'}};
@@ -97,6 +113,10 @@ for(const [name,v] of [
   ['uninstall-partial-owned',uninstallShared('addedByLigase','notOwned')],
   ['uninstall-all-notOwned-retained',uninstallShared('notOwned','notOwned')],
   ['uninstall-all-notOwned-present',uninstallAllNotOwnedPresent()],
+  ['v1-empty-provision',v1EmptyProvision()],
+  ['v1-empty-uninstall-package-absent',v1EmptyUninstall()],
+  ['v1-empty-uninstall-package-retained',v1EmptyUninstall(true)],
+  ['v1-empty-uninstall-cert-and-package-absent',v1EmptyUninstall(false,false)],
   ['provision-ownership-read-failed',ownershipReadFailed()],
   ['uninstall-ownership-read-failed',ownershipReadFailed('uninstall')]]){pass(name,v);positive++;}
 {
@@ -116,6 +136,12 @@ for(const [name,v] of [
   v=uninstallShared();v.trust={state:'verified',code:'absentNotOwned',ownership:'notOwned'};cases.push(['owned-stores-trust-notOwned',v]);
   v=markerCommitFailed('addedByLigase','notOwned');v.certificateStores.entries[0].authoritySource='historicalMarker';v.certificateStores.entries[0].preState='historicalMarker';v.certificateStores.entries[0].mutation='none';v.certificateStores.entries[0].readback='markerExact';cases.push(['commit-failure-history-splice',v]);
   v=historicalAlreadyInstalled('v2','addedByLigase','notOwned','notOwned');v.certificateStores.entries[0]=entry('LocalMachine\\Root','addedByLigase');cases.push(['v2-history-current-splice',v]);
+  v=v1EmptyUninstall();v.certificateStores.entries[0]=entry('LocalMachine\\Root','legacyOwned',true,'removed');v.certificateStores.ownedCount=1;v.certificateStores.ownershipSetSha256=hashes['legacyOwned,notOwned'];v.migration.certificateOwnership='owned';cases.push(['v1-empty-promoted-to-legacyOwned',v]);
+  v=v1EmptyUninstall();v.certificateStores.entries[0].ownership='legacyOwned';v.certificateStores.entries[0].cleanupState='removed';v.certificateStores.ownedCount=1;v.certificateStores.ownershipSetSha256=hashes['legacyOwned,notOwned'];v.migration.certificateOwnership='owned';cases.push(['v1-empty-present-cert-promoted-owned',v]);
+  v=v1EmptyUninstall();v.migration.packageOwnership='addedByLigase';cases.push(['v1-empty-package-promoted-added',v]);
+  v=v1EmptyUninstall();v.certificateStores.ownedCount=1;cases.push(['v1-empty-count-drift',v]);
+  v=v1EmptyUninstall();v.certificateStores.ownershipSetSha256=z;cases.push(['v1-empty-hash-drift',v]);
+  v=v1EmptyUninstall();v.migration.source='v2';cases.push(['v1-empty-source-drift',v]);
   for(const [name,value] of cases){reject(name,value);negative++;}
 }
 if(process.argv[3]==='--emit-consumer-fixtures'){
@@ -127,4 +153,4 @@ if(process.argv[3]==='--emit-consumer-fixtures'){
   fs.writeFileSync(path.join(output,'missing-branch.json'),JSON.stringify(missing));
   fs.writeFileSync(path.join(output,'contradictory-branch.json'),JSON.stringify(contradictory));
 }
-console.log(JSON.stringify({code:'rr16CertificateUninstallExitPassed',topLevelBranches:schema.oneOf.length,positive,negative,ownedHashes:Object.keys(hashes).length}));
+console.log(JSON.stringify({code:'legacyV1EmptyStoresAddendumPassed',topLevelBranches:schema.oneOf.length,positive,negative,ownedHashes:Object.keys(hashes).length}));

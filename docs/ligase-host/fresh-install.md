@@ -711,6 +711,11 @@ this provision and added/read back by this operation is `addedByLigase`;
 already trusted stores are `notOwned`. Stores listed by strict v1 become
 historical `legacyOwned`; unlisted stores are independently classified by the
 current operation. Strict v2 reads preserve the exact historical entry set.
+An empty strict-v1 store array is valid and means only that v1 declared no
+owned certificate store. Root and TrustedPublisher are then projected from
+fresh observation as non-owned; current certificate presence never upgrades
+either store, and the package remains legacy-unknown or freshly absent rather
+than Ligase-owned.
 The derived owned count and SHA-256 are schema-bound to the ordered UTF-8 pair
 `LocalMachine\\Root=<ownership>\nLocalMachine\\TrustedPublisher=<ownership>`
 with no BOM or trailing newline, so a
@@ -724,6 +729,11 @@ owned count zero, retains both stores without mutation, and reports aggregate
 trust only as fresh `retainedNotOwned` or `absentNotOwned`; it cannot be
 cross-spliced with owned/removal authority. Package retention, marker-last
 removal, stable zero and the verified Core-uninstall exit remain mandatory.
+The legacy retained success has a matching empty-v1 variant: both certificate
+stores are retained/absent without mutation, the legacy-unknown package is
+retained or freshly absent, and marker-last removal may then permit Core
+uninstall. Empty v1 cannot be reinterpreted as legacy-owned stores, certificate
+removal, package acquisition, or a v2 marker.
 The same implementation snapshot must remove the NSIS → PowerShell → batch legacy uninstall path and
 prove zero production/stage references. There is no transitional dual owner.
 

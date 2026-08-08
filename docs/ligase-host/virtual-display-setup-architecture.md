@@ -257,6 +257,16 @@ every entry from the marker and labels
 the authority historical. Presence, thumbprint, catalog/package hash or a
 bound device cannot upgrade a store to owned.
 
+A schema-v1 marker with an empty `certificateStores` array is a valid legacy
+journal. It asserts only that v1 declared no certificate store as owned. Both
+canonical stores are projected from fresh observation as `notOwned`, with
+owned count zero and the exact ordered-pair hash; even a matching certificate
+already present in either store remains non-owned. The empty list does not
+authorize certificate deletion and does not prove package acquisition. Its
+package authority remains `legacyUnknown`, except that a fresh absent package
+may be represented by the existing non-owned/absent component without being
+promoted to `addedByLigase`.
+
 `ownedCount` and `ownershipSetSha256` are derived from the two ordered
 ownership values. The hash input is strict UTF-8 with no BOM or trailing
 newline:
@@ -283,6 +293,14 @@ cleanup states are retained, and aggregate trust is only
 That all-non-owned branch never reports certificate removal. Package
 retention/absence, marker-last removal, terminal zero and the Core-uninstall
 success gate are otherwise unchanged.
+
+The same all-non-owned closure applies to a strict empty-store v1 journal under
+`uninstalledLegacyPackageRetained`: exact-node removal and stable zero precede
+cleanup, both stores are retained or freshly absent without mutation, the
+legacy-unknown package is retained or freshly absent, and the marker is
+removed last. This verified terminal may allow Core uninstall to continue;
+it cannot be cross-spliced with `legacyOwned`, certificate removal, package
+acquisition, or a v2 source.
 
 The result has one non-duplicated ordered `operationIdsSha256` identity list.
 Index 0 is always the current request/result operation. A first acquisition

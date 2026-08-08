@@ -52,7 +52,7 @@ internal static class Program
                 var callerFixture = Environment.GetEnvironmentVariable(
                     "LIGASE_VDISPLAY_CALLER_FIXTURE");
                 if (!string.IsNullOrEmpty(callerFixture))
-                    return RunCallerFixture(args[4], callerFixture);
+                    return RunCallerFixture(args[2], args[4], callerFixture);
 #endif
                 return ExecuteFromHandles(args[0], args[2], args[4]);
 #if SETUP_VALIDATION
@@ -75,7 +75,8 @@ internal static class Program
     }
 
 #if SETUP_VALIDATION
-    private static int RunCallerFixture(string resultValue, string mode)
+    private static int RunCallerFixture(string requestValue, string resultValue,
+        string mode)
     {
         if (mode == "overflow")
         {
@@ -107,6 +108,65 @@ internal static class Program
                 "\"packageSha256\":\"" + new string('0', 64) + "\"," +
                 "\"state\":\"completed\",\"code\":\"installed\"}");
             stream.Write(bytes); stream.Flush(true); return 0;
+        }
+        if (mode is "verifiedProvisionFailure" or "verifiedUninstallRecovery")
+        {
+            if (!long.TryParse(requestValue, out var requestRaw) || requestRaw <= 0 ||
+                !long.TryParse(resultValue, out var resultRaw) || resultRaw <= 0)
+                return 40;
+            using var requestHandle = new SafeFileHandle(new IntPtr(requestRaw), false);
+            using var requestStream = new FileStream(requestHandle,
+                FileAccess.Read, 4096, false);
+            requestStream.Position = 0;
+            var requestBytes = new byte[requestStream.Length];
+            requestStream.ReadExactly(requestBytes);
+            var request = ParseSetupRequest(requestBytes);
+            var clock = Stopwatch.StartNew();
+            Dictionary<string, object?> result;
+            if (mode == "verifiedProvisionFailure" && request.Operation == "provision")
+            {
+                result = SetupResultDocument(request, clock, "failed",
+                    "ownershipReadFailed", "readOwnership", true,
+                    Inventory(new[] { new Device("fixture", true, "started", "") }),
+                    Removal("notRequired", new List<object>(), "none", -1, false),
+                    ZeroProof("notAttempted", 0, 0, false),
+                    Component("notAttempted", "none"),
+                    Component("notAttempted", "none"),
+                    Component("notAttempted", "none"),
+                    UninstallComponent("failed", "conflict", "unknown"),
+                    Compensation("notRequired", "none"),
+                    Migration("failed", "v1", "legacyUnknown", "unknown"),
+                    OwnershipAcquisitionNone(), null,
+                    OwnershipReadFailure("conflict", "v1"));
+            }
+            else if (mode == "verifiedUninstallRecovery" && request.Operation == "uninstall")
+            {
+                var stores = new[] { "Root", "TrustedPublisher" }.Select(name =>
+                    new CertificateStoreAuthority("LocalMachine\\" + name,
+                        "notOwned", "currentObservation", "absent", "none",
+                        "absent", "retained")).ToArray();
+                result = SetupResultDocument(request, clock, "completed",
+                    "uninstalledLegacyPackageRetained", "completed", false,
+                    Inventory(Array.Empty<Device>()), Removal("completed",
+                        new List<object> { new Dictionary<string, object> {
+                            ["nativeCode"] = 0, ["rebootRequired"] = false,
+                            ["strictDecrease"] = true } }, "completed", 0, false),
+                    ZeroProof("completed", 3, 3, true),
+                    UninstallComponent("verified", "absentNotOwned", "notOwned"),
+                    UninstallComponent("verified", "absentNotOwned", "notOwned"),
+                    Component("notRequired", "none"),
+                    UninstallComponent("completed", "removed", "owned"),
+                    Compensation("notRequired", "none"),
+                    Migration("v1Read", "v1", "legacyUnknown", "notOwned"),
+                    OwnershipAcquisitionNone(), null,
+                    certificateStores: CertificateStores(stores));
+            }
+            else return 40;
+            using var resultHandle = new SafeFileHandle(new IntPtr(resultRaw), false);
+            using var resultStream = new FileStream(resultHandle,
+                FileAccess.ReadWrite, 4096, false);
+            var bytes = JsonSerializer.SerializeToUtf8Bytes(result, JsonOptions());
+            resultStream.Write(bytes); resultStream.Flush(true); return 0;
         }
         return 41;
     }
@@ -1094,7 +1154,7 @@ internal static class Program
                 "certificateStores").EnumerateArray().Select(value =>
                     value.ValueKind == JsonValueKind.String ?
                         value.GetString() ?? "" : "").ToArray();
-            if (legacyThumb?.Length != 40 || legacyStores.Length is < 1 or > 2 ||
+            if (legacyThumb?.Length != 40 || legacyStores.Length > 2 ||
                 legacyStores.Any(value => value is not (
                     "LocalMachine\\Root" or
                     "LocalMachine\\TrustedPublisher")))
@@ -1108,9 +1168,7 @@ internal static class Program
                             "legacyOwned", "historicalMarker",
                             "historicalMarker", "none", "markerExact",
                             "notAttempted") :
-                        new CertificateStoreAuthority(storePath, "notOwned",
-                            "currentObservation", "present", "none",
-                            "present", "notAttempted");
+                        ObserveUnownedCertificateStore(name, legacyThumb);
                 }).ToArray();
             return new OwnershipMarker(1, packageSha256, "legacyUnknown", null,
                 string.Empty, legacyThumb, legacyAuthorities);
@@ -1179,6 +1237,22 @@ internal static class Program
         }
     }
 
+    private static CertificateStoreAuthority ObserveUnownedCertificateStore(
+        string name, string thumbprint)
+    {
+        var storeName = name switch {
+            "Root" => StoreName.Root,
+            "TrustedPublisher" => StoreName.TrustedPublisher,
+            _ => throw new InvalidDataException() };
+        using var store = new X509Store(storeName, StoreLocation.LocalMachine);
+        store.Open(OpenFlags.ReadOnly);
+        var present = store.Certificates.Find(X509FindType.FindByThumbprint,
+            thumbprint, false).Count != 0;
+        return new CertificateStoreAuthority("LocalMachine\\" + name,
+            "notOwned", "currentObservation", present ? "present" : "absent",
+            "none", present ? "present" : "absent", "notAttempted");
+    }
+
     private static Dictionary<string, object> CleanupPackage(
         OwnershipMarker marker)
     {
@@ -1227,10 +1301,16 @@ internal static class Program
                     using var retainedStore = new X509Store(retainedStoreName,
                         StoreLocation.LocalMachine);
                     retainedStore.Open(OpenFlags.ReadOnly);
-                    retainedNotOwnedPresent |= retainedStore.Certificates.Find(
+                    var retainedPresent = retainedStore.Certificates.Find(
                         X509FindType.FindByThumbprint,
                         marker.CertificateThumbprint, false).Count != 0;
-                    output.Add(authority with { CleanupState = "retained" });
+                    retainedNotOwnedPresent |= retainedPresent;
+                    output.Add(authority with {
+                        AuthoritySource = "currentObservation",
+                        PreState = retainedPresent ? "present" : "absent",
+                        Mutation = "none",
+                        Readback = retainedPresent ? "present" : "absent",
+                        CleanupState = "retained" });
                     continue;
                 }
                 var storeName = authority.Store switch {

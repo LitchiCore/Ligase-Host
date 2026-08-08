@@ -487,6 +487,9 @@ function New-VirtualDisplaySetupOperationDirectory {
       throw "virtualDisplaySetupTransportInvalid"
     }
   }
+  if (Test-VirtualDisplaySetupRunnerValidationAllowed) {
+    return $operation
+  }
   $systemSid = [Security.Principal.SecurityIdentifier]::new(
     [Security.Principal.WellKnownSidType]::LocalSystemSid, $null)
   $adminsSid = [Security.Principal.SecurityIdentifier]::new(
@@ -706,7 +709,7 @@ function Assert-VirtualDisplaySetupResultContract($Result, $Manifest) {
 }
 
 function Test-VirtualDisplaySetupRunnerValidationAllowed {
-  return $Action -ceq "InstallVirtualDisplay" -and
+  return $Action -in @("InstallVirtualDisplay", "UninstallVirtualDisplay") -and
     $env:LIGASE_INSTALL_VALIDATION_HARNESS -ceq "1" -and
     $env:LIGASE_VDISPLAY_RUNNER_VALIDATION -ceq "1" -and
     -not [string]::IsNullOrWhiteSpace($ValidationRoot) -and
@@ -913,6 +916,8 @@ function Invoke-VirtualDisplaySetup($Manifest, [string]$Operation = "provision")
         [int]$result.execution.elapsedMilliseconds -gt 120000) {
       throw "virtualDisplaySetupResultInvalid"
     }
+    $script:virtualDisplayResultSha256 = Get-ByteSha256 $resultBytes
+    $script:virtualDisplayResultIdentitySha256 = $resultIdentity
     return $result
   } finally {
     if ($stdout) { $stdout.Dispose() }
@@ -921,6 +926,63 @@ function Invoke-VirtualDisplaySetup($Manifest, [string]$Operation = "provision")
     if ($requestWriter) { $requestWriter.Dispose() }
     if ($requestReader) { $requestReader.Dispose() }
     if ($resultStream) { $resultStream.Dispose() }
+  }
+}
+
+function Test-VirtualDisplaySetupEvidenceProjection($Projection) {
+  if ($null -eq $Projection) { return $true }
+  $names = @($Projection.PSObject.Properties.Name)
+  $expected = @("operation", "operationIdSha256", "state", "code", "stage",
+    "firstFailureFrozen", "writtenUtc", "resultFileIdentitySha256",
+    "resultFileSha256")
+  if ($names.Count -ne $expected.Count -or
+      @($expected | Where-Object { $names -cnotcontains $_ }).Count -ne 0) {
+    return $false
+  }
+  return [string]$Projection.operation -in @("provision", "uninstall") -and
+    [string]$Projection.operationIdSha256 -match '^[0-9a-f]{64}$' -and
+    [string]$Projection.state -in @("completed", "failed") -and
+    [string]$Projection.code -match '^[a-z][A-Za-z0-9]{0,63}$' -and
+    [string]$Projection.stage -match '^[a-z][A-Za-z0-9]{0,63}$' -and
+    $Projection.firstFailureFrozen -is [bool] -and
+    [string]$Projection.writtenUtc -match '^\d{4}-\d{2}-\d{2}T' -and
+    [string]$Projection.resultFileIdentitySha256 -match '^[0-9a-f]{64}$' -and
+    [string]$Projection.resultFileSha256 -match '^[0-9a-f]{64}$'
+}
+
+function Get-ExistingVirtualDisplaySetupEvidence {
+  $path = Get-InstallerEvidencePath
+  if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $null }
+  try {
+    $raw = [IO.File]::ReadAllText($path)
+    if (-not [LigaseStrictJson]::HasUniqueProperties($raw)) { return $null }
+    $document = $raw | ConvertFrom-Json
+    if ([int]$document.schemaVersion -ne 2 -or
+        [string]$document.candidateSourceHead -cne (Get-EvidenceSourceHead) -or
+        $null -eq $document.virtualDisplaySetup) { return $null }
+    $setup = $document.virtualDisplaySetup
+    $names = @($setup.PSObject.Properties.Name)
+    if ($names.Count -ne 2 -or $names -cnotcontains "primary" -or
+        $names -cnotcontains "recovery" -or
+        -not (Test-VirtualDisplaySetupEvidenceProjection $setup.primary) -or
+        -not (Test-VirtualDisplaySetupEvidenceProjection $setup.recovery)) {
+      return $null
+    }
+    return $setup
+  } catch { return $null }
+}
+
+function New-VirtualDisplaySetupEvidenceProjection($Result) {
+  return [ordered]@{
+    operation = [string]$Result.operation
+    operationIdSha256 = [string]@($Result.operationIdsSha256)[0]
+    state = [string]$Result.state
+    code = [string]$Result.code
+    stage = [string]$Result.stage
+    firstFailureFrozen = [bool]$Result.firstFailureFrozen
+    writtenUtc = [string]$Result.writtenUtc
+    resultFileIdentitySha256 = [string]$script:virtualDisplayResultIdentitySha256
+    resultFileSha256 = [string]$script:virtualDisplayResultSha256
   }
 }
 
@@ -1899,6 +1961,10 @@ function Get-EvidenceSourceHead {
 }
 
 function Get-InstallerEvidencePath {
+  if ($Action -in @("InstallVirtualDisplay", "UninstallVirtualDisplay") -and
+      (Test-VirtualDisplaySetupRunnerValidationAllowed)) {
+    return Join-Path $installRoot "last-outcome.json"
+  }
   if ($Action -in @("RecordEvidence", "ValidateInstallTransaction") -and
       $env:LIGASE_INSTALL_VALIDATION_HARNESS -ceq "1" -and
       -not [string]::IsNullOrWhiteSpace($ValidationRoot) -and
@@ -2648,9 +2714,11 @@ function Write-InstallerEvidence {
   if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
     $null = New-Item -ItemType Directory -Path $directory -Force
   }
-  if ($Action -notin @("RecordEvidence", "ValidateInstallTransaction")) {
+  if ($Action -notin @("RecordEvidence", "ValidateInstallTransaction") -and
+      -not (Test-VirtualDisplaySetupRunnerValidationAllowed)) {
     Set-SecureDataRootAcl $directory
   }
+  $existingVirtualDisplaySetup = Get-ExistingVirtualDisplaySetupEvidence
   $document = [ordered]@{
     schemaVersion = 2
     candidateSourceHead = Get-EvidenceSourceHead
@@ -2678,6 +2746,7 @@ function Write-InstallerEvidence {
       readbackStage = $script:transactionReadbackStage
       readbackReason = $script:transactionReadbackReason
     }
+    virtualDisplaySetup = $existingVirtualDisplaySetup
     failedField = if ($EvidenceFailedField -ceq "none") {
       $null
     } else { $EvidenceFailedField }
@@ -2697,8 +2766,22 @@ function Write-InstallerEvidence {
       "yyyy-MM-ddTHH:mm:ss.fffZ",
       [Globalization.CultureInfo]::InvariantCulture)
   }
+  Write-InstallerEvidenceDocument $document
+  return $document
+}
+
+function Write-InstallerEvidenceDocument($Document) {
+  $evidencePath = Get-InstallerEvidencePath
+  $directory = Split-Path -Parent $evidencePath
+  if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
+    $null = New-Item -ItemType Directory -Path $directory -Force
+  }
+  if ($Action -notin @("RecordEvidence", "ValidateInstallTransaction") -and
+      -not (Test-VirtualDisplaySetupRunnerValidationAllowed)) {
+    Set-SecureDataRootAcl $directory
+  }
   $bytes = [Text.UTF8Encoding]::new($false).GetBytes(
-    ($document | ConvertTo-Json -Depth 6 -Compress))
+    ($Document | ConvertTo-Json -Depth 10 -Compress))
   $temporary = Join-Path $directory (
     ".last-outcome-" + [Guid]::NewGuid().ToString("N") + ".tmp")
   $backup = Join-Path $directory (
@@ -2726,7 +2809,113 @@ function Write-InstallerEvidence {
     Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
   }
-  return $document
+  return $Document
+}
+
+function Write-VirtualDisplaySetupEvidence($Result) {
+  $current = New-VirtualDisplaySetupEvidenceProjection $Result
+  if (-not (Test-VirtualDisplaySetupEvidenceProjection ([pscustomobject]$current))) {
+    throw "installerEvidenceInvalid"
+  }
+  $existing = Get-ExistingVirtualDisplaySetupEvidence
+  $primary = if ($null -ne $existing) { $existing.primary } else { $null }
+  if ($null -eq $primary -and [string]$Result.state -ceq "failed") {
+    $primary = $current
+  }
+  $recovery = if ($null -ne $primary -and
+      [string]$primary.resultFileSha256 -ceq [string]$current.resultFileSha256) {
+    if ($null -ne $existing) { $existing.recovery } else { $null }
+  } else { $current }
+  $setup = [ordered]@{ primary = $primary; recovery = $recovery }
+  $path = Get-InstallerEvidencePath
+  $base = $null
+  if (Test-Path -LiteralPath $path -PathType Leaf) {
+    try {
+      $raw = [IO.File]::ReadAllText($path)
+      if ([LigaseStrictJson]::HasUniqueProperties($raw)) {
+        $candidate = $raw | ConvertFrom-Json
+        if ([int]$candidate.schemaVersion -eq 2 -and
+            [string]$candidate.candidateSourceHead -ceq (Get-EvidenceSourceHead)) {
+          $base = $candidate
+        }
+      }
+    } catch { $base = $null }
+  }
+  if ($null -eq $base) {
+    $base = [pscustomobject]([ordered]@{
+      schemaVersion = 2; candidateSourceHead = Get-EvidenceSourceHead
+      phase = "virtualDisplaySetup"; success = $null
+      resultCode = "virtualDisplaySetupRecorded"; failedField = $null
+      components = [pscustomobject]([ordered]@{ virtualDisplay = "pending" })
+      timestampUtc = [DateTime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
+    })
+  }
+  $base | Add-Member -NotePropertyName virtualDisplaySetup -NotePropertyValue (
+    [pscustomobject]$setup) -Force
+  $base.phase = "virtualDisplaySetup"
+  $base.success = if ($null -ne $primary) { $false } else {
+    [string]$Result.state -ceq "completed"
+  }
+  $base.resultCode = if ($null -ne $primary) {
+    [string]$primary.code
+  } else { [string]$Result.code }
+  if ($base.PSObject.Properties.Name -contains "failedField") {
+    $base.failedField = if ($null -ne $primary) { "virtualDisplay" } else { $null }
+  } else {
+    $failedFieldValue = if ($null -ne $primary) { "virtualDisplay" } else { $null }
+    $base | Add-Member -NotePropertyName failedField -NotePropertyValue (
+      $failedFieldValue)
+  }
+  if ($null -eq $base.components) {
+    $base | Add-Member -NotePropertyName components -NotePropertyValue (
+      [pscustomobject]([ordered]@{})) -Force
+  }
+  $componentValue = if ($null -ne $primary) { "failed" } else { "verified" }
+  $base.components | Add-Member -NotePropertyName virtualDisplay -NotePropertyValue (
+    $componentValue) -Force
+  $base.timestampUtc = [DateTime]::UtcNow.ToString(
+    "yyyy-MM-ddTHH:mm:ss.fffZ",
+    [Globalization.CultureInfo]::InvariantCulture)
+  Write-InstallerEvidenceDocument $base
+}
+
+function Write-VirtualDisplaySetupLastResortEvidence($Result) {
+  $current = New-VirtualDisplaySetupEvidenceProjection $Result
+  $existing = Get-ExistingVirtualDisplaySetupEvidence
+  $primary = if ($null -ne $existing) { $existing.primary } else { $null }
+  if ($null -eq $primary -and [string]$Result.state -ceq "failed") {
+    $primary = $current
+  }
+  $recovery = if ($null -ne $primary -and
+      [string]$primary.resultFileSha256 -ceq [string]$current.resultFileSha256) {
+    if ($null -ne $existing) { $existing.recovery } else { $null }
+  } else { $current }
+  $failed = $null -ne $primary
+  $document = [ordered]@{
+    schemaVersion = 2
+    candidateSourceHead = Get-EvidenceSourceHead
+    phase = "virtualDisplaySetup"
+    success = -not $failed
+    resultCode = if ($failed) { [string]$primary.code } else {
+      [string]$Result.code
+    }
+    failedField = if ($failed) { "virtualDisplay" } else { $null }
+    components = [ordered]@{
+      virtualDisplay = if ($failed) { "failed" } else { "verified" }
+    }
+    virtualDisplaySetup = [ordered]@{
+      primary = $primary
+      recovery = $recovery
+    }
+    persistence = [ordered]@{
+      state = "lastResort"
+      standardWriter = "failed"
+    }
+    timestampUtc = [DateTime]::UtcNow.ToString(
+      "yyyy-MM-ddTHH:mm:ss.fffZ",
+      [Globalization.CultureInfo]::InvariantCulture)
+  }
+  Write-InstallerEvidenceDocument $document
 }
 
 function Read-Manifest {
@@ -4139,6 +4328,11 @@ try {
         "provision"
       } else { "uninstall" }
       $setupResult = Invoke-VirtualDisplaySetup $manifest $setupOperation
+      try { $null = Write-VirtualDisplaySetupEvidence $setupResult }
+      catch {
+        try { $null = Write-VirtualDisplaySetupLastResortEvidence $setupResult }
+        catch { throw "installerEvidenceUnavailable" }
+      }
       $success = [string]$setupResult.state -ceq "completed" -and
         [string]$setupResult.code -in @(
           "installed", "alreadyInstalled", "uninstalled", "alreadyAbsent",
@@ -4149,17 +4343,19 @@ try {
         code = [string]$setupResult.code
         state = [string]$setupResult.state
         success = $success
-      } | ConvertTo-Json -Compress
+      }
+      $summary = $summary | ConvertTo-Json -Compress
       [Console]::Out.WriteLine($summary)
       if ($success) { exit 0 }
       exit 20
     } catch {
-      [Console]::Out.WriteLine((ConvertTo-Json ([ordered]@{
+      $failure = [ordered]@{
         schemaVersion = 1
         code = "virtualDisplaySetupUnavailable"
         state = "failed"
         success = $false
-      }) -Compress))
+      }
+      [Console]::Out.WriteLine((ConvertTo-Json $failure -Compress))
       exit 20
     }
   }
