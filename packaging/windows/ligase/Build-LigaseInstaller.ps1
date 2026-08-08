@@ -177,7 +177,7 @@ $desktop = Join-Path $work "desktop"
 $watcher = Join-Path $work "watcher"
 $launcher = Join-Path $work "launcher"
 $transactionHelper = Join-Path $work "transaction-helper"
-$virtualDisplayInventoryHelper = Join-Path $work "virtual-display-inventory-helper"
+$virtualDisplaySetupHelper = Join-Path $work "virtual-display-setup-helper"
 $dotnetArtifacts = Join-Path $work "dotnet-artifacts"
 $stage = Join-Path $work "stage"
 $label = if ($ReleaseKind -eq "UnsignedDev") { "UNSIGNED-DEV" } else { "release" }
@@ -231,11 +231,11 @@ if (-not $SkipBuild) {
     -c $Configuration -p:Platform=$Platform -r win-x64 --self-contained true `
     -p:PublishSingleFile=true -p:UseSharedCompilation=false -o $transactionHelper
   if ($LASTEXITCODE -ne 0) { throw "transactionHelperPublishFailed" }
-  & $DotNet publish (Join-Path $sourceRoot "tools/Ligase.VirtualDisplay.InventoryHelper/Ligase.VirtualDisplay.InventoryHelper.csproj") `
+  & $DotNet publish (Join-Path $sourceRoot "tools/Ligase.VirtualDisplay.Setup/Ligase.VirtualDisplay.Setup.csproj") `
     -c $Configuration -p:Platform=$Platform -r win-x64 --self-contained true `
     -p:PublishSingleFile=true -p:UseSharedCompilation=false `
-    -o $virtualDisplayInventoryHelper
-  if ($LASTEXITCODE -ne 0) { throw "virtualDisplayInventoryHelperPublishFailed" }
+    -o $virtualDisplaySetupHelper
+  if ($LASTEXITCODE -ne 0) { throw "virtualDisplaySetupHelperPublishFailed" }
 }
 
 $coreBinary = Join-Path $cppRoot "sunshine.exe"
@@ -243,15 +243,15 @@ $desktopBinary = Join-Path $desktop "Ligase.Host.Desktop.exe"
 $watcherBinary = Join-Path $watcher "Ligase.GameWatcher.exe"
 $launcherBinary = Join-Path $launcher "Ligase Host.exe"
 $transactionHelperBinary = Join-Path $transactionHelper "Ligase.Installation.TransactionHelper.exe"
-$virtualDisplayInventoryHelperBinary = Join-Path $virtualDisplayInventoryHelper (
-  "Ligase.VirtualDisplay.InventoryHelper.exe")
+$virtualDisplaySetupHelperBinary = Join-Path $virtualDisplaySetupHelper (
+  "Ligase.VirtualDisplay.Setup.exe")
 foreach ($entry in @(
   @{ code = "launcherArtifactMissing"; path = $launcherBinary },
   @{ code = "desktopArtifactMissing"; path = $desktopBinary },
   @{ code = "managedCoreArtifactMissing"; path = $coreBinary },
   @{ code = "gameWatcherArtifactMissing"; path = $watcherBinary },
   @{ code = "transactionHelperArtifactMissing"; path = $transactionHelperBinary },
-  @{ code = "virtualDisplayInventoryHelperArtifactMissing"; path = $virtualDisplayInventoryHelperBinary }
+  @{ code = "virtualDisplaySetupHelperArtifactMissing"; path = $virtualDisplaySetupHelperBinary }
 )) {
   if (-not (Test-Path -LiteralPath $entry.path -PathType Leaf)) {
     throw $entry.code
@@ -291,6 +291,21 @@ Copy-Item -LiteralPath $nefconPath -Destination (
   Join-Path $temporaryStage "Deployment/Drivers/sudovda/nefconc.exe")
 Copy-Item -LiteralPath $sudoVdaPath -Destination (
   Join-Path $temporaryStage "Deployment/Drivers/sudovda/SudoVDA.dll")
+$virtualDisplayPackageStream = [IO.MemoryStream]::new()
+try {
+  foreach ($name in @(
+      "SudoVDA.dll", "SudoVDA.inf", "sudovda.cat", "sudovda.cer") |
+      Sort-Object -CaseSensitive) {
+    $bytes = [IO.File]::ReadAllBytes((Join-Path $temporaryStage (
+      "Deployment/Drivers/sudovda/$name")))
+    $virtualDisplayPackageStream.Write($bytes, 0, $bytes.Length)
+  }
+  $virtualDisplayPackageSha256 = [Convert]::ToHexString(
+    [Security.Cryptography.SHA256]::HashData(
+      $virtualDisplayPackageStream.ToArray())).ToLowerInvariant()
+} finally {
+  $virtualDisplayPackageStream.Dispose()
+}
 Copy-Item -LiteralPath (Join-Path $sourceRoot "src_assets/windows/misc/firewall") `
   -Destination (Join-Path $temporaryStage "Deployment/Firewall") -Recurse
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "Manage-LigaseInstallation.ps1") `
@@ -301,8 +316,20 @@ Copy-Item -LiteralPath (Join-Path $PSScriptRoot "Invoke-LigaseInstaller.ps1") `
   -Destination (Join-Path $temporaryStage "Deployment")
 Copy-Item -LiteralPath $transactionHelperBinary `
   -Destination (Join-Path $temporaryStage "Deployment")
-Copy-Item -LiteralPath $virtualDisplayInventoryHelperBinary `
+Copy-Item -LiteralPath $virtualDisplaySetupHelperBinary `
   -Destination (Join-Path $temporaryStage "Deployment")
+Copy-Item -LiteralPath (Join-Path $sourceRoot (
+    "docs/ligase-host/virtual-display-setup-request-v1.schema.json")) `
+  -Destination (Join-Path $temporaryStage "Deployment")
+Copy-Item -LiteralPath (Join-Path $sourceRoot (
+    "docs/ligase-host/virtual-display-setup-result-v1.schema.json")) `
+  -Destination (Join-Path $temporaryStage "Deployment")
+$virtualDisplayRequestSchemaSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath (
+  Join-Path $temporaryStage "Deployment/virtual-display-setup-request-v1.schema.json"
+)).Hash.ToLowerInvariant()
+$virtualDisplayResultSchemaSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath (
+  Join-Path $temporaryStage "Deployment/virtual-display-setup-result-v1.schema.json"
+)).Hash.ToLowerInvariant()
 
 $artifactDefinitions = @(
   @{ role = "launcher"; relativePath = "Ligase Host.exe" },
@@ -344,7 +371,9 @@ $helperDefinitions = @(
   "Deployment/Resolve-LigaseInstallDirectory.ps1",
   "Deployment/Invoke-LigaseInstaller.ps1",
   "Deployment/Ligase.Installation.TransactionHelper.exe",
-  "Deployment/Ligase.VirtualDisplay.InventoryHelper.exe",
+  "Deployment/Ligase.VirtualDisplay.Setup.exe",
+  "Deployment/virtual-display-setup-request-v1.schema.json",
+  "Deployment/virtual-display-setup-result-v1.schema.json",
   "Deployment/Firewall/Manage-LigaseFirewall.ps1"
 )
 $privilegedHelpers = $helperDefinitions | ForEach-Object {
@@ -401,8 +430,12 @@ $manifest = [ordered]@{
   privilegedHelpers = $privilegedHelpers
   virtualDisplay = [ordered]@{
     required = $false
-    installer = "Deployment/Drivers/sudovda/install.bat"
-    uninstaller = "Deployment/Drivers/sudovda/uninstall.bat"
+    setupHelper = "Deployment/Ligase.VirtualDisplay.Setup.exe"
+    requestSchema = "Deployment/virtual-display-setup-request-v1.schema.json"
+    requestSchemaSha256 = $virtualDisplayRequestSchemaSha256
+    resultSchema = "Deployment/virtual-display-setup-result-v1.schema.json"
+    resultSchemaSha256 = $virtualDisplayResultSchemaSha256
+    packageSha256 = $virtualDisplayPackageSha256
     installerTool = "Deployment/Drivers/sudovda/nefconc.exe"
     installerToolSha256 = $nefconHash.ToLowerInvariant()
     installerToolSignerThumbprint =

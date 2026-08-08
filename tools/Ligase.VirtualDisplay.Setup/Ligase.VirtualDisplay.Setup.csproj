@@ -10,6 +10,12 @@
     <InvariantGlobalization>true</InvariantGlobalization>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <AssemblyName>Ligase.VirtualDisplay.InventoryHelper</AssemblyName>
+    <AssemblyName>Ligase.VirtualDisplay.Setup</AssemblyName>
   </PropertyGroup>
+  <PropertyGroup Condition="'$(VirtualDisplaySetupValidation)' == 'true'">
+    <DefineConstants>$(DefineConstants);SETUP_VALIDATION</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Remove="obj\**\*.cs" />
+  </ItemGroup>
 </Project>

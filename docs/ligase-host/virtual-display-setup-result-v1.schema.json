@@ -1,0 +1,1407 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ligase.local/schemas/virtual-display-setup-result-v1.schema.json",
+  "title": "Ligase Virtual Display Setup Result v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion", "operation", "operationIdsSha256", "sourceHead", "helperSha256",
+    "packageSha256", "state", "code", "stage", "firstFailureFrozen", "writtenUtc", "migration", "ownershipAcquisition", "certificateStores", "inventory",
+    "removal", "zeroProof", "trust", "package", "create", "marker",
+    "compensation", "execution"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "operation": { "enum": ["provision", "uninstall"] },
+    "operationIdsSha256": {
+      "type": "array", "minItems": 1, "maxItems": 2, "uniqueItems": true,
+      "items": { "$ref": "#/$defs/sha256" }
+    },
+    "sourceHead": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "helperSha256": { "$ref": "#/$defs/sha256" },
+    "packageSha256": { "$ref": "#/$defs/sha256" },
+    "state": { "enum": ["completed", "failed"] },
+    "code": {
+      "enum": [
+        "installed", "alreadyInstalled", "uninstalled", "alreadyAbsent",
+        "uninstalledLegacyPackageRetained", "uninstalledSharedPackageRetained",
+        "ownershipReadFailed",
+        "requestRejected",
+        "inventoryUnavailable", "removeNativeFailed",
+        "removeRebootRequired", "removeReadbackFailed", "removeNoProgress",
+        "zeroProofFailed", "trustFailed", "packageFailed", "createFailed",
+        "finalReadbackFailed", "markerCommitFailed",
+        "markerCleanupFailed", "packageCleanupFailed", "trustCleanupFailed"
+      ]
+    },
+    "stage": {
+      "enum": [
+        "validateRequest", "inventoryBefore", "readOwnership", "remove",
+        "inventoryAfterRemove", "stableZero", "trustPackage", "create",
+        "readbackAfterCreate", "commitMarker", "cleanupOwnership", "completed"
+      ]
+    },
+    "firstFailureFrozen": { "type": "boolean" },
+    "writtenUtc": { "type": "string", "format": "date-time" },
+    "migration": { "$ref": "#/$defs/migration" },
+    "ownershipAcquisition": { "$ref": "#/$defs/ownershipAcquisition" },
+    "certificateStores": { "$ref": "#/$defs/certificateStoreAuthority" },
+    "ownershipReadFailure": { "$ref": "#/$defs/ownershipReadFailure" },
+    "inventory": { "$ref": "#/$defs/inventory" },
+    "removal": { "$ref": "#/$defs/removal" },
+    "zeroProof": { "$ref": "#/$defs/zeroProof" },
+    "trust": { "oneOf": [{ "$ref": "#/$defs/component" }, { "$ref": "#/$defs/uninstallComponent" }] },
+    "package": { "oneOf": [{ "$ref": "#/$defs/component" }, { "$ref": "#/$defs/uninstallComponent" }] },
+    "create": { "$ref": "#/$defs/component" },
+    "marker": { "oneOf": [{ "$ref": "#/$defs/component" }, { "$ref": "#/$defs/uninstallComponent" }] },
+    "compensation": { "$ref": "#/$defs/compensation" },
+    "execution": { "$ref": "#/$defs/execution" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "operation": { "const": "provision" } } },
+      "then": { "properties": { "code": { "enum": [
+        "installed", "alreadyInstalled", "ownershipReadFailed", "requestRejected",
+        "inventoryUnavailable", "removeNativeFailed", "removeRebootRequired",
+        "removeReadbackFailed", "removeNoProgress", "zeroProofFailed",
+        "trustFailed", "packageFailed", "createFailed",
+        "finalReadbackFailed", "markerCommitFailed"
+      ] } } }
+    },
+    {
+      "if": { "properties": { "operation": { "const": "uninstall" } } },
+      "then": { "properties": { "code": { "enum": [
+        "uninstalled", "alreadyAbsent", "uninstalledLegacyPackageRetained", "uninstalledSharedPackageRetained", "ownershipReadFailed", "requestRejected",
+        "inventoryUnavailable", "removeNativeFailed", "removeRebootRequired",
+        "removeReadbackFailed", "removeNoProgress", "zeroProofFailed",
+        "markerCleanupFailed", "packageCleanupFailed", "trustCleanupFailed"
+      ] } } }
+    },
+    {
+      "if": { "properties": { "migration": { "properties": { "packageOwnership": { "const": "addedByLigase" } } } } },
+      "then": { "properties": { "ownershipAcquisition": { "$ref": "#/$defs/ownershipAcquisitionProven" } } },
+      "else": { "properties": { "ownershipAcquisition": { "$ref": "#/$defs/ownershipAcquisitionNone" }, "operationIdsSha256": { "maxItems": 1 } } }
+    },
+    {
+      "if": { "properties": { "migration": { "properties": { "certificateOwnership": { "const": "owned" } } } } },
+      "then": { "properties": { "certificateStores": { "$ref": "#/$defs/certificateStoresOwned" } } },
+      "else": {
+        "if": { "properties": { "migration": { "properties": { "certificateOwnership": { "const": "notOwned" } } } } },
+        "then": { "properties": { "certificateStores": { "oneOf": [{ "$ref": "#/$defs/certificateStoresNotAttempted" }, { "$ref": "#/$defs/certificateStoresNotOwned" }] } } },
+        "else": { "properties": { "certificateStores": { "$ref": "#/$defs/certificateStoresUnavailable" } } }
+      }
+    },
+    {
+      "if": { "properties": {
+        "migration": { "properties": { "source": { "const": "none" } } },
+        "certificateStores": { "properties": { "state": { "const": "verified" } } }
+      } },
+      "then": { "properties": { "certificateStores": { "$ref": "#/$defs/certificateStoresCurrent" } } }
+    },
+    {
+      "if": { "properties": {
+        "migration": { "properties": { "source": { "const": "v1" } } },
+        "certificateStores": { "properties": { "state": { "const": "verified" } } }
+      } },
+      "then": { "properties": { "certificateStores": { "$ref": "#/$defs/certificateStoresV1" } } }
+    },
+    {
+      "if": { "properties": {
+        "migration": { "properties": { "source": { "const": "v2" } } },
+        "certificateStores": { "properties": { "state": { "const": "verified" } } }
+      } },
+      "then": { "properties": { "certificateStores": { "$ref": "#/$defs/certificateStoresHistorical" } } }
+    },
+    {
+      "if": { "properties": { "migration": { "properties": { "source": { "const": "none" } } }, "trust": { "properties": { "state": { "const": "completed" }, "code": { "const": "added" } } } } },
+      "then": { "properties": { "certificateStores": { "$ref": "#/$defs/certificateStoresCurrentWithAdded" } } }
+    },
+    {
+      "if": { "properties": { "operation": { "const": "provision" }, "trust": { "properties": { "state": { "const": "verified" }, "code": { "const": "alreadyOwned" } } }, "migration": { "properties": { "source": { "const": "none" } } } } },
+      "then": { "properties": { "certificateStores": { "$ref": "#/$defs/certificateStoresNotOwned" } } }
+    },
+    {
+      "if": { "properties": { "operation": { "const": "provision" }, "certificateStores": { "properties": { "state": { "const": "verified" } } } } },
+      "then": { "properties": { "certificateStores": { "$ref": "#/$defs/certificateStoresCleanupNotAttempted" } } }
+    },
+    {
+      "if": { "properties": { "operation": { "const": "uninstall" }, "trust": { "properties": { "code": { "enum": ["removed", "absentOwned", "absentNotOwned", "retainedNotOwned"] } } } } },
+      "then": { "properties": { "certificateStores": { "$ref": "#/$defs/certificateStoresCleanupCompleted" } } }
+    },
+    {
+      "if": { "properties": { "operation": { "const": "uninstall" }, "trust": { "properties": { "state": { "const": "failed" } } } } },
+      "then": { "properties": { "certificateStores": { "$ref": "#/$defs/certificateStoresCleanupFailed" } } }
+    },
+    {
+      "if": { "properties": { "operation": { "const": "uninstall" }, "trust": { "properties": { "code": { "enum": ["owned", "none"] } } }, "certificateStores": { "properties": { "state": { "const": "verified" } } } } },
+      "then": { "properties": { "certificateStores": { "$ref": "#/$defs/certificateStoresCleanupNotAttempted" } } }
+    },
+    {
+      "if": {
+        "properties": {
+          "operation": { "const": "provision" },
+          "package": { "properties": { "state": { "const": "completed" }, "code": { "const": "installed" } } }
+        }
+      },
+      "then": {
+        "properties": {
+          "migration": { "properties": { "packageOwnership": { "const": "addedByLigase" } } },
+          "ownershipAcquisition": { "$ref": "#/$defs/ownershipAcquisitionCurrent" },
+          "operationIdsSha256": { "maxItems": 1 }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "operation": { "const": "uninstall" },
+          "migration": { "properties": { "packageOwnership": { "const": "addedByLigase" } } }
+        }
+      },
+      "then": { "properties": { "ownershipAcquisition": { "$ref": "#/$defs/ownershipAcquisitionHistorical" }, "operationIdsSha256": { "minItems": 2 } } }
+    },
+    {
+      "if": {
+        "properties": {
+          "code": { "const": "alreadyInstalled" },
+          "migration": { "properties": { "packageOwnership": { "const": "addedByLigase" } } }
+        }
+      },
+      "then": { "properties": { "ownershipAcquisition": { "$ref": "#/$defs/ownershipAcquisitionHistorical" }, "operationIdsSha256": { "minItems": 2 } } }
+    },
+    {
+      "if": { "properties": { "ownershipAcquisition": { "properties": { "source": { "const": "currentOperation" } } } } },
+      "then": { "properties": {
+        "operation": { "const": "provision" },
+        "package": { "$ref": "#/$defs/packageInstalled" },
+        "migration": { "properties": {
+          "state": { "enum": ["v2Pending", "v2Committed", "v2CommitFailed", "v1UpgradePending", "v1Upgraded", "v1UpgradeFailed"] },
+          "source": { "enum": ["none", "v1"] },
+          "packageOwnership": { "const": "addedByLigase" }
+        } },
+        "operationIdsSha256": { "maxItems": 1 }
+      } }
+    },
+    {
+      "if": { "properties": { "migration": { "properties": { "state": { "const": "v2Pending" } } } } },
+      "then": {
+        "properties": {
+          "operation": { "const": "provision" },
+          "ownershipAcquisition": { "$ref": "#/$defs/ownershipAcquisitionCurrent" },
+          "package": { "$ref": "#/$defs/packageInstalled" }
+        },
+        "not": { "properties": { "marker": { "$ref": "#/$defs/markerCommitted" } } }
+      }
+    },
+    {
+      "if": { "properties": { "migration": { "properties": { "state": { "const": "v2Committed" } } } } },
+      "then": { "properties": {
+        "operation": { "const": "provision" },
+        "ownershipAcquisition": { "$ref": "#/$defs/ownershipAcquisitionCurrent" },
+        "package": { "$ref": "#/$defs/packageInstalled" },
+        "marker": { "$ref": "#/$defs/markerCommitted" }
+      } }
+    },
+    {
+      "if": { "properties": { "migration": { "properties": { "state": { "const": "v2RetainedCommitted" } } } } },
+      "then": { "properties": {
+        "operation": { "const": "provision" },
+        "ownershipAcquisition": { "$ref": "#/$defs/ownershipAcquisitionNone" },
+        "operationIdsSha256": { "maxItems": 1 },
+        "package": { "$ref": "#/$defs/packageAlreadyOwned" },
+        "marker": { "$ref": "#/$defs/markerCommitted" }
+      } }
+    },
+    {
+      "if": { "properties": { "migration": { "properties": { "state": { "const": "v1Upgraded" }, "packageOwnership": { "const": "addedByLigase" } } } } },
+      "then": { "properties": {
+        "operation": { "const": "provision" },
+        "ownershipAcquisition": { "$ref": "#/$defs/ownershipAcquisitionCurrent" },
+        "package": { "$ref": "#/$defs/packageInstalled" },
+        "marker": { "$ref": "#/$defs/markerCommitted" }
+      } }
+    },
+    {
+      "if": { "properties": { "migration": { "properties": { "state": { "enum": ["v1UpgradePending", "v2Pending"] } } } } },
+      "then": {
+        "properties": {
+          "operation": { "const": "provision" },
+          "ownershipAcquisition": { "$ref": "#/$defs/ownershipAcquisitionCurrent" },
+          "package": { "$ref": "#/$defs/packageInstalled" }
+        },
+        "not": { "properties": { "marker": { "$ref": "#/$defs/markerCommitted" } } }
+      }
+    },
+    {
+      "if": { "properties": { "migration": { "properties": { "state": { "enum": ["v1UpgradeFailed", "v2CommitFailed"] } } } } },
+      "then": { "properties": {
+        "operation": { "const": "provision" },
+        "code": { "const": "markerCommitFailed" },
+        "stage": { "const": "commitMarker" },
+        "ownershipAcquisition": { "$ref": "#/$defs/ownershipAcquisitionCurrent" },
+        "package": { "$ref": "#/$defs/packageInstalled" },
+        "marker": { "$ref": "#/$defs/markerFailed" }
+      } }
+    },
+    {
+      "if": { "properties": { "migration": { "properties": { "state": { "enum": ["v1RetainedUpgradeFailed", "v2RetainedCommitFailed"] } } } } },
+      "then": { "properties": {
+        "operation": { "const": "provision" },
+        "code": { "const": "markerCommitFailed" },
+        "stage": { "const": "commitMarker" },
+        "ownershipAcquisition": { "$ref": "#/$defs/ownershipAcquisitionNone" },
+        "operationIdsSha256": { "maxItems": 1 },
+        "package": { "$ref": "#/$defs/packageAlreadyOwned" },
+        "marker": { "$ref": "#/$defs/markerFailed" }
+      } }
+    },
+    {
+      "if": { "properties": { "code": { "const": "markerCommitFailed" } } },
+      "then": { "oneOf": [
+        { "properties": { "migration": { "properties": { "state": { "const": "v2CommitFailed" }, "source": { "const": "none" }, "packageOwnership": { "const": "addedByLigase" } } }, "ownershipAcquisition": { "$ref": "#/$defs/ownershipAcquisitionCurrent" }, "package": { "$ref": "#/$defs/packageInstalled" } } },
+        { "properties": { "migration": { "properties": { "state": { "const": "v1UpgradeFailed" }, "source": { "const": "v1" }, "packageOwnership": { "const": "addedByLigase" } } }, "ownershipAcquisition": { "$ref": "#/$defs/ownershipAcquisitionCurrent" }, "package": { "$ref": "#/$defs/packageInstalled" } } },
+        { "properties": { "migration": { "properties": { "state": { "const": "v2RetainedCommitFailed" }, "source": { "const": "none" }, "packageOwnership": { "enum": ["notOwned", "legacyUnknown"] } } }, "ownershipAcquisition": { "$ref": "#/$defs/ownershipAcquisitionNone" }, "package": { "$ref": "#/$defs/packageAlreadyOwned" } } },
+        { "properties": { "migration": { "properties": { "state": { "const": "v1RetainedUpgradeFailed" }, "source": { "const": "v1" }, "packageOwnership": { "enum": ["notOwned", "legacyUnknown"] } } }, "ownershipAcquisition": { "$ref": "#/$defs/ownershipAcquisitionNone" }, "package": { "$ref": "#/$defs/packageAlreadyOwned" } } }
+      ] }
+    },
+    {
+      "if": { "properties": { "ownershipAcquisition": { "properties": { "source": { "const": "historicalOperation" } } } } },
+      "then": { "oneOf": [
+        { "properties": {
+          "operation": { "const": "provision" },
+          "package": { "$ref": "#/$defs/packageAlreadyOwned" },
+          "operationIdsSha256": { "minItems": 2 }
+        } },
+        { "properties": {
+          "operation": { "const": "uninstall" },
+          "migration": { "properties": { "state": { "const": "v2Read" }, "source": { "const": "v2" }, "packageOwnership": { "const": "addedByLigase" } } },
+          "operationIdsSha256": { "minItems": 2 }
+        } }
+      ] }
+    },
+    {
+      "if": { "properties": { "code": { "enum": [
+        "requestRejected", "inventoryUnavailable", "removeNativeFailed",
+        "removeRebootRequired", "removeReadbackFailed", "removeNoProgress",
+        "zeroProofFailed", "trustFailed", "packageFailed"
+      ] } } },
+      "then": { "properties": {
+        "ownershipAcquisition": { "$ref": "#/$defs/ownershipAcquisitionNone" },
+        "operationIdsSha256": { "maxItems": 1 },
+        "migration": { "properties": { "packageOwnership": { "enum": ["notOwned", "legacyUnknown"] } } }
+      } }
+    },
+    {
+      "if": { "properties": { "code": { "const": "ownershipReadFailed" } } },
+      "then": { "required": ["ownershipReadFailure"] },
+      "else": { "not": { "required": ["ownershipReadFailure"] } }
+    }
+  ],
+  "oneOf": [
+    {
+      "properties": {
+        "state": { "const": "completed" },
+        "operation": { "const": "provision" },
+        "code": { "const": "installed" },
+        "stage": { "const": "completed" },
+        "firstFailureFrozen": { "const": false },
+        "inventory": { "$ref": "#/$defs/exactOneBoundInventory" },
+        "removal": { "oneOf": [{ "$ref": "#/$defs/removalNotRequired" }, { "$ref": "#/$defs/removalCompleted" }] },
+        "zeroProof": { "$ref": "#/$defs/zeroProofCompleted" },
+        "trust": { "$ref": "#/$defs/trustInstalled" },
+        "package": { "$ref": "#/$defs/packageReady" },
+        "create": { "$ref": "#/$defs/createCompleted" },
+        "marker": { "$ref": "#/$defs/markerCommitted" },
+        "compensation": { "$ref": "#/$defs/compensationNotRequired" },
+        "execution": { "$ref": "#/$defs/executionVerified" }
+      }
+    },
+    {
+      "properties": {
+        "state": { "const": "completed" },
+        "operation": { "const": "provision" },
+        "code": { "const": "alreadyInstalled" },
+        "stage": { "const": "completed" },
+        "firstFailureFrozen": { "const": false },
+        "inventory": { "$ref": "#/$defs/exactOneBoundInventory" },
+        "removal": { "$ref": "#/$defs/removalNotRequired" },
+        "zeroProof": { "$ref": "#/$defs/zeroProofNotAttempted" },
+        "trust": { "$ref": "#/$defs/trustAlreadyOwned" },
+        "package": { "$ref": "#/$defs/packageAlreadyOwned" },
+        "create": { "$ref": "#/$defs/componentNotRequired" },
+        "marker": { "$ref": "#/$defs/markerAlreadyOwned" },
+        "compensation": { "$ref": "#/$defs/compensationNotRequired" },
+        "execution": { "$ref": "#/$defs/executionVerified" }
+      }
+    },
+    {
+      "$ref": "#/$defs/requestRejectedResult"
+    },
+    {
+      "$ref": "#/$defs/inventoryUnavailableResult"
+    },
+    {
+      "$ref": "#/$defs/removeNativeFailedResult"
+    },
+    {
+      "$ref": "#/$defs/removeRebootRequiredResult"
+    },
+    {
+      "$ref": "#/$defs/removeReadbackFailedResult"
+    },
+    {
+      "$ref": "#/$defs/removeNoProgressResult"
+    },
+    {
+      "$ref": "#/$defs/zeroProofFailedResult"
+    },
+    {
+      "$ref": "#/$defs/trustFailedResult"
+    },
+    {
+      "$ref": "#/$defs/packageFailedResult"
+    },
+    {
+      "$ref": "#/$defs/createFailedResult"
+    },
+    {
+      "$ref": "#/$defs/finalReadbackFailedResult"
+    },
+    {
+      "$ref": "#/$defs/markerCommitFailedResult"
+    },
+    {
+      "$ref": "#/$defs/uninstalledResult"
+    },
+    {
+      "$ref": "#/$defs/alreadyAbsentResult"
+    },
+    {
+      "$ref": "#/$defs/uninstalledLegacyPackageRetainedResult"
+    },
+    {
+      "$ref": "#/$defs/uninstalledSharedPackageRetainedResult"
+    },
+    {
+      "$ref": "#/$defs/ownershipReadFailedResult"
+    },
+    {
+      "$ref": "#/$defs/provisionOwnershipReadFailedResult"
+    },
+    {
+      "$ref": "#/$defs/markerCleanupFailedResult"
+    },
+    {
+      "$ref": "#/$defs/packageCleanupFailedResult"
+    },
+    {
+      "$ref": "#/$defs/trustCleanupFailedResult"
+    }
+  ],
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "certificateStoreEntry": {
+      "type": "object", "additionalProperties": false,
+      "required": ["store", "ownership", "authoritySource", "preState", "mutation", "readback", "cleanupState"],
+      "properties": {
+        "store": { "enum": ["LocalMachine\\Root", "LocalMachine\\TrustedPublisher"] },
+        "ownership": { "enum": ["addedByLigase", "notOwned", "legacyOwned"] },
+        "authoritySource": { "enum": ["currentOperation", "currentObservation", "historicalMarker"] },
+        "preState": { "enum": ["absent", "present", "historicalMarker"] },
+        "mutation": { "enum": ["addedByThisOperation", "none"] },
+        "readback": { "enum": ["present", "markerExact"] },
+        "cleanupState": { "enum": ["notAttempted", "removed", "absentOwned", "retained", "failed"] }
+      },
+      "oneOf": [
+        { "properties": { "ownership": { "const": "addedByLigase" }, "authoritySource": { "const": "currentOperation" }, "preState": { "const": "absent" }, "mutation": { "const": "addedByThisOperation" }, "readback": { "const": "present" } } },
+        { "properties": { "ownership": { "const": "addedByLigase" }, "authoritySource": { "const": "historicalMarker" }, "preState": { "const": "historicalMarker" }, "mutation": { "const": "none" }, "readback": { "const": "markerExact" } } },
+        { "properties": { "ownership": { "const": "notOwned" }, "authoritySource": { "const": "currentObservation" }, "preState": { "const": "present" }, "mutation": { "const": "none" }, "readback": { "const": "present" } } },
+        { "properties": { "ownership": { "const": "notOwned" }, "authoritySource": { "const": "historicalMarker" }, "preState": { "const": "historicalMarker" }, "mutation": { "const": "none" }, "readback": { "const": "markerExact" } } },
+        { "properties": { "ownership": { "const": "legacyOwned" }, "authoritySource": { "const": "historicalMarker" }, "preState": { "const": "historicalMarker" }, "mutation": { "const": "none" }, "readback": { "const": "markerExact" } } }
+      ],
+      "allOf": [
+        { "if": { "properties": { "ownership": { "const": "notOwned" } } }, "then": { "properties": { "cleanupState": { "enum": ["notAttempted", "retained"] } } } },
+        { "if": { "properties": { "ownership": { "enum": ["addedByLigase", "legacyOwned"] } } }, "then": { "properties": { "cleanupState": { "enum": ["notAttempted", "removed", "absentOwned", "failed"] } } } }
+      ]
+    },
+    "certificateStoresVerified": {
+      "type": "object", "additionalProperties": false,
+      "required": ["state", "entries", "ownedCount", "ownershipSetSha256"],
+      "properties": {
+        "state": { "const": "verified" },
+        "entries": {
+          "type": "array", "minItems": 2, "maxItems": 2,
+          "prefixItems": [
+            { "allOf": [{ "$ref": "#/$defs/certificateStoreEntry" }, { "properties": { "store": { "const": "LocalMachine\\Root" } } }] },
+            { "allOf": [{ "$ref": "#/$defs/certificateStoreEntry" }, { "properties": { "store": { "const": "LocalMachine\\TrustedPublisher" } } }] }
+          ],
+          "items": false
+        },
+        "ownedCount": { "type": "integer", "minimum": 0, "maximum": 2 },
+        "ownershipSetSha256": { "$ref": "#/$defs/sha256" }
+      },
+      "oneOf": [
+        { "properties": { "entries": { "prefixItems": [{ "properties": { "ownership": { "const": "addedByLigase" } } }, { "properties": { "ownership": { "const": "addedByLigase" } } }] }, "ownedCount": { "const": 2 }, "ownershipSetSha256": { "const": "8be5778520c95d2f5ebd20ff6bc54f76b2ade2178fd26b2cfcb9c21b18c57ea0" } } },
+        { "properties": { "entries": { "prefixItems": [{ "properties": { "ownership": { "const": "addedByLigase" } } }, { "properties": { "ownership": { "const": "notOwned" } } }] }, "ownedCount": { "const": 1 }, "ownershipSetSha256": { "const": "97f266505608d0ce1c392e675f3a10a758090c3e14b0aaf28b27a57b70252b70" } } },
+        { "properties": { "entries": { "prefixItems": [{ "properties": { "ownership": { "const": "addedByLigase" } } }, { "properties": { "ownership": { "const": "legacyOwned" } } }] }, "ownedCount": { "const": 2 }, "ownershipSetSha256": { "const": "1870df34b6a5ce2fd8c441c4a96990f6d4d74e1d04459fe9ab124d982de7a1e5" } } },
+        { "properties": { "entries": { "prefixItems": [{ "properties": { "ownership": { "const": "notOwned" } } }, { "properties": { "ownership": { "const": "addedByLigase" } } }] }, "ownedCount": { "const": 1 }, "ownershipSetSha256": { "const": "5130122c4d1d15d17785ca0e8e2ae6278c0c402a3290d1623346ac8cc2c35a03" } } },
+        { "properties": { "entries": { "prefixItems": [{ "properties": { "ownership": { "const": "notOwned" } } }, { "properties": { "ownership": { "const": "notOwned" } } }] }, "ownedCount": { "const": 0 }, "ownershipSetSha256": { "const": "689455d737a8a106f8aec0d4d099d573dfe48d5e9d28714c796fabd222d30d1f" } } },
+        { "properties": { "entries": { "prefixItems": [{ "properties": { "ownership": { "const": "notOwned" } } }, { "properties": { "ownership": { "const": "legacyOwned" } } }] }, "ownedCount": { "const": 1 }, "ownershipSetSha256": { "const": "06568eddac20032fbe52856184076a35bbcce9ee9072063ce6428de7edb97b3c" } } },
+        { "properties": { "entries": { "prefixItems": [{ "properties": { "ownership": { "const": "legacyOwned" } } }, { "properties": { "ownership": { "const": "addedByLigase" } } }] }, "ownedCount": { "const": 2 }, "ownershipSetSha256": { "const": "8823972cf9c2465d76f9d5231717be4d383b93e1a32392be252481035dd889af" } } },
+        { "properties": { "entries": { "prefixItems": [{ "properties": { "ownership": { "const": "legacyOwned" } } }, { "properties": { "ownership": { "const": "notOwned" } } }] }, "ownedCount": { "const": 1 }, "ownershipSetSha256": { "const": "c870751255f5a30f8b8959a3ad81949a430d29c688f26d9a86362557a1ddb72e" } } },
+        { "properties": { "entries": { "prefixItems": [{ "properties": { "ownership": { "const": "legacyOwned" } } }, { "properties": { "ownership": { "const": "legacyOwned" } } }] }, "ownedCount": { "const": 2 }, "ownershipSetSha256": { "const": "ff95f9b6c83abf1aea2a8a28457e34673d79c37ec3fa112fa898d4c9196b90c7" } } }
+      ]
+    },
+    "certificateStoresNotAttempted": {
+      "type": "object", "additionalProperties": false,
+      "required": ["state", "entries", "ownedCount", "ownershipSetSha256"],
+      "properties": { "state": { "const": "notAttempted" }, "entries": { "type": "array", "maxItems": 0 }, "ownedCount": { "const": 0 }, "ownershipSetSha256": { "const": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" } }
+    },
+    "certificateStoresUnavailable": {
+      "type": "object", "additionalProperties": false,
+      "required": ["state", "entries", "ownedCount", "ownershipSetSha256"],
+      "properties": { "state": { "const": "unavailable" }, "entries": { "type": "array", "maxItems": 0 }, "ownedCount": { "const": -1 }, "ownershipSetSha256": { "const": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" } }
+    },
+    "certificateStoreAuthority": { "oneOf": [{ "$ref": "#/$defs/certificateStoresVerified" }, { "$ref": "#/$defs/certificateStoresNotAttempted" }, { "$ref": "#/$defs/certificateStoresUnavailable" }] },
+    "certificateStoresOwned": { "allOf": [{ "$ref": "#/$defs/certificateStoresVerified" }, { "properties": { "ownedCount": { "minimum": 1 } } }] },
+    "certificateStoresNotOwned": { "allOf": [{ "$ref": "#/$defs/certificateStoresVerified" }, { "properties": { "ownedCount": { "const": 0 } } }] },
+    "certificateStoresCurrent": { "allOf": [{ "$ref": "#/$defs/certificateStoresVerified" }, { "properties": { "entries": { "prefixItems": [{ "properties": { "authoritySource": { "enum": ["currentOperation", "currentObservation"] } } }, { "properties": { "authoritySource": { "enum": ["currentOperation", "currentObservation"] } } }] } } }] },
+    "certificateStoresHistorical": { "allOf": [{ "$ref": "#/$defs/certificateStoresVerified" }, { "properties": { "entries": { "prefixItems": [{ "properties": { "authoritySource": { "const": "historicalMarker" } } }, { "properties": { "authoritySource": { "const": "historicalMarker" } } }] } } }] },
+    "certificateStoresV1": {
+      "allOf": [{ "$ref": "#/$defs/certificateStoresVerified" }, { "properties": { "entries": { "prefixItems": [
+        { "oneOf": [
+          { "properties": { "ownership": { "const": "legacyOwned" }, "authoritySource": { "const": "historicalMarker" } } },
+          { "properties": { "ownership": { "const": "addedByLigase" }, "authoritySource": { "const": "currentOperation" } } },
+          { "properties": { "ownership": { "const": "notOwned" }, "authoritySource": { "const": "currentObservation" } } }
+        ] },
+        { "oneOf": [
+          { "properties": { "ownership": { "const": "legacyOwned" }, "authoritySource": { "const": "historicalMarker" } } },
+          { "properties": { "ownership": { "const": "addedByLigase" }, "authoritySource": { "const": "currentOperation" } } },
+          { "properties": { "ownership": { "const": "notOwned" }, "authoritySource": { "const": "currentObservation" } } }
+        ] }
+      ] } } }]
+    },
+    "certificateStoresCurrentWithAdded": { "allOf": [{ "$ref": "#/$defs/certificateStoresCurrent" }, { "properties": { "entries": { "contains": { "properties": { "ownership": { "const": "addedByLigase" } }, "required": ["ownership"] } } } }] },
+    "certificateStoresCleanupNotAttempted": { "allOf": [{ "$ref": "#/$defs/certificateStoresVerified" }, { "properties": { "entries": { "prefixItems": [{ "properties": { "cleanupState": { "const": "notAttempted" } } }, { "properties": { "cleanupState": { "const": "notAttempted" } } }] } } }] },
+    "certificateStoresCleanupCompleted": {
+      "allOf": [{ "$ref": "#/$defs/certificateStoresVerified" }, { "properties": { "entries": { "prefixItems": [{ "oneOf": [
+        { "properties": { "ownership": { "enum": ["addedByLigase", "legacyOwned"] }, "cleanupState": { "enum": ["removed", "absentOwned"] } } },
+        { "properties": { "ownership": { "const": "notOwned" }, "cleanupState": { "const": "retained" } } }
+      ] }, { "oneOf": [
+        { "properties": { "ownership": { "enum": ["addedByLigase", "legacyOwned"] }, "cleanupState": { "enum": ["removed", "absentOwned"] } } },
+        { "properties": { "ownership": { "const": "notOwned" }, "cleanupState": { "const": "retained" } } }
+      ] }] } } }]
+    },
+    "certificateStoresCleanupFailed": {
+      "allOf": [{ "$ref": "#/$defs/certificateStoresVerified" }, { "properties": { "entries": { "contains": { "properties": { "cleanupState": { "const": "failed" } }, "required": ["cleanupState"] } } } }]
+    },
+    "migration": {
+      "type": "object", "additionalProperties": false,
+      "required": ["state", "source", "packageOwnership", "certificateOwnership"],
+      "properties": {
+        "state": { "enum": ["notRequired", "v1Read", "v1UpgradePending", "v1Upgraded", "v1UpgradeFailed", "v1RetainedUpgradeFailed", "v2Pending", "v2Committed", "v2RetainedCommitted", "v2CommitFailed", "v2RetainedCommitFailed", "v2Read", "failed"] },
+        "source": { "enum": ["none", "unknown", "v1", "v2"] },
+        "packageOwnership": { "enum": ["addedByLigase", "notOwned", "legacyUnknown", "unknown"] },
+        "certificateOwnership": { "enum": ["owned", "notOwned", "unknown"] }
+      },
+      "oneOf": [
+        { "properties": { "state": { "const": "notRequired" }, "source": { "const": "none" }, "packageOwnership": { "const": "notOwned" }, "certificateOwnership": { "const": "notOwned" } } },
+        { "properties": { "state": { "const": "v1Read" }, "source": { "const": "v1" }, "packageOwnership": { "const": "legacyUnknown" }, "certificateOwnership": { "enum": ["owned", "notOwned"] } } },
+        { "properties": { "state": { "const": "v1UpgradePending" }, "source": { "const": "v1" }, "packageOwnership": { "const": "addedByLigase" }, "certificateOwnership": { "enum": ["owned", "notOwned"] } } },
+        { "properties": { "state": { "const": "v1Upgraded" }, "source": { "const": "v1" }, "packageOwnership": { "enum": ["addedByLigase", "notOwned", "legacyUnknown"] }, "certificateOwnership": { "enum": ["owned", "notOwned"] } } },
+        { "properties": { "state": { "const": "v1UpgradeFailed" }, "source": { "const": "v1" }, "packageOwnership": { "const": "addedByLigase" }, "certificateOwnership": { "enum": ["owned", "notOwned"] } } },
+        { "properties": { "state": { "const": "v1RetainedUpgradeFailed" }, "source": { "const": "v1" }, "packageOwnership": { "enum": ["notOwned", "legacyUnknown"] }, "certificateOwnership": { "enum": ["owned", "notOwned"] } } },
+        { "properties": { "state": { "const": "v2Pending" }, "source": { "const": "none" }, "packageOwnership": { "const": "addedByLigase" }, "certificateOwnership": { "enum": ["owned", "notOwned"] } } },
+        { "properties": { "state": { "const": "v2Committed" }, "source": { "const": "none" }, "packageOwnership": { "const": "addedByLigase" }, "certificateOwnership": { "enum": ["owned", "notOwned"] } } },
+        { "properties": { "state": { "const": "v2RetainedCommitted" }, "source": { "const": "none" }, "packageOwnership": { "enum": ["notOwned", "legacyUnknown"] }, "certificateOwnership": { "enum": ["owned", "notOwned"] } } },
+        { "properties": { "state": { "const": "v2CommitFailed" }, "source": { "const": "none" }, "packageOwnership": { "const": "addedByLigase" }, "certificateOwnership": { "enum": ["owned", "notOwned"] } } },
+        { "properties": { "state": { "const": "v2RetainedCommitFailed" }, "source": { "const": "none" }, "packageOwnership": { "enum": ["notOwned", "legacyUnknown"] }, "certificateOwnership": { "enum": ["owned", "notOwned"] } } },
+        { "properties": { "state": { "const": "v2Read" }, "source": { "const": "v2" }, "packageOwnership": { "enum": ["addedByLigase", "notOwned", "legacyUnknown"] }, "certificateOwnership": { "enum": ["owned", "notOwned"] } } },
+        { "properties": { "state": { "const": "failed" }, "source": { "enum": ["unknown", "v1", "v2"] }, "packageOwnership": { "enum": ["unknown", "notOwned", "legacyUnknown"] }, "certificateOwnership": { "enum": ["owned", "notOwned", "unknown"] } } }
+      ]
+    },
+    "ownershipReadFailure": {
+      "type": "object", "additionalProperties": false,
+      "required": ["state", "reason", "count", "source", "resourceMutationCount"],
+      "properties": {
+        "state": { "const": "failed" },
+        "reason": { "enum": ["io", "unreadable", "duplicateProperty", "schema", "type", "version", "conflict", "identityChanged", "readback"] },
+        "count": { "type": "integer", "minimum": 1, "maximum": 16 },
+        "source": { "enum": ["unknown", "v1", "v2"] },
+        "resourceMutationCount": { "const": 0 }
+      },
+      "oneOf": [
+        { "properties": { "reason": { "enum": ["io", "unreadable", "duplicateProperty", "schema", "type", "version", "identityChanged"] }, "source": { "const": "unknown" } } },
+        { "properties": { "reason": { "enum": ["conflict", "readback"] }, "source": { "enum": ["v1", "v2"] } } }
+      ]
+    },
+    "ownershipAcquisition": {
+      "oneOf": [
+        { "$ref": "#/$defs/ownershipAcquisitionNone" },
+        { "$ref": "#/$defs/ownershipAcquisitionCurrent" },
+        { "$ref": "#/$defs/ownershipAcquisitionHistorical" }
+      ]
+    },
+    "ownershipAcquisitionNone": {
+      "type": "object", "additionalProperties": false,
+      "required": ["state", "source"],
+      "properties": { "state": { "const": "none" }, "source": { "const": "none" } }
+    },
+    "ownershipAcquisitionCurrent": {
+      "type": "object", "additionalProperties": false,
+      "required": ["state", "source", "acquisitionOperationIndex", "preState", "mutation", "readback"],
+      "properties": {
+        "state": { "const": "proven" },
+        "source": { "const": "currentOperation" },
+        "acquisitionOperationIndex": { "const": 0 },
+        "preState": { "const": "absent" },
+        "mutation": { "const": "publishedByLigaseProvision" },
+        "readback": { "const": "presentPinned" }
+      }
+    },
+    "ownershipAcquisitionHistorical": {
+      "type": "object", "additionalProperties": false,
+      "required": ["state", "source", "acquisitionOperationIndex", "markerIdentityReadback", "preState", "mutation", "readback"],
+      "properties": {
+        "state": { "const": "proven" },
+        "source": { "const": "historicalOperation" },
+        "acquisitionOperationIndex": { "const": 1 },
+        "markerIdentityReadback": { "const": "exact" },
+        "preState": { "const": "absent" },
+        "mutation": { "const": "publishedByLigaseProvision" },
+        "readback": { "const": "presentPinned" }
+      }
+    },
+    "ownershipAcquisitionProven": {
+      "oneOf": [
+        { "$ref": "#/$defs/ownershipAcquisitionCurrent" },
+        { "$ref": "#/$defs/ownershipAcquisitionHistorical" }
+      ]
+    },
+    "emptySha256": {
+      "const": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "nonEmptySha256": {
+      "type": "string",
+      "pattern": "^(?!e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855$)[0-9a-f]{64}$"
+    },
+    "nodeState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["present", "bound"],
+      "properties": {
+        "present": { "type": "boolean" },
+        "bound": { "type": "boolean" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "bound": { "const": true } } },
+          "then": { "properties": { "present": { "const": true } } }
+        }
+      ]
+    },
+    "inventory": {
+      "oneOf": [
+        { "$ref": "#/$defs/unknownInventory" },
+        { "$ref": "#/$defs/zeroInventory" },
+        { "$ref": "#/$defs/exactOneBoundInventory" },
+        { "$ref": "#/$defs/exactOneUnboundInventory" },
+        { "$ref": "#/$defs/multipleInventory" }
+      ]
+    },
+    "inventoryShape": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "nodes", "uniqueSetSha256", "residual"],
+      "properties": {
+        "state": { "enum": ["proven", "unknown"] },
+        "nodes": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/nodeState" },
+          "maxItems": 16
+        },
+        "uniqueSetSha256": { "$ref": "#/$defs/sha256" },
+        "residual": {
+          "enum": ["unknown", "zero", "exactOneBound", "exactOneUnbound", "multiple"]
+        }
+      }
+    },
+    "unknownInventory": {
+      "allOf": [
+        { "$ref": "#/$defs/inventoryShape" },
+        {
+          "properties": {
+            "state": { "const": "unknown" },
+            "nodes": { "maxItems": 0 },
+            "uniqueSetSha256": { "$ref": "#/$defs/emptySha256" },
+            "residual": { "const": "unknown" }
+          }
+        }
+      ]
+    },
+    "zeroInventory": {
+      "allOf": [
+        { "$ref": "#/$defs/inventoryShape" },
+        {
+          "properties": {
+            "state": { "const": "proven" },
+            "nodes": { "maxItems": 0 },
+            "uniqueSetSha256": { "$ref": "#/$defs/emptySha256" },
+            "residual": { "const": "zero" }
+          }
+        }
+      ]
+    },
+    "exactOneBoundInventory": {
+      "allOf": [
+        { "$ref": "#/$defs/inventoryShape" },
+        {
+          "properties": {
+            "state": { "const": "proven" },
+            "nodes": {
+              "minItems": 1,
+              "maxItems": 1,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "present": { "const": true },
+                  "bound": { "const": true }
+                }
+              }
+            },
+            "uniqueSetSha256": { "$ref": "#/$defs/nonEmptySha256" },
+            "residual": { "const": "exactOneBound" }
+          }
+        }
+      ]
+    },
+    "exactOneUnboundInventory": {
+      "allOf": [
+        { "$ref": "#/$defs/inventoryShape" },
+        {
+          "properties": {
+            "state": { "const": "proven" },
+            "nodes": {
+              "minItems": 1,
+              "maxItems": 1,
+              "items": {
+                "type": "object",
+                "properties": { "bound": { "const": false } }
+              }
+            },
+            "uniqueSetSha256": { "$ref": "#/$defs/nonEmptySha256" },
+            "residual": { "const": "exactOneUnbound" }
+          }
+        }
+      ]
+    },
+    "multipleInventory": {
+      "allOf": [
+        { "$ref": "#/$defs/inventoryShape" },
+        {
+          "properties": {
+            "state": { "const": "proven" },
+            "nodes": { "minItems": 2, "maxItems": 16 },
+            "uniqueSetSha256": { "$ref": "#/$defs/nonEmptySha256" },
+            "residual": { "const": "multiple" }
+          }
+        }
+      ]
+    },
+    "provenInventory": {
+      "oneOf": [
+        { "$ref": "#/$defs/zeroInventory" },
+        { "$ref": "#/$defs/exactOneBoundInventory" },
+        { "$ref": "#/$defs/exactOneUnboundInventory" },
+        { "$ref": "#/$defs/multipleInventory" }
+      ]
+    },
+    "nonZeroInventory": {
+      "oneOf": [
+        { "$ref": "#/$defs/exactOneBoundInventory" },
+        { "$ref": "#/$defs/exactOneUnboundInventory" },
+        { "$ref": "#/$defs/multipleInventory" }
+      ]
+    },
+    "removedRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["nativeCode", "rebootRequired", "strictDecrease"],
+      "properties": {
+        "nativeCode": { "const": 0 },
+        "rebootRequired": { "const": false },
+        "strictDecrease": { "const": true }
+      }
+    },
+    "removal": {
+      "oneOf": [
+        { "$ref": "#/$defs/removalNotRequired" },
+        { "$ref": "#/$defs/removalCompleted" },
+        { "$ref": "#/$defs/removalNativeFailure" },
+        { "$ref": "#/$defs/removalRebootRequired" },
+        { "$ref": "#/$defs/removalReadbackFailure" },
+        { "$ref": "#/$defs/removalNoProgress" }
+      ]
+    },
+    "removalBeforeProvisioning": {
+      "oneOf": [
+        { "$ref": "#/$defs/removalNotRequired" },
+        { "$ref": "#/$defs/removalCompleted" }
+      ]
+    },
+    "removalShape": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "removed", "terminal", "nativeCode", "rebootRequired"],
+      "properties": {
+        "state": { "enum": ["notRequired", "completed", "failed"] },
+        "removed": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/removedRecord" },
+          "maxItems": 16
+        },
+        "terminal": {
+          "enum": [
+            "none", "completed", "nativeFailure", "rebootRequired",
+            "readbackFailure", "noProgress"
+          ]
+        },
+        "nativeCode": { "type": "integer", "minimum": -1, "maximum": 2147483647 },
+        "rebootRequired": { "type": "boolean" }
+      }
+    },
+    "removalNotRequired": {
+      "allOf": [
+        { "$ref": "#/$defs/removalShape" },
+        {
+          "properties": {
+            "state": { "const": "notRequired" },
+            "removed": { "maxItems": 0 },
+            "terminal": { "const": "none" },
+            "nativeCode": { "const": -1 },
+            "rebootRequired": { "const": false }
+          }
+        }
+      ]
+    },
+    "removalCompleted": {
+      "allOf": [
+        { "$ref": "#/$defs/removalShape" },
+        {
+          "properties": {
+            "state": { "const": "completed" },
+            "removed": { "minItems": 1 },
+            "terminal": { "const": "completed" },
+            "nativeCode": { "const": 0 },
+            "rebootRequired": { "const": false }
+          }
+        }
+      ]
+    },
+    "removalNativeFailure": {
+      "allOf": [
+        { "$ref": "#/$defs/removalShape" },
+        {
+          "properties": {
+            "state": { "const": "failed" },
+            "terminal": { "const": "nativeFailure" },
+            "nativeCode": { "minimum": 1 },
+            "rebootRequired": { "const": false }
+          }
+        }
+      ]
+    },
+    "removalRebootRequired": {
+      "allOf": [
+        { "$ref": "#/$defs/removalShape" },
+        {
+          "properties": {
+            "state": { "const": "failed" },
+            "terminal": { "const": "rebootRequired" },
+            "nativeCode": { "const": 0 },
+            "rebootRequired": { "const": true }
+          }
+        }
+      ]
+    },
+    "removalReadbackFailure": {
+      "allOf": [
+        { "$ref": "#/$defs/removalShape" },
+        {
+          "properties": {
+            "state": { "const": "failed" },
+            "terminal": { "const": "readbackFailure" },
+            "nativeCode": { "const": 0 },
+            "rebootRequired": { "const": false }
+          }
+        }
+      ]
+    },
+    "removalNoProgress": {
+      "allOf": [
+        { "$ref": "#/$defs/removalShape" },
+        {
+          "properties": {
+            "state": { "const": "failed" },
+            "terminal": { "const": "noProgress" },
+            "nativeCode": { "const": 0 },
+            "rebootRequired": { "const": false }
+          }
+        }
+      ]
+    },
+    "zeroProof": {
+      "oneOf": [
+        { "$ref": "#/$defs/zeroProofNotAttempted" },
+        { "$ref": "#/$defs/zeroProofCompleted" },
+        { "$ref": "#/$defs/zeroProofFailed" }
+      ]
+    },
+    "zeroProofShape": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "samples", "windowMilliseconds", "epochStable"],
+      "properties": {
+        "state": { "enum": ["notAttempted", "completed", "failed"] },
+        "samples": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["zero"],
+            "properties": { "zero": { "const": true } }
+          },
+          "maxItems": 16
+        },
+        "windowMilliseconds": { "type": "integer", "minimum": 0, "maximum": 60000 },
+        "epochStable": { "type": "boolean" }
+      }
+    },
+    "zeroProofNotAttempted": {
+      "allOf": [
+        { "$ref": "#/$defs/zeroProofShape" },
+        {
+          "properties": {
+            "state": { "const": "notAttempted" },
+            "samples": { "maxItems": 0 },
+            "windowMilliseconds": { "const": 0 },
+            "epochStable": { "const": false }
+          }
+        }
+      ]
+    },
+    "zeroProofCompleted": {
+      "allOf": [
+        { "$ref": "#/$defs/zeroProofShape" },
+        {
+          "properties": {
+            "state": { "const": "completed" },
+            "samples": { "minItems": 3 },
+            "windowMilliseconds": { "minimum": 1 },
+            "epochStable": { "const": true }
+          }
+        }
+      ]
+    },
+    "zeroProofFailed": {
+      "allOf": [
+        { "$ref": "#/$defs/zeroProofShape" },
+        { "properties": { "state": { "const": "failed" } } }
+      ]
+    },
+    "component": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "code"],
+      "properties": {
+        "state": { "enum": ["notAttempted", "notRequired", "verified", "completed", "failed"] },
+        "code": {
+          "enum": [
+            "none", "alreadyOwned", "added", "installed", "created",
+            "committed", "removed", "notOwned", "nativeFailure", "readbackFailure", "conflict"
+          ]
+        }
+      }
+    },
+    "componentNotAttempted": {
+      "properties": { "state": { "const": "notAttempted" }, "code": { "const": "none" } }
+    },
+    "componentNotRequired": {
+      "properties": { "state": { "const": "notRequired" }, "code": { "const": "none" } }
+    },
+    "trustInstalled": {
+      "oneOf": [
+        { "$ref": "#/$defs/trustAlreadyOwned" },
+        { "properties": { "state": { "const": "completed" }, "code": { "const": "added" } } }
+      ]
+    },
+    "trustAlreadyOwned": {
+      "properties": { "state": { "const": "verified" }, "code": { "const": "alreadyOwned" } }
+    },
+    "packageInstalled": {
+      "properties": { "state": { "const": "completed" }, "code": { "const": "installed" } }
+    },
+    "packageReady": {
+      "oneOf": [
+        { "$ref": "#/$defs/packageInstalled" },
+        { "$ref": "#/$defs/packageAlreadyOwned" }
+      ]
+    },
+    "packageAlreadyOwned": {
+      "properties": { "state": { "const": "verified" }, "code": { "const": "alreadyOwned" } }
+    },
+    "createCompleted": {
+      "properties": { "state": { "const": "completed" }, "code": { "const": "created" } }
+    },
+    "markerCommitted": {
+      "properties": { "state": { "const": "completed" }, "code": { "const": "committed" } }
+    },
+    "markerAlreadyOwned": {
+      "properties": { "state": { "const": "verified" }, "code": { "const": "alreadyOwned" } }
+    },
+    "trustFailed": {
+      "properties": { "state": { "const": "failed" }, "code": { "enum": ["nativeFailure", "readbackFailure", "conflict"] } }
+    },
+    "packageFailed": {
+      "properties": { "state": { "const": "failed" }, "code": { "enum": ["nativeFailure", "readbackFailure", "conflict"] } }
+    },
+    "createFailed": {
+      "properties": { "state": { "const": "failed" }, "code": { "enum": ["nativeFailure", "readbackFailure"] } }
+    },
+    "markerFailed": {
+      "properties": { "state": { "const": "failed" }, "code": { "enum": ["nativeFailure", "readbackFailure", "conflict"] } }
+    },
+    "compensation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "code"],
+      "properties": {
+        "state": { "enum": ["notRequired", "completed", "failed"] },
+        "code": { "enum": ["none", "trust", "package", "marker", "multiple"] }
+      },
+      "oneOf": [
+        { "$ref": "#/$defs/compensationNotRequired" },
+        { "properties": { "state": { "const": "completed" }, "code": { "enum": ["trust", "package", "marker", "multiple"] } } },
+        { "properties": { "state": { "const": "failed" }, "code": { "enum": ["trust", "package", "marker", "multiple"] } } }
+      ]
+    },
+    "compensationNotRequired": {
+      "properties": { "state": { "const": "notRequired" }, "code": { "const": "none" } }
+    },
+    "compensationTrustOnly": {
+      "oneOf": [
+        { "$ref": "#/$defs/compensationNotRequired" },
+        { "properties": { "state": { "enum": ["completed", "failed"] }, "code": { "const": "trust" } } }
+      ]
+    },
+    "compensationTrustPackage": {
+      "oneOf": [
+        { "$ref": "#/$defs/compensationNotRequired" },
+        { "properties": { "state": { "enum": ["completed", "failed"] }, "code": { "enum": ["trust", "package", "multiple"] } } }
+      ]
+    },
+    "compensationPostCreate": {
+      "oneOf": [
+        { "$ref": "#/$defs/compensationNotRequired" },
+        { "properties": { "state": { "enum": ["completed", "failed"] }, "code": { "enum": ["trust", "package", "marker", "multiple"] } } }
+      ]
+    },
+    "compensationMarkerCommitRequired": {
+      "allOf": [
+        { "$ref": "#/$defs/compensation" },
+        { "properties": { "state": { "enum": ["completed", "failed"] }, "code": { "enum": ["trust", "package", "marker", "multiple"] } } }
+      ]
+    },
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["elapsedMilliseconds", "hardCapMilliseconds", "resultFileState"],
+      "properties": {
+        "elapsedMilliseconds": { "type": "integer", "minimum": 0, "maximum": 120000 },
+        "hardCapMilliseconds": { "const": 120000 },
+        "resultFileState": { "enum": ["unavailable", "verified"] }
+      }
+    },
+    "executionVerified": {
+      "allOf": [
+        { "$ref": "#/$defs/execution" },
+        { "properties": { "resultFileState": { "const": "verified" } } }
+      ]
+    },
+    "failureBase": {
+      "properties": {
+        "state": { "const": "failed" },
+        "firstFailureFrozen": { "const": true },
+        "execution": { "$ref": "#/$defs/executionVerified" }
+      }
+    },
+    "requestRejectedResult": {
+      "allOf": [
+        { "$ref": "#/$defs/failureBase" },
+        {
+          "properties": {
+            "code": { "const": "requestRejected" },
+            "stage": { "const": "validateRequest" },
+            "inventory": { "$ref": "#/$defs/unknownInventory" },
+            "removal": { "$ref": "#/$defs/removalNotRequired" },
+            "zeroProof": { "$ref": "#/$defs/zeroProofNotAttempted" },
+            "trust": { "$ref": "#/$defs/componentNotAttempted" },
+            "package": { "$ref": "#/$defs/componentNotAttempted" },
+            "create": { "$ref": "#/$defs/componentNotAttempted" },
+            "marker": { "$ref": "#/$defs/componentNotAttempted" },
+            "compensation": { "$ref": "#/$defs/compensationNotRequired" }
+          }
+        }
+      ]
+    },
+    "inventoryUnavailableResult": {
+      "allOf": [
+        { "$ref": "#/$defs/failureBase" },
+        {
+          "properties": {
+            "code": { "const": "inventoryUnavailable" },
+            "stage": { "const": "inventoryBefore" },
+            "inventory": { "$ref": "#/$defs/unknownInventory" },
+            "removal": { "$ref": "#/$defs/removalNotRequired" },
+            "zeroProof": { "$ref": "#/$defs/zeroProofNotAttempted" },
+            "trust": { "$ref": "#/$defs/componentNotAttempted" },
+            "package": { "$ref": "#/$defs/componentNotAttempted" },
+            "create": { "$ref": "#/$defs/componentNotAttempted" },
+            "marker": { "$ref": "#/$defs/componentNotAttempted" },
+            "compensation": { "$ref": "#/$defs/compensationNotRequired" }
+          }
+        }
+      ]
+    },
+    "removeNativeFailedResult": {
+      "allOf": [
+        { "$ref": "#/$defs/failureBase" },
+        { "properties": { "code": { "const": "removeNativeFailed" }, "stage": { "const": "remove" }, "inventory": { "$ref": "#/$defs/nonZeroInventory" }, "removal": { "$ref": "#/$defs/removalNativeFailure" }, "zeroProof": { "$ref": "#/$defs/zeroProofNotAttempted" }, "trust": { "$ref": "#/$defs/componentNotAttempted" }, "package": { "$ref": "#/$defs/componentNotAttempted" }, "create": { "$ref": "#/$defs/componentNotAttempted" }, "marker": { "$ref": "#/$defs/componentNotAttempted" }, "compensation": { "$ref": "#/$defs/compensationNotRequired" } } }
+      ]
+    },
+    "removeRebootRequiredResult": {
+      "allOf": [
+        { "$ref": "#/$defs/failureBase" },
+        { "properties": { "code": { "const": "removeRebootRequired" }, "stage": { "const": "remove" }, "inventory": { "$ref": "#/$defs/nonZeroInventory" }, "removal": { "$ref": "#/$defs/removalRebootRequired" }, "zeroProof": { "$ref": "#/$defs/zeroProofNotAttempted" }, "trust": { "$ref": "#/$defs/componentNotAttempted" }, "package": { "$ref": "#/$defs/componentNotAttempted" }, "create": { "$ref": "#/$defs/componentNotAttempted" }, "marker": { "$ref": "#/$defs/componentNotAttempted" }, "compensation": { "$ref": "#/$defs/compensationNotRequired" } } }
+      ]
+    },
+    "removeReadbackFailedResult": {
+      "allOf": [
+        { "$ref": "#/$defs/failureBase" },
+        { "properties": { "code": { "const": "removeReadbackFailed" }, "stage": { "const": "inventoryAfterRemove" }, "inventory": { "$ref": "#/$defs/unknownInventory" }, "removal": { "$ref": "#/$defs/removalReadbackFailure" }, "zeroProof": { "$ref": "#/$defs/zeroProofNotAttempted" }, "trust": { "$ref": "#/$defs/componentNotAttempted" }, "package": { "$ref": "#/$defs/componentNotAttempted" }, "create": { "$ref": "#/$defs/componentNotAttempted" }, "marker": { "$ref": "#/$defs/componentNotAttempted" }, "compensation": { "$ref": "#/$defs/compensationNotRequired" } } }
+      ]
+    },
+    "removeNoProgressResult": {
+      "allOf": [
+        { "$ref": "#/$defs/failureBase" },
+        { "properties": { "code": { "const": "removeNoProgress" }, "stage": { "const": "inventoryAfterRemove" }, "inventory": { "$ref": "#/$defs/nonZeroInventory" }, "removal": { "$ref": "#/$defs/removalNoProgress" }, "zeroProof": { "$ref": "#/$defs/zeroProofNotAttempted" }, "trust": { "$ref": "#/$defs/componentNotAttempted" }, "package": { "$ref": "#/$defs/componentNotAttempted" }, "create": { "$ref": "#/$defs/componentNotAttempted" }, "marker": { "$ref": "#/$defs/componentNotAttempted" }, "compensation": { "$ref": "#/$defs/compensationNotRequired" } } }
+      ]
+    },
+    "zeroProofFailedResult": {
+      "allOf": [
+        { "$ref": "#/$defs/failureBase" },
+        { "properties": { "code": { "const": "zeroProofFailed" }, "stage": { "const": "stableZero" }, "inventory": { "$ref": "#/$defs/provenInventory" }, "removal": { "oneOf": [{ "$ref": "#/$defs/removalNotRequired" }, { "$ref": "#/$defs/removalCompleted" }] }, "zeroProof": { "$ref": "#/$defs/zeroProofFailed" }, "trust": { "$ref": "#/$defs/componentNotAttempted" }, "package": { "$ref": "#/$defs/componentNotAttempted" }, "create": { "$ref": "#/$defs/componentNotAttempted" }, "marker": { "$ref": "#/$defs/componentNotAttempted" }, "compensation": { "$ref": "#/$defs/compensationNotRequired" } } }
+      ]
+    },
+    "trustFailedResult": {
+      "allOf": [
+        { "$ref": "#/$defs/failureBase" },
+        { "properties": { "code": { "const": "trustFailed" }, "stage": { "const": "trustPackage" }, "inventory": { "$ref": "#/$defs/zeroInventory" }, "removal": { "$ref": "#/$defs/removalBeforeProvisioning" }, "zeroProof": { "$ref": "#/$defs/zeroProofCompleted" }, "trust": { "$ref": "#/$defs/trustFailed" }, "package": { "$ref": "#/$defs/componentNotAttempted" }, "create": { "$ref": "#/$defs/componentNotAttempted" }, "marker": { "$ref": "#/$defs/componentNotAttempted" }, "compensation": { "$ref": "#/$defs/compensationTrustOnly" } } }
+      ]
+    },
+    "packageFailedResult": {
+      "allOf": [
+        { "$ref": "#/$defs/failureBase" },
+        { "properties": { "code": { "const": "packageFailed" }, "stage": { "const": "trustPackage" }, "inventory": { "$ref": "#/$defs/zeroInventory" }, "removal": { "$ref": "#/$defs/removalBeforeProvisioning" }, "zeroProof": { "$ref": "#/$defs/zeroProofCompleted" }, "trust": { "$ref": "#/$defs/trustInstalled" }, "package": { "$ref": "#/$defs/packageFailed" }, "create": { "$ref": "#/$defs/componentNotAttempted" }, "marker": { "$ref": "#/$defs/componentNotAttempted" }, "compensation": { "$ref": "#/$defs/compensationTrustPackage" } } }
+      ]
+    },
+    "createFailedResult": {
+      "allOf": [
+        { "$ref": "#/$defs/failureBase" },
+        { "properties": { "code": { "const": "createFailed" }, "stage": { "const": "create" }, "inventory": { "$ref": "#/$defs/zeroInventory" }, "removal": { "$ref": "#/$defs/removalBeforeProvisioning" }, "zeroProof": { "$ref": "#/$defs/zeroProofCompleted" }, "trust": { "$ref": "#/$defs/trustInstalled" }, "package": { "$ref": "#/$defs/packageReady" }, "create": { "$ref": "#/$defs/createFailed" }, "marker": { "$ref": "#/$defs/componentNotAttempted" }, "compensation": { "$ref": "#/$defs/compensationPostCreate" } } }
+      ]
+    },
+    "finalReadbackFailedResult": {
+      "allOf": [
+        { "$ref": "#/$defs/failureBase" },
+        { "properties": { "code": { "const": "finalReadbackFailed" }, "stage": { "const": "readbackAfterCreate" }, "inventory": { "oneOf": [{ "$ref": "#/$defs/unknownInventory" }, { "$ref": "#/$defs/zeroInventory" }, { "$ref": "#/$defs/exactOneUnboundInventory" }, { "$ref": "#/$defs/multipleInventory" }] }, "removal": { "$ref": "#/$defs/removalBeforeProvisioning" }, "zeroProof": { "$ref": "#/$defs/zeroProofCompleted" }, "trust": { "$ref": "#/$defs/trustInstalled" }, "package": { "$ref": "#/$defs/packageReady" }, "create": { "$ref": "#/$defs/createCompleted" }, "marker": { "$ref": "#/$defs/componentNotAttempted" }, "compensation": { "$ref": "#/$defs/compensationPostCreate" } } }
+      ]
+    },
+    "uninstallComponentRemoved": {
+      "allOf": [{ "$ref": "#/$defs/uninstallComponent" }, { "properties": { "state": { "const": "completed" }, "code": { "const": "removed" }, "ownership": { "const": "owned" } } }]
+    },
+    "uninstallComponentNotOwned": {
+      "allOf": [{ "$ref": "#/$defs/uninstallComponent" }, { "properties": { "state": { "const": "verified" }, "code": { "const": "absentNotOwned" }, "ownership": { "const": "notOwned" } } }]
+    },
+    "uninstallComponentVerifiedOwned": {
+      "allOf": [{ "$ref": "#/$defs/uninstallComponent" }, { "properties": { "state": { "const": "verified" }, "code": { "const": "owned" }, "ownership": { "const": "owned" } } }]
+    },
+    "uninstallComponentAbsentOwned": {
+      "allOf": [{ "$ref": "#/$defs/uninstallComponent" }, { "properties": { "state": { "const": "verified" }, "code": { "const": "absentOwned" }, "ownership": { "const": "owned" } } }]
+    },
+    "uninstallComponentRetainedLegacy": {
+      "allOf": [{ "$ref": "#/$defs/uninstallComponent" }, { "properties": { "state": { "const": "verified" }, "code": { "const": "retainedLegacyUnknown" }, "ownership": { "const": "legacyUnknown" } } }]
+    },
+    "uninstallComponentRetainedNotOwned": {
+      "allOf": [{ "$ref": "#/$defs/uninstallComponent" }, { "properties": { "state": { "const": "verified" }, "code": { "const": "retainedNotOwned" }, "ownership": { "const": "notOwned" } } }]
+    },
+    "uninstallTrustNotOwnedClean": {
+      "oneOf": [
+        { "$ref": "#/$defs/uninstallComponentRetainedNotOwned" },
+        { "$ref": "#/$defs/uninstallComponentNotOwned" }
+      ]
+    },
+    "uninstallOwnedResourceClean": {
+      "oneOf": [
+        { "$ref": "#/$defs/uninstallComponentRemoved" },
+        { "$ref": "#/$defs/uninstallComponentAbsentOwned" }
+      ]
+    },
+    "uninstallComponentClean": {
+      "oneOf": [
+        { "$ref": "#/$defs/uninstallComponentRemoved" },
+        { "$ref": "#/$defs/uninstallComponentNotOwned" }
+      ]
+    },
+    "uninstallComponentFailed": {
+      "allOf": [{ "$ref": "#/$defs/uninstallComponent" }, { "properties": { "state": { "const": "failed" }, "code": { "enum": ["nativeFailure", "readbackFailure", "conflict"] }, "ownership": { "enum": ["owned", "unknown"] } } }]
+    },
+    "uninstallComponent": {
+      "type": "object", "additionalProperties": false,
+      "required": ["state", "code", "ownership"],
+      "properties": {
+        "state": { "enum": ["verified", "completed", "failed"] },
+        "code": { "enum": ["owned", "removed", "absentOwned", "absentNotOwned", "retainedNotOwned", "retainedLegacyUnknown", "nativeFailure", "readbackFailure", "conflict"] },
+        "ownership": { "enum": ["owned", "notOwned", "legacyUnknown", "unknown"] }
+      }
+    },
+    "uninstalledResult": {
+      "allOf": [{ "properties": {
+        "operation": { "const": "uninstall" }, "state": { "const": "completed" },
+        "code": { "const": "uninstalled" }, "stage": { "const": "completed" },
+        "firstFailureFrozen": { "const": false },
+        "migration": { "properties": { "state": { "const": "v2Read" }, "source": { "const": "v2" }, "packageOwnership": { "const": "addedByLigase" } } },
+        "inventory": { "$ref": "#/$defs/zeroInventory" },
+        "removal": { "oneOf": [{ "$ref": "#/$defs/removalNotRequired" }, { "$ref": "#/$defs/removalCompleted" }] },
+        "zeroProof": { "$ref": "#/$defs/zeroProofCompleted" },
+        "marker": { "$ref": "#/$defs/uninstallComponentRemoved" },
+        "package": { "$ref": "#/$defs/uninstallOwnedResourceClean" },
+        "trust": { "$ref": "#/$defs/uninstallOwnedResourceClean" },
+        "create": { "$ref": "#/$defs/componentNotRequired" },
+        "compensation": { "$ref": "#/$defs/compensationNotRequired" },
+        "execution": { "$ref": "#/$defs/executionVerified" }
+      } }, { "anyOf": [
+        { "properties": { "removal": { "$ref": "#/$defs/removalCompleted" } } },
+        { "properties": { "package": { "$ref": "#/$defs/uninstallComponentRemoved" } } },
+        { "properties": { "trust": { "$ref": "#/$defs/uninstallComponentRemoved" } } },
+        { "properties": { "marker": { "$ref": "#/$defs/uninstallComponentRemoved" } } }
+      ] }]
+    },
+    "alreadyAbsentResult": {
+      "properties": {
+        "operation": { "const": "uninstall" }, "state": { "const": "completed" },
+        "code": { "const": "alreadyAbsent" }, "stage": { "const": "completed" },
+        "firstFailureFrozen": { "const": false },
+        "migration": { "oneOf": [
+          { "properties": { "state": { "const": "notRequired" }, "source": { "const": "none" }, "packageOwnership": { "const": "notOwned" }, "certificateOwnership": { "const": "notOwned" } } },
+          { "properties": { "state": { "const": "v2Read" }, "source": { "const": "v2" }, "packageOwnership": { "const": "notOwned" }, "certificateOwnership": { "const": "notOwned" } } }
+        ] },
+        "inventory": { "$ref": "#/$defs/zeroInventory" },
+        "removal": { "$ref": "#/$defs/removalNotRequired" },
+        "zeroProof": { "$ref": "#/$defs/zeroProofCompleted" },
+        "marker": { "$ref": "#/$defs/uninstallComponentNotOwned" },
+        "package": { "$ref": "#/$defs/uninstallComponentNotOwned" },
+        "trust": { "$ref": "#/$defs/uninstallComponentNotOwned" },
+        "create": { "$ref": "#/$defs/componentNotRequired" },
+        "compensation": { "$ref": "#/$defs/compensationNotRequired" },
+        "execution": { "$ref": "#/$defs/executionVerified" }
+      }
+    },
+    "uninstalledLegacyPackageRetainedResult": {
+      "properties": {
+        "operation": { "const": "uninstall" }, "state": { "const": "completed" },
+        "code": { "const": "uninstalledLegacyPackageRetained" },
+        "stage": { "const": "completed" }, "firstFailureFrozen": { "const": false },
+        "migration": { "properties": { "source": { "enum": ["v1", "v2"] }, "packageOwnership": { "const": "legacyUnknown" }, "certificateOwnership": { "const": "owned" } } },
+        "inventory": { "$ref": "#/$defs/zeroInventory" },
+        "removal": { "oneOf": [{ "$ref": "#/$defs/removalNotRequired" }, { "$ref": "#/$defs/removalCompleted" }] },
+        "zeroProof": { "$ref": "#/$defs/zeroProofCompleted" },
+        "marker": { "$ref": "#/$defs/uninstallComponentRemoved" },
+        "package": { "$ref": "#/$defs/uninstallComponentRetainedLegacy" },
+        "trust": { "$ref": "#/$defs/uninstallOwnedResourceClean" },
+        "create": { "$ref": "#/$defs/componentNotRequired" },
+        "compensation": { "$ref": "#/$defs/compensationNotRequired" },
+        "execution": { "$ref": "#/$defs/executionVerified" }
+      }
+    },
+    "uninstalledSharedPackageRetainedResult": {
+      "allOf": [{ "properties": {
+        "operation": { "const": "uninstall" }, "state": { "const": "completed" },
+        "code": { "const": "uninstalledSharedPackageRetained" },
+        "stage": { "const": "completed" }, "firstFailureFrozen": { "const": false },
+        "migration": { "properties": { "state": { "const": "v2Read" }, "source": { "const": "v2" }, "packageOwnership": { "const": "notOwned" } } },
+        "ownershipAcquisition": { "$ref": "#/$defs/ownershipAcquisitionNone" },
+        "inventory": { "$ref": "#/$defs/zeroInventory" },
+        "removal": { "oneOf": [{ "$ref": "#/$defs/removalNotRequired" }, { "$ref": "#/$defs/removalCompleted" }] },
+        "zeroProof": { "$ref": "#/$defs/zeroProofCompleted" },
+        "marker": { "$ref": "#/$defs/uninstallComponentRemoved" },
+        "package": { "oneOf": [{ "$ref": "#/$defs/uninstallComponentRetainedNotOwned" }, { "$ref": "#/$defs/uninstallComponentNotOwned" }] },
+        "create": { "$ref": "#/$defs/componentNotRequired" },
+        "compensation": { "$ref": "#/$defs/compensationNotRequired" },
+        "execution": { "$ref": "#/$defs/executionVerified" }
+      } }, { "oneOf": [
+        { "properties": {
+          "migration": { "properties": { "certificateOwnership": { "const": "owned" } } },
+          "certificateStores": { "$ref": "#/$defs/certificateStoresOwned" },
+          "trust": { "$ref": "#/$defs/uninstallOwnedResourceClean" }
+        } },
+        { "properties": {
+          "migration": { "properties": { "certificateOwnership": { "const": "notOwned" } } },
+          "certificateStores": { "allOf": [{ "$ref": "#/$defs/certificateStoresNotOwned" }, { "$ref": "#/$defs/certificateStoresCleanupCompleted" }] },
+          "trust": { "$ref": "#/$defs/uninstallTrustNotOwnedClean" }
+        } }
+      ] }, { "anyOf": [
+        { "properties": { "removal": { "$ref": "#/$defs/removalCompleted" } } },
+        { "properties": { "trust": { "$ref": "#/$defs/uninstallComponentRemoved" } } },
+        { "properties": { "marker": { "$ref": "#/$defs/uninstallComponentRemoved" } } }
+      ] }]
+    },
+    "ownershipReadFailedResult": {
+      "allOf": [{ "$ref": "#/$defs/failureBase" }, { "properties": {
+        "operation": { "const": "uninstall" },
+        "code": { "const": "ownershipReadFailed" },
+        "stage": { "const": "cleanupOwnership" },
+        "migration": { "properties": {
+          "state": { "const": "failed" },
+          "source": { "enum": ["unknown", "v1", "v2"] },
+          "packageOwnership": { "enum": ["unknown", "notOwned", "legacyUnknown"] },
+          "certificateOwnership": { "const": "unknown" }
+        } },
+        "ownershipAcquisition": { "$ref": "#/$defs/ownershipAcquisitionNone" },
+        "operationIdsSha256": { "maxItems": 1 },
+        "inventory": { "$ref": "#/$defs/zeroInventory" },
+        "removal": { "oneOf": [{ "$ref": "#/$defs/removalNotRequired" }, { "$ref": "#/$defs/removalCompleted" }] },
+        "zeroProof": { "$ref": "#/$defs/zeroProofCompleted" },
+        "marker": { "$ref": "#/$defs/uninstallComponentFailed" },
+        "package": { "$ref": "#/$defs/componentNotAttempted" },
+        "trust": { "$ref": "#/$defs/componentNotAttempted" },
+        "create": { "$ref": "#/$defs/componentNotRequired" },
+        "compensation": { "$ref": "#/$defs/compensationNotRequired" },
+        "ownershipReadFailure": { "$ref": "#/$defs/ownershipReadFailure" }
+      } }, { "oneOf": [
+        { "properties": {
+          "migration": { "properties": { "source": { "const": "v1" }, "packageOwnership": { "enum": ["unknown", "notOwned", "legacyUnknown"] } } },
+          "ownershipReadFailure": { "properties": { "reason": { "enum": ["conflict", "readback"] }, "source": { "const": "v1" } } }
+        } },
+        { "properties": {
+          "migration": { "properties": { "source": { "const": "v2" }, "packageOwnership": { "enum": ["unknown", "notOwned", "legacyUnknown"] } } },
+          "ownershipReadFailure": { "properties": { "reason": { "enum": ["conflict", "readback"] }, "source": { "const": "v2" } } }
+        } },
+        { "properties": {
+          "migration": { "properties": { "source": { "const": "unknown" }, "packageOwnership": { "const": "unknown" } } },
+          "ownershipReadFailure": { "properties": { "reason": { "enum": ["io", "unreadable", "duplicateProperty", "schema", "type", "version", "identityChanged"] }, "source": { "const": "unknown" } } }
+        } }
+      ] }, { "oneOf": [
+        { "properties": {
+          "ownershipReadFailure": { "properties": { "reason": { "const": "conflict" } } },
+          "marker": { "properties": { "state": { "const": "failed" }, "code": { "const": "conflict" }, "ownership": { "const": "unknown" } } }
+        } },
+        { "properties": {
+          "ownershipReadFailure": { "properties": { "reason": { "enum": ["io", "unreadable", "duplicateProperty", "schema", "type", "version", "identityChanged", "readback"] } } },
+          "marker": { "properties": { "state": { "const": "failed" }, "code": { "const": "readbackFailure" }, "ownership": { "const": "unknown" } } }
+        } }
+      ] }]
+    },
+    "provisionOwnershipReadFailedResult": {
+      "allOf": [{ "$ref": "#/$defs/failureBase" }, { "properties": {
+        "operation": { "const": "provision" },
+        "code": { "const": "ownershipReadFailed" },
+        "stage": { "const": "readOwnership" },
+        "migration": { "properties": {
+          "state": { "const": "failed" },
+          "source": { "enum": ["unknown", "v1", "v2"] },
+          "packageOwnership": { "enum": ["unknown", "notOwned", "legacyUnknown"] },
+          "certificateOwnership": { "const": "unknown" }
+        } },
+        "ownershipAcquisition": { "$ref": "#/$defs/ownershipAcquisitionNone" },
+        "operationIdsSha256": { "maxItems": 1 },
+        "inventory": { "$ref": "#/$defs/provenInventory" },
+        "removal": { "$ref": "#/$defs/removalNotRequired" },
+        "zeroProof": { "$ref": "#/$defs/zeroProofNotAttempted" },
+        "marker": { "$ref": "#/$defs/uninstallComponentFailed" },
+        "package": { "$ref": "#/$defs/componentNotAttempted" },
+        "trust": { "$ref": "#/$defs/componentNotAttempted" },
+        "create": { "$ref": "#/$defs/componentNotAttempted" },
+        "compensation": { "$ref": "#/$defs/compensationNotRequired" },
+        "ownershipReadFailure": { "$ref": "#/$defs/ownershipReadFailure" }
+      } }, { "oneOf": [
+        { "properties": {
+          "migration": { "properties": { "source": { "const": "v1" }, "packageOwnership": { "enum": ["unknown", "notOwned", "legacyUnknown"] } } },
+          "ownershipReadFailure": { "properties": { "reason": { "enum": ["conflict", "readback"] }, "source": { "const": "v1" } } }
+        } },
+        { "properties": {
+          "migration": { "properties": { "source": { "const": "v2" }, "packageOwnership": { "enum": ["unknown", "notOwned", "legacyUnknown"] } } },
+          "ownershipReadFailure": { "properties": { "reason": { "enum": ["conflict", "readback"] }, "source": { "const": "v2" } } }
+        } },
+        { "properties": {
+          "migration": { "properties": { "source": { "const": "unknown" }, "packageOwnership": { "const": "unknown" } } },
+          "ownershipReadFailure": { "properties": { "reason": { "enum": ["io", "unreadable", "duplicateProperty", "schema", "type", "version", "identityChanged"] }, "source": { "const": "unknown" } } }
+        } }
+      ] }, { "oneOf": [
+        { "properties": {
+          "ownershipReadFailure": { "properties": { "reason": { "const": "conflict" } } },
+          "marker": { "properties": { "state": { "const": "failed" }, "code": { "const": "conflict" }, "ownership": { "const": "unknown" } } }
+        } },
+        { "properties": {
+          "ownershipReadFailure": { "properties": { "reason": { "enum": ["io", "unreadable", "duplicateProperty", "schema", "type", "version", "identityChanged", "readback"] } } },
+          "marker": { "properties": { "state": { "const": "failed" }, "code": { "const": "readbackFailure" }, "ownership": { "const": "unknown" } } }
+        } }
+      ] }]
+    },
+    "markerCleanupFailedResult": {
+      "allOf": [{ "$ref": "#/$defs/failureBase" }, { "properties": {
+        "operation": { "const": "uninstall" }, "code": { "const": "markerCleanupFailed" },
+        "stage": { "const": "cleanupOwnership" }, "inventory": { "$ref": "#/$defs/zeroInventory" },
+        "removal": { "oneOf": [{ "$ref": "#/$defs/removalNotRequired" }, { "$ref": "#/$defs/removalCompleted" }] },
+        "zeroProof": { "$ref": "#/$defs/zeroProofCompleted" },
+        "marker": { "$ref": "#/$defs/uninstallComponentFailed" },
+        "package": { "$ref": "#/$defs/uninstallOwnedResourceClean" },
+        "trust": { "$ref": "#/$defs/uninstallOwnedResourceClean" },
+        "create": { "$ref": "#/$defs/componentNotRequired" },
+        "compensation": { "$ref": "#/$defs/compensationNotRequired" }
+      } }]
+    },
+    "packageCleanupFailedResult": {
+      "allOf": [{ "$ref": "#/$defs/failureBase" }, { "properties": {
+        "operation": { "const": "uninstall" }, "code": { "const": "packageCleanupFailed" },
+        "stage": { "const": "cleanupOwnership" }, "inventory": { "$ref": "#/$defs/zeroInventory" },
+        "removal": { "oneOf": [{ "$ref": "#/$defs/removalNotRequired" }, { "$ref": "#/$defs/removalCompleted" }] },
+        "zeroProof": { "$ref": "#/$defs/zeroProofCompleted" },
+        "marker": { "$ref": "#/$defs/uninstallComponentVerifiedOwned" },
+        "package": { "$ref": "#/$defs/uninstallComponentFailed" },
+        "trust": { "$ref": "#/$defs/componentNotAttempted" },
+        "create": { "$ref": "#/$defs/componentNotRequired" },
+        "compensation": { "$ref": "#/$defs/compensationNotRequired" }
+      } }]
+    },
+    "trustCleanupFailedResult": {
+      "allOf": [{ "$ref": "#/$defs/failureBase" }, { "properties": {
+        "operation": { "const": "uninstall" }, "code": { "const": "trustCleanupFailed" },
+        "stage": { "const": "cleanupOwnership" }, "inventory": { "$ref": "#/$defs/zeroInventory" },
+        "removal": { "oneOf": [{ "$ref": "#/$defs/removalNotRequired" }, { "$ref": "#/$defs/removalCompleted" }] },
+        "zeroProof": { "$ref": "#/$defs/zeroProofCompleted" },
+        "marker": { "$ref": "#/$defs/uninstallComponentVerifiedOwned" },
+        "package": { "$ref": "#/$defs/uninstallOwnedResourceClean" },
+        "trust": { "$ref": "#/$defs/uninstallComponentFailed" },
+        "create": { "$ref": "#/$defs/componentNotRequired" },
+        "compensation": { "$ref": "#/$defs/compensationNotRequired" }
+      } }]
+    },
+    "markerCommitFailedResult": {
+      "allOf": [
+        { "$ref": "#/$defs/failureBase" },
+        { "properties": { "code": { "const": "markerCommitFailed" }, "stage": { "const": "commitMarker" }, "inventory": { "$ref": "#/$defs/exactOneBoundInventory" }, "removal": { "$ref": "#/$defs/removalBeforeProvisioning" }, "zeroProof": { "$ref": "#/$defs/zeroProofCompleted" }, "trust": { "$ref": "#/$defs/trustInstalled" }, "package": { "$ref": "#/$defs/packageReady" }, "create": { "$ref": "#/$defs/createCompleted" }, "marker": { "$ref": "#/$defs/markerFailed" }, "compensation": { "$ref": "#/$defs/compensationMarkerCommitRequired" } } }
+      ]
+    }
+  }
+}

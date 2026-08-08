@@ -1,5 +1,15 @@
 # Ligase Host fresh installation boundary
 
+> Source transition: Core installation is now separated from virtual-display
+> provisioning in the current review snapshot. Its canonical design is
+> [`virtual-display-setup-architecture.md`](virtual-display-setup-architecture.md),
+> with the proposed request/result machine contracts in
+> [`virtual-display-setup-request-v1.schema.json`](virtual-display-setup-request-v1.schema.json)
+> and
+> [`virtual-display-setup-result-v1.schema.json`](virtual-display-setup-result-v1.schema.json).
+> This source snapshot is not shipped until source and artifact reviews accept
+> it; installed products continue to reflect their own recorded version.
+
 The Windows release artifact is built by
 `packaging/windows/ligase/Build-LigaseInstaller.ps1`. It accepts one explicit
 C++ build root and builds the native root launcher, Desktop, managed Core, and GameWatcher from the same
@@ -634,291 +644,108 @@ requested no-child flag. Set, readback, or mismatch failure returns a closed
 secure root. This mandatory OS mitigation, plus the source prohibition on
 child-process APIs, is the development preflight's child-process boundary.
 
-The bundled SudoVDA catalog currently uses a self-signed
-`CN=sudovda@su.mk` certificate. A `Valid` result on a machine where that
-certificate was previously inserted into Root/TrustedPublisher is classified
-as `locallyTrustedSelfSigned`, never `caTrusted`. The manifest records catalog
-hash, certificate thumbprint, subject, issuer, self-signed flag, timestamp
-state, and trust class. `PublicRelease` rejects this dependency until a
-publicly trusted, timestamped driver package is available. Development install
-requires an explicit warning before trusting it. Historical copies in
-LocalMachine or CurrentUser stores are read back as residue; they are never
-silently removed. Certificate removal is permitted only for stores recorded
-as owned by that installer execution and after confirming that no dependent
-driver remains.
-An `install.bat` exit code of zero is provisional rather than success
-authority. Repair removes matching device nodes with a bounded loop before
-creating a replacement. Removal is owned by the pinned native inventory helper,
-not by nefcon or localized command output. The helper first performs a fresh
-all-devnode exact-hardware-ID inventory and returns a random nonce, the sorted
-identity-set epoch hash, and per-node identity and removal-authority hashes.
-The removal verb accepts only one complete request derived from that same
-inventory. It re-inventories before mutation and rejects an unknown, stale,
-duplicated, case-drifted, or hash-mismatched identity. The native operation uses
-the Windows 7+ `DiUninstallDevice` API; the application does not call
-`SetupDiRemoveDevice` directly. Its strict result contains only the prior epoch
-hash, instance hash, native status and `rebootRequired`, never the raw instance
-identity.
+The virtual-display reset contract is
+[`virtual-display-setup-architecture.md`](virtual-display-setup-architecture.md),
+with request and result authority in the linked machine schemas. The current
+source review snapshot implements it, but this does not claim that an installed
+product already uses it. One pinned `Ligase.VirtualDisplay.Setup` process is the sole
+owner of both `provision` and `uninstall`. Both operations use the same
+inherited-handle ACL/non-reparse/identity boundary and one immutable verified
+result. `uninstall` performs fresh all-devnode exact inventory, bounded exact
+`DiUninstallDevice` removal with strict decrease, three-sample stable zero,
+then package → trust → marker cleanup only where the still-intact Ligase marker
+proves ownership. A resource already absent on crash recovery is
+`absentOwned`, not `notOwned` and not a removal claimed by the new invocation;
+the marker is removed atomically only after both resources read back clean.
+It never creates or installs a device. Zero with no owned resources is
+idempotent `alreadyAbsent`; any native, reboot, readback, progress, zero-proof
+or ownership-cleanup uncertainty is a closed first failure.
 
-Each native removal is followed by a bounded fresh helper readback, and
-creation is permitted only after that readback proves the total matching device
-count strictly decreased and eventually reached zero. A successful native call
-or `rebootRequired` is not removal authority by itself. A single zero snapshot
-is never sufficient:
-the helper requires at least three zero snapshots spanning a bounded settle
-window, with the same sorted unique-identity-set SHA-256 throughout. A
-nonzero count, readback uncertainty, identity epoch drift, or total-deadline
-expiry during this proof is closed
-`virtualDisplayDeviceZeroProofFailed`; creation is not attempted. Nefcon remains
-limited to the package's create/install operation and is not a removal
-authority. There is no PnPUtil text fallback. A native helper rejection or
-failure is closed `virtualDisplayDeviceRemoveFallbackFailed` in the existing
-diagnostic wire vocabulary and preserves the last proven residual identity-set
-hash; localized stdout is never parsed as success authority. The same
-diagnostic also carries a safe `removalRunner` authority for failures
-before a legal native result tuple exists. It distinguishes token encoding,
-pinned-helper resolution, Job start or start cleanup, bounded capture, native
-exit, UTF-8/JSON/schema validation, and completion. Cleanup is complete only
-when root and descendant processes are gone, the Job reports zero active
-processes, and both output pipes are closed; it never records argv, paths, raw
-output, exceptions, or device identities. The D-only validation harness must
-launch the pinned helper through this same runner and obtain a legal removal
-tuple, while start, cleanup, timeout, overflow, and pipe faults remain bounded
-and leave no helper process. This proves runner reachability only and does not
-perform a real device mutation or authorize an installer run.
+Core uninstall must invoke native VD uninstall before deleting its pinned
+helper, schemas, driver payload or marker. If VD cleanup fails, V1 stops Core
+payload, ACL, firewall and identity mutation, preserves the retry authority,
+and reports `Host仍保留、VD未确认移除、可重试卸载`; it never claims that Host
+or virtual display was removed. Failed/reboot/cleanup, an unverified result and
+`persistenceUnavailable` all take this same fail-closed path. Only verified
+`uninstalled`, `alreadyAbsent`, `uninstalledLegacyPackageRetained` or
+`uninstalledSharedPackageRetained` permits Core uninstall to continue. A
+legacy retained result leaves `legacyUnknown`; a v2 shared retained result
+leaves a fresh-present `notOwned` package as `retainedNotOwned` (or records
+fresh absence as `absentNotOwned`). Both prove exact nodes zero, clean only explicit
+owned certificate stores, remove the marker last, and disclose any retained
+package without mutating it. A v1 marker proves only its listed certificate
+stores, never package ownership from matching hash, binding or INF.
+`addedByLigase` is accepted only with exact closed provenance
+`absent → publishedByLigaseProvision → presentPinned`; preexisting, shared,
+already-bound or already-owned packages cannot acquire that ownership by
+identity inference. A first provision binds provenance to the current
+operation (index 0). Later healthy/read-only or uninstall results copy the v2
+marker's acquisition identity into index 1 of a two-element unique operation
+identity list, so they never claim that the current operation published the
+package. `notOwned|legacyUnknown` carries no acquisition provenance. Only
+`provision` with a completed `installed` package may use current-operation
+provenance. A verified `alreadyOwned` package may use historical provenance;
+all request/inventory/removal/zero/trust/package failure states use no
+provenance, and later create/readback/marker states follow the package state.
+Current acquisition uses `v2Pending/source=none` before a fresh marker commit,
+or `v1UpgradePending/source=v1` after a strict legacy-marker read. Only atomic
+write/flush/replace and exact readback becomes `v2Committed` or `v1Upgraded`;
+commit-stage failure is `v2CommitFailed` or `v1UpgradeFailed` and never claims
+durability. `v2Read` remains preexisting historical authority. If a crash
+occurs after package publication but before the marker commit, the next
+invocation cannot reconstruct ownership from package identity, INF or binding;
+it retains the package as non-owned/legacy-unknown and never deletes it. A new
+verified journal for that retained package is `v2RetainedCommitted`, not
+current acquisition. Failure to commit that retained journal is
+`v2RetainedCommitFailed`, or `v1RetainedUpgradeFailed` after a strict v1 read;
+neither claims current package acquisition. A terminal marker failure cannot
+remain in a pending/read/committed migration state, and because create already
+completed it must carry completed-or-failed compensation authority rather than
+`notRequired/none`.
 
-The outer fallback tuple and nested runner tuple are one authority: a
-pre-tuple runner failure must remain `processInvoke` with no fallback exit,
-whereas a completed runner can only project a validated native tuple or a
-completed removal. Token and file consumers reject any cross-spliced state.
+Certificate ownership follows the same no-inference rule per exact store,
+not as one boolean. The machine result and v2 marker order
+`LocalMachine\\Root` before `LocalMachine\\TrustedPublisher` and freeze each
+store's pre-state, action, readback and ownership. Only a store absent before
+this provision and added/read back by this operation is `addedByLigase`;
+already trusted stores are `notOwned`. Stores listed by strict v1 become
+historical `legacyOwned`; unlisted stores are independently classified by the
+current operation. Strict v2 reads preserve the exact historical entry set.
+The derived owned count and SHA-256 are schema-bound to the ordered UTF-8 pair
+`LocalMachine\\Root=<ownership>\nLocalMachine\\TrustedPublisher=<ownership>`
+with no BOM or trailing newline, so a
+partial add cannot claim both stores and an empty owned list is accepted only
+when both are non-owned. Uninstall removes only `addedByLigase|legacyOwned`
+stores, retains `notOwned` stores, and carries the unchanged per-store tuple
+through crash, reentry and marker-commit failure.
+For `uninstalledSharedPackageRetained`, the machine result separates an
+owned-certificate cleanup from an all-`notOwned` retention. The latter locks
+owned count zero, retains both stores without mutation, and reports aggregate
+trust only as fresh `retainedNotOwned` or `absentNotOwned`; it cannot be
+cross-spliced with owned/removal authority. Package retention, marker-last
+removal, stable zero and the verified Core-uninstall exit remain mandatory.
+The same implementation snapshot must remove the NSIS → PowerShell → batch legacy uninstall path and
+prove zero production/stage references. There is no transitional dual owner.
 
-Failure to read
-the count after mutation is closed
-`virtualDisplayDeviceRemoveReadbackFailed`; failure to observe monotonic
-progress within the settle or total deadline is
-`virtualDisplayDeviceRemoveSettleFailed`. Before writing the ownership marker or
-returning `virtualDisplayInstalled`, a purpose-built read-only native helper
-inventories every present and non-present PnP devnode through SetupAPI. It does
-not prefilter by setup class, friendly name, instance text, presence, or driver
-binding: a phantom, unbound, stopped, or class-unknown node remains visible to
-duplicate prevention. Inside the helper, HardwareIds are read for each devnode
-and only a complete ordinal-ignore-case `ROOT\SUDOMAKER\SUDOVDA` match is
-retained. InstanceId, present/status, and DriverInf are then read only for
-those retained nodes. DriverInf is read with the Windows SDK
-`DEVPKEY_Device_DriverInfPath` key (PID 5). The strict JSON result contains at most sixteen matching
-nodes and no unrelated device data.
+Provision strictly reads any existing ownership journal immediately after the
+first proven inventory and before device removal or trust/package/create/marker
+mutation. A failure is the dedicated
+`ownershipReadFailed/readOwnership` result with the fresh proven inventory,
+removal and zero proof not attempted, every resource component not attempted,
+unknown marker ownership, current operation identity only and resource mutation
+count zero. Unknown/unreadable/duplicate/schema/type/version/identity-change
+failures do not name a marker version; only a strictly identified v1/v2 marker
+may report a later conflict or readback failure. It is never rewritten as a
+request, inventory, package or marker-commit failure.
 
-The helper is a self-contained x64 payload built from repository source. Its
-relative path and exact artifact hash are recorded in `privilegedHelpers` and
-verified immediately before every invocation; `PATH`, `SystemRoot`, caller
-input, and a dynamically substituted executable are never authority. The
-elevated owner incrementally captures raw stdout/stderr with a 64 KiB cap per
-stream, enforces one ten-second hard cap, and uses a kill-on-close Job with
-bounded root wait, pipe drain, and zero-active-process accounting on timeout or
-overflow. It rejects nonzero exit, stderr,
-oversized output, duplicate JSON properties, schema drift, duplicate instance
-identities, or unknown fields. Any invocation, enumeration, property, output,
-cleanup, or schema uncertainty makes the complete inventory unknown and can
-never become a zero-device result.
-
-This replaces the former full-system PowerShell property pipeline, its 32-node
-batching, EncodedCommand child, Job/pipe containment, and StartExact inventory
-diagnostics. Those mechanisms are not a secondary or fallback authority. Zero
-before creation requires the helper's complete result to be empty. Final
-success then requires
-exactly one total matching node which is present and has a bound Windows OEM
-INF. Hardware IDs are compared using Windows'
-ordinal-ignore-case identity semantics without prefix, suffix, or substring
-matching, and a bound Windows OEM INF. Zero or duplicate matching devices,
-missing driver binding, or readback failure is closed. The readback projects
-only the count and a SHA-256 of the sorted unique instance identities, never the
-raw identities.
-
-The child action atomically persists a strict, safe virtual-display diagnostic
-containing the install stage, readback code, child/remove and fallback exits,
-the closed fallback substage and reason, removal count, process cleanup state,
-marker stage, total observed and present counts,
-identity-set hash, binding result, device-recovery state, residual-device
-state, marker/certificate compensation state and failure reason, and the final
-terminal-enumeration state and reason. Inventory failure persists only a closed
-helper invocation/schema/cleanup classification. It never stores helper output,
-executable path, command line, unrelated device data, raw instance identity, or
-exception text, and it never replaces the primary virtual-display result. It
-also records a bounded create
-provenance tuple: the invocation count (zero or one), a fresh invocation-ID
-SHA-256, the pre-create identity-set hash, and a closed post-create snapshot
-state/reason. A completed post-create snapshot carries its real identity-set
-hash, including the canonical empty-set hash when fresh enumeration proves
-zero devices; an unavailable or invalid snapshot carries that same empty hash
-only when its failed state and reason exactly match the terminal enumeration
-failure, rather than fabricating or cross-splicing identity authority. These fields
-distinguish one managed create invocation that exposes multiple nodes from a
-repeated invocation without persisting the invocation ID or raw device
-identities. A pre-tuple fallback failure therefore
-distinguishes trusted-tool resolution, process start or cleanup, timeout,
-bounded-output, and tuple-validation boundaries without persisting paths,
-output, exception text, or raw device identities. Device recovery is
-`completed` only when enumeration proves zero before creation; a completed
-transaction, shortcut, firewall, marker, or certificate compensation never
-asserts that PnP state was restored. Any terminal post-mutation readback error
-sets its observed count to the closed unknown value, binding to false, and
-residual state to `unknown`, rather than retaining an earlier transient zero.
-After every marker and certificate compensation attempt, one fresh terminal
-enumeration replaces the earlier residual projection; compensation failure
-does not overwrite the primary removal or fallback failure. A new child action first removes any
-previous diagnostic; the
-strict readback binds the replacement to the current manifest source and a
-bounded UTC freshness window. It contains no stdout, stderr, path, device identity, or
-exception text. NSIS accepts success only when the child exit is zero and its
-entire stdout is the exact terminal success JSON. On failure, the child also
-returns the same closed diagnostic as a bounded ASCII, SHA-bound token. NSIS
-passes that token without interpreting its contents; `FinalizeInstall` accepts
-it only after strict base64url, hash, unique-property, schema, source-head, and
-freshness validation. This secondary transport preserves the original failure
-tuple when the primary diagnostic ACL or atomic file write is unavailable.
-Both file and token consumers enforce the same cross-field correlations. A
-fallback which was not attempted cannot carry an exit or completed stage; a
-completed or not-required compensation cannot carry a failure reason; and the
-terminal state, reason, count, residual class, and binding must describe one
-internally consistent authority. A completed zero count requires the frozen
-empty-set SHA-256, while any positive count requires a non-empty-set identity
-hash; failed or not-attempted terminal reads carry only the empty-set hash and
-cannot preserve an earlier sample as terminal authority. Cross-spliced
-diagnostics are rejected before they can reach `last-outcome.json`.
-`FinalizeInstall` includes the validated tuple in `last-outcome.json`, so a
-duplicate-device count or other failed UI retains the first closed
-virtual-display authority for later readback. A secondary persistence failure
-never replaces that original result code.
-Finalize independently parses the existing token and file, chooses the oldest
-valid `writtenUtc` authority (with the file winning an exact timestamp tie),
-and freezes it before performing its fresh SetupAPI-helper readback. An invalid
-token cannot suppress a valid file, and a later valid transport cannot replace
-an earlier closed primary. The fresh readback is projected separately as the
-top-level `secondaryReadback` authority for safe stage/reason, cleanup, root/job-zero,
-dual-pipe closure, and count/hash/binding projection. A helper start, timeout,
-pipe, output, UTF-8/JSON/schema, SetupAPI-result, or cleanup failure is written
-with `failedField=virtualDisplay`; it cannot bypass the last-outcome writer or
-replace an earlier primary failure. These fields never contain raw output,
-executable paths, argv, device IDs, or exception text.
-The purpose-built SetupAPI helper is a single bounded inventory authority, so a
-completed inventory records zero legacy property-batch counters, a current
-batch of `-1`, and `notRequired` batch cleanup. This closed shape applies even
-when the helper returns one or more exact-HWID devices; the removed PowerShell
-chunk geometry is not used to reject an otherwise valid earlier primary.
-Before manifest, artifact, transaction, or helper reads, Finalize also writes a
-minimal same-directory atomic `finalize-handoff.json`. Its closed state moves
-through `entered`, primary absent/failed/selected and frozen, fresh-readback,
-writer-started, and completed (or persistence-unavailable) authority. A valid
-token/file primary is frozen and projected into `last-outcome.json` before any
-later product readback can fail. The handoff contains only state/source/reason
-enums and timestamps; it never contains raw output, paths, device identities,
-or exception text. Standard and last-resort outcome consumers validate the
-same state/selection correlation, so a later failure cannot leave only an
-older `integrationStarted` projection once a closed primary exists.
-The same secondary object records the closed existing-primary selection
-state/source/reason. In particular, an invalid token with a valid file is
-`selected/file/tokenInvalid`; impossible source/reason cross-splices are
-rejected by both standard and last-resort evidence consumers.
-When the closed reason is `schema`, `finalizePreReadSchemaReason` and
-`finalizePreReadSchemaCount` distinguish missing, unknown, or duplicate
-properties, record-count, type, enum, schema-version, cross-field, or identity failures without
-persisting the rejected JSON or any device value. The count is the safe number
-of closed-schema violations; a top-level null, an empty record set, or a schema
-version mismatch is always counted as at least one violation.
-The D-only evidence gate injects actual diagnostic-writer failures at temporary
-create/open, write, flush, dispose failure/retry, close, atomic replace,
-readback, and hash; every
-branch must preserve the existing target bytes and frozen primary and leave no
-temporary or backup file.
-Before any final evidence write, Finalize freezes the validated primary tuple
-in memory. Correlation, serialization, temporary-file creation/write, atomic
-move, final readback, or hash failure is recorded separately as the closed
-`secondaryWriter` state/reason and never clears or rewrites the primary. The
-normal writer uses a unique same-directory write-through temporary file,
-atomic replace/move, byte readback, and SHA-256 readback. If it fails, a smaller
-independent last-resort writer consumes the already-frozen primary JSON and
-writes only safe primary and secondary persistence authority; it does not
-rerun the failing correlation or serialization path. If both writers fail,
-the terminal wire result is explicitly `persistenceUnavailable` and does not
-claim that a typed last-outcome exists. D-only behavior gates cover token/file
-consumer failures and every writer stage, require one final outcome when the
-last-resort succeeds, and require zero temporary-file residue.
-
-The ownership marker then uses a same-directory
-write-through temporary file, byte and ACL readback, and an atomic replace or
-move. A write, replace, or final marker readback failure is closed
-`virtualDisplayMarkerCommitFailed`. On either path, the helper restores the
-exact pre-existing marker bytes or its prior absence, removes transaction temp
-files, and may remove only certificate-store entries which were absent before
-this exact invocation and have no dependent device. Failure to prove marker,
-temp-file, or certificate rollback is `virtualDisplayRollbackFailed`.
-An unchanged pre-existing marker is treated as an already-restored no-op and
-is byte-read back rather than unnecessarily replaced; this prevents a
-secondary marker write from masking the primary device-count failure.
-Pre-existing certificates and markers are not claimed or deleted.
-Candidate construction requires an explicitly supplied official nefcon v1.8.0
-x64 console tool. Before producing the payload, the build verifies its fixed
-size, SHA-256, Authenticode publisher and timestamp, copies only those exact
-bytes, and records the tool identity in the manifest. It never searches
-`PATH` or downloads an installer tool.
-The SudoVDA UMDF binary is a second explicit external build input rather than a
-repository binary. Its authority is the official Apollo v0.4.6 driver package
-whose INF and catalog bytes match the canonical package in this repository.
-Before any build or staging work, the installer build requires the exact
-83,216-byte x64 `SudoVDA.dll`, SHA-256
-`47EE263CB5DE9382C6630A2D7F3DAFEC4A49419F953BEEC869CA5DD0C460FF63`,
-embedded signer thumbprint
-`3C918FC73525AD8B1521B6DB26B71F694277CC49`, and INF driver version
-`1.10.9.289`. The INF `SourceDisksFiles`, `CopyFiles`, and service-binary
-references must form the exact `SudoVDA.dll` closure. The build copies that
-validated binary beside the INF/CAT/CER files and records its size, hash,
-architecture, version, and signer in the package manifest. Missing, extra,
-wrong-hash, wrong-architecture, wrong-signer, or version-mismatched driver
-input fails before candidate creation. Installed-tree bytes, `PATH`, and
-network fallback are never package authority.
-The batch wrapper emits one bounded
-closed tuple and preserves the exit of each certificate, device-create and
-driver-package step; its final `popd` cannot replace a failed child exit with
-success. The managed owner independently binds that tuple to the process exit
-and distinguishes missing/wrong tools, certificate Root/TrustedPublisher
-failure, device creation, driver package installation, timeout/output failure,
-reboot-required state, and final present-device plus bound-OEM-INF readback.
-The process owner reads stdout and stderr incrementally as raw bytes into
-separate fixed 512-byte buffers and rejects invalid UTF-8. It creates the
-command interpreter suspended, binds it to a kill-on-close Job Object, and
-only then resumes its first thread. A `STARTUPINFOEX` handle list permits only
-the stdout and stderr write handles to cross into the child; unrelated
-inheritable handles from the elevated owner are excluded. Overflow, timeout,
-or pipe failure uses
-that retained Job authority even if the root process has already exited; the
-original typed failure is returned only after root wait, zero active Job
-processes, and bounded closure of both pipe reads. Assignment, resume,
-termination, wait, Job accounting, or pipe-cleanup uncertainty is the distinct
-closed `virtualDisplayInstallerCleanupFailed`. Before Job assignment, the
-native owner retains the root handle until termination and a signaled wait are
-proved. After assignment it additionally requires Job termination and zero
-active Job processes. If its first bounded cleanup cannot prove those facts,
-it retains the handles and exposes only a numeric PID to the D-only caller for
-a second bounded containment pass; it never drops the last termination
-authority while claiming zero residue. This retained authority exists only
-inside the current helper process; it is not persistent across PowerShell
-exit. If the second pass also fails, the closed result reports failed cleanup,
-the retained nonzero PID, and the incomplete secondary state. The validation
-harness then performs a separate bounded accident cleanup and proves PID zero;
-production reports the residual PID/user-action boundary and never calls the
-failed cleanup completed.
-A D-only process seam requires both the validation-harness environment and an
-exact explicit D-root. It exercises exact success, every closed child exit,
-malformed and cross-spliced tuples, both stream overflows, timeout, inherited
-pipe and descendant cleanup, including stdout/stderr overflow after the root
-exits while a descendant retains a pipe, plus assignment/resume/termination/
-wait/Job-accounting/pipe cleanup faults and second-pass containment, without
-opening `Cert:`, PnP or ProgramData.
-The D-only validation seam for this transaction requires both the repository
-validation-harness switch and an exact explicit D-root binding; production
-installer flows cannot select it. It exercises every marker write/replace/
-readback failure and certificate-compensation branch without opening
-`Cert:`, PnP, or ProgramData.
+If the native owner cannot strictly read the ownership journal after terminal
+zero and before cleanup, it returns the dedicated closed
+`ownershipReadFailed/cleanupOwnership` result. Unknown/unreadable/schema or
+TOCTOU failures do not claim a marker version or any package/certificate
+ownership; only a strictly identified v1/v2 journal may report a later
+conflict or readback failure, and package non-ownership is retained only when
+it was independently proven before that failure. Package, trust, marker and Core mutation remain
+unstarted, the retry payload remains installed, and Core uninstall stops.
 
 Firewall installation uses only the Ligase-owned manifest and
 `Manage-LigaseFirewall.ps1`: Private profile, LocalSubnet, the managed

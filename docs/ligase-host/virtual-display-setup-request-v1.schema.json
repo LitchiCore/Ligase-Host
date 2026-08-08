@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ligase.local/schemas/virtual-display-setup-request-v1.schema.json",
+  "title": "Ligase Virtual Display Setup Request v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion", "operation", "operationIdSha256", "createdUtc",
+    "sourceHead", "helperSha256", "packageSha256", "hardwareId",
+    "hardCapMilliseconds", "settleMilliseconds", "trustSelected",
+    "packageSelected", "createSelected", "legacyMarkerPolicy",
+    "packageOwnershipPolicy", "transport"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "operation": { "enum": ["provision", "uninstall"] },
+    "operationIdSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "createdUtc": { "type": "string", "format": "date-time" },
+    "sourceHead": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "helperSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "packageSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "hardwareId": { "const": "ROOT\\SUDOMAKER\\SUDOVDA" },
+    "hardCapMilliseconds": { "const": 120000 },
+    "settleMilliseconds": { "type": "integer", "minimum": 500, "maximum": 60000 },
+    "trustSelected": { "type": "boolean" },
+    "packageSelected": { "type": "boolean" },
+    "createSelected": { "type": "boolean" },
+    "legacyMarkerPolicy": { "const": "v1CertificateOnly" },
+    "packageOwnershipPolicy": { "const": "provisionOperationProvenanceOnly" },
+    "transport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode", "operationDirectoryAcl", "operationDirectoryNonReparse",
+        "requestCreateNew", "requestFlushCompleted", "requestWriteHandlesClosed",
+        "requestReadOnlyHandle", "requestWriteSharing", "resultCreateNew",
+        "resultExclusiveHandle", "requestFileIdentitySha256",
+        "resultFileIdentitySha256"
+      ],
+      "properties": {
+        "mode": { "const": "inheritedHandles" },
+        "operationDirectoryAcl": { "const": "systemAdministratorsCallerOnly" },
+        "operationDirectoryNonReparse": { "const": true },
+        "requestCreateNew": { "const": true },
+        "requestFlushCompleted": { "const": true },
+        "requestWriteHandlesClosed": { "const": true },
+        "requestReadOnlyHandle": { "const": true },
+        "requestWriteSharing": { "const": false },
+        "resultCreateNew": { "const": true },
+        "resultExclusiveHandle": { "const": true },
+        "requestFileIdentitySha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "resultFileIdentitySha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "operation": { "const": "provision" } } },
+      "then": { "properties": {
+        "trustSelected": { "const": true },
+        "packageSelected": { "const": true },
+        "createSelected": { "const": true }
+      } }
+    },
+    {
+      "if": { "properties": { "operation": { "const": "uninstall" } } },
+      "then": { "properties": {
+        "trustSelected": { "const": false },
+        "packageSelected": { "const": false },
+        "createSelected": { "const": false }
+      } }
+    }
+  ]
+}
