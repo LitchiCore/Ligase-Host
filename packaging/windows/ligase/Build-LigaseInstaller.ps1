@@ -300,9 +300,15 @@ try {
       "Deployment/Drivers/sudovda/$name")))
     $virtualDisplayPackageStream.Write($bytes, 0, $bytes.Length)
   }
-  $virtualDisplayPackageSha256 = [Convert]::ToHexString(
-    [Security.Cryptography.SHA256]::HashData(
-      $virtualDisplayPackageStream.ToArray())).ToLowerInvariant()
+  $virtualDisplayPackageHasher = [Security.Cryptography.SHA256]::Create()
+  try {
+    $virtualDisplayPackageHash = $virtualDisplayPackageHasher.ComputeHash(
+      $virtualDisplayPackageStream.ToArray())
+    $virtualDisplayPackageSha256 = [BitConverter]::ToString(
+      $virtualDisplayPackageHash).Replace('-', '').ToLowerInvariant()
+  } finally {
+    $virtualDisplayPackageHasher.Dispose()
+  }
 } finally {
   $virtualDisplayPackageStream.Dispose()
 }

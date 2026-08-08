@@ -1097,6 +1097,85 @@ public sealed class FreshInstallPackagingTests
             repo, "tools", "Ligase.VirtualDisplay.InventoryHelper",
             "Ligase.VirtualDisplay.InventoryHelper.csproj")));
     }
+
+    [TestMethod]
+    public async Task InstallerPackageHashUsesWindowsPowerShell51CompatibleDisposedHasher()
+    {
+        var repo = FindRepositoryRoot();
+        var build = File.ReadAllText(Path.Combine(
+            repo, "packaging", "windows", "ligase",
+            "Build-LigaseInstaller.ps1"));
+
+        Assert.IsFalse(build.Contains("[Security.Cryptography.SHA256]::HashData(",
+            StringComparison.Ordinal));
+        Assert.IsFalse(build.Contains("[Convert]::ToHexString(",
+            StringComparison.Ordinal));
+        StringAssert.Contains(build,
+            "$virtualDisplayPackageHasher = [Security.Cryptography.SHA256]::Create()");
+        StringAssert.Contains(build,
+            "$virtualDisplayPackageHasher.ComputeHash(");
+        StringAssert.Contains(build,
+            "$virtualDisplayPackageHasher.Dispose()");
+        StringAssert.Contains(build,
+            "[BitConverter]::ToString(");
+        StringAssert.Contains(build,
+            ".Replace('-', '').ToLowerInvariant()");
+
+        var root = Path.Combine(
+            @"D:\Development\Ligase\Build",
+            "ps51-package-hash-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var start = new ProcessStartInfo
+            {
+                FileName = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.Windows),
+                    "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+                WorkingDirectory = root,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            start.ArgumentList.Add("-NoLogo");
+            start.ArgumentList.Add("-NoProfile");
+            start.ArgumentList.Add("-NonInteractive");
+            start.ArgumentList.Add("-Command");
+            start.ArgumentList.Add("& { " +
+                "$ErrorActionPreference='Stop'; " +
+                "$chunks=@([byte[]](0,1,2,255),[Text.Encoding]::UTF8.GetBytes('Ligase')); " +
+                "$stream=[IO.MemoryStream]::new(); try { foreach($chunk in $chunks){$stream.Write($chunk,0,$chunk.Length)}; " +
+                "$bytes=$stream.ToArray() } finally { $stream.Dispose() }; " +
+                "$path=Join-Path (Get-Location) 'canonical.bin'; [IO.File]::WriteAllBytes($path,$bytes); " +
+                "$hasher=[Security.Cryptography.SHA256]::Create(); try { $hash=$hasher.ComputeHash($bytes); " +
+                "$hex=[BitConverter]::ToString($hash).Replace('-','').ToLowerInvariant() } finally { $hasher.Dispose() }; " +
+                "$disposedRejected=$false; try { [void]$hasher.ComputeHash($bytes) } catch [ObjectDisposedException] { $disposedRejected=$true }; " +
+                "[ordered]@{version=$PSVersionTable.PSVersion.ToString(); hash=$hex; independent=(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant(); " +
+                "length=$hex.Length; lowercase=($hex -cmatch '^[0-9a-f]{64}$'); disposedRejected=$disposedRejected} | ConvertTo-Json -Compress }");
+            using var process = Process.Start(start)
+                ?? throw new InvalidOperationException("powershellStartFailed");
+            var output = await process.StandardOutput.ReadToEndAsync();
+            var error = await process.StandardError.ReadToEndAsync();
+            await process.WaitForExitAsync();
+
+            Assert.AreEqual(0, process.ExitCode, error);
+            using var result = JsonDocument.Parse(output);
+            var value = result.RootElement;
+            StringAssert.StartsWith(value.GetProperty("version").GetString(), "5.1");
+            Assert.AreEqual(
+                value.GetProperty("independent").GetString(),
+                value.GetProperty("hash").GetString());
+            Assert.AreEqual(64, value.GetProperty("length").GetInt32());
+            Assert.IsTrue(value.GetProperty("lowercase").GetBoolean());
+            Assert.IsTrue(value.GetProperty("disposedRejected").GetBoolean());
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
     [TestMethod]
     public async Task InstallDirectoryResolverSupportsExplicitDAndFreshProgramDataDefault()
     {
