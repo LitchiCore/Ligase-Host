@@ -2766,7 +2766,7 @@ function Write-InstallerEvidence {
       "yyyy-MM-ddTHH:mm:ss.fffZ",
       [Globalization.CultureInfo]::InvariantCulture)
   }
-  Write-InstallerEvidenceDocument $document
+  $null = Write-InstallerEvidenceDocument $document
   return $document
 }
 

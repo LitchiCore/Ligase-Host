@@ -1055,6 +1055,11 @@ public sealed class FreshInstallPackagingTests
             "resultFileIdentitySha256 = [string]$script:virtualDisplayResultIdentitySha256");
         StringAssert.Contains(management,
             "resultFileSha256 = [string]$script:virtualDisplayResultSha256");
+        StringAssert.Contains(management,
+            "$null = Write-InstallerEvidenceDocument $document");
+        Assert.IsFalse(management.Contains(
+            "\n  Write-InstallerEvidenceDocument $document\n  return $document",
+            StringComparison.Ordinal));
         StringAssert.Contains(build, "resultSchemaSha256");
         StringAssert.Contains(nsis, "-Action InstallVirtualDisplay");
         StringAssert.Contains(nsis, "-Action UninstallVirtualDisplay");

@@ -26,7 +26,10 @@ if (-not (Test-Path -LiteralPath (Join-Path $sourceRoot ".git") -PathType Contai
 
 function Get-Sha256([byte[]]$Bytes) {
   $sha = [Security.Cryptography.SHA256]::Create()
-  try { return [Convert]::ToHexString($sha.ComputeHash($Bytes)).ToLowerInvariant() }
+  try {
+    return [BitConverter]::ToString($sha.ComputeHash($Bytes)).Replace(
+      "-", "").ToLowerInvariant()
+  }
   finally { $sha.Dispose() }
 }
 
@@ -189,6 +192,11 @@ if ($emit.exitCode -ne 0 -or $emit.stderr.Length -ne 0) {
   throw "resultConsumerFixtureGenerationFailed"
 }
 $manage = Join-Path $PSScriptRoot "Manage-LigaseInstallation.ps1"
+$windowsPowerShell = Join-Path $env:SystemRoot (
+  "System32\WindowsPowerShell\v1.0\powershell.exe")
+if (-not (Test-Path -LiteralPath $windowsPowerShell -PathType Leaf)) {
+  throw "windowsPowerShell51Missing"
+}
 $consumerEnvironment = @{ LIGASE_INSTALL_VALIDATION_HARNESS="1" }
 foreach ($case in @(
     @{name="valid"; accepted=$true},
@@ -245,6 +253,75 @@ $runnerManifest = [ordered]@{
 } | ConvertTo-Json -Depth 7 -Compress
 [IO.File]::WriteAllText((Join-Path $runnerRoot "ligase-install-manifest.json"),
   $runnerManifest, [Text.UTF8Encoding]::new($false))
+$recordEnvironment = @{ LIGASE_INSTALL_VALIDATION_HARNESS="1" }
+$recordRun = Invoke-Bounded $windowsPowerShell @(
+  "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", $manage,
+  "-Action", "RecordEvidence", "-InstallDirectory", $runnerRoot,
+  "-ValidationRoot", $runnerRoot, "-EvidencePhase", "initialized",
+  "-EvidenceResultCode", "notStarted") $recordEnvironment 10000
+$recordLines = @($recordRun.stdout -split "`r?`n" | Where-Object Length)
+if ($recordRun.exitCode -ne 0 -or $recordRun.stderr.Length -ne 0 -or
+    $recordLines.Count -ne 1 -or
+    $recordLines[0] -cne ('{"code":"installerEvidenceRecorded","success":true,' +
+      '"phase":"initialized","resultCode":"notStarted"}')) {
+  throw "installerEvidenceAcknowledgementInvalid"
+}
+$recordAck = $recordLines[0] | ConvertFrom-Json
+if (@($recordAck).Count -ne 1 -or
+    $recordAck.code -cne "installerEvidenceRecorded" -or
+    -not [bool]$recordAck.success -or $recordAck.phase -cne "initialized" -or
+    $recordAck.resultCode -cne "notStarted") {
+  throw "installerEvidenceAcknowledgementShapeInvalid"
+}
+$recordPath = Join-Path $runnerRoot "last-outcome.json"
+$recordBytes = [IO.File]::ReadAllBytes($recordPath)
+$recordHash = Get-Sha256 $recordBytes
+$recordReadback = [IO.File]::ReadAllBytes($recordPath)
+if ((Get-Sha256 $recordReadback) -cne $recordHash -or
+    ([Text.UTF8Encoding]::new($false, $true).GetString($recordReadback) |
+      ConvertFrom-Json).phase -cne "initialized" -or
+    @(Get-ChildItem -LiteralPath $runnerRoot -Force -Filter (
+      ".last-outcome-*.tmp")).Count -ne 0 -or
+    @(Get-ChildItem -LiteralPath $runnerRoot -Force -Filter (
+      ".last-outcome-backup-*.tmp")).Count -ne 0) {
+  throw "installerEvidenceAtomicReadbackInvalid"
+}
+$duplicateFixturePath = Join-Path $root "duplicate-pipeline-fixture.ps1"
+try {
+  [IO.File]::WriteAllText($duplicateFixturePath, @'
+$a = @(
+  [pscustomobject]@{ phase="initialized"; resultCode="notStarted" },
+  [pscustomobject]@{ phase="initialized"; resultCode="notStarted" })
+@{
+  count=@($a).Count
+  phase=[string]$a.phase
+  resultCode=[string]$a.resultCode
+} | ConvertTo-Json -Compress
+'@, [Text.UTF8Encoding]::new($false))
+  $duplicateRun = Invoke-Bounded $windowsPowerShell @(
+    "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+    "-File", $duplicateFixturePath) @{} 10000
+  $duplicateProjection = $duplicateRun.stdout | ConvertFrom-Json
+  if ($duplicateRun.exitCode -ne 0 -or $duplicateRun.stderr.Length -ne 0 -or
+      [int]$duplicateProjection.count -ne 2 -or
+      $duplicateProjection.phase -cne "initialized initialized" -or
+      $duplicateProjection.resultCode -cne "notStarted notStarted") {
+    throw "installerEvidenceDuplicatePipelineFixtureInvalid"
+  }
+} finally {
+  if (Test-Path -LiteralPath $duplicateFixturePath) {
+    Remove-Item -LiteralPath $duplicateFixturePath -Force
+  }
+}
+$faultRun = Invoke-Bounded $windowsPowerShell @(
+  "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", $manage,
+  "-Action", "RecordEvidence", "-InstallDirectory", $runnerRoot,
+  "-ValidationRoot", $runnerRoot, "-EvidenceResultCode", "invalid-value") `
+  $recordEnvironment 10000
+if ($faultRun.exitCode -eq 0 -or
+    $faultRun.stdout.IndexOf('"success":true', [StringComparison]::Ordinal) -ge 0) {
+  throw "installerEvidenceWriterFaultReportedSuccess"
+}
 $runnerPassed = 0
 foreach ($fault in @("timeout", "overflow", "dualPipePending",
     "startRetain", "schemaInvalidSuccess")) {
@@ -370,6 +447,14 @@ if (@(Get-ChildItem -LiteralPath $root -Force -Filter ".*.tmp").Count -ne 0) {
     accepted = 1
     rejected = 2
     schemaPinned = $true
+  }
+  installerEvidenceAcknowledgement = [ordered]@{
+    windowsPowerShell51 = $true
+    lineCount = 1
+    objectCount = 1
+    atomicReadback = $true
+    duplicatePipelineRejected = $true
+    faultSuccessRejected = $true
   }
   productionRunner = [ordered]@{
     faultCases = $runnerPassed

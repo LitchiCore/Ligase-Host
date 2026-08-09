@@ -198,6 +198,10 @@ states, and an UTC timestamp. It never contains exception text, stack traces,
 command lines, raw bootstrap or authority documents, certificates, tokens, or
 other secrets. Initialization, confirmation, cancellation, integration
 failure, final readback, and success each update this same evidence.
+The initialization writer returns exactly one typed document after its atomic
+readback; NSIS accepts only the corresponding single-line JSON acknowledgement.
+Any extra pipeline value or acknowledgement mismatch aborts before product
+integration begins and does not weaken the protected evidence path.
 
 Installed shortcuts are machine-scoped. Start Menu and the optional Desktop
 shortcut use the Windows all-users shell folders and the stable root launcher;
