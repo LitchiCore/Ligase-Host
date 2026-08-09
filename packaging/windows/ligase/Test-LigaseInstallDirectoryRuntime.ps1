@@ -140,6 +140,27 @@ foreach ($pattern in $legacyPatterns) {
     throw "legacyVirtualDisplayAuthorityPresent"
   }
 }
+$nsisText = [IO.File]::ReadAllText($nsisPath)
+$uninstallMatches = [Text.RegularExpressions.Regex]::Matches(
+  $nsisText, '(?m)^Section\s+"Uninstall"\s*$')
+$localizedUninstallMatches = [Text.RegularExpressions.Regex]::Matches(
+  $nsisText, '(?m)^Section\s+"卸载"\s*$')
+$uninstallBlock = [Text.RegularExpressions.Regex]::Match(
+  $nsisText, '(?ms)^Section\s+"Uninstall"\s*\r?\n(?<body>.*?)^SectionEnd\s*$')
+if ($uninstallMatches.Count -ne 1 -or
+    $localizedUninstallMatches.Count -ne 0 -or
+    -not $uninstallBlock.Success -or
+    $uninstallBlock.Groups['body'].Value.IndexOf(
+      '-Action UninstallVirtualDisplay', [StringComparison]::Ordinal) -lt 0 -or
+    $uninstallBlock.Groups['body'].Value.IndexOf(
+      '-Action Uninstall ', [StringComparison]::Ordinal) -lt 0 -or
+    $uninstallBlock.Groups['body'].Value.IndexOf(
+      'DeleteRegKey HKLM', [StringComparison]::Ordinal) -lt 0 -or
+    $uninstallBlock.Groups['body'].Value.IndexOf(
+      'RMDir /r "$INSTDIR"', [StringComparison]::Ordinal) -lt 0) {
+  throw "reservedUninstallSourceGateFailed"
+}
+$uninstallDeclaration = $uninstallMatches[0].Value
 $setupText = [IO.File]::ReadAllText($setupSource)
 if ($productionText.IndexOf("Ligase.VirtualDisplay.Setup",
       [StringComparison]::Ordinal) -lt 0 -or
@@ -322,6 +343,136 @@ if ($faultRun.exitCode -eq 0 -or
     $faultRun.stdout.IndexOf('"success":true', [StringComparison]::Ordinal) -ge 0) {
   throw "installerEvidenceWriterFaultReportedSuccess"
 }
+$uninstallSelectionRun = Invoke-Bounded $windowsPowerShell @(
+  "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", $manage,
+  "-Action", "RecordEvidence", "-InstallDirectory", $runnerRoot,
+  "-ValidationRoot", $runnerRoot, "-EvidencePhase", "uninstalling",
+  "-EvidenceSuccess", "unknown", "-EvidenceResultCode", "uninstallStarted",
+  "-EvidenceUninstallDisposition", "Quarantine", "-EvidenceUninstallState",
+  "pending") $recordEnvironment 10000
+if ($uninstallSelectionRun.exitCode -ne 0 -or
+    $uninstallSelectionRun.stdout.Trim() -cne
+      '{"code":"installerEvidenceRecorded","success":true,"phase":"uninstalling","resultCode":"uninstallStarted"}') {
+  throw "uninstallSelectionEvidenceInvalid"
+}
+$selectionDocument = [IO.File]::ReadAllText($recordPath) | ConvertFrom-Json
+if ($selectionDocument.phase -cne "uninstalling" -or
+    $selectionDocument.uninstall.disposition -cne "Quarantine" -or
+    $selectionDocument.uninstall.state -cne "pending") {
+  throw "uninstallSelectionEvidenceReadbackInvalid"
+}
+$uninstallResultRun = Invoke-Bounded $windowsPowerShell @(
+  "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", $manage,
+  "-Action", "RecordEvidence", "-InstallDirectory", $runnerRoot,
+  "-ValidationRoot", $runnerRoot, "-EvidencePhase", "uninstalled",
+  "-EvidenceSuccess", "true", "-EvidenceResultCode", "uninstalled",
+  "-EvidenceUninstallDisposition", "Quarantine", "-EvidenceUninstallState",
+  "quarantined") $recordEnvironment 10000
+if ($uninstallResultRun.exitCode -ne 0 -or
+    $uninstallResultRun.stdout.Trim() -cne
+      '{"code":"installerEvidenceRecorded","success":true,"phase":"uninstalled","resultCode":"uninstalled"}') {
+  throw "uninstallResultEvidenceInvalid"
+}
+$resultDocument = [IO.File]::ReadAllText($recordPath) | ConvertFrom-Json
+if ($resultDocument.phase -cne "uninstalled" -or
+    $resultDocument.success -ne $true -or
+    $resultDocument.uninstall.disposition -cne "Quarantine" -or
+    $resultDocument.uninstall.state -cne "quarantined" -or
+    @(Get-ChildItem -LiteralPath $runnerRoot -Force -Filter (
+      ".last-outcome-*.tmp")).Count -ne 0 -or
+    @(Get-ChildItem -LiteralPath $runnerRoot -Force -Filter (
+      ".last-outcome-backup-*.tmp")).Count -ne 0) {
+  throw "uninstallResultEvidenceReadbackInvalid"
+}
+$uninstallCrossSpliceRun = Invoke-Bounded $windowsPowerShell @(
+  "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", $manage,
+  "-Action", "RecordEvidence", "-InstallDirectory", $runnerRoot,
+  "-ValidationRoot", $runnerRoot, "-EvidencePhase", "uninstalled",
+  "-EvidenceSuccess", "true", "-EvidenceResultCode", "uninstalled",
+  "-EvidenceUninstallDisposition", "Preserve", "-EvidenceUninstallState",
+  "pending") $recordEnvironment 10000
+if ($uninstallCrossSpliceRun.exitCode -eq 0 -or
+    $uninstallCrossSpliceRun.stdout.IndexOf('"success":true',
+      [StringComparison]::Ordinal) -ge 0) {
+  throw "uninstallEvidenceCrossSpliceAccepted"
+}
+
+$lifecycleRoot = Join-Path $root "compiled-lifecycle"
+New-Item -ItemType Directory -Path $lifecycleRoot | Out-Null
+$lifecycleInstall = Join-Path $lifecycleRoot "installed"
+$lifecycleScript = Join-Path $lifecycleRoot "lifecycle.nsi"
+$lifecycleInstaller = Join-Path $lifecycleRoot "fixture-installer.exe"
+$escapedInstaller = $lifecycleInstaller.Replace('$', '$$')
+$escapedInstall = $lifecycleInstall.Replace('$', '$$')
+[IO.File]::WriteAllText($lifecycleScript, @"
+Unicode true
+RequestExecutionLevel user
+SilentInstall silent
+SilentUnInstall silent
+OutFile `"$escapedInstaller`"
+InstallDir `"$escapedInstall`"
+Section `"Core`"
+  SetOutPath `"`$INSTDIR`"
+  FileOpen `$0 `"`$INSTDIR\payload805`" w
+  FileWrite `$0 `"805`"
+  FileClose `$0
+  FileOpen `$0 `"`$INSTDIR\arp`" w
+  FileClose `$0
+  FileOpen `$0 `"`$INSTDIR\shortcut`" w
+  FileClose `$0
+  FileOpen `$0 `"`$INSTDIR\firewall`" w
+  FileClose `$0
+  FileOpen `$0 `"`$INSTDIR\bootstrap`" w
+  FileClose `$0
+  FileOpen `$0 `"`$INSTDIR\vd-failed`" w
+  FileClose `$0
+  WriteUninstaller `"`$INSTDIR\uninstall.exe`"
+SectionEnd
+$uninstallDeclaration
+  IfFileExists `"`$INSTDIR\vd-verified`" +2 0
+  Abort
+  FileOpen `$0 `"`$INSTDIR\uninstall-called`" w
+  FileClose `$0
+  Delete `"`$INSTDIR\payload805`"
+  Delete `"`$INSTDIR\arp`"
+  Delete `"`$INSTDIR\shortcut`"
+  Delete `"`$INSTDIR\firewall`"
+  Delete `"`$INSTDIR\bootstrap`"
+SectionEnd
+"@, [Text.UTF8Encoding]::new($false))
+$compileLifecycle = Invoke-Bounded $MakeNsis @(
+  "/INPUTCHARSET", "UTF8", $lifecycleScript) @{} 15000
+if ($compileLifecycle.exitCode -ne 0 -or
+    -not (Test-Path -LiteralPath $lifecycleInstaller -PathType Leaf)) {
+  throw "compiledLifecycleBuildFailed"
+}
+$installLifecycle = Invoke-Bounded $lifecycleInstaller @("/S") @{} 15000
+$coreMarkers = @("payload805", "arp", "shortcut", "firewall", "bootstrap")
+if ($installLifecycle.exitCode -ne 0 -or
+    @(Get-ChildItem -LiteralPath $lifecycleInstall -File | Where-Object {
+      $_.Name -in $coreMarkers }).Count -ne 5 -or
+    (Get-Content -LiteralPath (Join-Path $lifecycleInstall "payload805") -Raw) -cne
+      "805" -or
+    (Test-Path -LiteralPath (Join-Path $lifecycleInstall "uninstall-called"))) {
+  throw "compiledInstallerReachedUninstallSection"
+}
+$uninstaller = Join-Path $lifecycleInstall "uninstall.exe"
+$blockedUninstall = Invoke-Bounded $uninstaller @("/S") @{} 15000
+if (@(Get-ChildItem -LiteralPath $lifecycleInstall -File | Where-Object {
+      $_.Name -in $coreMarkers }).Count -ne 5 -or
+    (Test-Path -LiteralPath (Join-Path $lifecycleInstall "uninstall-called"))) {
+  throw "compiledUninstallerFailClosedInvalid"
+}
+[IO.File]::WriteAllText((Join-Path $lifecycleInstall "vd-verified"), "1",
+  [Text.UTF8Encoding]::new($false))
+$verifiedUninstall = Invoke-Bounded $uninstaller @("/S") @{} 15000
+if ($verifiedUninstall.exitCode -ne 0 -or
+    -not (Test-Path -LiteralPath (
+      Join-Path $lifecycleInstall "uninstall-called") -PathType Leaf) -or
+    @(Get-ChildItem -LiteralPath $lifecycleInstall -File | Where-Object {
+      $_.Name -in $coreMarkers }).Count -ne 0) {
+  throw "compiledUninstallerSectionUnreachable"
+}
 $runnerPassed = 0
 foreach ($fault in @("timeout", "overflow", "dualPipePending",
     "startRetain", "schemaInvalidSuccess")) {
@@ -455,6 +606,20 @@ if (@(Get-ChildItem -LiteralPath $root -Force -Filter ".*.tmp").Count -ne 0) {
     atomicReadback = $true
     duplicatePipelineRejected = $true
     faultSuccessRejected = $true
+  }
+  installerLifecycle = [ordered]@{
+    sourceReservedUninstallSection = $true
+    compiledReservedUninstallSection = $true
+    installerUninstallCalls = 0
+    corePayloadOwned = 805
+    arpRetainedAfterVirtualDisplayFailure = $true
+    shortcutRetainedAfterVirtualDisplayFailure = $true
+    firewallRetainedAfterVirtualDisplayFailure = $true
+    bootstrapRetainedAfterVirtualDisplayFailure = $true
+    uninstallerBlockedBeforeVirtualDisplayVerified = $true
+    uninstallerReachedAfterVirtualDisplayVerified = $true
+    uninstallEvidenceAtomic = $true
+    uninstallEvidenceCrossSpliceRejected = $true
   }
   productionRunner = [ordered]@{
     faultCases = $runnerPassed

@@ -203,6 +203,17 @@ readback; NSIS accepts only the corresponding single-line JSON acknowledgement.
 Any extra pipeline value or acknowledgement mismatch aborts before product
 integration begins and does not weaken the protected evidence path.
 
+The NSIS uninstaller is the exact reserved `Section "Uninstall"`; localized
+display text belongs only to MUI/LangString resources. It first requires a
+verified Virtual Display cleanup result, then persists the selected
+`Preserve`/`Quarantine` disposition to this same protected ProgramData outcome
+before any Core removal. The typed Core-uninstall result is atomically written
+and read back there before ARP or the installation root can be deleted. A
+writer or acknowledgement failure therefore keeps the retry payload. An
+ordinary installer path cannot enter this section: a Core-success/Virtual-
+Display-failure install retains the complete payload, ARP entry, shortcuts,
+firewall, and bootstrap while reporting Virtual Display unavailable.
+
 Installed shortcuts are machine-scoped. Start Menu and the optional Desktop
 shortcut use the Windows all-users shell folders and the stable root launcher;
 target, empty arguments, and the installation-root working directory are all

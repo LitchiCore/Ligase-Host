@@ -696,7 +696,7 @@ Section -Finalize SEC_FINALIZE
   ${EndIf}
 SectionEnd
 
-Section "卸载"
+Section "Uninstall"
   MessageBox MB_YESNO|MB_ICONQUESTION \
     "是否将 Ligase 个人数据移入可恢复的隔离目录？选择“否”会将数据保留在原位置。" \
     /SD IDNO IDNO preserveData
@@ -705,6 +705,16 @@ Section "卸载"
   preserveData:
   StrCpy $3 "Preserve"
   dataChoiceDone:
+  nsExec::ExecToStack 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\Deployment\Manage-LigaseInstallation.ps1" -Action RecordEvidence -InstallDirectory "$INSTDIR" -EvidencePhase uninstalling -EvidenceSuccess unknown -EvidenceResultCode uninstallStarted -EvidenceUninstallDisposition $3 -EvidenceUninstallState pending'
+  Pop $0
+  Pop $1
+  ${StrTrimNewLines} $1 $1
+  ${If} $0 != 0
+  ${OrIf} $1 != '{"code":"installerEvidenceRecorded","success":true,"phase":"uninstalling","resultCode":"uninstallStarted"}'
+    MessageBox MB_OK|MB_ICONSTOP "无法持久化卸载选择。Host 仍保留，可重试卸载。"
+    SetErrorLevel 20
+    Abort
+  ${EndIf}
   ; Virtual Display cleanup is a fail-closed precondition for Core removal.
   ; Keeping the payload intact on failure preserves the pinned native helper
   ; and the exact schemas required for a safe retry.
@@ -716,7 +726,34 @@ Section "卸载"
     SetErrorLevel 20
     Abort
   ${EndIf}
-  nsExec::ExecToLog 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\Deployment\Manage-LigaseInstallation.ps1" -Action Uninstall -InstallDirectory "$INSTDIR" -DataDisposition $3 -ConfigureFirewall'
+  nsExec::ExecToStack 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\Deployment\Manage-LigaseInstallation.ps1" -Action Uninstall -InstallDirectory "$INSTDIR" -DataDisposition $3 -ConfigureFirewall'
+  Pop $0
+  Pop $1
+  ${StrTrimNewLines} $1 $1
+  ${If} $0 != 0
+    MessageBox MB_OK|MB_ICONSTOP "Host 卸载未完成，程序文件仍保留，可重试卸载。"
+    SetErrorLevel 20
+    Abort
+  ${EndIf}
+  ${If} $1 == '{"code":"uninstalled","success":true,"dataRootState":"preserved","ownedFirewallRulesRemoved":true}'
+    StrCpy $4 "preserved"
+  ${ElseIf} $1 == '{"code":"uninstalled","success":true,"dataRootState":"quarantined","ownedFirewallRulesRemoved":true}'
+    StrCpy $4 "quarantined"
+  ${Else}
+    MessageBox MB_OK|MB_ICONSTOP "Host 卸载结果无法严格验证，程序文件仍保留。"
+    SetErrorLevel 20
+    Abort
+  ${EndIf}
+  nsExec::ExecToStack 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\Deployment\Manage-LigaseInstallation.ps1" -Action RecordEvidence -InstallDirectory "$INSTDIR" -EvidencePhase uninstalled -EvidenceSuccess true -EvidenceResultCode uninstalled -EvidenceUninstallDisposition $3 -EvidenceUninstallState $4'
+  Pop $0
+  Pop $1
+  ${StrTrimNewLines} $1 $1
+  ${If} $0 != 0
+  ${OrIf} $1 != '{"code":"installerEvidenceRecorded","success":true,"phase":"uninstalled","resultCode":"uninstalled"}'
+    MessageBox MB_OK|MB_ICONSTOP "无法持久化卸载结果，程序文件仍保留。"
+    SetErrorLevel 20
+    Abort
+  ${EndIf}
   DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Ligase Host"
   RMDir /r "$INSTDIR"
 SectionEnd

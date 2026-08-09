@@ -30,7 +30,9 @@ param(
     "finalReadback",
     "succeeded",
     "failed",
-    "cancelled")]
+    "cancelled",
+    "uninstalling",
+    "uninstalled")]
   [string]$EvidencePhase = "initialized",
   [ValidateSet("unknown", "true", "false")]
   [string]$EvidenceSuccess = "unknown",
@@ -44,6 +46,10 @@ param(
     "recoverOrphanLegacyDataRoot")]
   [string]$EvidenceDataRootAction = "none",
   [string]$EvidenceDataRootSource,
+  [ValidateSet("none", "Preserve", "Quarantine")]
+  [string]$EvidenceUninstallDisposition = "none",
+  [ValidateSet("notAttempted", "pending", "preserved", "quarantined")]
+  [string]$EvidenceUninstallState = "notAttempted",
   [string]$ValidationRoot,
   [int]$EvidenceHelperExit = -1,
   [ValidateSet("notRequired", "completed", "failed", "unknown")]
@@ -2733,6 +2739,15 @@ function Write-InstallerEvidence {
       source = Get-SafePathProjection $EvidenceDataRootSource
       target = Get-SafePathProjection $DataRoot
     }
+    uninstall = if ($EvidenceUninstallDisposition -ceq "none") {
+      $null
+    } else {
+      [ordered]@{
+        disposition = $EvidenceUninstallDisposition
+        state = $EvidenceUninstallState
+        resultCode = $EvidenceResultCode
+      }
+    }
     helper = [ordered]@{
       exitCode = $EvidenceHelperExit
       resultCode = $EvidenceResultCode
@@ -4230,6 +4245,21 @@ try {
     if ($EvidenceResultCode -notmatch '^[a-z][A-Za-z0-9]{0,63}$') {
       throw "installerEvidenceInvalid"
     }
+    $uninstallEvidenceValid = if ($EvidencePhase -ceq "uninstalling") {
+      $EvidenceSuccess -ceq "unknown" -and
+      $EvidenceResultCode -ceq "uninstallStarted" -and
+      $EvidenceUninstallDisposition -cne "none" -and
+      $EvidenceUninstallState -ceq "pending"
+    } elseif ($EvidencePhase -ceq "uninstalled") {
+      $EvidenceSuccess -ceq "true" -and
+      $EvidenceResultCode -ceq "uninstalled" -and
+      $EvidenceUninstallDisposition -cne "none" -and
+      $EvidenceUninstallState -in @("preserved", "quarantined")
+    } else {
+      $EvidenceUninstallDisposition -ceq "none" -and
+      $EvidenceUninstallState -ceq "notAttempted"
+    }
+    if (-not $uninstallEvidenceValid) { throw "installerEvidenceInvalid" }
     $written = Write-InstallerEvidence
     Write-Outcome "installerEvidenceRecorded" $true @{
       phase = [string]$written.phase
@@ -4636,10 +4666,10 @@ try {
       }
       $dataRootState = "quarantined"
     }
-    Write-Outcome "uninstalled" $true @{
+    Write-Outcome "uninstalled" $true ([ordered]@{
       dataRootState = $dataRootState
       ownedFirewallRulesRemoved = [bool]$ConfigureFirewall
-    }
+    })
     exit 0
   }
 

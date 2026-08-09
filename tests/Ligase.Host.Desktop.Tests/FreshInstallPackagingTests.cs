@@ -1057,12 +1057,38 @@ public sealed class FreshInstallPackagingTests
             "resultFileSha256 = [string]$script:virtualDisplayResultSha256");
         StringAssert.Contains(management,
             "$null = Write-InstallerEvidenceDocument $document");
+        StringAssert.Contains(management,
+            "[string]$EvidenceUninstallDisposition = \"none\"");
+        StringAssert.Contains(management,
+            "[string]$EvidenceUninstallState = \"notAttempted\"");
+        StringAssert.Contains(management,
+            "$EvidenceResultCode -ceq \"uninstallStarted\"");
+        StringAssert.Contains(management,
+            "$EvidenceResultCode -ceq \"uninstalled\"");
+        StringAssert.Contains(management, "uninstall = if (");
+        StringAssert.Contains(management,
+            "Write-Outcome \"uninstalled\" $true ([ordered]@{");
         Assert.IsFalse(management.Contains(
             "\n  Write-InstallerEvidenceDocument $document\n  return $document",
             StringComparison.Ordinal));
         StringAssert.Contains(build, "resultSchemaSha256");
         StringAssert.Contains(nsis, "-Action InstallVirtualDisplay");
         StringAssert.Contains(nsis, "-Action UninstallVirtualDisplay");
+        StringAssert.Contains(nsis, "Section \"Uninstall\"");
+        Assert.IsFalse(nsis.Contains("Section \"卸载\"", StringComparison.Ordinal));
+        StringAssert.Contains(nsis, "-EvidencePhase uninstalling");
+        StringAssert.Contains(nsis, "-EvidencePhase uninstalled");
+        StringAssert.Contains(nsis, "-EvidenceUninstallDisposition $3");
+        StringAssert.Contains(nsis, "-EvidenceUninstallState $4");
+        Assert.IsTrue(nsis.IndexOf("-EvidencePhase uninstalling",
+            StringComparison.Ordinal) < nsis.IndexOf(
+            "-Action UninstallVirtualDisplay", StringComparison.Ordinal));
+        Assert.IsTrue(nsis.IndexOf("-EvidencePhase uninstalled",
+            StringComparison.Ordinal) < nsis.IndexOf("DeleteRegKey HKLM",
+            StringComparison.Ordinal));
+        Assert.IsTrue(nsis.IndexOf("DeleteRegKey HKLM",
+            StringComparison.Ordinal) < nsis.IndexOf("RMDir /r \"$INSTDIR\"",
+            StringComparison.Ordinal));
         StringAssert.Contains(nsis,
             "虚拟显示未安装；物理桌面串流仍可用。");
         StringAssert.Contains(nsis,
