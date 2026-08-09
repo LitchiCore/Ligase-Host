@@ -545,8 +545,19 @@ if ($ReleaseKind -eq "PublicRelease") {
   $nsisArguments += "/DSignerTool=$SigningTool"
 }
 $nsisArguments += (Join-Path $PSScriptRoot "LigaseHost.nsi")
-& $MakeNsis @nsisArguments
-if ($LASTEXITCODE -ne 0) { throw "nsisBuildFailed" }
+$nsisResult = & (Join-Path $PSScriptRoot "Invoke-NsisCompiler.ps1") `
+  -MakeNsis $MakeNsis `
+  -CompilerArguments $nsisArguments `
+  -WorkingDirectory ([Environment]::CurrentDirectory) `
+  -EvidenceDirectory (Join-Path $work "nsis-evidence")
+if ($null -eq $nsisResult -or
+    [string]$nsisResult.code -cne "nsisCompilerEvidenceCaptured" -or
+    $null -eq $nsisResult.exitCode) {
+  throw "nsisEvidenceResultInvalid"
+}
+if ([int]$nsisResult.exitCode -ne 0) {
+  throw "nsisBuildFailed:$([int]$nsisResult.exitCode)"
+}
 $installerSignature = Get-AuthenticodeSignature -LiteralPath $package
 if ($ReleaseKind -eq "PublicRelease" -and (
     $installerSignature.Status -ne "Valid" -or

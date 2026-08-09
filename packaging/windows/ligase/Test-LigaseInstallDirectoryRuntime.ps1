@@ -111,6 +111,7 @@ function Invoke-Bounded(
 $managePath = Join-Path $PSScriptRoot "Manage-LigaseInstallation.ps1"
 $nsisPath = Join-Path $PSScriptRoot "LigaseHost.nsi"
 $buildPath = Join-Path $PSScriptRoot "Build-LigaseInstaller.ps1"
+$nsisCapturePath = Join-Path $PSScriptRoot "Invoke-NsisCompiler.ps1"
 $setupSource = Join-Path $sourceRoot "tools/Ligase.VirtualDisplay.Setup/Program.cs"
 $requestSchema = Join-Path $sourceRoot (
   "docs/ligase-host/virtual-display-setup-request-v1.schema.json")
@@ -118,12 +119,91 @@ $resultSchema = Join-Path $sourceRoot (
   "docs/ligase-host/virtual-display-setup-result-v1.schema.json")
 $architecture = Join-Path $sourceRoot (
   "docs/ligase-host/virtual-display-setup-architecture.md")
-foreach ($path in @($managePath,$nsisPath,$buildPath,$setupSource,
+foreach ($path in @($managePath,$nsisPath,$buildPath,$nsisCapturePath,$setupSource,
     $requestSchema,$resultSchema,$architecture)) {
   if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
     throw "runtimeAuthorityMissing"
   }
 }
+
+$nsisEvidenceRoot = Join-Path $root "nsis-evidence-cases"
+New-Item -ItemType Directory -Path $nsisEvidenceRoot | Out-Null
+$fakeCompiler = Join-Path $nsisEvidenceRoot "controlled-makensis.cmd"
+[IO.File]::WriteAllText($fakeCompiler, @'
+@echo off
+if "%~1"=="/VERSION" (
+  echo vControlled-1
+  exit /b 0
+)
+echo controlled stdout
+echo controlled compiler error 1>&2
+exit /b 37
+'@, [Text.Encoding]::ASCII)
+$failureEvidence = Join-Path $nsisEvidenceRoot "failure"
+$failureDriver = Join-Path $nsisEvidenceRoot "failure-driver.ps1"
+[IO.File]::WriteAllText($failureDriver, @"
+`$result = & '$nsisCapturePath' -MakeNsis '$fakeCompiler' -CompilerArguments @('fixture.nsi') -WorkingDirectory '$nsisEvidenceRoot' -EvidenceDirectory '$failureEvidence'
+if (`$result.code -cne 'nsisCompilerEvidenceCaptured') { exit 98 }
+[IO.File]::WriteAllText('$failureEvidence\caller-consumed.marker', [string]`$result.exitCode)
+exit [int]`$result.exitCode
+"@, [Text.UTF8Encoding]::new($false))
+$failureRun = Invoke-Bounded "powershell.exe" @(
+  "-NoLogo","-NoProfile","-NonInteractive","-ExecutionPolicy","Bypass",
+  "-File",$failureDriver) @{}
+if ($failureRun.exitCode -ne 37 -or
+    $failureRun.stderr -notmatch 'controlled compiler error' -or
+    (Get-Content -Raw -LiteralPath (
+      Join-Path $failureEvidence "caller-consumed.marker")) -cne "37") {
+  throw "nsisControlledFailureNotPreserved"
+}
+$failureManifest = Get-Content -Raw -LiteralPath (
+  Join-Path $failureEvidence "makensis-result.json") | ConvertFrom-Json
+if ($failureManifest.exitCode -ne 37 -or
+    $failureManifest.version -cne "vControlled-1" -or
+    -not [bool]$failureManifest.stdout.closed -or
+    -not [bool]$failureManifest.stderr.closed -or
+    (Get-FileHash -Algorithm SHA256 -LiteralPath (
+      Join-Path $failureEvidence "makensis.stderr.log")).Hash.ToLowerInvariant() -cne
+      [string]$failureManifest.stderr.sha256) {
+  throw "nsisControlledFailureEvidenceInvalid"
+}
+$successScript = Join-Path $nsisEvidenceRoot "success.nsi"
+$successArtifact = Join-Path $nsisEvidenceRoot "success.exe"
+[IO.File]::WriteAllText($successScript, @"
+Unicode true
+Name "Ligase NSIS Evidence Fixture"
+OutFile "$successArtifact"
+Section
+SectionEnd
+"@, [Text.UTF8Encoding]::new($false))
+$successEvidence = Join-Path $nsisEvidenceRoot "success"
+$successDriver = Join-Path $nsisEvidenceRoot "success-driver.ps1"
+[IO.File]::WriteAllText($successDriver, @"
+`$result = & '$nsisCapturePath' -MakeNsis '$MakeNsis' -CompilerArguments @('/INPUTCHARSET','UTF8','$successScript') -WorkingDirectory '$nsisEvidenceRoot' -EvidenceDirectory '$successEvidence'
+if (`$result.code -cne 'nsisCompilerEvidenceCaptured' -or [int]`$result.exitCode -ne 0) { exit 99 }
+[IO.File]::WriteAllText('$successEvidence\caller-continued.marker', 'signatureValidationReachable')
+exit 0
+"@, [Text.UTF8Encoding]::new($false))
+$successRun = Invoke-Bounded "powershell.exe" @(
+  "-NoLogo","-NoProfile","-NonInteractive","-ExecutionPolicy","Bypass",
+  "-File",$successDriver) @{}
+if ($successRun.exitCode -ne 0 -or -not (Test-Path -LiteralPath $successArtifact) -or
+    (Get-Content -Raw -LiteralPath (
+      Join-Path $successEvidence "caller-continued.marker")) -cne
+      "signatureValidationReachable") {
+  throw "nsisRealSuccessEvidenceFailed"
+}
+$successManifest = Get-Content -Raw -LiteralPath (
+  Join-Path $successEvidence "makensis-result.json") | ConvertFrom-Json
+if ($successManifest.exitCode -ne 0 -or
+    -not [bool]$successManifest.stdout.closed -or
+    -not [bool]$successManifest.stderr.closed -or
+    [string]::IsNullOrWhiteSpace([string]$successManifest.version)) {
+  throw "nsisRealSuccessEvidenceInvalid"
+}
+$nsisResidue = @(Get-ChildItem -LiteralPath $nsisEvidenceRoot -Recurse -File |
+  Where-Object { $_.Name -match '\.(tmp|bak)$' })
+if ($nsisResidue.Count -ne 0) { throw "nsisEvidenceResidue" }
 
 $legacyPatterns = @(
   "VirtualDisplayDiagnostic", "VirtualDisplayInventoryHelper",
@@ -606,6 +686,17 @@ if (@(Get-ChildItem -LiteralPath $root -Force -Filter ".*.tmp").Count -ne 0) {
     atomicReadback = $true
     duplicatePipelineRejected = $true
     faultSuccessRejected = $true
+  }
+  nsisCompilerEvidence = [ordered]@{
+    controlledFailureExit = 37
+    controlledFailureStderrPreserved = $true
+    realCompileExit = 0
+    realArtifact = $true
+    productionCallerContinued = $true
+    productionCallerConsumedFailure = $true
+    stdoutClosed = $true
+    stderrClosed = $true
+    temporaryResidue = 0
   }
   installerLifecycle = [ordered]@{
     sourceReservedUninstallSection = $true

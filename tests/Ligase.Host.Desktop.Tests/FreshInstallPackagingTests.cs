@@ -1222,6 +1222,32 @@ public sealed class FreshInstallPackagingTests
     }
 
     [TestMethod]
+    public void InstallerBuildCapturesNsisStdoutAndStderrAsAtomicEvidence()
+    {
+        var repo = FindRepositoryRoot();
+        var build = File.ReadAllText(Path.Combine(
+            repo, "packaging", "windows", "ligase", "Build-LigaseInstaller.ps1"));
+        var capture = File.ReadAllText(Path.Combine(
+            repo, "packaging", "windows", "ligase", "Invoke-NsisCompiler.ps1"));
+
+        StringAssert.Contains(build, "Invoke-NsisCompiler.ps1");
+        Assert.IsFalse(System.Text.RegularExpressions.Regex.IsMatch(build,
+            @"(?m)^\s*&\s*\$MakeNsis\s+@nsisArguments\s*$"));
+        StringAssert.Contains(capture, "RedirectStandardOutput = $true");
+        StringAssert.Contains(capture, "RedirectStandardError = $true");
+        StringAssert.Contains(capture, "nsisCompilerEvidenceCaptured");
+        StringAssert.Contains(capture, "makensis.stdout.log");
+        StringAssert.Contains(capture, "makensis.stderr.log");
+        StringAssert.Contains(capture, "[IO.FileOptions]::WriteThrough");
+        StringAssert.Contains(capture, "nsisEvidenceFinalReadbackFailed");
+        StringAssert.Contains(capture, "nsisOutputOverflow");
+        Assert.IsFalse(System.Text.RegularExpressions.Regex.IsMatch(capture,
+            @"(?m)^\s*exit(?:\s|$)"));
+        StringAssert.Contains(build, "$nsisResult = &");
+        StringAssert.Contains(build, "nsisBuildFailed:$([int]$nsisResult.exitCode)");
+    }
+
+    [TestMethod]
     public async Task InstallDirectoryResolverSupportsExplicitDAndFreshProgramDataDefault()
     {
         const string explicitD = @"D:\Program Files\Ligase Host Unit";
