@@ -19,6 +19,7 @@ ShowUninstDetails show
 !include "Sections.nsh"
 !include "StrFunc.nsh"
 ${StrTrimNewLines}
+${UnStrTrimNewLines}
 !define MUI_CUSTOMFUNCTION_ABORT InstallerUserAbort
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_DIRECTORY
@@ -708,7 +709,7 @@ Section "Uninstall"
   nsExec::ExecToStack 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\Deployment\Manage-LigaseInstallation.ps1" -Action RecordEvidence -InstallDirectory "$INSTDIR" -EvidencePhase uninstalling -EvidenceSuccess unknown -EvidenceResultCode uninstallStarted -EvidenceUninstallDisposition $3 -EvidenceUninstallState pending'
   Pop $0
   Pop $1
-  ${StrTrimNewLines} $1 $1
+  ${UnStrTrimNewLines} $1 $1
   ${If} $0 != 0
   ${OrIf} $1 != '{"code":"installerEvidenceRecorded","success":true,"phase":"uninstalling","resultCode":"uninstallStarted"}'
     MessageBox MB_OK|MB_ICONSTOP "无法持久化卸载选择。Host 仍保留，可重试卸载。"
@@ -729,7 +730,7 @@ Section "Uninstall"
   nsExec::ExecToStack 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\Deployment\Manage-LigaseInstallation.ps1" -Action Uninstall -InstallDirectory "$INSTDIR" -DataDisposition $3 -ConfigureFirewall'
   Pop $0
   Pop $1
-  ${StrTrimNewLines} $1 $1
+  ${UnStrTrimNewLines} $1 $1
   ${If} $0 != 0
     MessageBox MB_OK|MB_ICONSTOP "Host 卸载未完成，程序文件仍保留，可重试卸载。"
     SetErrorLevel 20
@@ -747,7 +748,7 @@ Section "Uninstall"
   nsExec::ExecToStack 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\Deployment\Manage-LigaseInstallation.ps1" -Action RecordEvidence -InstallDirectory "$INSTDIR" -EvidencePhase uninstalled -EvidenceSuccess true -EvidenceResultCode uninstalled -EvidenceUninstallDisposition $3 -EvidenceUninstallState $4'
   Pop $0
   Pop $1
-  ${StrTrimNewLines} $1 $1
+  ${UnStrTrimNewLines} $1 $1
   ${If} $0 != 0
   ${OrIf} $1 != '{"code":"installerEvidenceRecorded","success":true,"phase":"uninstalled","resultCode":"uninstalled"}'
     MessageBox MB_OK|MB_ICONSTOP "无法持久化卸载结果，程序文件仍保留。"

@@ -7,6 +7,7 @@ param(
   [string]$CppBuildRoot,
   [string]$OutputRoot,
   [string]$DotNet = "dotnet.exe",
+  [string]$DotNetDiagnosticLibraryRoot,
   [string]$CMake = "cmake.exe",
   [string]$MakeNsis = "makensis.exe",
   [ValidateRange(1, 64)]
@@ -190,6 +191,30 @@ if ($ReleaseKind -eq "PublicRelease" -and (
   throw "publicSigningSeamUnavailable"
 }
 
+function Invoke-VerifiedDotNetPublish(
+  [string[]]$Arguments,
+  [string]$EvidenceName,
+  [string]$FailureCode
+) {
+  $dotNetCommand = Get-Command -Name $DotNet -CommandType Application -ErrorAction Stop
+  $expectedExecutable = [IO.Path]::GetFullPath($dotNetCommand.Source)
+  $expectedWorkingDirectory = [IO.Path]::GetFullPath($sourceRoot)
+  $expectedEvidenceRoot = [IO.Path]::GetFullPath((Join-Path $output $EvidenceName))
+  $expectedVersionRoot = $expectedEvidenceRoot + '.dotnet-info'
+  if ((Test-Path -LiteralPath $expectedEvidenceRoot) -or (Test-Path -LiteralPath $expectedVersionRoot)) { throw 'dotnetPublishEvidenceNotFresh' }
+  try {
+    $evidence = & (Join-Path $PSScriptRoot 'Invoke-DotNetPublish.ps1') -DotNet $expectedExecutable -PublishArguments $Arguments -WorkingDirectory $expectedWorkingDirectory -EvidenceDirectory $expectedEvidenceRoot -DiagnosticLibraryRoot $DotNetDiagnosticLibraryRoot
+  }
+  catch {
+    if ($_.Exception.Message -like 'dotnetPublishEvidenceUnavailable*') { throw 'dotnetPublishEvidenceUnavailable' }
+    throw
+  }
+  $verified = & (Join-Path $PSScriptRoot 'Assert-DotNetPublishEvidence.ps1') -Evidence $evidence -DotNet $expectedExecutable -Arguments $Arguments -WorkingDirectory $expectedWorkingDirectory -EvidenceRoot $expectedEvidenceRoot
+  if ($verified.code -cne 'dotnetPublishEvidenceVerified') { throw 'dotnetPublishEvidenceInvalid' }
+  if ([int]$verified.exitCode -ne 0) { throw "$FailureCode`:$($verified.exitCode)" }
+  return $evidence
+}
+
 if (-not $SkipBuild) {
   & $CMake --build $cppRoot --config $Configuration --target sunshine `
     --parallel $CoreBuildParallelism
@@ -200,12 +225,9 @@ if (-not $SkipBuild) {
       (Test-Path -LiteralPath $desktop)) {
     throw "desktopBuildWorkspaceNotClean"
   }
-  & $DotNet publish (Join-Path $sourceRoot "src/Ligase.Desktop/Ligase.Host.Desktop.csproj") `
-    -c $Configuration -p:Platform=$Platform -p:LigaseStructuredPackage=true `
-    -p:UseSharedCompilation=false -nodeReuse:false `
-    -p:UseArtifactsOutput=true -p:ArtifactsPath=$dotnetArtifacts `
-    -r win-x64 --self-contained true -o $desktop
-  if ($LASTEXITCODE -ne 0) { throw "desktopPublishFailed" }
+  if ([string]::IsNullOrWhiteSpace($DotNetDiagnosticLibraryRoot)) { throw "dotnetPublishDiagnosticLibraryUnavailable" }
+  $publishArguments = @('publish',(Join-Path $sourceRoot "src/Ligase.Desktop/Ligase.Host.Desktop.csproj"),'-c',$Configuration,"-p:Platform=$Platform",'-p:LigaseStructuredPackage=true','-p:UseSharedCompilation=false','-nodeReuse:false','-p:UseArtifactsOutput=true',"-p:ArtifactsPath=$dotnetArtifacts",'-r','win-x64','--self-contained','true','-o',$desktop)
+  $publishEvidence = Invoke-VerifiedDotNetPublish $publishArguments 'dotnet-publish-evidence' 'desktopPublishFailed'
   $desktopPayloadValidation = & (Join-Path $PSScriptRoot "Test-LigaseDesktopPayload.ps1") `
     -DesktopDirectory $desktop -SourceRoot $sourceRoot
   if ($LASTEXITCODE -ne 0) {
@@ -216,26 +238,15 @@ if (-not $SkipBuild) {
   if ($LASTEXITCODE -ne 0) {
     throw "desktopStartupValidationFailed:$desktopStartupValidation"
   }
-  & $DotNet publish (Join-Path $sourceRoot "tools/Ligase.GameWatcher/Ligase.GameWatcher.csproj") `
-    -c $Configuration -p:Platform=$Platform -r win-x64 --self-contained true -o $watcher
-  if ($LASTEXITCODE -ne 0) { throw "gameWatcherPublishFailed" }
-  & $DotNet publish (Join-Path $sourceRoot "tools/Ligase.Host.Launcher/Ligase.Host.Launcher.csproj") `
-    -c $Configuration -p:LigaseLauncherNative=true -r win-x64 --self-contained true -o $launcher
-  if ($LASTEXITCODE -ne 0) { throw "launcherPublishFailed" }
+  $null = Invoke-VerifiedDotNetPublish @('publish',(Join-Path $sourceRoot 'tools/Ligase.GameWatcher/Ligase.GameWatcher.csproj'),'-c',$Configuration,"-p:Platform=$Platform",'-r','win-x64','--self-contained','true','-o',$watcher) 'dotnet-publish-game-watcher-evidence' 'gameWatcherPublishFailed'
+  $null = Invoke-VerifiedDotNetPublish @('publish',(Join-Path $sourceRoot 'tools/Ligase.Host.Launcher/Ligase.Host.Launcher.csproj'),'-c',$Configuration,'-p:LigaseLauncherNative=true','-r','win-x64','--self-contained','true','-o',$launcher) 'dotnet-publish-launcher-evidence' 'launcherPublishFailed'
   $launcherRuntimeValidation = & (Join-Path $PSScriptRoot "Test-LigaseRootLauncher.ps1") `
     -LauncherPath (Join-Path $launcher "Ligase Host.exe")
   if ($LASTEXITCODE -ne 0) {
     throw "launcherRuntimeValidationFailed:$launcherRuntimeValidation"
   }
-  & $DotNet publish (Join-Path $sourceRoot "tools/Ligase.Installation.TransactionHelper/Ligase.Installation.TransactionHelper.csproj") `
-    -c $Configuration -p:Platform=$Platform -r win-x64 --self-contained true `
-    -p:PublishSingleFile=true -p:UseSharedCompilation=false -o $transactionHelper
-  if ($LASTEXITCODE -ne 0) { throw "transactionHelperPublishFailed" }
-  & $DotNet publish (Join-Path $sourceRoot "tools/Ligase.VirtualDisplay.Setup/Ligase.VirtualDisplay.Setup.csproj") `
-    -c $Configuration -p:Platform=$Platform -r win-x64 --self-contained true `
-    -p:PublishSingleFile=true -p:UseSharedCompilation=false `
-    -o $virtualDisplaySetupHelper
-  if ($LASTEXITCODE -ne 0) { throw "virtualDisplaySetupHelperPublishFailed" }
+  $null = Invoke-VerifiedDotNetPublish @('publish',(Join-Path $sourceRoot 'tools/Ligase.Installation.TransactionHelper/Ligase.Installation.TransactionHelper.csproj'),'-c',$Configuration,"-p:Platform=$Platform",'-r','win-x64','--self-contained','true','-p:PublishSingleFile=true','-p:UseSharedCompilation=false','-o',$transactionHelper) 'dotnet-publish-transaction-helper-evidence' 'transactionHelperPublishFailed'
+  $null = Invoke-VerifiedDotNetPublish @('publish',(Join-Path $sourceRoot 'tools/Ligase.VirtualDisplay.Setup/Ligase.VirtualDisplay.Setup.csproj'),'-c',$Configuration,"-p:Platform=$Platform",'-r','win-x64','--self-contained','true','-p:PublishSingleFile=true','-p:UseSharedCompilation=false','-o',$virtualDisplaySetupHelper) 'dotnet-publish-virtual-display-setup-evidence' 'virtualDisplaySetupHelperPublishFailed'
 }
 
 $coreBinary = Join-Path $cppRoot "sunshine.exe"

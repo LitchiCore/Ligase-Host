@@ -227,16 +227,24 @@ $localizedUninstallMatches = [Text.RegularExpressions.Regex]::Matches(
   $nsisText, '(?m)^Section\s+"卸载"\s*$')
 $uninstallBlock = [Text.RegularExpressions.Regex]::Match(
   $nsisText, '(?ms)^Section\s+"Uninstall"\s*\r?\n(?<body>.*?)^SectionEnd\s*$')
+$uninstallBody = $uninstallBlock.Groups['body'].Value
+$installerBody = $nsisText.Remove($uninstallBlock.Index, $uninstallBlock.Length)
 if ($uninstallMatches.Count -ne 1 -or
     $localizedUninstallMatches.Count -ne 0 -or
     -not $uninstallBlock.Success -or
-    $uninstallBlock.Groups['body'].Value.IndexOf(
+    ([Text.RegularExpressions.Regex]::Matches(
+      $uninstallBody, '\$\{UnStrTrimNewLines\}')).Count -ne 3 -or
+    ([Text.RegularExpressions.Regex]::Matches(
+      $uninstallBody, '\$\{StrTrimNewLines\}')).Count -ne 0 -or
+    ([Text.RegularExpressions.Regex]::Matches(
+      $installerBody, '\$\{UnStrTrimNewLines\}')).Count -ne 1 -or
+    $uninstallBody.IndexOf(
       '-Action UninstallVirtualDisplay', [StringComparison]::Ordinal) -lt 0 -or
-    $uninstallBlock.Groups['body'].Value.IndexOf(
+    $uninstallBody.IndexOf(
       '-Action Uninstall ', [StringComparison]::Ordinal) -lt 0 -or
-    $uninstallBlock.Groups['body'].Value.IndexOf(
+    $uninstallBody.IndexOf(
       'DeleteRegKey HKLM', [StringComparison]::Ordinal) -lt 0 -or
-    $uninstallBlock.Groups['body'].Value.IndexOf(
+    $uninstallBody.IndexOf(
       'RMDir /r "$INSTDIR"', [StringComparison]::Ordinal) -lt 0) {
   throw "reservedUninstallSourceGateFailed"
 }
@@ -489,6 +497,8 @@ Unicode true
 RequestExecutionLevel user
 SilentInstall silent
 SilentUnInstall silent
+!include `"StrFunc.nsh`"
+`${UnStrTrimNewLines}
 OutFile `"$escapedInstaller`"
 InstallDir `"$escapedInstall`"
 Section `"Core`"
@@ -511,6 +521,11 @@ SectionEnd
 $uninstallDeclaration
   IfFileExists `"`$INSTDIR\vd-verified`" +2 0
   Abort
+  StrCpy `$1 `"strictAck`$\r`$\n`"
+  `${UnStrTrimNewLines} `$1 `$1
+  FileOpen `$0 `"`$INSTDIR\trimmed-ack`" w
+  FileWrite `$0 `$1
+  FileClose `$0
   FileOpen `$0 `"`$INSTDIR\uninstall-called`" w
   FileClose `$0
   Delete `"`$INSTDIR\payload805`"
@@ -549,6 +564,8 @@ $verifiedUninstall = Invoke-Bounded $uninstaller @("/S") @{} 15000
 if ($verifiedUninstall.exitCode -ne 0 -or
     -not (Test-Path -LiteralPath (
       Join-Path $lifecycleInstall "uninstall-called") -PathType Leaf) -or
+    (Get-Content -LiteralPath (Join-Path $lifecycleInstall "trimmed-ack") -Raw) -cne
+      "strictAck" -or
     @(Get-ChildItem -LiteralPath $lifecycleInstall -File | Where-Object {
       $_.Name -in $coreMarkers }).Count -ne 0) {
   throw "compiledUninstallerSectionUnreachable"

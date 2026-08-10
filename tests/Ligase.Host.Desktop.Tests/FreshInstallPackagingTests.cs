@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using System.Security.Principal;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 
 namespace Ligase.Host.Desktop.Tests;
@@ -1076,6 +1077,17 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(nsis, "-Action UninstallVirtualDisplay");
         StringAssert.Contains(nsis, "Section \"Uninstall\"");
         Assert.IsFalse(nsis.Contains("Section \"卸载\"", StringComparison.Ordinal));
+        StringAssert.Contains(nsis, "${UnStrTrimNewLines}");
+        var uninstallBlock = Regex.Match(nsis,
+            "(?ms)^Section\\s+\"Uninstall\"\\s*\\r?\\n(?<body>.*?)^SectionEnd\\s*$");
+        Assert.IsTrue(uninstallBlock.Success);
+        Assert.AreEqual(3, Regex.Matches(uninstallBlock.Groups["body"].Value,
+            "\\$\\{UnStrTrimNewLines\\}").Count);
+        Assert.AreEqual(0, Regex.Matches(uninstallBlock.Groups["body"].Value,
+            "\\$\\{StrTrimNewLines\\}").Count);
+        var installerOnly = nsis.Remove(uninstallBlock.Index, uninstallBlock.Length);
+        Assert.AreEqual(1, Regex.Matches(installerOnly,
+            "\\$\\{UnStrTrimNewLines\\}").Count);
         StringAssert.Contains(nsis, "-EvidencePhase uninstalling");
         StringAssert.Contains(nsis, "-EvidencePhase uninstalled");
         StringAssert.Contains(nsis, "-EvidenceUninstallDisposition $3");
