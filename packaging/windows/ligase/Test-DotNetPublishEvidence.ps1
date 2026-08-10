@@ -144,6 +144,33 @@ foreach ($terminalMutation in @('exit','stdoutEof','stderrEof','exitNull','exitS
   [IO.File]::WriteAllBytes($base.versionEvidencePath,$versionBytes)
 }
 $publishBytes = [IO.File]::ReadAllBytes($base.evidencePath)
+$identityTerminal = [Text.UTF8Encoding]::new($false,$true).GetString($publishBytes) | ConvertFrom-Json
+$identityTerminal.state='failed';$identityTerminal.primary.stage='identitySnapshot';$identityTerminal.primary.reasonCode='listDrift'
+$identityTerminal.execution.exitCode=$null
+$identityTerminal.identitySnapshotDetail=[pscustomobject][ordered]@{innerStage='jobListSecond';reasonCode='listDrift';attemptCount=[long]3;firstListCount=[long]2;secondListCount=[long]1;remainingDeadlineTicks=[long]100}
+[IO.File]::WriteAllText($base.evidencePath,($identityTerminal|ConvertTo-Json -Depth 10 -Compress),[Text.UTF8Encoding]::new($false,$true))
+$identityEvidence=$base|ConvertTo-Json -Depth 8|ConvertFrom-Json;$identityEvidence.exitCode=$null;$identityEvidence.evidenceSha256=(Get-FileHash $base.evidencePath -Algorithm SHA256).Hash.ToLowerInvariant()
+$identityAccepted=$false
+try{$null=& $consumer -Evidence $identityEvidence -DotNet $fixtureExe -Arguments $baseArguments -WorkingDirectory (Split-Path -Parent $baseRoot) -EvidenceRoot $baseRoot}catch{$identityAccepted=$_.Exception.Message-like'dotnetPublishEvidenceUnavailable:identitySnapshot:listDrift'}
+Assert-True $identityAccepted 'identityDetailPositiveNotTypedUnavailable'
+[IO.File]::WriteAllBytes($base.evidencePath,$publishBytes)
+foreach($detailMutation in @('missing','extra','detailOnNonidentity','nullOnIdentity','stageDrift','reasonDrift','attemptZero','countNegative','countOverflow','remainingNegative')){
+  $mutated=[Text.UTF8Encoding]::new($false,$true).GetString($publishBytes)|ConvertFrom-Json
+  if($detailMutation-eq'detailOnNonidentity'){$mutated.identitySnapshotDetail=[pscustomobject]@{innerStage='jobListSecond';reasonCode='listDrift';attemptCount=3;firstListCount=2;secondListCount=1;remainingDeadlineTicks=100}}
+  else{$mutated.state='failed';$mutated.primary.stage='identitySnapshot';$mutated.primary.reasonCode='listDrift';$mutated.identitySnapshotDetail=[pscustomobject][ordered]@{innerStage='jobListSecond';reasonCode='listDrift';attemptCount=[long]3;firstListCount=[long]2;secondListCount=[long]1;remainingDeadlineTicks=[long]100};switch($detailMutation){'missing'{$mutated.identitySnapshotDetail.PSObject.Properties.Remove('attemptCount')};'extra'{$mutated.identitySnapshotDetail|Add-Member extra 1};'nullOnIdentity'{$mutated.identitySnapshotDetail=$null};'stageDrift'{$mutated.identitySnapshotDetail.innerStage='openProcess'};'reasonDrift'{$mutated.identitySnapshotDetail.reasonCode='processDisappeared'};'attemptZero'{$mutated.identitySnapshotDetail.attemptCount=0};'countNegative'{$mutated.identitySnapshotDetail.firstListCount=-1};'countOverflow'{$mutated.identitySnapshotDetail.secondListCount=4097};'remainingNegative'{$mutated.identitySnapshotDetail.remainingDeadlineTicks=-1}}}
+  [IO.File]::WriteAllText($base.evidencePath,($mutated|ConvertTo-Json -Depth 10 -Compress),[Text.UTF8Encoding]::new($false,$true));$copy=$base|ConvertTo-Json -Depth 8|ConvertFrom-Json;$copy.evidenceSha256=(Get-FileHash $base.evidencePath -Algorithm SHA256).Hash.ToLowerInvariant();Assert-ConsumerReject $copy "identityDetail-$detailMutation";[IO.File]::WriteAllBytes($base.evidencePath,$publishBytes)
+}
+foreach($exitMutation in @('identityTerminalInteger','identityOuterInteger','identityBothInteger','processExitTerminalNull','processExitOuterNull')){
+  $mutated=[Text.UTF8Encoding]::new($false,$true).GetString($publishBytes)|ConvertFrom-Json
+  $copy=$base|ConvertTo-Json -Depth 8|ConvertFrom-Json
+  if($exitMutation -like 'identity*'){$mutated.state='failed';$mutated.primary.stage='identitySnapshot';$mutated.primary.reasonCode='listDrift';$mutated.execution.exitCode=$null;$mutated.identitySnapshotDetail=[pscustomobject][ordered]@{innerStage='jobListSecond';reasonCode='listDrift';attemptCount=[long]3;firstListCount=[long]2;secondListCount=[long]1;remainingDeadlineTicks=[long]100};$copy.exitCode=$null}
+  else{$mutated.state='failed';$mutated.primary.stage='processExit';$mutated.primary.reasonCode='nonzeroExit';$mutated.execution.exitCode=37;$copy.exitCode=37}
+  if($exitMutation -in @('identityTerminalInteger','identityBothInteger')){$mutated.execution.exitCode=37}
+  if($exitMutation -in @('identityOuterInteger','identityBothInteger')){$copy.exitCode=37}
+  if($exitMutation -ceq 'processExitTerminalNull'){$mutated.execution.exitCode=$null}
+  if($exitMutation -ceq 'processExitOuterNull'){$copy.exitCode=$null}
+  [IO.File]::WriteAllText($base.evidencePath,($mutated|ConvertTo-Json -Depth 10 -Compress),[Text.UTF8Encoding]::new($false,$true));$copy.evidenceSha256=(Get-FileHash $base.evidencePath -Algorithm SHA256).Hash.ToLowerInvariant();Assert-ConsumerReject $copy "exitCorrelation-$exitMutation";[IO.File]::WriteAllBytes($base.evidencePath,$publishBytes)
+}
 foreach ($terminalMutation in @('outputOverflowExit0','cleanupFailedExit0','pipePendingExit0','passedNonzero','stageReasonDrift','capturedShaDrift','fullShaDrift','countDrift','truncatedDrift','exitNull','exitString','exitBool','exitFloat','closedString','truncatedString','cleanupRootString','cleanupLockNumber','countString','countBool','countFloat','sizeString','elapsedString','elapsedBool','elapsedFloat','rootPidString','rootPidBool','rootPidFloat')) {
   $mutatedTerminal = [Text.UTF8Encoding]::new($false,$true).GetString($publishBytes) | ConvertFrom-Json
   switch ($terminalMutation) {

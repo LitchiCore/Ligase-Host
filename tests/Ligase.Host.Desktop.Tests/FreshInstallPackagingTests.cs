@@ -1510,6 +1510,39 @@ public sealed class FreshInstallPackagingTests
         throw new DirectoryNotFoundException("repositoryRootUnavailable");
     }
 
+    [TestMethod]
+    public void DesktopWindowsSdkReferenceIsPinnedToReviewedOfflineAuthority()
+    {
+        var repo = FindRepositoryRoot();
+        var project = File.ReadAllText(Path.Combine(
+            repo, "src", "Ligase.Desktop", "Ligase.Host.Desktop.csproj"));
+        var build = File.ReadAllText(Path.Combine(
+            repo, "packaging", "windows", "ligase", "Build-LigaseInstaller.ps1"));
+        using var manifest = JsonDocument.Parse(File.ReadAllText(Path.Combine(
+            repo, "packaging", "windows", "ligase", "offline-dotnet-dependencies-v1.json")));
+
+        StringAssert.Contains(project,
+            "<WindowsSdkPackageVersion>10.0.19041.38</WindowsSdkPackageVersion>");
+        StringAssert.Contains(project,
+            "<TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>");
+        StringAssert.Contains(project,
+            "<TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>");
+        Assert.AreEqual(1, manifest.RootElement.GetProperty("schemaVersion").GetInt32());
+        var package = manifest.RootElement.GetProperty("packages")[0];
+        Assert.AreEqual("Microsoft.Windows.SDK.NET.Ref", package.GetProperty("id").GetString());
+        Assert.AreEqual("10.0.19041.38", package.GetProperty("version").GetString());
+        Assert.AreEqual(9385829, package.GetProperty("size").GetInt64());
+        Assert.AreEqual("c16a0a93ad01556b69ee24441f482f37706f2a9fdb5832cd7fdcd261d66c1558",
+            package.GetProperty("sha256").GetString());
+        StringAssert.Contains(build, "Assert-WindowsSdkReferenceResolution");
+        StringAssert.Contains(build, "windowsSdkReferenceResolvedVersionInvalid");
+        StringAssert.Contains(build, "windowsAppSdkRequiredReferenceUnverified");
+        StringAssert.Contains(build,
+            "<Required>10.0.$([System.Version]::Parse(\"$(WindowsSdkPackageVersion.Split(''-'')[0])\").Build).38</Required>");
+        StringAssert.Contains(build,
+            "VersionGreaterThanOrEquals(%(Referenced), %(Required))");
+    }
+
     private sealed class InstallFixture : IDisposable
     {
         private readonly string _script;

@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "packages": [
+    {
+      "id": "Microsoft.Windows.SDK.NET.Ref",
+      "version": "10.0.19041.38",
+      "source": "https://api.nuget.org/v3-flatcontainer/microsoft.windows.sdk.net.ref/10.0.19041.38/microsoft.windows.sdk.net.ref.10.0.19041.38.nupkg",
+      "fileName": "microsoft.windows.sdk.net.ref.10.0.19041.38.nupkg",
+      "size": 9385829,
+      "sha256": "c16a0a93ad01556b69ee24441f482f37706f2a9fdb5832cd7fdcd261d66c1558"
+    }
+  ]
+}

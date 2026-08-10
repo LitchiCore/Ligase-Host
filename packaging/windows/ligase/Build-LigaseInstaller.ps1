@@ -209,10 +209,46 @@ function Invoke-VerifiedDotNetPublish(
     if ($_.Exception.Message -like 'dotnetPublishEvidenceUnavailable*') { throw 'dotnetPublishEvidenceUnavailable' }
     throw
   }
-  $verified = & (Join-Path $PSScriptRoot 'Assert-DotNetPublishEvidence.ps1') -Evidence $evidence -DotNet $expectedExecutable -Arguments $Arguments -WorkingDirectory $expectedWorkingDirectory -EvidenceRoot $expectedEvidenceRoot
+  try {
+    $verified = & (Join-Path $PSScriptRoot 'Assert-DotNetPublishEvidence.ps1') -Evidence $evidence -DotNet $expectedExecutable -Arguments $Arguments -WorkingDirectory $expectedWorkingDirectory -EvidenceRoot $expectedEvidenceRoot
+  }
+  catch {
+    if ($_.Exception.Message -like 'dotnetPublishEvidenceUnavailable:*') { throw 'dotnetPublishEvidenceUnavailable' }
+    throw
+  }
   if ($verified.code -cne 'dotnetPublishEvidenceVerified') { throw 'dotnetPublishEvidenceInvalid' }
   if ([int]$verified.exitCode -ne 0) { throw "$FailureCode`:$($verified.exitCode)" }
   return $evidence
+}
+
+function Assert-WindowsSdkReferenceResolution([string]$ArtifactsRoot) {
+  $project = [xml](Get-Content -LiteralPath (Join-Path $sourceRoot 'src\Ligase.Desktop\Ligase.Host.Desktop.csproj') -Raw)
+  if ([string]$project.Project.PropertyGroup.WindowsSdkPackageVersion -cne '10.0.19041.38' -or
+      [string]$project.Project.PropertyGroup.TargetFramework -cne 'net8.0-windows10.0.19041.0' -or
+      [string]$project.Project.PropertyGroup.TargetPlatformMinVersion -cne '10.0.17763.0') { throw 'windowsSdkReferenceSourcePinInvalid' }
+  $assets = @(Get-ChildItem -LiteralPath $ArtifactsRoot -Recurse -Filter 'project.assets.json' -File | Where-Object { $_.FullName -match 'Ligase\.Host\.Desktop' })
+  $dgspec = @(Get-ChildItem -LiteralPath $ArtifactsRoot -Recurse -Filter '*.nuget.dgspec.json' -File | Where-Object { $_.FullName -match 'Ligase\.Host\.Desktop' })
+  if ($assets.Count -ne 1 -or $dgspec.Count -ne 1) { throw 'windowsSdkReferenceRestoreEvidenceMissing' }
+  $assetsValue = Get-Content -LiteralPath $assets[0].FullName -Raw | ConvertFrom-Json
+  $assetFramework = @($assetsValue.project.frameworks.PSObject.Properties | Where-Object { $_.Name -ceq 'net8.0-windows10.0.19041' })
+  $assetSdk = @($assetFramework.Value.downloadDependencies | Where-Object { $_.name -ceq 'Microsoft.Windows.SDK.NET.Ref' })
+  if ($assetFramework.Count -ne 1 -or $assetSdk.Count -ne 1 -or $assetSdk[0].version -cne '[10.0.19041.38, 10.0.19041.38]') { throw 'windowsSdkReferenceResolvedVersionInvalid' }
+  $dgspecValue = Get-Content -LiteralPath $dgspec[0].FullName -Raw | ConvertFrom-Json
+  $desktopProjectPath = [IO.Path]::GetFullPath((Join-Path $sourceRoot 'src\Ligase.Desktop\Ligase.Host.Desktop.csproj'))
+  $desktopProject = @($dgspecValue.projects.PSObject.Properties | Where-Object { [IO.Path]::GetFullPath($_.Name) -ceq $desktopProjectPath })
+  $desktopFramework = @($desktopProject.Value.frameworks.PSObject.Properties | Where-Object { $_.Name -ceq 'net8.0-windows10.0.19041' })
+  $dgspecSdk = @($desktopFramework.Value.downloadDependencies | Where-Object { $_.name -ceq 'Microsoft.Windows.SDK.NET.Ref' })
+  if ($desktopProject.Count -ne 1 -or $desktopFramework.Count -ne 1 -or $dgspecSdk.Count -ne 1 -or $dgspecSdk[0].version -cne '[10.0.19041.38, 10.0.19041.38]') { throw 'windowsSdkReferenceDgSpecInvalid' }
+  $baseTargets = Join-Path $env:NUGET_PACKAGES 'microsoft.windowsappsdk.base\1.8.251216001\buildTransitive\Microsoft.WindowsAppSDK.Base.targets'
+  if (-not (Test-Path -LiteralPath $baseTargets)) { throw 'windowsAppSdkRequiredReferenceUnverified' }
+  $baseTargetsText = Get-Content -LiteralPath $baseTargets -Raw
+  foreach ($requiredToken in @(
+      '<_WindowsSdkPackage Include="$(WindowsSdkPackageVersion)"',
+      '<Referenced>$(WindowsSdkPackageVersion)</Referenced>',
+      '<Required>10.0.$([System.Version]::Parse("$(WindowsSdkPackageVersion.Split(''-'')[0])").Build).38</Required>',
+      'VersionGreaterThanOrEquals(%(Referenced), %(Required))')) {
+    if ($baseTargetsText.IndexOf($requiredToken, [StringComparison]::Ordinal) -lt 0) { throw 'windowsAppSdkRequiredReferenceUnverified' }
+  }
 }
 
 if (-not $SkipBuild) {
@@ -228,6 +264,7 @@ if (-not $SkipBuild) {
   if ([string]::IsNullOrWhiteSpace($DotNetDiagnosticLibraryRoot)) { throw "dotnetPublishDiagnosticLibraryUnavailable" }
   $publishArguments = @('publish',(Join-Path $sourceRoot "src/Ligase.Desktop/Ligase.Host.Desktop.csproj"),'-c',$Configuration,"-p:Platform=$Platform",'-p:LigaseStructuredPackage=true','-p:UseSharedCompilation=false','-nodeReuse:false','-p:UseArtifactsOutput=true',"-p:ArtifactsPath=$dotnetArtifacts",'-r','win-x64','--self-contained','true','-o',$desktop)
   $publishEvidence = Invoke-VerifiedDotNetPublish $publishArguments 'dotnet-publish-evidence' 'desktopPublishFailed'
+  Assert-WindowsSdkReferenceResolution $dotnetArtifacts
   $desktopPayloadValidation = & (Join-Path $PSScriptRoot "Test-LigaseDesktopPayload.ps1") `
     -DesktopDirectory $desktop -SourceRoot $sourceRoot
   if ($LASTEXITCODE -ne 0) {

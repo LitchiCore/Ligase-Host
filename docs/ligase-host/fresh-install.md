@@ -16,6 +16,11 @@ C++ build root and builds the native root launcher, Desktop, managed Core, and G
 Git HEAD, configuration, and x64 platform. The staging manifest records the
 relative path, byte length, and SHA-256 of all four required executables.
 Missing or mismatched artifacts fail closed.
+The Desktop publish also pins `Microsoft.Windows.SDK.NET.Ref` to the reviewed
+version in
+[`offline-dotnet-dependencies-v1.json`](../../packaging/windows/ligase/offline-dotnet-dependencies-v1.json);
+offline materialization and restored `project.assets.json`/dgspec evidence must
+match that exact package before payload validation continues.
 
 The Ligase installer is independent of the legacy Apollo CPack installer.
 It never calls Apollo's migration script and never imports an existing Apollo
