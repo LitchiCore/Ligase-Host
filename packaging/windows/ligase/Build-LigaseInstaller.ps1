@@ -223,9 +223,17 @@ function Invoke-VerifiedDotNetPublish(
 
 function Assert-WindowsSdkReferenceResolution([string]$ArtifactsRoot) {
   $project = [xml](Get-Content -LiteralPath (Join-Path $sourceRoot 'src\Ligase.Desktop\Ligase.Host.Desktop.csproj') -Raw)
-  if ([string]$project.Project.PropertyGroup.WindowsSdkPackageVersion -cne '10.0.19041.38' -or
-      [string]$project.Project.PropertyGroup.TargetFramework -cne 'net8.0-windows10.0.19041.0' -or
-      [string]$project.Project.PropertyGroup.TargetPlatformMinVersion -cne '10.0.17763.0') { throw 'windowsSdkReferenceSourcePinInvalid' }
+  $windowsSdkVersion = @($project.SelectNodes('/Project/PropertyGroup/WindowsSdkPackageVersion'))
+  $targetFramework = @($project.SelectNodes('/Project/PropertyGroup/TargetFramework'))
+  $targetPlatformMinVersion = @($project.SelectNodes('/Project/PropertyGroup/TargetPlatformMinVersion'))
+  if ($windowsSdkVersion.Count -ne 1 -or
+      $targetFramework.Count -ne 1 -or
+      $targetPlatformMinVersion.Count -ne 1 -or
+      [string]$windowsSdkVersion[0].InnerText -cne '10.0.19041.38' -or
+      [string]$targetFramework[0].InnerText -cne 'net8.0-windows10.0.19041.0' -or
+      [string]$targetPlatformMinVersion[0].InnerText -cne '10.0.17763.0') {
+    throw 'windowsSdkReferenceSourcePinInvalid'
+  }
   $assets = @(Get-ChildItem -LiteralPath $ArtifactsRoot -Recurse -Filter 'project.assets.json' -File | Where-Object { $_.FullName -match 'Ligase\.Host\.Desktop' })
   $dgspec = @(Get-ChildItem -LiteralPath $ArtifactsRoot -Recurse -Filter '*.nuget.dgspec.json' -File | Where-Object { $_.FullName -match 'Ligase\.Host\.Desktop' })
   if ($assets.Count -ne 1 -or $dgspec.Count -ne 1) { throw 'windowsSdkReferenceRestoreEvidenceMissing' }
@@ -275,15 +283,15 @@ if (-not $SkipBuild) {
   if ($LASTEXITCODE -ne 0) {
     throw "desktopStartupValidationFailed:$desktopStartupValidation"
   }
-  $null = Invoke-VerifiedDotNetPublish @('publish',(Join-Path $sourceRoot 'tools/Ligase.GameWatcher/Ligase.GameWatcher.csproj'),'-c',$Configuration,"-p:Platform=$Platform",'-r','win-x64','--self-contained','true','-o',$watcher) 'dotnet-publish-game-watcher-evidence' 'gameWatcherPublishFailed'
-  $null = Invoke-VerifiedDotNetPublish @('publish',(Join-Path $sourceRoot 'tools/Ligase.Host.Launcher/Ligase.Host.Launcher.csproj'),'-c',$Configuration,'-p:LigaseLauncherNative=true','-r','win-x64','--self-contained','true','-o',$launcher) 'dotnet-publish-launcher-evidence' 'launcherPublishFailed'
+  $null = Invoke-VerifiedDotNetPublish @('publish',(Join-Path $sourceRoot 'tools/Ligase.GameWatcher/Ligase.GameWatcher.csproj'),'-c',$Configuration,"-p:Platform=$Platform",'-p:UseSharedCompilation=false','-nodeReuse:false','-r','win-x64','--self-contained','true','-o',$watcher) 'dotnet-publish-game-watcher-evidence' 'gameWatcherPublishFailed'
+  $null = Invoke-VerifiedDotNetPublish @('publish',(Join-Path $sourceRoot 'tools/Ligase.Host.Launcher/Ligase.Host.Launcher.csproj'),'-c',$Configuration,'-p:LigaseLauncherNative=true','-p:UseSharedCompilation=false','-nodeReuse:false','-r','win-x64','--self-contained','true','-o',$launcher) 'dotnet-publish-launcher-evidence' 'launcherPublishFailed'
   $launcherRuntimeValidation = & (Join-Path $PSScriptRoot "Test-LigaseRootLauncher.ps1") `
     -LauncherPath (Join-Path $launcher "Ligase Host.exe")
   if ($LASTEXITCODE -ne 0) {
     throw "launcherRuntimeValidationFailed:$launcherRuntimeValidation"
   }
-  $null = Invoke-VerifiedDotNetPublish @('publish',(Join-Path $sourceRoot 'tools/Ligase.Installation.TransactionHelper/Ligase.Installation.TransactionHelper.csproj'),'-c',$Configuration,"-p:Platform=$Platform",'-r','win-x64','--self-contained','true','-p:PublishSingleFile=true','-p:UseSharedCompilation=false','-o',$transactionHelper) 'dotnet-publish-transaction-helper-evidence' 'transactionHelperPublishFailed'
-  $null = Invoke-VerifiedDotNetPublish @('publish',(Join-Path $sourceRoot 'tools/Ligase.VirtualDisplay.Setup/Ligase.VirtualDisplay.Setup.csproj'),'-c',$Configuration,"-p:Platform=$Platform",'-r','win-x64','--self-contained','true','-p:PublishSingleFile=true','-p:UseSharedCompilation=false','-o',$virtualDisplaySetupHelper) 'dotnet-publish-virtual-display-setup-evidence' 'virtualDisplaySetupHelperPublishFailed'
+  $null = Invoke-VerifiedDotNetPublish @('publish',(Join-Path $sourceRoot 'tools/Ligase.Installation.TransactionHelper/Ligase.Installation.TransactionHelper.csproj'),'-c',$Configuration,"-p:Platform=$Platform",'-r','win-x64','--self-contained','true','-p:PublishSingleFile=true','-p:UseSharedCompilation=false','-nodeReuse:false','-o',$transactionHelper) 'dotnet-publish-transaction-helper-evidence' 'transactionHelperPublishFailed'
+  $null = Invoke-VerifiedDotNetPublish @('publish',(Join-Path $sourceRoot 'tools/Ligase.VirtualDisplay.Setup/Ligase.VirtualDisplay.Setup.csproj'),'-c',$Configuration,"-p:Platform=$Platform",'-r','win-x64','--self-contained','true','-p:PublishSingleFile=true','-p:UseSharedCompilation=false','-nodeReuse:false','-o',$virtualDisplaySetupHelper) 'dotnet-publish-virtual-display-setup-evidence' 'virtualDisplaySetupHelperPublishFailed'
 }
 
 $coreBinary = Join-Path $cppRoot "sunshine.exe"
@@ -341,9 +349,10 @@ Copy-Item -LiteralPath $sudoVdaPath -Destination (
   Join-Path $temporaryStage "Deployment/Drivers/sudovda/SudoVDA.dll")
 $virtualDisplayPackageStream = [IO.MemoryStream]::new()
 try {
+  # This order is part of the request/consumer contract. Do not use the
+  # current PowerShell culture to sort names whose casing differs.
   foreach ($name in @(
-      "SudoVDA.dll", "SudoVDA.inf", "sudovda.cat", "sudovda.cer") |
-      Sort-Object -CaseSensitive) {
+      "SudoVDA.dll", "SudoVDA.inf", "sudovda.cat", "sudovda.cer")) {
     $bytes = [IO.File]::ReadAllBytes((Join-Path $temporaryStage (
       "Deployment/Drivers/sudovda/$name")))
     $virtualDisplayPackageStream.Write($bytes, 0, $bytes.Length)

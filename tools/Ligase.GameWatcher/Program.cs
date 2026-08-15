@@ -1,5 +1,20 @@
 using Ligase.Host.Core.Services;
 
+if (Environment.GetEnvironmentVariable("LIGASE_SHUTDOWN_VALIDATION_HARNESS") == "1" &&
+    TryReadShutdownValidationOwner(args, out var ownerProcessId))
+{
+    try
+    {
+        using var owner = System.Diagnostics.Process.GetProcessById(ownerProcessId);
+        await owner.WaitForExitAsync();
+        return 0;
+    }
+    catch (ArgumentException)
+    {
+        return 0;
+    }
+}
+
 if (!TryReadArguments(args, out var appId, out var installPath))
 {
     Console.Error.WriteLine("Usage: Ligase.GameWatcher --steam-app-id <id> --install-path <path>");
@@ -45,4 +60,13 @@ static bool TryReadArguments(string[] args, out uint appId, out string installPa
     }
 
     return appId > 0 && !string.IsNullOrWhiteSpace(installPath);
+}
+
+static bool TryReadShutdownValidationOwner(string[] args, out int processId)
+{
+    processId = 0;
+    return args.Length == 2 &&
+        args[0] == "--shutdown-validation-owner-pid" &&
+        int.TryParse(args[1], out processId) &&
+        processId > 0;
 }

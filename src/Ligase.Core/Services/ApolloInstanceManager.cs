@@ -36,6 +36,8 @@ public static class ApolloStopCodes
     public const string KillFailed = "killFailed";
     public const string KillTimeout = "killTimeout";
     public const string PostKillTimeout = "postKillTimeout";
+    public const string GracefulSignalUnavailable = "gracefulSignalUnavailable";
+    public const string GracefulTimeout = "gracefulTimeout";
 }
 
 public static class ApolloStopStages
@@ -274,6 +276,63 @@ public sealed class ApolloInstanceManager
         return ObserveStopAsync(stop, cancellationToken);
     }
 
+    public async Task<ApolloStopOutcome> StopForInstallerAsync(
+        CancellationToken cancellationToken = default)
+    {
+        if (!await _lifecycleGate.WaitAsync(_timeouts.GateAcquire, cancellationToken))
+            return Outcome(
+                ApolloStopCodes.GateTimeout,
+                ApolloStopStages.Gate,
+                _process,
+                Generation,
+                ApolloStopNextActions.RetryStop);
+
+        try
+        {
+            var process = _process;
+            var generation = Generation;
+            _intentionalStop = true;
+            if (process is null || process.HasExited)
+                return new ApolloStopOutcome(
+                    ApolloStopCodes.AlreadyStopped,
+                    ApolloStopStages.Complete,
+                    process?.Id,
+                    generation,
+                    false,
+                    ApolloStopNextActions.None);
+            if (!process.RequestGracefulExit())
+                return Outcome(
+                    ApolloStopCodes.GracefulSignalUnavailable,
+                    ApolloStopStages.GracefulWait,
+                    process,
+                    generation,
+                    ApolloStopNextActions.RetryStop);
+            if (!await WaitForExitAsync(process, TimeSpan.FromSeconds(5)))
+                return Outcome(
+                    ApolloStopCodes.GracefulTimeout,
+                    ApolloStopStages.GracefulWait,
+                    process,
+                    generation,
+                    ApolloStopNextActions.RetryStop);
+
+            var processId = process.Id;
+            DisposeExitedProcess(process, generation);
+            StartupError = null;
+            return PublishStopOutcome(new ApolloStopOutcome(
+                ApolloStopCodes.Stopped,
+                ApolloStopStages.GracefulWait,
+                processId,
+                generation,
+                false,
+                ApolloStopNextActions.None));
+        }
+        finally
+        {
+            _lifecycleGate.Release();
+            StatusChanged?.Invoke();
+        }
+    }
+
     private async Task<ApolloStopOutcome> StopGenerationAsync()
     {
         if (!await _lifecycleGate.WaitAsync(_timeouts.GateAcquire))
@@ -314,12 +373,13 @@ public sealed class ApolloInstanceManager
             _intentionalStop = true;
             if (await WaitForExitAsync(requestedProcess, _timeouts.GracefulExit))
             {
+                var gracefulProcessId = requestedProcess.Id;
                 DisposeExitedProcess(requestedProcess, requestedGeneration);
                 StartupError = null;
                 return PublishStopOutcome(new ApolloStopOutcome(
                     ApolloStopCodes.Stopped,
                     ApolloStopStages.GracefulWait,
-                    requestedProcess.Id,
+                    gracefulProcessId,
                     requestedGeneration,
                     false,
                     ApolloStopNextActions.None));
@@ -371,12 +431,13 @@ public sealed class ApolloInstanceManager
                     ApolloStopNextActions.RetryStop));
             }
 
+            var killedProcessId = requestedProcess.Id;
             DisposeExitedProcess(requestedProcess, requestedGeneration);
             StartupError = null;
             return PublishStopOutcome(new ApolloStopOutcome(
                 ApolloStopCodes.Stopped,
                 ApolloStopStages.PostKillWait,
-                requestedProcess.Id,
+                killedProcessId,
                 requestedGeneration,
                 false,
                 ApolloStopNextActions.None));
@@ -611,6 +672,7 @@ internal interface IManagedApolloProcess : IDisposable
     int ExitCode { get; }
     bool HasExited { get; }
     DateTimeOffset StartedAtUtc { get; }
+    bool RequestGracefulExit();
     Task KillAsync();
     Task WaitForExitAsync(CancellationToken cancellationToken);
 }
@@ -660,6 +722,9 @@ internal sealed class SystemManagedApolloProcess : IManagedApolloProcess
     public bool HasExited => _process.HasExited;
     public DateTimeOffset StartedAtUtc { get; }
 
+    public bool RequestGracefulExit() =>
+        LigaseManagedCoreExitSignal.Request(_process.Id) > 0;
+
     public Task KillAsync() =>
         Task.Run(() => _process.Kill(true));
 
@@ -674,4 +739,34 @@ internal sealed class SystemManagedApolloProcess : IManagedApolloProcess
 
     private void ForwardExited(object? sender, EventArgs eventArgs) =>
         Exited?.Invoke(this, EventArgs.Empty);
+}
+
+internal static class LigaseManagedCoreExitSignal
+{
+    private const uint ManagedShutdownMessage = 0x8000 + 0x4C;
+    private delegate bool EnumWindowsCallback(IntPtr window, IntPtr state);
+
+    public static int Request(int processId)
+    {
+        var sent = 0;
+        EnumWindows((window, _) =>
+        {
+            GetWindowThreadProcessId(window, out var owner);
+            if (owner == unchecked((uint)processId) &&
+                PostMessageW(window, ManagedShutdownMessage, IntPtr.Zero, IntPtr.Zero))
+                sent++;
+            return true;
+        }, IntPtr.Zero);
+        return sent;
+    }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool EnumWindows(EnumWindowsCallback callback, IntPtr state);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)]
+    private static extern bool PostMessageW(
+        IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
 }

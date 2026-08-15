@@ -397,11 +397,53 @@ Function InstallSummaryPageCreate
   nsDialogs::Show
 FunctionEnd
 
+Function EnsureRunningProductClosed
+  nsExec::ExecToStack 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\Manage-LigaseInstallation.ps1" -Action QueryRunningProduct -InstallDirectory "$INSTDIR"'
+  Pop $0
+  Pop $1
+  ${StrTrimNewLines} $1 $1
+  ${If} $0 != 0
+    MessageBox MB_OK|MB_ICONSTOP "无法可靠检查正在运行的 Ligase Host。安装尚未写入程序文件。"
+    Abort
+  ${EndIf}
+  ${If} $1 == '{"code":"productNotRunning","success":true}'
+    Return
+  ${EndIf}
+  ${If} $1 != '{"code":"productRunning","success":true}'
+    MessageBox MB_OK|MB_ICONSTOP "Ligase Host 运行状态返回了未知结果。安装尚未写入程序文件。"
+    Abort
+  ${EndIf}
+
+  MessageBox MB_YESNO|MB_ICONEXCLAMATION|MB_DEFBUTTON2 "检测到 Ligase Host 正在运行。选择“关闭并继续”（是）将先请求优雅退出（正常关闭）；若旧版本不响应，仅会通过 Windows Restart Manager 关闭已验证属于 Ligase 的旧进程，这可能丢失未保存状态。选择“取消”（否）将取消本次安装。" IDYES productCloseConfirmed
+  Abort
+  productCloseConfirmed:
+  nsExec::ExecToStack 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\Manage-LigaseInstallation.ps1" -Action CloseRunningProduct -InstallDirectory "$INSTDIR" -UserConfirmedClose'
+  Pop $0
+  Pop $1
+  ${StrTrimNewLines} $1 $1
+  ${If} $0 != 0
+  ${OrIf} $1 != '{"code":"productStopped","success":true}'
+    ${If} $1 == '{"code":"shutdownTerminalInvalid","success":false}'
+      MessageBox MB_OK|MB_ICONSTOP "旧版本 Ligase Host 已响应关闭请求，但没有返回完整终态；Windows 标准关闭也未能确认安全退出。请从托盘中选择“退出 Ligase Host”后重试。安装尚未写入程序文件。"
+    ${ElseIf} $1 == '{"code":"restartManagerShutdownFailed","success":false}'
+      MessageBox MB_OK|MB_ICONSTOP "Ligase Host 已响应关闭请求，但 Windows Restart Manager 未能完成剩余旧进程的优雅关闭。请从托盘中选择“退出 Ligase Host”后重试。安装尚未写入程序文件。"
+    ${ElseIf} $1 == '{"code":"shutdownResidualProcesses","success":false}'
+      MessageBox MB_OK|MB_ICONSTOP "Ligase Host 已完成清理响应，但仍检测到产品进程。请从托盘中选择“退出 Ligase Host”后重试。安装尚未写入程序文件。"
+    ${ElseIf} $1 == '{"code":"restartManagerResidualLocks","success":false}'
+      MessageBox MB_OK|MB_ICONSTOP "Ligase Host 进程已退出，但 Windows 仍检测到程序文件占用。请关闭相关程序后重试。安装尚未写入程序文件。"
+    ${Else}
+      MessageBox MB_OK|MB_ICONSTOP "无法确认 Ligase Host 整条进程链已安全退出。请从托盘中选择“退出 Ligase Host”后重试；安装尚未写入程序文件。"
+    ${EndIf}
+    Abort
+  ${EndIf}
+FunctionEnd
+
 Function InstallSummaryPageLeave
   ${If} $DataRoot == ""
     MessageBox MB_OK|MB_ICONSTOP "尚未确认数据目录。"
     Abort
   ${EndIf}
+  Call EnsureRunningProductClosed
   ClearErrors
   Call RecordInstallerEvidenceConfirmed
   IfErrors 0 +2
@@ -651,7 +693,11 @@ Section "创建桌面快捷方式（可选）" SEC_DESKTOP_SHORTCUT
   ; shell context here.
 SectionEnd
 
-Section /o "Ligase 虚拟显示（可选）" SEC_VDISPLAY
+; A normal (non-/o, non-RO) section is selected by default on both fresh and
+; upgrade installs, while the Components page still lets the user opt out.
+; If it is unchecked NSIS skips this entire section, so the certificate,
+; nefcon, PnP and Driver Store path remains unreachable.
+Section "Ligase 虚拟显示（默认勾选，可取消）" SEC_VDISPLAY
   ${If} $InstallOutcome == "failed"
     Goto virtualDisplayDone
   ${EndIf}

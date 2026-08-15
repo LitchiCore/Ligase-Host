@@ -294,6 +294,8 @@ public sealed class ApolloInstanceManagerTests
         public bool ThrowSynchronouslyOnKill { get; init; }
         public Exception? KillException { get; init; }
         public int KillCount { get; private set; }
+        public bool GracefulSignalAccepted { get; init; } = true;
+        public int GracefulSignalCount { get; private set; }
         public bool Disposed { get; private set; }
 
         public Task KillAsync()
@@ -308,6 +310,12 @@ public sealed class ApolloInstanceManagerTests
             if (ExitWhenKilled)
                 Exit();
             return Task.CompletedTask;
+        }
+
+        public bool RequestGracefulExit()
+        {
+            GracefulSignalCount++;
+            return GracefulSignalAccepted;
         }
 
         public Task WaitForExitAsync(CancellationToken cancellationToken)

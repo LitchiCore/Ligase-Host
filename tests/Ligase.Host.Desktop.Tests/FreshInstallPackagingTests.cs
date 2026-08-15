@@ -632,6 +632,7 @@ public sealed class FreshInstallPackagingTests
     [TestMethod]
     public async Task MigrationRejectsUnknownExistingRootWithoutChangingBootstrapOrSource()
     {
+        RequireProductProcessesStoppedForMigrationFixture();
         using var fixture = new InstallFixture();
         var source = Path.Combine(fixture.Root, "unknown-existing-data");
         Directory.CreateDirectory(source);
@@ -664,6 +665,21 @@ public sealed class FreshInstallPackagingTests
             originalLibrary,
             await File.ReadAllBytesAsync(Path.Combine(source, "library.json")));
         Assert.IsFalse(Directory.Exists(target));
+    }
+
+    private static void RequireProductProcessesStoppedForMigrationFixture()
+    {
+        var names = new[]
+        {
+            "Ligase Host",
+            "Ligase.Host.Desktop",
+            "sunshine",
+            "Ligase.GameWatcher"
+        };
+        if (names.Any(name => Process.GetProcessesByName(name).Length != 0))
+            Assert.Inconclusive(
+                "Migration fixture requires the installed product to remain stopped; " +
+                "the current physical acceptance window is intentionally preserved.");
     }
 
     [TestMethod]
@@ -1073,6 +1089,10 @@ public sealed class FreshInstallPackagingTests
             "\n  Write-InstallerEvidenceDocument $document\n  return $document",
             StringComparison.Ordinal));
         StringAssert.Contains(build, "resultSchemaSha256");
+        StringAssert.Contains(build,
+            "\"SudoVDA.dll\", \"SudoVDA.inf\", \"sudovda.cat\", \"sudovda.cer\"");
+        Assert.IsFalse(Regex.IsMatch(build,
+            "\\\"sudovda\\.cer\\\"\\)\\s*\\|\\s*Sort-Object\\s+-CaseSensitive"));
         StringAssert.Contains(nsis, "-Action InstallVirtualDisplay");
         StringAssert.Contains(nsis, "-Action UninstallVirtualDisplay");
         StringAssert.Contains(nsis, "Section \"Uninstall\"");
@@ -1120,8 +1140,46 @@ public sealed class FreshInstallPackagingTests
         StringAssert.Contains(setup, "CleanupState = \"retained\"");
         StringAssert.Contains(setup, "legacyStores.Length > 2");
         StringAssert.Contains(setup, "ObserveUnownedCertificateStore");
+        StringAssert.Contains(setup, "FailureDiagnostic(failure, \"trust\")");
+        StringAssert.Contains(setup, "FailureDiagnostic(failure, \"package\")");
+        StringAssert.Contains(setup, "FailureDiagnostic(commands.Failure!, \"create\")");
+        StringAssert.Contains(setup, "setupapi.dev.log");
+        StringAssert.Contains(setup, "nativeCodeHex");
+        StringAssert.Contains(setup, "reasonCode");
+        Assert.IsFalse(Regex.IsMatch(setup,
+            "\\\"sudovda\\.cer\\\"\\s*\\}\\s*\\.OrderBy\\("));
+        foreach (var reason in new[]
+        {
+            "installerToolMissing", "installerToolReparse",
+            "installerToolHashMismatch", "packageFileMissing",
+            "packageFileReparse", "packageHashMismatch"
+        }) StringAssert.Contains(setup, reason);
+        StringAssert.Contains(setup, "logPathState");
         StringAssert.Contains(setup,
             "present ? \"present\" : \"absent\"");
+        StringAssert.Contains(setup, "ValidatePackage(driverRoot, request.PackageSha256");
+        StringAssert.Contains(setup, "request.InstallerToolSha256");
+        StringAssert.Contains(setup, "--create-device-node");
+        StringAssert.Contains(setup, "--install-driver");
+        StringAssert.Contains(setup, "--inf-path");
+        StringAssert.Contains(setup, "RunPinnedTool(toolPath, arguments");
+        StringAssert.Contains(setup, "request.InstallerToolSha256, driverRoot");
+        StringAssert.Contains(setup, "RollbackProvisionMutation");
+        StringAssert.Contains(setup, "RollbackTrustMutation");
+        Assert.IsFalse(setup.Contains("SetupCopyOEMInf", StringComparison.Ordinal));
+        Assert.IsTrue(setup.IndexOf("var trustResult = EnsureTrust(driverRoot",
+                StringComparison.Ordinal) <
+            setup.IndexOf("var commands = ExecuteDriverCommandSequence(",
+                StringComparison.Ordinal));
+        Assert.IsTrue(setup.IndexOf(
+                "ValidatePackage(driverRoot, request.PackageSha256",
+                StringComparison.Ordinal) < setup.IndexOf(
+                "var trustResult = EnsureTrust(driverRoot",
+                StringComparison.Ordinal));
+        Assert.IsTrue(setup.IndexOf("CreateDriverArguments", StringComparison.Ordinal) <
+            setup.IndexOf("InstallDriverArguments", StringComparison.Ordinal));
+        StringAssert.Contains(management,
+            "installerToolSha256 = [string]$Manifest.virtualDisplay.installerToolSha256");
         Assert.IsFalse(setup.Contains(
             "legacyStores.Length is < 1 or > 2", StringComparison.Ordinal));
 
@@ -1153,6 +1211,248 @@ public sealed class FreshInstallPackagingTests
         Assert.IsFalse(File.Exists(Path.Combine(
             repo, "tools", "Ligase.VirtualDisplay.InventoryHelper",
             "Ligase.VirtualDisplay.InventoryHelper.csproj")));
+    }
+
+    [TestMethod]
+    public void VirtualDisplayComponentDefaultsSelectedButRemainsOptionalAndRiskGated()
+    {
+        var repo = FindRepositoryRoot();
+        var nsis = File.ReadAllText(Path.Combine(
+            repo, "packaging", "windows", "ligase", "LigaseHost.nsi"));
+        const string header =
+            "Section \"Ligase 虚拟显示（默认勾选，可取消）\" SEC_VDISPLAY";
+        StringAssert.Contains(nsis, header);
+        Assert.IsFalse(nsis.Contains(
+            "Section /o \"Ligase 虚拟显示", StringComparison.Ordinal));
+        Assert.IsFalse(nsis.Contains(
+            "SectionSetFlags ${LIGASE_SECTION_VIRTUAL_DISPLAY}",
+            StringComparison.Ordinal));
+
+        var section = Regex.Match(nsis,
+            "(?ms)^" + Regex.Escape(header) +
+            "\\r?\\n(?<body>.*?)^SectionEnd\\s*$");
+        Assert.IsTrue(section.Success);
+        var body = section.Groups["body"].Value;
+
+        // No SectionIn RO: the default applies equally to fresh and upgrade,
+        // but the user can still clear the checkbox on the Components page.
+        Assert.IsFalse(body.Contains("SectionIn RO", StringComparison.Ordinal));
+        StringAssert.Contains(body, "自签名发布者证书");
+        StringAssert.Contains(body, "本机信任存储");
+        StringAssert.Contains(body, "Windows 安装内核驱动");
+        StringAssert.Contains(body, "串流物理桌面不需要此组件");
+        StringAssert.Contains(body, "MB_YESNO");
+        StringAssert.Contains(body, "IDNO skipVirtualDisplay");
+
+        var warning = body.IndexOf("MessageBox MB_YESNO", StringComparison.Ordinal);
+        var privilegedCall = body.IndexOf(
+            "-Action InstallVirtualDisplay", StringComparison.Ordinal);
+        Assert.IsTrue(warning >= 0 && privilegedCall > warning);
+        Assert.AreEqual(1, Regex.Matches(body,
+            Regex.Escape("-Action InstallVirtualDisplay")).Count);
+
+        // NSIS does not execute the body of an unselected section. Keeping
+        // every privileged virtual-display action inside this one optional
+        // section is the mutation-zero contract for an explicit opt-out.
+        var installerOnlyAction = Regex.Match(nsis,
+            "(?m)^\\s*nsExec::ExecToStack .*?-Action InstallVirtualDisplay.*$");
+        Assert.IsTrue(installerOnlyAction.Success);
+        Assert.IsTrue(installerOnlyAction.Index >= section.Index &&
+            installerOnlyAction.Index < section.Index + section.Length);
+    }
+
+    [TestMethod]
+    public void UpgradeGatePromptsBeforeWritesAndRestrictsLegacyForceToExactReceipts()
+    {
+        var repo = FindRepositoryRoot();
+        var nsis = File.ReadAllText(Path.Combine(
+            repo, "packaging", "windows", "ligase", "LigaseHost.nsi"));
+        var management = File.ReadAllText(Path.Combine(
+            repo, "packaging", "windows", "ligase",
+            "Manage-LigaseInstallation.ps1"));
+        var tray = File.ReadAllText(Path.Combine(
+            repo, "src", "Ligase.Desktop", "Services",
+            "WindowsTrayIconService.cs"));
+        var shutdownService = File.ReadAllText(Path.Combine(
+            repo, "src", "Ligase.Desktop", "Services",
+            "InstallerShutdownService.cs"));
+        var app = File.ReadAllText(Path.Combine(
+            repo, "src", "Ligase.Desktop", "App.xaml.cs"));
+        var coreManager = File.ReadAllText(Path.Combine(
+            repo, "src", "Ligase.Core", "Services",
+            "ApolloInstanceManager.cs"));
+        var nativeCore = File.ReadAllText(Path.Combine(repo, "src", "main.cpp"));
+        var singleInstance = File.ReadAllText(Path.Combine(
+            repo, "src", "Ligase.Desktop", "Services", "SingleInstanceService.cs"));
+        var releaseGate = File.ReadAllText(Path.Combine(
+            repo, "packaging", "windows", "ligase",
+            "Test-LigaseReleaseShutdown.ps1"));
+
+        StringAssert.Contains(nsis, "Function EnsureRunningProductClosed");
+        StringAssert.Contains(nsis, "-Action QueryRunningProduct");
+        StringAssert.Contains(nsis, "-Action CloseRunningProduct");
+        StringAssert.Contains(nsis, "关闭并继续");
+        StringAssert.Contains(nsis, "优雅退出");
+        Assert.IsTrue(nsis.IndexOf("Call EnsureRunningProductClosed",
+            StringComparison.Ordinal) < nsis.IndexOf(
+            "Call RecordInstallerEvidenceConfirmed", StringComparison.Ordinal));
+        Assert.IsTrue(nsis.IndexOf("Call EnsureRunningProductClosed",
+            StringComparison.Ordinal) < nsis.IndexOf(
+            "SetOutPath \"$INSTDIR\"", StringComparison.Ordinal));
+        Assert.IsFalse(nsis.Contains("MB_ABORTRETRYIGNORE",
+            StringComparison.Ordinal));
+
+        StringAssert.Contains(management, "function Get-RunningLigaseProductProcesses");
+        StringAssert.Contains(management, "function Request-RunningLigaseProductExit");
+        StringAssert.Contains(management, "Ligase Host.exe");
+        StringAssert.Contains(management, "Desktop\\Ligase.Host.Desktop.exe");
+        StringAssert.Contains(management, "Core\\sunshine.exe");
+        StringAssert.Contains(management, "LigaseProductShutdownClient");
+        StringAssert.Contains(management, "NamedPipeClientStream");
+        StringAssert.Contains(management, "GetNamedPipeServerProcessId");
+        StringAssert.Contains(management, "shutdownAcknowledged");
+        StringAssert.Contains(management, "7000");
+        StringAssert.Contains(management, "Write-ShutdownTerminal");
+        StringAssert.Contains(management,
+            "Write-RunningLigaseProductQueryTerminal");
+        StringAssert.Contains(management, "operation = \"query\"");
+        StringAssert.Contains(management, "operation = \"close\"");
+        StringAssert.Contains(management, "shutdownResidualProcesses");
+        StringAssert.Contains(management, "desktopTerminalReceived");
+        StringAssert.Contains(management, "LigaseRestartManager");
+        StringAssert.Contains(management, "RmRegisterResources");
+        StringAssert.Contains(management, "RmGetList");
+        StringAssert.Contains(management, "Test-ExactProcessLockerSet");
+        StringAssert.Contains(management, "Open-LegacyForceAuthority");
+        StringAssert.Contains(management, "Test-LegacyForceAuthorityCurrent");
+        StringAssert.Contains(management, "ShutdownLockingProcesses");
+        StringAssert.Contains(management, "RmShutdown(handle, force ? 1u : 0u");
+        StringAssert.Contains(management, "legacyForceIneligible");
+        StringAssert.Contains(management, "legacyAuthorityFinalDrift");
+        StringAssert.Contains(management, "programWriteCalls = 0");
+        StringAssert.Contains(management, "UserConfirmedClose");
+        StringAssert.Contains(management, "EvaluateLegacyForceEligibility");
+        StringAssert.Contains(management, "Invoke-LegacyForceEligibilityDryRun");
+        StringAssert.Contains(management, "wouldBeForcedEligible");
+        StringAssert.Contains(management, "forcedAttempted = $false");
+        StringAssert.Contains(management, "rmShutdownCalls = 0");
+        StringAssert.Contains(management, "RM_UNIQUE_PROCESS");
+        StringAssert.Contains(management, "StartFileTimeUtc");
+        StringAssert.Contains(management, "legacyAuthorityProcessDrift");
+        StringAssert.Contains(management, "legacyAuthorityRestartManagerDrift");
+        StringAssert.Contains(management, "legacyAuthorityPathMismatch");
+        StringAssert.Contains(management, "legacyAuthorityArtifactMismatch");
+        StringAssert.Contains(management, "legacyAuthoritySignerMismatch");
+        StringAssert.Contains(management, "legacyAuthorityLockerSetMismatch");
+        StringAssert.Contains(management, "simulateGraceful351ForcePermission");
+        StringAssert.Contains(management, "simulateGraceful351ForceCompleted");
+        StringAssert.Contains(nsis, "-UserConfirmedClose");
+        StringAssert.Contains(management, "parentPid");
+        StringAssert.Contains(management, "startedUtc");
+        StringAssert.Contains(management, "restartManagerResidualLocks");
+        StringAssert.Contains(management, "TryReadTerminal");
+        StringAssert.Contains(management, "shutdownTerminalInvalid");
+        var closeBody = Regex.Match(management,
+            "(?ms)^function Request-RunningLigaseProductExit\\s*\\{(?<body>.*?)^\\}");
+        Assert.IsTrue(closeBody.Success);
+        Assert.IsFalse(closeBody.Groups["body"].Value.Contains(
+            ".Kill", StringComparison.Ordinal));
+        Assert.IsFalse(closeBody.Groups["body"].Value.Contains(
+            "TerminateProcess", StringComparison.Ordinal));
+        Assert.IsFalse(closeBody.Groups["body"].Value.Contains(
+            "taskkill", StringComparison.OrdinalIgnoreCase));
+
+        Assert.IsFalse(tray.Contains("InstallerExitMessage", StringComparison.Ordinal));
+        StringAssert.Contains(shutdownService, "PipeOptions.CurrentUserOnly");
+        StringAssert.Contains(shutdownService, "state\\\":\\\"accepted");
+        StringAssert.Contains(shutdownService, "shutdownProtocolVersion\\\":3");
+        StringAssert.Contains(shutdownService, "exitCommitFailed");
+        StringAssert.Contains(app, "PrepareForInstallerShutdownAsync");
+        StringAssert.Contains(app, "StopForInstallerAsync");
+        StringAssert.Contains(app, "BeginExit");
+        StringAssert.Contains(app, "exitCommitted");
+        Assert.IsFalse(app.Contains(
+            "ResumeAfterInstallerShutdownFailure", StringComparison.Ordinal));
+        var window = File.ReadAllText(Path.Combine(
+            repo, "src", "Ligase.Desktop", "MainWindow.xaml.cs"));
+        StringAssert.Contains(window, "_installerShutdownFrozen");
+        StringAssert.Contains(window,
+            "if (_isExiting || _installerShutdownFrozen) return;");
+        StringAssert.Contains(singleInstance, "public void BeginExit()");
+        StringAssert.Contains(singleInstance,
+            "if (Volatile.Read(ref _isExiting) != 0) return;");
+        StringAssert.Contains(releaseGate, "[ValidateRange(5, 10)]");
+        StringAssert.Contains(releaseGate, "releaseProductShutdownGatePassed");
+        StringAssert.Contains(releaseGate, "restartObserved=$false");
+        StringAssert.Contains(releaseGate, "finalResidual.restartManager.processes");
+        StringAssert.Contains(coreManager, "RequestGracefulExit()");
+        var installerStop = Regex.Match(coreManager,
+            "(?ms)public async Task<ApolloStopOutcome> StopForInstallerAsync.*?^    \\}");
+        Assert.IsTrue(installerStop.Success);
+        Assert.IsFalse(installerStop.Value.Contains(".Kill(", StringComparison.Ordinal));
+        StringAssert.Contains(nativeCore, "WM_LIGASE_MANAGED_SHUTDOWN");
+    }
+
+    [TestMethod]
+    public async Task UpgradeShutdownProtocolClosesOwnedProcessChainAndFailsClosed()
+    {
+        var repo = FindRepositoryRoot();
+        var dotnet = @"D:\Development\Ligase\Dependencies\dotnet-sdk-8.0.100\dotnet.exe";
+        var harness = Path.Combine(
+            repo, "packaging", "windows", "ligase",
+            "Test-LigaseProductShutdown.ps1");
+        Assert.IsTrue(File.Exists(dotnet));
+        Assert.IsTrue(File.Exists(harness));
+
+        var start = new ProcessStartInfo
+        {
+            FileName = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.Windows),
+                "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+            WorkingDirectory = repo,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+        foreach (var argument in new[]
+        {
+            "-NoLogo", "-NoProfile", "-NonInteractive",
+            "-File", harness,
+            "-DotNetPath", dotnet,
+            "-SourceRoot", repo
+        }) start.ArgumentList.Add(argument);
+
+        using var process = Process.Start(start)
+            ?? throw new InvalidOperationException("shutdownFixtureStartFailed");
+        var stdout = process.StandardOutput.ReadToEndAsync();
+        var stderr = process.StandardError.ReadToEndAsync();
+        await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(180));
+        Assert.AreEqual(0, process.ExitCode, await stderr);
+        var lines = (await stdout).Split(
+            new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+        using var terminal = JsonDocument.Parse(lines[^1]);
+        var root = terminal.RootElement;
+        Assert.AreEqual("shutdownProtocolFixturePassed",
+            root.GetProperty("code").GetString());
+        Assert.AreEqual(17, root.GetProperty("cases").GetInt32());
+        Assert.IsTrue(root.GetProperty("acknowledged").GetBoolean());
+        Assert.IsTrue(root.GetProperty("legacyReorderedAccepted").GetBoolean());
+        Assert.IsTrue(root.GetProperty("legacyCleanupFaultRecovered").GetBoolean());
+        Assert.AreEqual(1, root.GetProperty("launcherStarts").GetInt32());
+        Assert.IsTrue(root.GetProperty(
+            "ackUnavailableRecoveredByRestartManager").GetBoolean());
+        Assert.IsTrue(root.GetProperty(
+            "terminalFailureRecoveredByRestartManager").GetBoolean());
+        Assert.IsTrue(root.GetProperty(
+            "terminalEofRecoveredByRestartManager").GetBoolean());
+        Assert.IsTrue(root.GetProperty(
+            "residualRecoveredByRestartManager").GetBoolean());
+        Assert.IsTrue(root.GetProperty("forceUsed").GetBoolean());
+        Assert.AreEqual(8, root.GetProperty("forceNegatives").GetInt32());
+        Assert.IsTrue(root.GetProperty("staleIgnored").GetBoolean());
+        Assert.AreEqual(0, root.GetProperty("processResidue").GetInt32());
+        Assert.AreEqual(0, root.GetProperty("fileResidue").GetInt32());
     }
 
     [TestMethod]
@@ -1491,7 +1791,7 @@ public sealed class FreshInstallPackagingTests
         {
             var full = Path.GetFullPath(configured);
             if (File.Exists(Path.Combine(full, "CMakeLists.txt")) &&
-                Directory.Exists(Path.Combine(full, ".git")))
+                GitMarkerExists(full))
             {
                 return full;
             }
@@ -1501,13 +1801,19 @@ public sealed class FreshInstallPackagingTests
         while (directory is not null)
         {
             if (File.Exists(Path.Combine(directory.FullName, "CMakeLists.txt")) &&
-                Directory.Exists(Path.Combine(directory.FullName, ".git")))
+                GitMarkerExists(directory.FullName))
             {
                 return directory.FullName;
             }
             directory = directory.Parent;
         }
         throw new DirectoryNotFoundException("repositoryRootUnavailable");
+    }
+
+    private static bool GitMarkerExists(string root)
+    {
+        var marker = Path.Combine(root, ".git");
+        return Directory.Exists(marker) || File.Exists(marker);
     }
 
     [TestMethod]
@@ -1527,6 +1833,16 @@ public sealed class FreshInstallPackagingTests
             "<TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>");
         StringAssert.Contains(project,
             "<TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>");
+        StringAssert.Contains(build,
+            "SelectNodes('/Project/PropertyGroup/WindowsSdkPackageVersion')");
+        StringAssert.Contains(build,
+            "SelectNodes('/Project/PropertyGroup/TargetFramework')");
+        StringAssert.Contains(build,
+            "SelectNodes('/Project/PropertyGroup/TargetPlatformMinVersion')");
+        Assert.AreEqual(5,
+            Regex.Matches(build, "'-p:UseSharedCompilation=false'").Count);
+        Assert.AreEqual(5,
+            Regex.Matches(build, "'-nodeReuse:false'").Count);
         Assert.AreEqual(1, manifest.RootElement.GetProperty("schemaVersion").GetInt32());
         var package = manifest.RootElement.GetProperty("packages")[0];
         Assert.AreEqual("Microsoft.Windows.SDK.NET.Ref", package.GetProperty("id").GetString());

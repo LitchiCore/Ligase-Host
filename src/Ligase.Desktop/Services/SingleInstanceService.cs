@@ -6,6 +6,7 @@ public sealed class SingleInstanceService : IDisposable
 {
     private const string InstanceKey = "Ligase.Host.Desktop.Primary";
     private AppInstance? _primary;
+    private int _isExiting;
 
     public event Action<AppActivationArguments>? RedirectedActivation;
 
@@ -25,8 +26,15 @@ public sealed class SingleInstanceService : IDisposable
         return (true, arguments);
     }
 
-    private void OnActivated(object? sender, AppActivationArguments arguments) =>
+    public void BeginExit() => Interlocked.Exchange(ref _isExiting, 1);
+
+    private void OnActivated(object? sender, AppActivationArguments arguments)
+    {
+        // Keep owning the instance key until process teardown so a concurrent
+        // activation cannot elect a new primary while this process exits.
+        if (Volatile.Read(ref _isExiting) != 0) return;
         RedirectedActivation?.Invoke(arguments);
+    }
 
     public void Dispose()
     {

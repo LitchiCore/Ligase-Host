@@ -7,6 +7,9 @@ param(
     "ReconcileShortcuts",
     "ValidateInstallTransaction",
     "PreflightInstallTransaction",
+    "QueryRunningProduct",
+    "EvaluateLegacyForceEligibility",
+    "CloseRunningProduct",
     "RecordEvidence",
     "Readback",
     "Uninstall",
@@ -51,6 +54,12 @@ param(
   [ValidateSet("notAttempted", "pending", "preserved", "quarantined")]
   [string]$EvidenceUninstallState = "notAttempted",
   [string]$ValidationRoot,
+  [string]$ShutdownEvidenceRoot,
+  [switch]$UserConfirmedClose,
+  [ValidateSet("none", "simulateGraceful351", "simulateGraceful351Force351",
+    "simulateGraceful351ForceTimeout", "simulateGraceful351ForcePermission",
+    "simulateGraceful351ForceCompleted")]
+  [string]$ShutdownValidationBehavior = "none",
   [int]$EvidenceHelperExit = -1,
   [ValidateSet("notRequired", "completed", "failed", "unknown")]
   [string]$EvidenceRollback = "notRequired",
@@ -211,7 +220,11 @@ $script:finalComponents = [ordered]@{
   virtualDisplay = "pending"
 }
 
-Add-Type -TypeDefinition @"
+$shutdownOnlyAction = $Action -in @(
+  "QueryRunningProduct", "EvaluateLegacyForceEligibility", "CloseRunningProduct")
+
+if (-not $shutdownOnlyAction) {
+  Add-Type -TypeDefinition @"
 using System;
 using System.ComponentModel;
 using System.Diagnostics;
@@ -328,6 +341,345 @@ public static class LigaseInteractiveUser
     }
 }
 "@
+}
+
+Add-Type -TypeDefinition @"
+using System;
+using System.IO;
+using System.IO.Pipes;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using System.Text;
+using System.Diagnostics;
+using System.Collections.Generic;
+using System.Web.Script.Serialization;
+
+public sealed class LigaseProductShutdownOutcome
+{
+    public string Code { get; set; }
+    public bool Connected { get; set; }
+    public bool RequestSent { get; set; }
+    public bool AckReceived { get; set; }
+    public bool DesktopTerminalReceived { get; set; }
+    public string DesktopTerminalState { get; set; }
+    public string DesktopTerminalCode { get; set; }
+    public string DesktopCleanupState { get; set; }
+    public string DesktopCoreStopCode { get; set; }
+    public bool? DesktopCoreProcessStillAlive { get; set; }
+}
+
+public static class LigaseProductShutdownClient
+{
+    public static LigaseProductShutdownOutcome Request(string installRoot, int desktopProcessId,
+        string requestId, int timeoutMilliseconds)
+    {
+        var result = new LigaseProductShutdownOutcome { Code = "pipeConnectFailed" };
+        var deadline = Stopwatch.StartNew();
+        var pipeName = GetPipeName(installRoot);
+        try
+        {
+            using (var pipe = new NamedPipeClientStream(".", pipeName,
+                       PipeDirection.InOut, PipeOptions.Asynchronous))
+            {
+                pipe.Connect(Remaining(deadline, timeoutMilliseconds, 2000));
+                result.Connected = true;
+                uint serverPid;
+                if (!GetNamedPipeServerProcessId(
+                        pipe.SafePipeHandle.DangerousGetHandle(), out serverPid) ||
+                    serverPid != unchecked((uint)desktopProcessId))
+                { result.Code = "shutdownServerIdentityMismatch"; return result; }
+                using (var reader = new StreamReader(pipe,
+                           new UTF8Encoding(false, true), false, 1024, true))
+                using (var writer = new StreamWriter(pipe,
+                           new UTF8Encoding(false), 1024, true))
+                {
+                    writer.NewLine = "\n";
+                    writer.AutoFlush = true;
+                    writer.WriteLine("{\"schemaVersion\":1,\"command\":\"shutdown\",\"requestId\":\"" +
+                        requestId + "\"}");
+                    result.RequestSent = true;
+                    var acceptedTask = reader.ReadLineAsync();
+                    if (!acceptedTask.Wait(Remaining(deadline, timeoutMilliseconds, 2500)))
+                    { result.Code = "shutdownAckTimeout"; return result; }
+                    var accepted = "{\"schemaVersion\":1,\"requestId\":\"" + requestId +
+                        "\",\"state\":\"accepted\"}";
+                    if (!String.Equals(acceptedTask.Result, accepted, StringComparison.Ordinal))
+                    { result.Code = "shutdownAckInvalid"; return result; }
+                    result.AckReceived = true;
+                    var terminalTask = reader.ReadLineAsync();
+                    if (!terminalTask.Wait(Remaining(deadline, timeoutMilliseconds,
+                            timeoutMilliseconds)))
+                    { result.Code = "shutdownTerminalTimeout"; return result; }
+                    if (!TryReadTerminal(terminalTask.Result, requestId, result))
+                    { result.Code = "shutdownTerminalInvalid"; return result; }
+                    result.DesktopTerminalReceived = true;
+                    result.Code = result.DesktopTerminalState == "completed" &&
+                        (result.DesktopTerminalCode == "exitCommitted" ||
+                         result.DesktopTerminalCode == "exitAlreadyCommitted" ||
+                         (result.DesktopTerminalCode == "coreStopped" &&
+                          result.DesktopCoreProcessStillAlive == false))
+                        ? "shutdownAcknowledged" : "shutdownTerminalFailed";
+                    return result;
+                }
+            }
+        }
+        catch (TimeoutException)
+        {
+            result.Code = result.AckReceived ? "shutdownTerminalTimeout" :
+                result.RequestSent ? "shutdownAckTimeout" : "pipeConnectFailed";
+            return result;
+        }
+        catch
+        {
+            result.Code = result.RequestSent ? "shutdownTransportFailed" :
+                "pipeConnectFailed";
+            return result;
+        }
+    }
+
+    private static bool TryReadTerminal(string json, string requestId,
+        LigaseProductShutdownOutcome result)
+    {
+        if (String.IsNullOrEmpty(json) || Encoding.UTF8.GetByteCount(json) > 2048)
+            return false;
+        try
+        {
+            var value = new JavaScriptSerializer().DeserializeObject(json)
+                as Dictionary<string, object>;
+            if (value == null ||
+                !value.ContainsKey("schemaVersion") ||
+                !value.ContainsKey("requestId") || !value.ContainsKey("state") ||
+                !value.ContainsKey("code") ||
+                !value.ContainsKey("coreProcessStillAlive") ||
+                !String.Equals(value["requestId"] as string, requestId,
+                    StringComparison.Ordinal) ||
+                !(value["coreProcessStillAlive"] is bool)) return false;
+            var schema = Convert.ToInt32(value["schemaVersion"]);
+            if (schema == 1 && value.Count != 5) return false;
+            if (schema == 2 && (value.Count != 6 ||
+                !value.ContainsKey("shutdownProtocolVersion") ||
+                Convert.ToInt32(value["shutdownProtocolVersion"]) != 2)) return false;
+            if (schema == 3 && (value.Count != 8 ||
+                !value.ContainsKey("shutdownProtocolVersion") ||
+                Convert.ToInt32(value["shutdownProtocolVersion"]) != 3 ||
+                !value.ContainsKey("cleanupState") ||
+                !value.ContainsKey("coreStopCode") ||
+                !(value["cleanupState"] is string) ||
+                !(value["coreStopCode"] is string))) return false;
+            if (schema != 1 && schema != 2 && schema != 3) return false;
+            result.DesktopTerminalState = value["state"] as string;
+            result.DesktopTerminalCode = value["code"] as string;
+            result.DesktopCoreProcessStillAlive =
+                (bool)value["coreProcessStillAlive"];
+            result.DesktopCleanupState = schema == 3
+                ? value["cleanupState"] as string : null;
+            result.DesktopCoreStopCode = schema == 3
+                ? value["coreStopCode"] as string : null;
+            return (result.DesktopTerminalState == "completed" ||
+                    result.DesktopTerminalState == "failed") &&
+                !String.IsNullOrEmpty(result.DesktopTerminalCode);
+        }
+        catch { return false; }
+    }
+
+    private static int Remaining(
+        Stopwatch deadline, int totalMilliseconds, int stageMaximum)
+    {
+        var remaining = totalMilliseconds - (int)deadline.ElapsedMilliseconds;
+        if (remaining <= 0) throw new TimeoutException("shutdownDeadlineExceeded");
+        return Math.Min(remaining, stageMaximum);
+    }
+
+    public static string GetPipeName(string installRoot)
+    {
+        var normalized = Path.GetFullPath(installRoot)
+            .TrimEnd(Path.DirectorySeparatorChar).ToLowerInvariant();
+        using (var sha = SHA256.Create())
+        {
+            var hash = BitConverter.ToString(sha.ComputeHash(
+                Encoding.UTF8.GetBytes(normalized))).Replace("-", "")
+                .ToLowerInvariant();
+            return "ligase-host-shutdown-v1-" + hash;
+        }
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetNamedPipeServerProcessId(
+        IntPtr pipe, out uint serverProcessId);
+}
+"@ -ReferencedAssemblies @("System.dll", "System.Core.dll", "System.Web.Extensions.dll")
+
+# Restart Manager is the Windows authority for applications holding files that
+# an installer needs to replace.  Ligase's named pipe only requests its custom
+# graceful cleanup; it does not replace this standard occupancy readback.
+Add-Type -TypeDefinition @"
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+
+public sealed class LigaseRestartManagerResult
+{
+    public LigaseRestartManagerProcessInfo[] Processes { get; set; }
+    public uint RebootReason { get; set; }
+}
+
+public sealed class LigaseRestartManagerProcessInfo
+{
+    public int ProcessId { get; set; }
+    public long ProcessStartFileTimeUtc { get; set; }
+    public uint AppStatus { get; set; }
+    public uint SessionId { get; set; }
+}
+
+public sealed class LigaseRestartManagerShutdownResult
+{
+    public int NativeCode { get; set; }
+    public bool Cancelled { get; set; }
+    public bool ForceUsed { get; set; }
+}
+
+public static class LigaseRestartManager
+{
+    private const int ERROR_SUCCESS = 0;
+    private const int ERROR_MORE_DATA = 234;
+    private const int CCH_RM_SESSION_KEY = 32;
+    private const int CCH_RM_MAX_APP_NAME = 255;
+    private const int CCH_RM_MAX_SVC_NAME = 63;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct RM_UNIQUE_PROCESS
+    {
+        public int ProcessId;
+        public System.Runtime.InteropServices.ComTypes.FILETIME ProcessStartTime;
+    }
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct RM_PROCESS_INFO
+    {
+        public RM_UNIQUE_PROCESS Process;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = CCH_RM_MAX_APP_NAME + 1)]
+        public string AppName;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = CCH_RM_MAX_SVC_NAME + 1)]
+        public string ServiceShortName;
+        public uint ApplicationType;
+        public uint AppStatus;
+        public uint TSSessionId;
+        [MarshalAs(UnmanagedType.Bool)] public bool Restartable;
+    }
+
+    public static LigaseRestartManagerResult GetLockingProcesses(string[] paths)
+    {
+        uint handle;
+        var key = new System.Text.StringBuilder(CCH_RM_SESSION_KEY + 1);
+        var code = RmStartSession(out handle, 0, key);
+        if (code != ERROR_SUCCESS) throw new Win32Exception(code);
+        try
+        {
+            code = RmRegisterResources(handle, (uint)paths.Length, paths,
+                0, null, 0, null);
+            if (code != ERROR_SUCCESS) throw new Win32Exception(code);
+            uint needed = 0, count = 0, rebootReason = 0;
+            code = RmGetList(handle, out needed, ref count, null, ref rebootReason);
+            if (code == ERROR_SUCCESS)
+                return new LigaseRestartManagerResult {
+                    Processes = new LigaseRestartManagerProcessInfo[0],
+                    RebootReason = rebootReason };
+            if (code != ERROR_MORE_DATA) throw new Win32Exception(code);
+            var values = new RM_PROCESS_INFO[needed];
+            count = needed;
+            code = RmGetList(handle, out needed, ref count, values, ref rebootReason);
+            if (code != ERROR_SUCCESS) throw new Win32Exception(code);
+            var processes = new List<LigaseRestartManagerProcessInfo>();
+            for (var index = 0; index < count; index++)
+            {
+                long start = ((long)values[index].Process.ProcessStartTime.dwHighDateTime << 32) |
+                    unchecked((uint)values[index].Process.ProcessStartTime.dwLowDateTime);
+                processes.Add(new LigaseRestartManagerProcessInfo {
+                    ProcessId = values[index].Process.ProcessId,
+                    ProcessStartFileTimeUtc = start,
+                    AppStatus = values[index].AppStatus,
+                    SessionId = values[index].TSSessionId });
+            }
+            processes.Sort((left, right) => left.ProcessId.CompareTo(right.ProcessId));
+            return new LigaseRestartManagerResult {
+                Processes = processes.ToArray(), RebootReason = rebootReason };
+        }
+        finally { RmEndSession(handle); }
+    }
+
+    public static LigaseRestartManagerShutdownResult ShutdownLockingProcesses(
+        string[] paths, int[] processIds, string[] processStartedUtc,
+        int timeoutMilliseconds, bool force)
+    {
+        if (processIds == null || processStartedUtc == null ||
+            processIds.Length == 0 || processIds.Length != processStartedUtc.Length ||
+            timeoutMilliseconds <= 0)
+            throw new ArgumentException("restartManagerShutdownInputInvalid");
+        if (paths == null) paths = new string[0];
+        var applications = new RM_UNIQUE_PROCESS[processIds.Length];
+        for (var index = 0; index < processIds.Length; index++)
+        {
+            long start = DateTime.Parse(
+                processStartedUtc[index],
+                System.Globalization.CultureInfo.InvariantCulture,
+                System.Globalization.DateTimeStyles.RoundtripKind).ToUniversalTime().ToFileTimeUtc();
+            applications[index].ProcessId = processIds[index];
+            applications[index].ProcessStartTime.dwLowDateTime = unchecked((int)(start & 0xffffffff));
+            applications[index].ProcessStartTime.dwHighDateTime = unchecked((int)(start >> 32));
+        }
+        uint handle;
+        var key = new System.Text.StringBuilder(CCH_RM_SESSION_KEY + 1);
+        var code = RmStartSession(out handle, 0, key);
+        if (code != ERROR_SUCCESS) throw new Win32Exception(code);
+        try
+        {
+            var registeredPaths = paths.Length == 0 ? null : paths;
+            code = RmRegisterResources(handle, (uint)paths.Length, registeredPaths,
+                (uint)applications.Length, applications, 0, null);
+            if (code != ERROR_SUCCESS) throw new Win32Exception(code);
+            var task = System.Threading.Tasks.Task.Run(() =>
+                RmShutdown(handle, force ? 1u : 0u, IntPtr.Zero));
+            if (!task.Wait(timeoutMilliseconds))
+            {
+                RmCancelCurrentTask(handle);
+                task.Wait(1000);
+                return new LigaseRestartManagerShutdownResult {
+                    NativeCode = task.IsCompleted ? task.Result : 1460,
+                    Cancelled = true,
+                    ForceUsed = force };
+            }
+            return new LigaseRestartManagerShutdownResult {
+                NativeCode = task.Result,
+                Cancelled = false,
+                ForceUsed = force };
+        }
+        finally { RmEndSession(handle); }
+    }
+
+    [DllImport("rstrtmgr.dll", CharSet = CharSet.Unicode)]
+    private static extern int RmStartSession(
+        out uint sessionHandle, int sessionFlags,
+        System.Text.StringBuilder sessionKey);
+    [DllImport("rstrtmgr.dll", CharSet = CharSet.Unicode)]
+    private static extern int RmRegisterResources(
+        uint sessionHandle, uint fileCount,
+        [MarshalAs(UnmanagedType.LPArray, ArraySubType = UnmanagedType.LPWStr)] string[] files,
+        uint applicationCount, RM_UNIQUE_PROCESS[] applications,
+        uint serviceCount, string[] services);
+    [DllImport("rstrtmgr.dll")]
+    private static extern int RmGetList(
+        uint sessionHandle, out uint needed, ref uint count,
+        [In, Out] RM_PROCESS_INFO[] affectedApps, ref uint rebootReason);
+    [DllImport("rstrtmgr.dll")]
+    private static extern int RmEndSession(uint sessionHandle);
+    [DllImport("rstrtmgr.dll")]
+    private static extern int RmShutdown(
+        uint sessionHandle, uint actionFlags, IntPtr statusCallback);
+    [DllImport("rstrtmgr.dll")]
+    private static extern int RmCancelCurrentTask(uint sessionHandle);
+}
+"@
 
 Add-Type -TypeDefinition @"
 using System;
@@ -337,6 +689,18 @@ using Microsoft.Win32.SafeHandles;
 
 public static class LigaseFileIdentity
 {
+    private const uint GENERIC_READ = 0x80000000;
+    private const uint FILE_SHARE_READ = 0x00000001;
+    private const uint OPEN_EXISTING = 3;
+    private const uint FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000;
+    private const uint FILE_ATTRIBUTE_DIRECTORY = 0x00000010;
+    private const uint FILE_ATTRIBUTE_REPARSE_POINT = 0x00000400;
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern SafeFileHandle CreateFileW(
+        string path, uint desiredAccess, uint shareMode, IntPtr securityAttributes,
+        uint creationDisposition, uint flagsAndAttributes, IntPtr templateFile);
+
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern uint GetSystemDirectoryW(
         System.Text.StringBuilder buffer, uint size);
@@ -375,6 +739,27 @@ public static class LigaseFileIdentity
                 throw new IOException("dataRootEnumerationFailed");
             return information.NumberOfLinks;
         }
+    }
+
+    public static FileStream OpenStableRead(string path)
+    {
+        var handle = CreateFileW(
+            Path.GetFullPath(path), GENERIC_READ, FILE_SHARE_READ, IntPtr.Zero,
+            OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, IntPtr.Zero);
+        if (handle.IsInvalid)
+        {
+            var code = Marshal.GetLastWin32Error();
+            handle.Dispose();
+            throw new IOException("legacyImageOpenFailed", new System.ComponentModel.Win32Exception(code));
+        }
+        BY_HANDLE_FILE_INFORMATION information;
+        if (!GetFileInformationByHandle(handle, out information) ||
+            (information.FileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0)
+        {
+            handle.Dispose();
+            throw new IOException("legacyImageIdentityInvalid");
+        }
+        return new FileStream(handle, FileAccess.Read, 4096, false);
     }
 
     public static string GetIdentitySha256(SafeFileHandle handle)
@@ -754,6 +1139,7 @@ function Invoke-VirtualDisplaySetup($Manifest, [string]$Operation = "provision")
       sourceHead = [string]$Manifest.sourceHead
       helperSha256 = [string]$helper.sha256
       packageSha256 = [string]$Manifest.virtualDisplay.packageSha256
+      installerToolSha256 = [string]$Manifest.virtualDisplay.installerToolSha256
       hardwareId = "ROOT\SUDOMAKER\SUDOVDA"
       hardCapMilliseconds = 120000; settleMilliseconds = 1000
       trustSelected = $Operation -ceq "provision"
@@ -940,12 +1326,40 @@ function Test-VirtualDisplaySetupEvidenceProjection($Projection) {
   $names = @($Projection.PSObject.Properties.Name)
   $expected = @("operation", "operationIdSha256", "state", "code", "stage",
     "firstFailureFrozen", "writtenUtc", "resultFileIdentitySha256",
-    "resultFileSha256")
+    "resultFileSha256", "failureDiagnostic")
   if ($names.Count -ne $expected.Count -or
       @($expected | Where-Object { $names -cnotcontains $_ }).Count -ne 0) {
     return $false
   }
-  return [string]$Projection.operation -in @("provision", "uninstall") -and
+  $diagnostic = $Projection.failureDiagnostic
+  if ($null -eq $diagnostic) { return $false }
+  $diagnosticNames = @($diagnostic.PSObject.Properties.Name)
+  $expectedDiagnostic = @("state", "owner", "category", "reasonCode",
+    "nativeCode", "nativeCodeHex", "logPath", "logPathState")
+  if ($diagnosticNames.Count -ne $expectedDiagnostic.Count -or
+      @($expectedDiagnostic | Where-Object {
+        $diagnosticNames -cnotcontains $_ }).Count -ne 0) { return $false }
+  $diagnosticValid = if ([string]$diagnostic.state -ceq "none") {
+    [string]$diagnostic.owner -ceq "none" -and
+    [string]$diagnostic.category -ceq "none" -and
+    [string]$diagnostic.reasonCode -ceq "none" -and
+    [int]$diagnostic.nativeCode -eq 0 -and
+    [string]$diagnostic.nativeCodeHex -ceq "none" -and
+    $null -eq $diagnostic.logPath -and
+    [string]$diagnostic.logPathState -ceq "notApplicable"
+  } else {
+    [string]$diagnostic.state -ceq "captured" -and
+    [string]$diagnostic.owner -in @("trust", "package") -and
+    [string]$diagnostic.category -in @(
+      "trustChain", "packageValidation", "setupApi", "nativeTool") -and
+    [string]$diagnostic.reasonCode -match '^[a-z][A-Za-z0-9]{0,63}$' -and
+    ([string]$diagnostic.nativeCodeHex -ceq "none" -or
+      [string]$diagnostic.nativeCodeHex -match '^0x[0-9A-F]{8}$') -and
+    [string]$diagnostic.logPathState -in @(
+      "notApplicable", "available", "missing", "unavailable")
+  }
+  return $diagnosticValid -and
+    [string]$Projection.operation -in @("provision", "uninstall") -and
     [string]$Projection.operationIdSha256 -match '^[0-9a-f]{64}$' -and
     [string]$Projection.state -in @("completed", "failed") -and
     [string]$Projection.code -match '^[a-z][A-Za-z0-9]{0,63}$' -and
@@ -989,10 +1403,23 @@ function New-VirtualDisplaySetupEvidenceProjection($Result) {
     writtenUtc = [string]$Result.writtenUtc
     resultFileIdentitySha256 = [string]$script:virtualDisplayResultIdentitySha256
     resultFileSha256 = [string]$script:virtualDisplayResultSha256
+    failureDiagnostic = [ordered]@{
+      state = [string]$Result.failureDiagnostic.state
+      owner = [string]$Result.failureDiagnostic.owner
+      category = [string]$Result.failureDiagnostic.category
+      reasonCode = [string]$Result.failureDiagnostic.reasonCode
+      nativeCode = [int]$Result.failureDiagnostic.nativeCode
+      nativeCodeHex = [string]$Result.failureDiagnostic.nativeCodeHex
+      logPath = if ($null -eq $Result.failureDiagnostic.logPath) {
+        $null
+      } else { [string]$Result.failureDiagnostic.logPath }
+      logPathState = [string]$Result.failureDiagnostic.logPathState
+    }
   }
 }
 
-Add-Type -TypeDefinition @"
+if (-not $shutdownOnlyAction) {
+  Add-Type -TypeDefinition @"
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
@@ -1720,6 +2147,7 @@ public sealed class LigaseJobProcess : IDisposable
     }
 }
 "@
+}
 
 Add-Type -TypeDefinition @"
 using System;
@@ -4235,6 +4663,762 @@ function Assert-FinalInstallReadback($Manifest, $VirtualDisplayReadback) {
   }
 }
 
+function Get-RunningLigaseProductProcesses {
+  $expected = [ordered]@{
+    "Ligase Host" = Join-Path $installRoot "Ligase Host.exe"
+    "Ligase.Host.Desktop" = Join-Path $installRoot "Desktop\Ligase.Host.Desktop.exe"
+    "sunshine" = Join-Path $installRoot "Core\sunshine.exe"
+    "Ligase.GameWatcher" = Join-Path $installRoot "Tools\GameWatcher\Ligase.GameWatcher.exe"
+  }
+  $matches = @()
+  foreach ($entry in $expected.GetEnumerator()) {
+    foreach ($process in @(Get-Process -Name $entry.Key -ErrorAction SilentlyContinue)) {
+      $pidValue = [int]$process.Id
+      try {
+        $path = [IO.Path]::GetFullPath([string]$process.Path)
+        if ($path.Equals(
+            [IO.Path]::GetFullPath([string]$entry.Value),
+            [StringComparison]::OrdinalIgnoreCase)) {
+          $cim = Get-CimInstance Win32_Process -Filter (
+            "ProcessId={0}" -f $pidValue) -ErrorAction Stop
+          $owner = Invoke-CimMethod -InputObject $cim -MethodName GetOwnerSid `
+            -ErrorAction Stop
+          if ([uint32]$owner.ReturnValue -ne 0 -or
+              [string]::IsNullOrWhiteSpace([string]$owner.Sid)) {
+            throw "productProcessOwnerUnavailable"
+          }
+          $matches += [pscustomobject]@{
+            Id = $pidValue
+            ParentId = [int]$cim.ParentProcessId
+            StartedUtc = $process.StartTime.ToUniversalTime().ToString("o")
+            StartFileTimeUtc = $process.StartTime.ToUniversalTime().ToFileTimeUtc()
+            SessionId = [int]$process.SessionId
+            UserSid = [string]$owner.Sid
+            Role = [string]$entry.Key
+            Path = $path
+          }
+        }
+      } catch {
+        # Exit between enumeration and identity projection is a normal part of
+        # the bounded shutdown drain.  Only fail closed when the exact PID is
+        # still live but its identity cannot be read.
+        $stillRunning = $false
+        $fresh = $null
+        try {
+          $fresh = Get-Process -Id $pidValue -ErrorAction Stop
+          $stillRunning = $true
+        } catch {
+          $stillRunning = $false
+        } finally {
+          if ($null -ne $fresh) { $fresh.Dispose() }
+        }
+        if ($stillRunning) { throw "productProcessIdentityUnavailable" }
+      } finally {
+        $process.Dispose()
+      }
+    }
+  }
+  return @($matches | Sort-Object Id)
+}
+
+function Get-LigaseRestartManagerState {
+  param([int]$IgnoreProcessId = 0)
+  $resources = @(Get-LigaseRestartManagerResources)
+  if ($resources.Count -eq 0) {
+    return [pscustomobject]@{ Code = "completed"; RebootReason = 0; Processes = @() }
+  }
+  try {
+    $readback = [LigaseRestartManager]::GetLockingProcesses([string[]]$resources)
+    $locks = @($readback.Processes | Where-Object {
+      $IgnoreProcessId -le 0 -or [int]$_.ProcessId -ne $IgnoreProcessId
+    } | ForEach-Object {
+      $rmProcess = $_
+      $pidValue = [int]$rmProcess.ProcessId
+      try {
+        $process = Get-Process -Id $pidValue -ErrorAction Stop
+        try {
+          $path = [IO.Path]::GetFullPath([string]$process.Path)
+          $role = switch -CaseSensitive ($process.ProcessName) {
+            "Ligase Host" { "Ligase Host" }
+            "Ligase.Host.Desktop" { "Ligase.Host.Desktop" }
+            "sunshine" { "sunshine" }
+            "Ligase.GameWatcher" { "Ligase.GameWatcher" }
+            default { "RestartManagerLocker" }
+          }
+          $cim = Get-CimInstance Win32_Process -Filter (
+            "ProcessId={0}" -f $pidValue) -ErrorAction Stop
+          $owner = Invoke-CimMethod -InputObject $cim -MethodName GetOwnerSid `
+            -ErrorAction Stop
+          if ([uint32]$owner.ReturnValue -ne 0 -or
+              [string]::IsNullOrWhiteSpace([string]$owner.Sid)) {
+            throw "restartManagerLockerOwnerUnavailable"
+          }
+          [pscustomobject]@{
+            Id = $pidValue
+            ParentId = [int]$cim.ParentProcessId
+            StartedUtc = $process.StartTime.ToUniversalTime().ToString("o")
+            StartFileTimeUtc = $process.StartTime.ToUniversalTime().ToFileTimeUtc()
+            RestartManagerStartFileTimeUtc = [long]$rmProcess.ProcessStartFileTimeUtc
+            AppStatus = [uint32]$rmProcess.AppStatus
+            SessionId = [int]$process.SessionId
+            RestartManagerSessionId = [uint32]$rmProcess.SessionId
+            UserSid = [string]$owner.Sid
+            Role = $role
+            Path = $path
+          }
+        } finally { $process.Dispose() }
+      } catch {
+        # The locker exited between RmGetList and identity readback.  A fresh
+        # Restart Manager sample decides terminal absence.
+      }
+    })
+    return [pscustomobject]@{
+      Code = "completed"
+      RebootReason = [uint32]$readback.RebootReason
+      Processes = @($locks | Sort-Object Id)
+    }
+  } catch {
+    throw "restartManagerQueryFailed"
+  }
+}
+
+function Get-LigaseRestartManagerResources {
+  return @(
+    (Join-Path $installRoot "Ligase Host.exe"),
+    (Join-Path $installRoot "Desktop\Ligase.Host.Desktop.exe"),
+    (Join-Path $installRoot "Core\sunshine.exe"),
+    (Join-Path $installRoot "Tools\GameWatcher\Ligase.GameWatcher.exe")
+  ) | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf }
+}
+
+function Test-ExactProcessLockerSet {
+  param([object[]]$Processes, [object]$RestartManager)
+  if ([string]$RestartManager.Code -cne "completed" -or
+      [uint32]$RestartManager.RebootReason -ne 0 -or
+      $Processes.Count -eq 0 -or
+      @($RestartManager.Processes).Count -ne $Processes.Count) { return $false }
+  $processKeys = @($Processes | ForEach-Object {
+    "{0}:{1}" -f [int]$_.Id, [long]$_.StartFileTimeUtc
+  } | Sort-Object)
+  $lockerKeys = @($RestartManager.Processes | ForEach-Object {
+    "{0}:{1}" -f [int]$_.Id, [long]$_.RestartManagerStartFileTimeUtc
+  } | Sort-Object)
+  return ($processKeys -join ',') -ceq ($lockerKeys -join ',')
+}
+
+function Read-AllStableBytes {
+  param([IO.FileStream]$Stream)
+  $Stream.Position = 0
+  $memory = [IO.MemoryStream]::new()
+  try { $Stream.CopyTo($memory); return $memory.ToArray() }
+  finally { $memory.Dispose(); $Stream.Position = 0 }
+}
+
+function Get-LegacyArtifactRole([string]$ProcessRole) {
+  switch -CaseSensitive ($ProcessRole) {
+    "Ligase Host" { "launcher" }
+    "Ligase.Host.Desktop" { "desktop" }
+    "sunshine" { "managedCore" }
+    "Ligase.GameWatcher" { "gameWatcher" }
+    default { $null }
+  }
+}
+
+function Close-LegacyForceAuthority([object]$Authority) {
+  if ($null -eq $Authority) { return }
+  foreach ($lease in @($Authority.Leases)) {
+    if ($null -ne $lease) { $lease.Dispose() }
+  }
+}
+
+function Open-LegacyForceAuthority {
+  param([object[]]$InitialProcesses, [object[]]$Processes,
+    [object]$RestartManager)
+  $leases = [Collections.Generic.List[IO.FileStream]]::new()
+  try {
+    if ([string]$RestartManager.Code -cne "completed" -or
+        [uint32]$RestartManager.RebootReason -ne 0 -or
+        $Processes.Count -eq 0 -or
+        @($RestartManager.Processes).Count -ne $Processes.Count) {
+      throw "legacyAuthorityLockerSetMismatch"
+    }
+    $processIds = @($Processes | ForEach-Object { [int]$_.Id } | Sort-Object)
+    $lockerIds = @($RestartManager.Processes | ForEach-Object { [int]$_.Id } | Sort-Object)
+    if (($processIds -join ',') -cne ($lockerIds -join ',')) {
+      throw "legacyAuthorityLockerSetMismatch"
+    }
+
+    $manifestLease = [LigaseFileIdentity]::OpenStableRead($manifestPath)
+    $leases.Add($manifestLease)
+    $manifestBytes = Read-AllStableBytes $manifestLease
+    $manifestSha = Get-ByteSha256 $manifestBytes
+    $manifestJson = [Text.UTF8Encoding]::new($false, $true).GetString($manifestBytes)
+    if (-not [LigaseStrictJson]::HasUniqueProperties($manifestJson)) {
+      throw "legacyAuthorityManifestInvalid"
+    }
+    $manifest = $manifestJson | ConvertFrom-Json
+    if ($manifest.schemaVersion -ne 1 -or
+        $manifest.installLayout -cne "structured-v1" -or
+        $manifest.platform -cne "x64" -or
+        $manifest.installMode -cne "packaged" -or
+        $manifest.releaseKind -notin @("UnsignedDev", "PublicRelease") -or
+        @($manifest.artifacts).Count -ne 4) {
+      throw "legacyAuthorityManifestInvalid"
+    }
+    $expectedRoles = @("desktop", "gameWatcher", "launcher", "managedCore")
+    $manifestRoles = @($manifest.artifacts | ForEach-Object { [string]$_.role } | Sort-Object)
+    if (($expectedRoles -join ',') -cne ($manifestRoles -join ',')) {
+      throw "legacyAuthorityManifestInvalid"
+    }
+
+    $initialByRole = @{}
+    foreach ($initial in $InitialProcesses) {
+      if ($initialByRole.ContainsKey([string]$initial.Role)) {
+        throw "legacyAuthorityInitialSetInvalid"
+      }
+      $initialByRole[[string]$initial.Role] = $initial
+    }
+    $targets = @()
+    foreach ($process in @($Processes | Sort-Object Id)) {
+      $role = [string]$process.Role
+      $artifactRole = Get-LegacyArtifactRole $role
+      if ([string]::IsNullOrWhiteSpace($artifactRole) -or
+          -not $initialByRole.ContainsKey($role)) {
+        throw "legacyAuthorityRoleInvalid"
+      }
+      $initial = $initialByRole[$role]
+      if ([int]$initial.Id -ne [int]$process.Id -or
+          [long]$initial.StartFileTimeUtc -ne [long]$process.StartFileTimeUtc -or
+          [int]$initial.ParentId -ne [int]$process.ParentId -or
+          [int]$initial.SessionId -ne [int]$process.SessionId -or
+          [string]$initial.UserSid -cne [string]$process.UserSid) {
+        throw "legacyAuthorityProcessDrift"
+      }
+      $locker = @($RestartManager.Processes | Where-Object { [int]$_.Id -eq [int]$process.Id })
+      if ($locker.Count -ne 1 -or
+          [long]$locker[0].RestartManagerStartFileTimeUtc -ne [long]$process.StartFileTimeUtc -or
+          [int]$locker[0].RestartManagerSessionId -ne [int]$process.SessionId -or
+          [int]$locker[0].ParentId -ne [int]$process.ParentId -or
+          [string]$locker[0].UserSid -cne [string]$process.UserSid) {
+        throw "legacyAuthorityRestartManagerDrift"
+      }
+      $artifact = @($manifest.artifacts | Where-Object { [string]$_.role -ceq $artifactRole })
+      if ($artifact.Count -ne 1 -or
+          [IO.Path]::IsPathRooted([string]$artifact[0].relativePath) -or
+          ([string]$artifact[0].relativePath).Contains("..")) {
+        throw "legacyAuthorityManifestInvalid"
+      }
+      $expectedPath = [IO.Path]::GetFullPath((Join-Path $installRoot (
+        [string]$artifact[0].relativePath).Replace('/','\')))
+      if (-not $expectedPath.Equals([IO.Path]::GetFullPath([string]$process.Path),
+          [StringComparison]::OrdinalIgnoreCase)) {
+        throw "legacyAuthorityPathMismatch"
+      }
+      $lease = [LigaseFileIdentity]::OpenStableRead($expectedPath)
+      $leases.Add($lease)
+      $identity = [LigaseFileIdentity]::GetIdentitySha256($lease.SafeFileHandle)
+      $bytes = Read-AllStableBytes $lease
+      $sha = Get-ByteSha256 $bytes
+      if ($bytes.LongLength -ne [int64]$artifact[0].size -or
+          $sha -cne ([string]$artifact[0].signedArtifactSha256).ToLowerInvariant() -or
+          [Diagnostics.FileVersionInfo]::GetVersionInfo($expectedPath).FileVersion -cne
+            [string]$artifact[0].version) {
+        throw "legacyAuthorityArtifactMismatch"
+      }
+      $signature = Get-AuthenticodeSignature -LiteralPath $expectedPath
+      if ($manifest.releaseKind -ceq "PublicRelease") {
+        if ($signature.Status -ne "Valid" -or
+            $null -eq $signature.SignerCertificate -or
+            $signature.SignerCertificate.Subject -cne [string]$artifact[0].signature.signerSubject -or
+            $signature.SignerCertificate.Thumbprint -cne [string]$artifact[0].signature.signerThumbprint) {
+          throw "legacyAuthoritySignerMismatch"
+        }
+      } elseif ($artifact[0].signature.status -cne "nonRelease" -or
+          $null -ne $artifact[0].signature.signerSubject -or
+          $null -ne $artifact[0].signature.signerThumbprint) {
+        throw "legacyAuthoritySignerMismatch"
+      }
+      $targets += [pscustomobject]@{
+        Id = [int]$process.Id; ParentId = [int]$process.ParentId
+        StartedUtc = [string]$process.StartedUtc
+        StartFileTimeUtc = [long]$process.StartFileTimeUtc
+        SessionId = [int]$process.SessionId; UserSid = [string]$process.UserSid
+        Role = $role; Path = $expectedPath; FileIdentitySha256 = $identity
+        ContentSha256 = $sha; Version = [string]$artifact[0].version
+        SignerThumbprint = if ($null -eq $signature.SignerCertificate) { $null } else {
+          [string]$signature.SignerCertificate.Thumbprint }
+        AppStatus = [uint32]$locker[0].AppStatus
+      }
+    }
+    # Parent identity is a freshness invariant, not a guessed topology rule:
+    # older generations launched Core/GameWatcher from different owners. Each
+    # target's parent PID is frozen in the initial receipt and re-read above.
+    return [pscustomobject]@{
+      Eligible = $true; Reason = "identityExact"; ManifestSha256 = $manifestSha
+      ManifestIdentitySha256 = [LigaseFileIdentity]::GetIdentitySha256(
+        $manifestLease.SafeFileHandle)
+      Targets = @($targets); Leases = @($leases)
+    }
+  } catch {
+    foreach ($lease in @($leases)) { if ($null -ne $lease) { $lease.Dispose() } }
+    return [pscustomobject]@{
+      Eligible = $false; Reason = [string]$_.Exception.Message
+      ManifestSha256 = $null; ManifestIdentitySha256 = $null
+      Targets = @(); Leases = @()
+    }
+  }
+}
+
+function Test-LegacyForceAuthorityCurrent {
+  param([object]$Authority)
+  if ($null -eq $Authority -or -not [bool]$Authority.Eligible) { return $false }
+  $current = @(Get-RunningLigaseProductProcesses)
+  # The retained image leases intentionally make this controller a read-only
+  # Restart Manager locker. Exclude only this exact PID; every other locker
+  # must still equal the force receipt. RmForceShutdown itself registers only
+  # the exact RM_UNIQUE_PROCESS targets, so the controller is never targeted.
+  $rm = Get-LigaseRestartManagerState -IgnoreProcessId $PID
+  if ([string]$rm.Code -cne "completed" -or
+      $current.Count -ne @($Authority.Targets).Count -or
+      @($rm.Processes).Count -ne @($Authority.Targets).Count) { return $false }
+  foreach ($target in @($Authority.Targets)) {
+    $process = @($current | Where-Object { [int]$_.Id -eq [int]$target.Id })
+    $locker = @($rm.Processes | Where-Object { [int]$_.Id -eq [int]$target.Id })
+    if ($process.Count -ne 1 -or $locker.Count -ne 1 -or
+        [long]$process[0].StartFileTimeUtc -ne [long]$target.StartFileTimeUtc -or
+        [int]$process[0].ParentId -ne [int]$target.ParentId -or
+        [int]$process[0].SessionId -ne [int]$target.SessionId -or
+        [string]$process[0].UserSid -cne [string]$target.UserSid -or
+        [long]$locker[0].RestartManagerStartFileTimeUtc -ne [long]$target.StartFileTimeUtc -or
+        [string]$locker[0].UserSid -cne [string]$target.UserSid) { return $false }
+    $fresh = $null
+    try {
+      $fresh = [LigaseFileIdentity]::OpenStableRead([string]$target.Path)
+      if ([LigaseFileIdentity]::GetIdentitySha256($fresh.SafeFileHandle) -cne
+          [string]$target.FileIdentitySha256 -or
+          (Get-ByteSha256 (Read-AllStableBytes $fresh)) -cne
+          [string]$target.ContentSha256) { return $false }
+    } catch { return $false }
+    finally { if ($null -ne $fresh) { $fresh.Dispose() } }
+  }
+  return $true
+}
+
+function Invoke-RestartManagerPrimaryShutdown {
+  param([int]$RemainingMilliseconds, [object[]]$Processes, [bool]$Force)
+  if ($RemainingMilliseconds -le 0) {
+    return [pscustomobject]@{ Code = "deadlineUnavailable"; NativeCode = 1460; Cancelled = $true; ForceUsed = $Force }
+  }
+  if ($ShutdownValidationBehavior -cne "none") {
+    if ($env:LIGASE_SHUTDOWN_VALIDATION_HARNESS -cne "1" -or
+        [IO.Path]::GetPathRoot($installRoot) -cne "D:\") {
+      return [pscustomobject]@{ Code = "failed"; NativeCode = -1
+        Cancelled = $false; ForceUsed = $Force }
+    }
+    if (-not $Force -and $ShutdownValidationBehavior -like "simulateGraceful351*") {
+      return [pscustomobject]@{ Code = "failed"; NativeCode = 351
+        Cancelled = $false; ForceUsed = $false }
+    }
+    if ($Force -and $ShutdownValidationBehavior -ceq "simulateGraceful351Force351") {
+      return [pscustomobject]@{ Code = "failed"; NativeCode = 351
+        Cancelled = $false; ForceUsed = $true }
+    }
+    if ($Force -and $ShutdownValidationBehavior -ceq "simulateGraceful351ForceTimeout") {
+      return [pscustomobject]@{ Code = "cancelled"; NativeCode = 1460
+        Cancelled = $true; ForceUsed = $true }
+    }
+    if ($Force -and $ShutdownValidationBehavior -ceq "simulateGraceful351ForcePermission") {
+      return [pscustomobject]@{ Code = "failed"; NativeCode = 5
+        Cancelled = $false; ForceUsed = $true }
+    }
+    if ($Force -and $ShutdownValidationBehavior -ceq "simulateGraceful351ForceCompleted") {
+      return [pscustomobject]@{ Code = "completed"; NativeCode = 0
+        Cancelled = $false; ForceUsed = $true }
+    }
+  }
+  try {
+    # The forced legacy phase registers only the exact RM_UNIQUE_PROCESS
+    # receipts. Registering paths again could admit a new foreign locker in
+    # the interval between the final exact-set readback and RmShutdown.
+    $resources = if ($Force) { @() } else { @(Get-LigaseRestartManagerResources) }
+    $result = [LigaseRestartManager]::ShutdownLockingProcesses(
+      [string[]]$resources,
+      [int[]]@($Processes | ForEach-Object { [int]$_.Id }),
+      [string[]]@($Processes | ForEach-Object { [string]$_.StartedUtc }),
+      $RemainingMilliseconds, $Force)
+    return [pscustomobject]@{
+      Code = if ([int]$result.NativeCode -eq 0 -and -not [bool]$result.Cancelled) {
+        "completed"
+      } elseif ([bool]$result.Cancelled) { "cancelled" } else { "failed" }
+      NativeCode = [int]$result.NativeCode
+      Cancelled = [bool]$result.Cancelled
+      ForceUsed = [bool]$result.ForceUsed
+    }
+  } catch {
+    return [pscustomobject]@{ Code = "failed"; NativeCode = -1
+      Cancelled = $false; ForceUsed = $Force
+      Reason = [string]$_.Exception.Message }
+  }
+}
+
+function ConvertTo-ShutdownProcessSnapshot {
+  param([object[]]$Processes, [long]$ElapsedMilliseconds, [object]$RestartManager)
+  return [ordered]@{
+    elapsedMilliseconds = $ElapsedMilliseconds
+    processes = @($Processes | ForEach-Object {
+      [ordered]@{
+        pid = [int]$_.Id
+        parentPid = if ($null -eq $_.ParentId) { $null } else { [int]$_.ParentId }
+        startedUtc = if ($null -eq $_.StartedUtc) { $null } else { [string]$_.StartedUtc }
+        role = [string]$_.Role
+        pathSha256 = Get-ByteSha256 ([Text.Encoding]::UTF8.GetBytes(
+          [IO.Path]::GetFullPath([string]$_.Path).ToLowerInvariant()))
+      }
+    })
+    restartManager = [ordered]@{
+      code = [string]$RestartManager.Code
+      rebootReason = [uint32]$RestartManager.RebootReason
+      processes = @($RestartManager.Processes | ForEach-Object {
+        [ordered]@{
+          pid = [int]$_.Id
+          parentPid = if ($null -eq $_.ParentId) { $null } else { [int]$_.ParentId }
+          startedUtc = if ($null -eq $_.StartedUtc) { $null } else { [string]$_.StartedUtc }
+          role = [string]$_.Role
+          pathSha256 = Get-ByteSha256 ([Text.Encoding]::UTF8.GetBytes(
+            [IO.Path]::GetFullPath([string]$_.Path).ToLowerInvariant()))
+        }
+      })
+    }
+  }
+}
+
+function Write-ShutdownTerminal {
+  param([string]$RequestId, [hashtable]$Terminal)
+  $root = if ([string]::IsNullOrWhiteSpace($ShutdownEvidenceRoot)) {
+    Join-Path ([Environment]::GetFolderPath("CommonApplicationData")) `
+      "Ligase Host\Installer\Shutdown"
+  } else {
+    if ($env:LIGASE_SHUTDOWN_VALIDATION_HARNESS -cne "1") {
+      throw "shutdownEvidenceRootRejected"
+    }
+    $candidate = [IO.Path]::GetFullPath($ShutdownEvidenceRoot)
+    if ([IO.Path]::GetPathRoot($candidate) -cne "D:\") {
+      throw "shutdownEvidenceRootRejected"
+    }
+    $candidate
+  }
+  [IO.Directory]::CreateDirectory($root) | Out-Null
+  $path = Join-Path $root ("shutdown-terminal-{0}.json" -f $RequestId)
+  $temp = "$path.$([Guid]::NewGuid().ToString('N')).tmp"
+  $bytes = [Text.UTF8Encoding]::new($false).GetBytes(
+    ($Terminal | ConvertTo-Json -Depth 12 -Compress))
+  try {
+    $stream = [IO.FileStream]::new($temp, [IO.FileMode]::CreateNew,
+      [IO.FileAccess]::Write, [IO.FileShare]::None, 4096,
+      [IO.FileOptions]::WriteThrough)
+    try { $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) }
+    finally { $stream.Dispose() }
+    [IO.File]::Move($temp, $path)
+  } finally {
+    if (Test-Path -LiteralPath $temp -PathType Leaf) {
+      [IO.File]::Delete($temp)
+    }
+  }
+  return $path
+}
+
+function Request-RunningLigaseProductExit {
+  $initial = @(Get-RunningLigaseProductProcesses)
+  $initialRm = Get-LigaseRestartManagerState
+  $requestId = [Guid]::NewGuid().ToString("N")
+  $clock = [Diagnostics.Stopwatch]::StartNew()
+  $samples = @((ConvertTo-ShutdownProcessSnapshot $initial 0 $initialRm))
+    $client = [pscustomobject]@{
+      Code = if ($initial.Count -eq 0) { "shutdownAcknowledged" } else { "desktopCountInvalid" }
+      Connected = $false; RequestSent = $false; AckReceived = $false
+      DesktopTerminalReceived = $false
+      DesktopTerminalState = $null; DesktopTerminalCode = $null
+      DesktopCoreProcessStillAlive = $null
+  }
+  $desktop = @($initial | Where-Object { $_.Role -ceq "Ligase.Host.Desktop" })
+  if ($initial.Count -ne 0 -and $desktop.Count -eq 1) {
+    $client = [LigaseProductShutdownClient]::Request(
+      $installRoot, [int]$desktop[0].Id, $requestId, 7000)
+  }
+  $gracefulRestartManagerShutdown = [ordered]@{
+    eligible = $false; attempted = $false; code = "notRequired"
+    nativeCode = $null; cancelled = $false; forceUsed = $false; reason = $null
+  }
+  $forcedRestartManagerShutdown = [ordered]@{
+    eligible = $false; eligibilityReason = "notEvaluated"
+    attempted = $false; code = "notRequired"; nativeCode = $null
+    cancelled = $false; forceUsed = $false; reason = $null; manifestSha256 = $null
+    manifestIdentitySha256 = $null; targets = @()
+  }
+  $shutdownAccepted = [string]$client.Code -ceq "shutdownAcknowledged"
+  if (-not $UserConfirmedClose) {
+    $shutdownAccepted = $false
+    $client.Code = "userCloseConsentRequired"
+  }
+  # Give an exit-committed product a short opportunity to release its own
+  # files. The product terminal is intent evidence; actual process and locker
+  # absence remain installer authority.
+  $graceLimit = [Math]::Min(10000, [int]$clock.ElapsedMilliseconds + 1000)
+  while ($shutdownAccepted -and $clock.ElapsedMilliseconds -lt $graceLimit) {
+    $graceProcesses = @(Get-RunningLigaseProductProcesses)
+    $graceRm = Get-LigaseRestartManagerState
+    $samples += ConvertTo-ShutdownProcessSnapshot $graceProcesses `
+      $clock.ElapsedMilliseconds $graceRm
+    if ($graceProcesses.Count -eq 0 -and $graceRm.Processes.Count -eq 0) { break }
+    Start-Sleep -Milliseconds 100
+  }
+
+  $rmProcesses = @(Get-RunningLigaseProductProcesses)
+  $rmState = Get-LigaseRestartManagerState
+  $samples += ConvertTo-ShutdownProcessSnapshot $rmProcesses `
+    $clock.ElapsedMilliseconds $rmState
+  if ($rmProcesses.Count -eq 0 -and $rmState.Processes.Count -eq 0) {
+    $shutdownAccepted = $true
+  } elseif ($UserConfirmedClose -and $clock.ElapsedMilliseconds -lt 10000) {
+    # Restart Manager is the standard primary-installer authority for files
+    # that remain occupied after the product-specific graceful request.  It is
+    # never replaces Ligase's graceful pipe. It is attempted only against an
+    # exact PID/start-time set, and always starts with non-forcing flags.
+    $gracefulRestartManagerShutdown.eligible = `
+      Test-ExactProcessLockerSet $rmProcesses $rmState
+    if ($gracefulRestartManagerShutdown.eligible) {
+      $gracefulRestartManagerShutdown.attempted = $true
+      $remaining = 10000 - [int]$clock.ElapsedMilliseconds
+      $rmShutdown = Invoke-RestartManagerPrimaryShutdown $remaining `
+        $rmProcesses $false
+      $gracefulRestartManagerShutdown.code = [string]$rmShutdown.Code
+      $gracefulRestartManagerShutdown.nativeCode = [int]$rmShutdown.NativeCode
+      $gracefulRestartManagerShutdown.cancelled = [bool]$rmShutdown.Cancelled
+      $gracefulRestartManagerShutdown.forceUsed = [bool]$rmShutdown.ForceUsed
+      $gracefulRestartManagerShutdown.reason = if ($null -eq $rmShutdown.Reason) {
+        $null } else { [string]$rmShutdown.Reason }
+      $shutdownAccepted = $gracefulRestartManagerShutdown.code -ceq "completed"
+    }
+  }
+  $forceAuthority = $null
+  if (-not $shutdownAccepted -and $UserConfirmedClose -and
+      $gracefulRestartManagerShutdown.attempted -and
+      $gracefulRestartManagerShutdown.code -cne "completed") {
+    $forceProcesses = @(Get-RunningLigaseProductProcesses)
+    $forceRm = Get-LigaseRestartManagerState
+    $samples += ConvertTo-ShutdownProcessSnapshot $forceProcesses `
+      $clock.ElapsedMilliseconds $forceRm
+    $forceAuthority = Open-LegacyForceAuthority $initial $forceProcesses $forceRm
+    $forcedRestartManagerShutdown.eligible = [bool]$forceAuthority.Eligible
+    $forcedRestartManagerShutdown.eligibilityReason = [string]$forceAuthority.Reason
+    $forcedRestartManagerShutdown.manifestSha256 = $forceAuthority.ManifestSha256
+    $forcedRestartManagerShutdown.manifestIdentitySha256 = `
+      $forceAuthority.ManifestIdentitySha256
+    $forcedRestartManagerShutdown.targets = @($forceAuthority.Targets | ForEach-Object {
+      [ordered]@{
+        pid = [int]$_.Id
+        parentPid = [int]$_.ParentId
+        startedUtc = [string]$_.StartedUtc
+        role = [string]$_.Role
+        pathSha256 = Get-ByteSha256 ([Text.Encoding]::UTF8.GetBytes(
+          [IO.Path]::GetFullPath([string]$_.Path).ToLowerInvariant()))
+        fileIdentitySha256 = [string]$_.FileIdentitySha256
+        contentSha256 = [string]$_.ContentSha256
+        versionSha256 = Get-ByteSha256 ([Text.Encoding]::UTF8.GetBytes(
+          [string]$_.Version))
+        signerThumbprintSha256 = if ($null -eq $_.SignerThumbprint) { $null } else {
+          Get-ByteSha256 ([Text.Encoding]::UTF8.GetBytes([string]$_.SignerThumbprint)) }
+        sessionId = [int]$_.SessionId
+        userSidSha256 = Get-ByteSha256 ([Text.Encoding]::UTF8.GetBytes([string]$_.UserSid))
+        appStatus = [uint32]$_.AppStatus
+      }
+    })
+    if ($forceAuthority.Eligible -and
+        (Test-LegacyForceAuthorityCurrent $forceAuthority)) {
+      $forcedRestartManagerShutdown.attempted = $true
+      $forceRemaining = 45000 - [int]$clock.ElapsedMilliseconds
+      $forced = Invoke-RestartManagerPrimaryShutdown $forceRemaining `
+        @($forceAuthority.Targets) $true
+      $forcedRestartManagerShutdown.code = [string]$forced.Code
+      $forcedRestartManagerShutdown.nativeCode = [int]$forced.NativeCode
+      $forcedRestartManagerShutdown.cancelled = [bool]$forced.Cancelled
+      $forcedRestartManagerShutdown.forceUsed = [bool]$forced.ForceUsed
+      $forcedRestartManagerShutdown.reason = if ($null -eq $forced.Reason) {
+        $null } else { [string]$forced.Reason }
+      $shutdownAccepted = $forcedRestartManagerShutdown.code -ceq "completed"
+    } elseif ($forceAuthority.Eligible) {
+      $forcedRestartManagerShutdown.eligible = $false
+      $forcedRestartManagerShutdown.eligibilityReason = "legacyAuthorityFinalDrift"
+    }
+  }
+  # The retained image leases prove the exact legacy targets through the RM
+  # call. Release them before the independent final process/RM zero readback;
+  # otherwise this controller is itself a read-only RM locker.
+  if ($null -ne $forceAuthority) {
+    Close-LegacyForceAuthority $forceAuthority
+    $forceAuthority = $null
+  }
+  if ($shutdownAccepted) {
+    $drainDeadline = if ($forcedRestartManagerShutdown.attempted) { 45000 } else { 10000 }
+    while ($clock.ElapsedMilliseconds -lt $drainDeadline) {
+      $current = @(Get-RunningLigaseProductProcesses)
+      $currentRm = Get-LigaseRestartManagerState
+      $samples += ConvertTo-ShutdownProcessSnapshot $current `
+        $clock.ElapsedMilliseconds $currentRm
+      if ($current.Count -eq 0 -and $currentRm.Processes.Count -eq 0) { break }
+      Start-Sleep -Milliseconds 100
+    }
+  }
+  $final = @(Get-RunningLigaseProductProcesses)
+  $finalRm = Get-LigaseRestartManagerState
+  $samples += ConvertTo-ShutdownProcessSnapshot $final $clock.ElapsedMilliseconds $finalRm
+  $code = if (-not $shutdownAccepted) {
+    if ($forcedRestartManagerShutdown.attempted) { "restartManagerForcedShutdownFailed" }
+    elseif ($gracefulRestartManagerShutdown.attempted -and
+        -not $forcedRestartManagerShutdown.eligible) { "legacyForceIneligible" }
+    elseif ($gracefulRestartManagerShutdown.attempted) { "restartManagerShutdownFailed" } else {
+    [string]$client.Code
+    }
+  } elseif ($final.Count -ne 0) { "shutdownResidualProcesses"
+  } elseif ($finalRm.Processes.Count -ne 0) { "restartManagerResidualLocks"
+  } else { "productStopped" }
+  $success = $code -ceq "productStopped"
+  $terminal = [ordered]@{
+    schemaVersion = 3
+    operation = "close"
+    state = if ($success) { "completed" } else { "failed" }
+    code = $code
+    requestIdSha256 = Get-ByteSha256 ([Text.Encoding]::UTF8.GetBytes($requestId))
+    pipe = [ordered]@{
+      connected = [bool]$client.Connected
+      requestSent = [bool]$client.RequestSent
+      ackReceived = [bool]$client.AckReceived
+      desktopTerminalReceived = [bool]$client.DesktopTerminalReceived
+      desktopTerminalState = if ($null -eq $client.DesktopTerminalState) {
+        $null
+      } else { [string]$client.DesktopTerminalState }
+      desktopTerminalCode = if ($null -eq $client.DesktopTerminalCode) {
+        $null
+      } else { [string]$client.DesktopTerminalCode }
+      desktopCleanupState = if ($null -eq $client.DesktopCleanupState) {
+        $null
+      } else { [string]$client.DesktopCleanupState }
+      desktopCoreStopCode = if ($null -eq $client.DesktopCoreStopCode) {
+        $null
+      } else { [string]$client.DesktopCoreStopCode }
+      desktopCoreProcessStillAlive = if (
+          $null -eq $client.DesktopCoreProcessStillAlive) {
+        $null
+      } else { [bool]$client.DesktopCoreProcessStillAlive }
+    }
+    gracefulRestartManagerShutdown = $gracefulRestartManagerShutdown
+    forcedRestartManagerShutdown = $forcedRestartManagerShutdown
+    programWriteCalls = 0
+    initial = $samples[0]
+    samples = @($samples)
+    finalResidual = ConvertTo-ShutdownProcessSnapshot $final `
+      $clock.ElapsedMilliseconds $finalRm
+    writtenUtc = [DateTime]::UtcNow.ToString("o")
+  }
+  try { $terminalPath = Write-ShutdownTerminal $requestId $terminal }
+  finally { Close-LegacyForceAuthority $forceAuthority }
+  return [pscustomobject]@{ Success = $success; Code = $code; TerminalPath = $terminalPath }
+}
+
+function Write-RunningLigaseProductQueryTerminal {
+  param([object[]]$Processes)
+  $restartManager = Get-LigaseRestartManagerState
+  $requestId = [Guid]::NewGuid().ToString("N")
+  $code = if ($Processes.Count -eq 0 -and
+      $restartManager.Processes.Count -eq 0) { "productNotRunning" } else {
+    "productRunning"
+  }
+  $snapshot = ConvertTo-ShutdownProcessSnapshot $Processes 0 $restartManager
+  $terminal = [ordered]@{
+    schemaVersion = 2
+    operation = "query"
+    state = "completed"
+    code = $code
+    requestIdSha256 = Get-ByteSha256 ([Text.Encoding]::UTF8.GetBytes($requestId))
+    pipe = [ordered]@{
+      connected = $false
+      requestSent = $false
+      ackReceived = $false
+      desktopTerminalReceived = $false
+    }
+    initial = $snapshot
+    samples = @($snapshot)
+    finalResidual = $snapshot
+    writtenUtc = [DateTime]::UtcNow.ToString("o")
+  }
+  $terminalPath = Write-ShutdownTerminal $requestId $terminal
+  return [pscustomobject]@{ Code = $code; TerminalPath = $terminalPath }
+}
+
+function Invoke-LegacyForceEligibilityDryRun {
+  $requestId = [Guid]::NewGuid().ToString("N")
+  $processes = @(Get-RunningLigaseProductProcesses)
+  $restartManager = Get-LigaseRestartManagerState
+  $authority = $null
+  try {
+    $authority = Open-LegacyForceAuthority $processes $processes $restartManager
+    $current = [bool]$authority.Eligible -and
+      (Test-LegacyForceAuthorityCurrent $authority)
+    $wouldBeEligible = [bool]$authority.Eligible -and $current
+    $reason = if (-not [bool]$authority.Eligible) {
+      [string]$authority.Reason
+    } elseif (-not $current) { "legacyAuthorityFinalDrift" } else { "identityExact" }
+    $terminal = [ordered]@{
+      schemaVersion = 1
+      operation = "legacyForceEligibilityDryRun"
+      state = "completed"
+      code = if ($wouldBeEligible) { "liveLegacyForceEligible" } else {
+        "liveLegacyForceIneligible" }
+      userConsentSimulated = $true
+      forcedAttempted = $false
+      rmShutdownCalls = 0
+      programWriteCalls = 0
+      wouldBeForcedEligible = $wouldBeEligible
+      eligibilityReason = $reason
+      manifestSha256 = $authority.ManifestSha256
+      manifestIdentitySha256 = $authority.ManifestIdentitySha256
+      processCount = $processes.Count
+      restartManagerLockerCount = @($restartManager.Processes).Count
+      restartManagerRebootReason = [uint32]$restartManager.RebootReason
+      targets = @($authority.Targets | ForEach-Object {
+        [ordered]@{
+          pid = [int]$_.Id
+          parentPid = [int]$_.ParentId
+          startedUtc = [string]$_.StartedUtc
+          role = [string]$_.Role
+          pathSha256 = Get-ByteSha256 ([Text.Encoding]::UTF8.GetBytes(
+            [IO.Path]::GetFullPath([string]$_.Path).ToLowerInvariant()))
+          fileIdentitySha256 = [string]$_.FileIdentitySha256
+          contentSha256 = [string]$_.ContentSha256
+          versionSha256 = Get-ByteSha256 ([Text.Encoding]::UTF8.GetBytes(
+            [string]$_.Version))
+          signerThumbprintSha256 = if ($null -eq $_.SignerThumbprint) { $null } else {
+            Get-ByteSha256 ([Text.Encoding]::UTF8.GetBytes(
+              [string]$_.SignerThumbprint)) }
+          sessionId = [int]$_.SessionId
+          userSidSha256 = Get-ByteSha256 ([Text.Encoding]::UTF8.GetBytes(
+            [string]$_.UserSid))
+          appStatus = [uint32]$_.AppStatus
+        }
+      })
+      writtenUtc = [DateTime]::UtcNow.ToString("o")
+    }
+    $terminalPath = Write-ShutdownTerminal $requestId $terminal
+    return [pscustomobject]@{
+      Success = $wouldBeEligible
+      Code = [string]$terminal.code
+      TerminalPath = $terminalPath
+    }
+  } finally {
+    Close-LegacyForceAuthority $authority
+  }
+}
+
 try {
   $held = $mutex.WaitOne([TimeSpan]::FromSeconds(2))
   if (-not $held) {
@@ -4324,6 +5508,26 @@ try {
       stage = [string]$script:transactionHelperStage
     }
     exit 0
+  }
+  if ($Action -eq "QueryRunningProduct") {
+    $running = @(Get-RunningLigaseProductProcesses)
+    $query = Write-RunningLigaseProductQueryTerminal $running
+    Write-Outcome ([string]$query.Code) $true
+    exit 0
+  }
+  if ($Action -eq "EvaluateLegacyForceEligibility") {
+    $eligibility = Invoke-LegacyForceEligibilityDryRun
+    Write-Outcome ([string]$eligibility.Code) ([bool]$eligibility.Success)
+    if ([bool]$eligibility.Success) { exit 0 } else { exit 10 }
+  }
+  if ($Action -eq "CloseRunningProduct") {
+    $shutdown = Request-RunningLigaseProductExit
+    if ([bool]$shutdown.Success) {
+      Write-Outcome "productStopped" $true
+      exit 0
+    }
+    Write-Outcome ([string]$shutdown.Code) $false
+    exit 10
   }
   $manifest = Read-Manifest
   if ($Action -ceq "ValidateVirtualDisplayResultContract") {

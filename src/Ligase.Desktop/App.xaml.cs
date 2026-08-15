@@ -21,7 +21,7 @@ namespace Ligase.Host.Desktop;
 public partial class App : Application
 {
     private readonly IHost _host;
-    private bool _isExiting;
+    private readonly IrreversibleExitGate _exit = new();
     public IServiceProvider Services => _host.Services;
 
     public App()
@@ -97,6 +97,7 @@ public partial class App : Application
                 services.AddSingleton<ApolloSessionService>();
                 services.AddSingleton<IDesktopPreviewService, GdiDesktopPreviewService>();
                 services.AddSingleton<SingleInstanceService>();
+                services.AddSingleton<InstallerShutdownService>();
                 services.AddSingleton<WindowsTrayIconService>();
                 services.AddSingleton<AttendedPairingCoordinator>();
                 services.AddSingleton<PairingNotificationService>();
@@ -136,6 +137,10 @@ public partial class App : Application
         // failed to launch.
         var window = _host.Services.GetRequiredService<MainWindow>();
         window.Activate();
+        _host.Services.GetRequiredService<InstallerShutdownService>().Start(
+            () => window.InvokeInstallerShutdownAsync(
+                PrepareForInstallerShutdownAsync),
+            window.ExitAfterInstallerShutdown);
         _host.Services.GetRequiredService<AttendedPairingUiCoordinator>()
             .HandleInitialActivation(activation.Arguments);
 
@@ -185,8 +190,8 @@ public partial class App : Application
 
     public async Task ExitAsync()
     {
-        if (_isExiting) return;
-        _isExiting = true;
+        if (!_exit.TryCommit()) return;
+        Services.GetRequiredService<SingleInstanceService>().BeginExit();
         Services.GetRequiredService<MainWindow>().AllowApplicationExit();
         Services.GetRequiredService<WindowsTrayIconService>().Dispose();
         try
@@ -212,5 +217,68 @@ public partial class App : Application
             // background service. App.Exit owns final process teardown.
             Exit();
         }
+    }
+
+    private async Task<InstallerShutdownOutcome> PrepareForInstallerShutdownAsync()
+    {
+        if (!_exit.TryCommit())
+            return new InstallerShutdownOutcome(
+                true, "exitAlreadyCommitted", "inProgress",
+                "notObserved", true);
+
+        var window = Services.GetRequiredService<MainWindow>();
+        window.AllowApplicationExit();
+        Services.GetRequiredService<SingleInstanceService>().BeginExit();
+        Services.GetRequiredService<WindowsTrayIconService>().Dispose();
+        Services.GetRequiredService<PairingNotificationService>().Dispose();
+
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        var cleanupState = "completed";
+        var coreStopCode = "notObserved";
+        var coreStillAlive = true;
+        try
+        {
+            var pairingTask = Services.GetRequiredService<AttendedPairingCoordinator>()
+                .DisposeAsync().AsTask();
+            var coreTask = Services.GetRequiredService<ApolloInstanceManager>()
+                .StopForInstallerAsync();
+            try
+            {
+                var core = await coreTask.WaitAsync(TimeSpan.FromSeconds(5));
+                coreStopCode = core.Code;
+                coreStillAlive = core.ProcessStillAlive;
+                if (core.ProcessStillAlive) cleanupState = "deferred";
+            }
+            catch (TimeoutException)
+            {
+                cleanupState = "deferred";
+                coreStopCode = "gracefulTimeout";
+            }
+            catch
+            {
+                cleanupState = "faulted";
+                coreStopCode = "gracefulObservationFailed";
+            }
+
+            var pairingBudget = TimeSpan.FromSeconds(6) - clock.Elapsed;
+            if (pairingBudget > TimeSpan.Zero)
+            {
+                try { await pairingTask.WaitAsync(pairingBudget); }
+                catch { cleanupState = cleanupState == "completed" ? "deferred" : cleanupState; }
+            }
+        }
+        catch
+        {
+            cleanupState = "faulted";
+        }
+
+        return new InstallerShutdownOutcome(
+            true, "exitCommitted", cleanupState, coreStopCode, coreStillAlive);
+    }
+
+    internal void CompleteInstallerShutdown()
+    {
+        Services.GetRequiredService<SingleInstanceService>().Dispose();
+        Exit();
     }
 }

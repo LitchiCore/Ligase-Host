@@ -40,6 +40,73 @@ root has no identity.
 
 ## Structured installation layout
 
+Before leaving the final confirmation page, and before any `SetOutPath` or
+payload `File` instruction, an upgrade checks the exact structured launcher,
+Desktop, Core and GameWatcher process paths. If any are running, the installer
+offers only **Close and continue** or **Cancel**. Confirmation sends the fixed
+same-user shutdown request to Desktop's install-root-derived named pipe. The
+client verifies that the pipe server is the exact installed Desktop PID before
+accepting its `accepted` acknowledgement. A validated request moves Desktop
+immediately into a one-way `Exiting` state: redirected activation, tray restore,
+new windows, readiness retries and Core restart are disabled before any
+best-effort cleanup is awaited. Desktop requests the Core's private graceful
+exit without a force fallback and returns an `exitCommitted` terminal with the
+typed cleanup/Core observation. Cleanup may be `deferred` or `faulted`, but the
+application never resumes its UI after acknowledging the request. The stable
+launcher starts Desktop once and only waits for that child, so it cannot relaunch
+Desktop during installer shutdown. Pairing teardown and Core shutdown run
+concurrently under one hard deadline; expensive teardown is left to process
+termination or next-start recovery rather than blocking application exit.
+
+Before any program-file write, the installer atomically persists a safe terminal
+containing the pipe-connect, request, acknowledgement and Desktop-terminal stages
+plus every bounded poll of the exact Launcher/Desktop/Core/GameWatcher PID, role
+and path hash. It also records each process parent PID and creation time, so a
+later read-only audit can distinguish a surviving process from a replacement
+process without inferring identity from a window. The product terminal records
+intent, not process absence. The installer uses Windows Restart Manager as the
+primary-installer authority for program-file lockers: it starts one session,
+registers every structured executable, obtains the current locker list, and when
+needed calls non-forcing `RmShutdown` before fresh PID and locker readback. The
+named pipe remains only Ligase's authenticated graceful-cleanup seam. A separate
+legacy-only fallback may use official `RmForceShutdown` after that graceful
+attempt fails, but only after explicit close-and-continue consent and an exact
+installed-manifest receipt proves every residual PID and locker is the same
+Ligase-owned process generation. The receipt locks PID and creation time, role
+and parent chain, session and user, retained image identity, size, content hash,
+version, and release signer. Missing authority, a foreign or extra locker, or
+any fresh identity drift aborts before program-file writes. The force phase
+registers only verified `RM_UNIQUE_PROCESS` receipts, never a process name, and
+the installer never calls `TerminateProcess` or `taskkill`. This follows Microsoft's
+[primary installer flow](https://learn.microsoft.com/windows/win32/rstmgr/using-restart-manager-with-a-primary-installer)
+and
+[`RmShutdown` contract](https://learn.microsoft.com/windows/win32/api/restartmanager/nf-restartmanager-rmshutdown).
+
+Single-instance activation follows the Windows App SDK rule that a secondary
+must await redirection and then return. While exiting, the primary keeps its key
+registered but ignores redirected activation until process teardown:
+[app instancing](https://learn.microsoft.com/windows/apps/windows-app-sdk/applifecycle/applifecycle-instancing)
+and
+[multi-instance apps](https://learn.microsoft.com/windows/apps/develop/launch/multi-instance-apps).
+Final Desktop termination uses WinUI
+[`Application.Exit`](https://learn.microsoft.com/windows/windows-app-sdk/api/winrt/microsoft.ui.xaml.application.exit),
+not window hiding or tray restoration.
+
+Any unavailable identity or non-empty terminal set stops the install. No path
+may fall through to NSIS Abort/Retry/Ignore file replacement or partial
+overwrite. The NSIS wiki lists process detection and `WM_CLOSE`-style options,
+but Ligase uses Restart Manager for standard occupancy and retains the pipe only
+for product-specific cleanup:
+[NSIS running application guidance](https://nsis.sourceforge.io/Check_whether_your_application_is_running).
+The D-only contract fixture is
+`packaging/windows/ligase/Test-LigaseProductShutdown.ps1`; its forced timeout
+cleanup belongs only to the test harness and is not linked from installer code.
+The release-equivalent gate
+`packaging/windows/ligase/Test-LigaseReleaseShutdown.ps1` publishes the current
+Launcher/Desktop/GameWatcher, combines them with the fixed Core stage in a fresh
+D-only structured root, invokes the same installer preflight, and requires five
+consecutive PID-zero, locker-zero, no-restart terminals.
+
 `installLayout: "structured-v1"` has one typed path authority:
 `InstallationLayoutResolver`. Product code resolves it from the Desktop
 installation entry and never depends on the current working directory or
@@ -263,6 +330,49 @@ performs a bounded create/write/read/delete probe with the same handle,
 reparse, ACL, identity, and atomic-replace rules used by the journal, and
 leaves no pending transaction. A preflight failure therefore leaves all four
 shortcut locations and the firewall unchanged.
+
+The upgrade preflight uses the current package's helper extracted to the NSIS
+plugin directory, before any program-file write. Every running-product query
+persists a typed shutdown terminal; if a product is running, the subsequent
+named-pipe close request persists a separate close terminal containing pipe,
+the parsed Desktop terminal state/code/Core-alive value, bounded process
+samples, Restart Manager lock samples, and final-residual facts. EOF is not a
+Desktop terminal. The client accepts the closed legacy-v1 and current-v2
+terminal shapes by field semantics instead of JSON property order, so an
+upgrade does not require the already-installed Desktop to serialize bytes in
+the new package's exact order. A query that finds neither an owned process nor
+a Restart Manager locker records `productNotRunning` with pipe fields false.
+
+Windows Restart Manager remains the standard authority for identifying
+applications holding installer resources: custom installers can register file
+resources, query `RmGetList`, and request shutdown through the documented
+session APIs
+(<https://learn.microsoft.com/windows/win32/rstmgr/using-restart-manager-with-a-primary-installer>;
+<https://learn.microsoft.com/windows/win32/api/restartmanager/nf-restartmanager-rmshutdown>).
+Ligase's named pipe is narrower: it asks the product to freeze its own restart
+policy and close Core/Desktop/Launcher state cleanly; it is not claimed as a
+replacement for Restart Manager. The preflight registers the four executable
+resources with Restart Manager, queries `RmGetList` on every bounded sample,
+records exact owned paths plus hashed locker identities, and refuses
+program-file writes while either an owned role or a registered-resource locker
+remains. The normal current-product path does not call `RmShutdown`:
+product-specific shutdown remains the acknowledged pipe request. The
+fail-closed legacy branch first calls `RmShutdown` with flags zero. Only if that
+call fails and a fresh retained authority proves exact equality between the
+remaining Ligase process set and Restart Manager lockers may it call
+`RmShutdown(RmForceShutdown)` for those exact `RM_UNIQUE_PROCESS` values. The
+schema-v3 terminal keeps graceful and forced attempts separate, records the
+closed eligibility reason and safe per-target correlations, and fixes
+`programWriteCalls=0`. A force failure, cancellation, identity change, residual
+PID, or residual locker aborts the upgrade. Forced shutdown can discard legacy
+in-memory state, so it is available only after explicit user consent and is
+never used for a current cooperative generation.
+
+The internal `EvaluateLegacyForceEligibility` diagnostic reuses the same
+manifest, retained-image, process and Restart Manager evaluator but performs
+only `RmRegisterResources`/`RmGetList`. It never connects the product shutdown
+pipe or calls `RmShutdown`; its safe terminal always records
+`forcedAttempted=false`, `rmShutdownCalls=0`, and `programWriteCalls=0`.
 
 New admin-only directory segments are created with `CreateDirectoryW` and a
 final `SECURITY_ATTRIBUTES` descriptor. Owner `Administrators`, protected
@@ -502,7 +612,16 @@ Desktop composition, first-route behavior, and installed-product acceptance are
 documented in [`desktop-ui.md`](desktop-ui.md). That document links here rather
 than duplicating manifest, script, cleanup, or privileged-action rules.
 
-The managed Core and GameWatcher are required. SudoVDA is optional: without it,
+The managed Core and GameWatcher are required. SudoVDA is optional. Its NSIS
+component is selected by default on both a fresh install and an upgrade or
+maintenance install, including when a prior installation already contains the
+component, but it is not read-only: the user can clear the checkbox on the
+Components page. Clearing it skips the complete Virtual Display section, so
+certificate-store, nefcon, PnP, and Driver Store mutation counts remain zero.
+Immediately before any selected Virtual Display mutation, the installer still
+requires a separate confirmation that explains the self-signed publisher
+certificate, Local Machine trust-store change, and kernel-driver risk. Declining
+that confirmation also leaves the component uninstalled. Without SudoVDA,
 physical-desktop streaming remains available while virtual-display-only
 features must be disabled with `virtualDisplayNotInstalled`. The readiness
 readback distinguishes `available`, `notInstalled`, `rebootRequired`, and
@@ -680,6 +799,19 @@ the marker is removed atomically only after both resources read back clean.
 It never creates or installs a device. Zero with no owned resources is
 idempotent `alreadyAbsent`; any native, reboot, readback, progress, zero-proof
 or ownership-cleanup uncertainty is a closed first failure.
+
+`provision` deliberately matches Apollo v0.4.6's working driver transition
+without executing `install.bat`: the helper verifies the package aggregate and
+the separately pinned nefcon executable, establishes and reads back Root plus
+TrustedPublisher trust, removes only exact SudoVDA nodes to a stable zero,
+invokes pinned nefcon with exact ordered create argv, then invokes the same
+binary with exact ordered `--install-driver --inf-path SudoVDA.inf` argv from
+the driver directory. `SetupCopyOEMInfW` is not the installation authority.
+Create/install exit, timeout or identity drift is typed; a post-mutation failure
+rolls back only current-operation-owned node/package/trust resources and keeps
+foreign or preexisting resources untouched. This source/build contract does not
+authorize agent-run installation: the real elevated driver trial remains one
+explicit user action coordinated separately.
 
 Core uninstall must invoke native VD uninstall before deleting its pinned
 helper, schemas, driver payload or marker. If VD cleanup fails, V1 stops Core

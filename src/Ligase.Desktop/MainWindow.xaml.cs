@@ -26,6 +26,7 @@ public sealed partial class MainWindow : Window
     private readonly AppWindow _appWindow;
     private string? _pendingPairingNavigationRequestId;
     private bool _isExiting;
+    private bool _installerShutdownFrozen;
 
     public MainWindow()
     {
@@ -63,10 +64,38 @@ public sealed partial class MainWindow : Window
 
     public void HideToTray() => _appWindow.Hide();
 
-    internal void AllowApplicationExit() => _isExiting = true;
+    internal void AllowApplicationExit()
+    {
+        _isExiting = true;
+        _installerShutdownFrozen = true;
+    }
+
+    internal Task<InstallerShutdownOutcome> InvokeInstallerShutdownAsync(
+        Func<Task<InstallerShutdownOutcome>> shutdown)
+    {
+        if (DispatcherQueue.HasThreadAccess) return shutdown();
+        var completion = new TaskCompletionSource<InstallerShutdownOutcome>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        if (!DispatcherQueue.TryEnqueue(async () =>
+        {
+            try { completion.TrySetResult(await shutdown()); }
+            catch (Exception exception) { completion.TrySetException(exception); }
+        }))
+            completion.TrySetResult(new InstallerShutdownOutcome(
+                false, "dispatcherUnavailable", "notStarted",
+                "notObserved", true));
+        return completion.Task;
+    }
+
+    internal void ExitAfterInstallerShutdown()
+    {
+        _ = DispatcherQueue.TryEnqueue(
+            () => ((App)Application.Current).CompleteInstallerShutdown());
+    }
 
     public void ShowWindow()
     {
+        if (_isExiting || _installerShutdownFrozen) return;
         _appWindow.Show();
         Activate();
     }
