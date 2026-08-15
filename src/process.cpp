@@ -9,6 +9,7 @@
 #endif
 // standard includes
 #include <filesystem>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -61,6 +62,34 @@ namespace proc {
 
 #ifdef _WIN32
   VDISPLAY::DRIVER_STATUS vDisplayDriverStatus = VDISPLAY::DRIVER_STATUS::UNKNOWN;
+  namespace {
+    std::mutex managed_vdisplay_mutex;
+    std::wstring managed_vdisplay_name;
+    const GUID managed_vdisplay_guid = {
+      0x70ee1d62, 0x17b9, 0x4f5d, {0x89, 0xb1, 0x7a, 0xf2, 0x8c, 0x5d, 0x4e, 0x31}
+    };
+
+    bool managed_vdisplay_present() {
+      if (managed_vdisplay_name.empty()) return false;
+      DEVMODEW mode {};
+      return VDISPLAY::getDeviceSettings(managed_vdisplay_name.c_str(), mode) != 0;
+    }
+
+    managed_virtual_display_state_t managed_vdisplay_state(
+      std::string state, std::string reason
+    ) {
+      const auto present = managed_vdisplay_present();
+      return {
+        std::move(state),
+        std::move(reason),
+        platf::to_utf8(managed_vdisplay_name),
+        vDisplayDriverStatus == VDISPLAY::DRIVER_STATUS::OK,
+        present,
+        vDisplayDriverStatus == VDISPLAY::DRIVER_STATUS::OK,
+        present && proc.running() > 0 && proc.display_name == platf::to_utf8(managed_vdisplay_name)
+      };
+    }
+  }
 
   void onVDisplayWatchdogFailed() {
     vDisplayDriverStatus = VDISPLAY::DRIVER_STATUS::WATCHDOG_FAILED;
@@ -76,12 +105,83 @@ namespace proc {
       }
     }
   }
+
+  managed_virtual_display_state_t read_managed_virtual_display() {
+    std::scoped_lock lock(managed_vdisplay_mutex);
+    if (vDisplayDriverStatus != VDISPLAY::DRIVER_STATUS::OK) {
+      return managed_vdisplay_state("unavailable", "driverUnavailable");
+    }
+    if (!managed_vdisplay_name.empty() && !managed_vdisplay_present()) {
+      managed_vdisplay_name.clear();
+      return managed_vdisplay_state("disabled", "displayNotPresent");
+    }
+    return managed_vdisplay_state(
+      managed_vdisplay_name.empty() ? "disabled" : "enabled",
+      "none");
+  }
+
+  managed_virtual_display_state_t enable_managed_virtual_display() {
+    std::scoped_lock lock(managed_vdisplay_mutex);
+    if (proc.running() > 0) {
+      return managed_vdisplay_state("unavailable", "streamActive");
+    }
+    if (managed_vdisplay_present()) {
+      return managed_vdisplay_state("enabled", "alreadyEnabled");
+    }
+    managed_vdisplay_name.clear();
+    if (vDisplayDriverStatus != VDISPLAY::DRIVER_STATUS::OK) initVDisplayDriver();
+    if (vDisplayDriverStatus != VDISPLAY::DRIVER_STATUS::OK) {
+      return managed_vdisplay_state("unavailable", "driverUnavailable");
+    }
+    auto name = VDISPLAY::createVirtualDisplay(
+      "ligase-host-managed-display",
+      "Ligase virtual desktop",
+      1920,
+      1080,
+      60000,
+      managed_vdisplay_guid);
+    if (name.empty()) return managed_vdisplay_state("unavailable", "createFailed");
+    managed_vdisplay_name = std::move(name);
+    if (VDISPLAY::changeDisplaySettings(
+          managed_vdisplay_name.c_str(), 1920, 1080, 60000) != ERROR_SUCCESS ||
+        !managed_vdisplay_present()) {
+      VDISPLAY::removeVirtualDisplay(managed_vdisplay_guid);
+      managed_vdisplay_name.clear();
+      return managed_vdisplay_state("unavailable", "readbackFailed");
+    }
+    return managed_vdisplay_state("enabled", "none");
+  }
+
+  managed_virtual_display_state_t disable_managed_virtual_display() {
+    std::scoped_lock lock(managed_vdisplay_mutex);
+    if (proc.running() > 0) {
+      return managed_vdisplay_state("unavailable", "streamActive");
+    }
+    if (managed_vdisplay_name.empty()) {
+      return managed_vdisplay_state("disabled", "alreadyDisabled");
+    }
+    if (!VDISPLAY::removeVirtualDisplay(managed_vdisplay_guid)) {
+      return managed_vdisplay_state("unavailable", "removeFailed");
+    }
+    for (int attempt = 0; attempt < 20 && managed_vdisplay_present(); ++attempt) {
+      std::this_thread::sleep_for(100ms);
+    }
+    if (managed_vdisplay_present()) {
+      return managed_vdisplay_state("unavailable", "readbackFailed");
+    }
+    managed_vdisplay_name.clear();
+    return managed_vdisplay_state("disabled", "none");
+  }
 #endif
 
   class deinit_t: public platf::deinit_t {
   public:
     ~deinit_t() {
       proc.terminate();
+#ifdef _WIN32
+      const auto state = read_managed_virtual_display();
+      if (state.state == "enabled") disable_managed_virtual_display();
+#endif
     }
   };
 
@@ -288,18 +388,29 @@ namespace proc {
           target_fps *= 2;
         }
 
-        std::wstring vdisplayName = VDISPLAY::createVirtualDisplay(
-          device_uuid_str.c_str(),
-          device_name.c_str(),
-          render_width,
-          render_height,
-          target_fps,
-          launch_session->display_guid
-        );
+        std::wstring vdisplayName;
+        bool reused_managed_display = false;
+        {
+          std::scoped_lock lock(managed_vdisplay_mutex);
+          if (managed_vdisplay_present()) {
+            vdisplayName = managed_vdisplay_name;
+            reused_managed_display = true;
+          }
+        }
+        if (!reused_managed_display) {
+          vdisplayName = VDISPLAY::createVirtualDisplay(
+            device_uuid_str.c_str(),
+            device_name.c_str(),
+            render_width,
+            render_height,
+            target_fps,
+            launch_session->display_guid
+          );
+        }
 
         // No matter we get the display name or not, the virtual display might still be created.
         // We need to track it properly to remove the display when the session terminates.
-        launch_session->virtual_display = true;
+        launch_session->virtual_display = !reused_managed_display;
 
         if (!vdisplayName.empty()) {
           BOOST_LOG(info) << "Virtual Display created at " << vdisplayName;
@@ -833,6 +944,13 @@ namespace proc {
     auto app_image_path = iter == _apps.end() ? std::string() : iter->image_path;
 
     return validate_app_image_path(app_image_path);
+  }
+
+  std::string proc_t::get_app_uuid(int app_id) {
+    auto iter = std::find_if(_apps.begin(), _apps.end(), [&app_id](const auto &app) {
+      return app.id == std::to_string(app_id);
+    });
+    return iter == _apps.end() ? std::string() : iter->uuid;
   }
 
   std::string proc_t::get_last_run_app_name() {

@@ -125,9 +125,9 @@ The following are forbidden matching inputs:
 - an inferred executable, directory, icon, or file hash;
 - an unversioned store guess.
 
-## Additive Sync v1 fields
+## Frozen Sync v1 fields
 
-The proposed fields are optional additions to each existing
+The fields are optional additions to each existing
 `library.items[]` object:
 
 ```json
@@ -152,18 +152,21 @@ instance. Its absence means there is no Host override.
 
 Compatibility defaults:
 
-- missing or `null` `portableIdentity` means instance-only; clients must not
+- missing `portableIdentity` means instance-only; clients must not
   derive one from `kind`, `name`, `steamAppId`, path, applist, or asset data;
-- missing or `null` `layoutBinding` means no explicit binding;
-- an unknown provider, malformed ID, or unknown identity shape on a Sync item
-  makes only that item's portable identity unusable; an otherwise valid
-  explicit `layoutBinding` can still resolve;
+- missing `layoutBinding` means no explicit binding;
+- explicit `null`, an unknown provider, malformed ID, or unknown key makes the
+  Sync v1 snapshot invalid; there is no string or permissive compatibility
+  shape;
 - old Android versions may ignore both fields and continue launch behavior;
 - new Android versions must not treat missing fields from an older Sync v1
   snapshot as evidence that two games match.
 
 Adding or changing either field is a Host library mutation: it increments the
 library revision and item `updatedAt`. Host remains the sole writer.
+The exact machine shape is owned by
+[`android-sync-v1.schema.json`](android-sync-v1.schema.json); this document does
+not define a second wire schema.
 
 ## Layout descriptor v1
 
@@ -357,13 +360,16 @@ Android never writes game identity to Host.
 Migration is additive:
 
 1. Continue reading current library schema without either new field.
-2. On a future Host implementation, populate `portableIdentity` only for
-   verified Steam items; leave system and executable items null.
+2. Host populates `portableIdentity` only for Steam items created from verified
+   local manifests; system and executable items remain instance-only.
 3. Do not auto-bind layouts during migration.
 4. Preserve all current app UUIDs, GameStream launch mapping, streaming
    settings, visibility, sort state, and timestamps.
-5. Introduce Host binding UI and Sync writes only after this contract is
-   accepted and separately implemented/tested.
+5. The Host layout hall writes an explicit binding only after the user selects
+   a concrete game UUID and confirms. Library, H1 catalog and Sync are one
+   rollback transaction under the managed-Core authority gate. A missing,
+   retired, malformed or drifted target fails closed; clearing removes only the
+   selected game UUID binding.
 
 Existing Android TouchKit data migrates without identity guessing:
 

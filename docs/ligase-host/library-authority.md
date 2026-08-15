@@ -22,6 +22,47 @@ An external core, multiple cores, an exited core, or any identity mismatch makes
 the library read-only. The UI must explain how to recover and its command
 handlers must repeat the authority check.
 
+## Windows shortcut import
+
+The non-Steam add page may accept exactly one local Windows `.lnk` through
+drag-and-drop or the keyboard-reachable file picker. Dropping or choosing a
+file only creates a preview; it never mutates the Host library. The preview
+shows the resolved executable, arguments, working directory and icon source,
+and a separate explicit confirmation is required before the existing
+`LibraryMutationCoordinator` writes and verifies the Core projection.
+
+`WindowsShortcutResolver` is the single parser. It rejects non-shortcuts,
+multiple inputs, missing or network targets, scripts, command interpreters,
+installers, unsupported URI/UWP targets, and any shortcut/target/working path
+that traverses a reparse point. It does not execute the target or invoke the
+shell. Preview authority binds the shortcut bytes, executable bytes, canonical
+target and arguments, working directory and icon. Confirmation resolves and
+rehashes the source again; drift cancels the preview and produces zero library
+writes. Duplicate executable additions are still rejected by the canonical
+Host library repository. Cancel always discards the preview without changing
+the library.
+
+Layout binding is another library mutation under this same authority. The Host
+uses only `(hostUniqueId, appUuid)` and an exact canonical
+`(layoutId, revision)`; it never matches by game name or numeric launch appid.
+The library item, H1 catalog projection, Sync fields and managed-Core readback
+form one rollback boundary. New Steam items receive `portableIdentity` from the
+already verified local Steam manifest App ID. Executable and system items do
+not gain a guessed portable identity.
+
+A newly started managed Core may own a live process before its loopback
+`serverinfo` route is ready. The desktop owns one cancellable readiness loop
+that probes every 400 ms for at most 15 seconds and presents a zero-result state
+as **starting**, not as multiple cores. When exactly one matching Core becomes
+readable, the loop revalidates nonce, token, root fingerprint, port and Host
+UUID, updates the shell through its UI dispatcher, refreshes the visible game
+library and removes the temporary read-only state. Only a result greater than
+one is labelled multiple cores. Closing the application cancels the loop;
+duplicate triggers share the existing run instead of starting concurrent
+probes. A 15-second zero result becomes an explicit unavailable/timeout state
+with a read-only **refresh status** action and never remains indefinitely in
+the starting state.
+
 ## Explicit product data root
 
 Managed structured deployments place `ligase-bootstrap.json` at the
@@ -34,6 +75,13 @@ child-process environment variable `LIGASE_DATA_ROOT`. Command line wins over
 environment, which wins over the typed bootstrap path. This is the product data
 boundary used by the desktop, its managed core, and every generated projection.
 A relative, missing, or duplicate command-line value is rejected.
+
+The Settings page exposes the resolved DataRoot, its canonical instance UUID
+when it is a `%ProgramData%\Ligase Host\Instances\<UUID>` root, and whether the
+installed bootstrap resolves to the same directory. This is read-only operator
+evidence. It does not expose the per-start authority token, nonce, root
+fingerprint, paired-device material, or other secrets, and it does not infer a
+historical migration source from the current path alone.
 
 An ordinary unpackaged first run without this option still uses
 `%LOCALAPPDATA%\Ligase Host`. Deployment and acceptance automation must pass an
@@ -103,3 +151,39 @@ separately initialized management account. This is tracked as
 `BLOCKED_BY_HOST_FIRST_RUN_PAIRING`; it is not represented as a successful
 client-side deletion refresh and no hidden account or compatibility route was
 created to bypass it.
+## Steam 游戏封面 authority
+
+Steam 游戏封面不按名称查询或模糊关联。唯一身份链是：
+
+1. `SteamLibraryService` 从本机 `appmanifest_<appid>.acf` 读取十进制 App ID；
+2. `CoverArtService.FindSteamAsync` 再次读取同一 manifest，并要求文件名与内容里的
+   `appid` 都等于 `SteamGame.AppId`；
+3. 只接受同一 Steam 安装根下
+   `appcache/librarycache/<appid>/library_600x900.jpg`，路径链和文件均不得是
+   reparse point；
+4. retained read 期间禁止写入或替换，JPEG 必须能由 Windows Imaging Component
+   解码且尺寸恰为 Steam Library Capsule 的 600×900；
+5. 转码后只把经过 PNG signature、decoder、pixel-count 和 12 MiB 上限验证的 PNG
+   原子写到权威 DataRoot 的 `covers/`。
+
+Steam 官方把 [600×900 Library Capsule](https://partner.steamgames.com/doc/store/assets/libraryassets)
+定义为 Steam Library 的主要竖版封面素材。
+Ligase 只读取用户本机 Steam client cache，不随安装包分发、上传或声明拥有这些第三方
+图片。`cover-cache-authority-v1.json` 记录相对缓存路径、内容 SHA-256、Steam App ID、
+来源和 `thirdPartyArtworkLocalUseOnlyNoRedistribution` 使用边界；machine schema 是
+[`cover-cache-authority-v1.schema.json`](cover-cache-authority-v1.schema.json)。
+
+`library.json` 与 `ligase-sync.json` 保存同一 `coverSha256/sourceKind/sourceId/
+usageRights`。`ApolloAppsWriter` 仅把已缓存 PNG 的绝对 `image-path` 交给 Apollo；
+`/appasset?appid=<apollo-app-id>` 只有在 app UUID、Sync `coverSha256` 与实际 PNG bytes
+三方一致时才返回 `200`，并附带 exact UUID/SHA/content-type/content-length header；
+缺失或不匹配按 [`android-sync-contract.md`](android-sync-contract.md) 的 closed status
+失败，8 MiB 以上拒绝；
+路径验证和 PNG fallback 沿用
+[Sunshine upstream `process.cpp`](https://github.com/LizardByte/Sunshine/blob/master/src/process.cpp)，
+Android 可把 `applist` 的 UUID、Sync 的 `coverSha256` 与 appasset bytes 三方关联。
+Host source/tests 只能证明该接口可验证；真正 Host→Android 图片显示仍是跨端真实验收门。
+
+删除游戏成功且核心 readback 已确认后，Host 仅根据缓存 authority 清理不再被任何
+library item 引用的 `covers/` owned 文件；外部文件、reparse、未知记录均不删除。
+离线、cache 缺失或无合格图片时保持稳定占位图，不回退到名称模糊匹配。

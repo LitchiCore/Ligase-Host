@@ -44,6 +44,20 @@ namespace proc {
 
 #ifdef _WIN32
   extern VDISPLAY::DRIVER_STATUS vDisplayDriverStatus;
+
+  struct managed_virtual_display_state_t {
+    std::string state;
+    std::string reason;
+    std::string display_name;
+    bool driver_ready;
+    bool windows_display_present;
+    bool streaming_available;
+    bool used_by_active_stream;
+  };
+
+  managed_virtual_display_state_t read_managed_virtual_display();
+  managed_virtual_display_state_t enable_managed_virtual_display();
+  managed_virtual_display_state_t disable_managed_virtual_display();
 #endif
 
   typedef config::prep_cmd_t cmd_t;
@@ -133,6 +147,7 @@ namespace proc {
     const std::vector<ctx_t> &get_apps() const;
     std::vector<ctx_t> &get_apps();
     std::string get_app_image(int app_id);
+    std::string get_app_uuid(int app_id);
     std::string get_last_run_app_name();
     std::string get_running_app_uuid();
     boost::process::v1::environment get_env();
@@ -172,6 +187,8 @@ namespace proc {
    * @return Tuple of id calculated without index (for use if no collision) and one with.
    */
   std::tuple<std::string, std::string> calculate_app_id(const std::string &app_name, std::string app_image_path, int index);
+
+  std::optional<std::string> calculate_sha256(const std::string &filename);
 
   std::string validate_app_image_path(std::string app_image_path);
   void refresh(const std::string &file_name, bool needs_terminate = true);

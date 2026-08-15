@@ -68,6 +68,90 @@ public sealed class ApplicationLibraryTests
     }
 
     [TestMethod]
+    public async Task SteamIdentityAndExplicitLayoutBindingPersistIntoSyncByUuid()
+    {
+        var paths = new LigasePaths(_temporaryDirectory);
+        var library = new ApplicationLibrary(
+            paths,
+            new RecordingAppsWriter(),
+            new StreamingSettingsService(paths),
+            new LigaseSyncDocumentWriter(paths));
+        var item = await library.AddSteamAsync(new SteamGame(
+            3548580,
+            "Stray",
+            "Stray",
+            @"D:\Steam\Stray",
+            @"D:\Steam\steamapps\appmanifest_3548580.acf",
+            1));
+        var binding = new LayoutBindingV1(
+            "10000000-0000-4000-8000-000000000000",
+            7);
+
+        var updated = await library.SetLayoutBindingAsync(item.Id, binding);
+        var reloaded = await new ApplicationLibrary(paths, new RecordingAppsWriter()).LoadAsync();
+
+        Assert.AreEqual(
+            new PortableGameIdentityV1("steam", "3548580"),
+            updated.PortableIdentity);
+        Assert.AreEqual(binding, reloaded.Items.Single(candidate => candidate.Id == item.Id).LayoutBinding);
+        using var sync = JsonDocument.Parse(await File.ReadAllTextAsync(paths.SyncFile));
+        var projected = sync.RootElement.GetProperty("library").GetProperty("items")
+            .EnumerateArray().Single(candidate =>
+                candidate.GetProperty("id").GetGuid() == item.Id);
+        Assert.AreEqual(
+            "steam",
+            projected.GetProperty("portableIdentity").GetProperty("provider").GetString());
+        Assert.AreEqual(
+            "3548580",
+            projected.GetProperty("portableIdentity").GetProperty("id").GetString());
+        Assert.AreEqual(
+            binding.LayoutId,
+            projected.GetProperty("layoutBinding").GetProperty("layoutId").GetString());
+        Assert.AreEqual(
+            binding.Revision,
+            projected.GetProperty("layoutBinding").GetProperty("revision").GetInt64());
+    }
+
+    [TestMethod]
+    public async Task TamperedPortableIdentityAndLayoutBindingFailClosedOnRead()
+    {
+        var paths = new LigasePaths(_temporaryDirectory);
+        var state = new LibraryState
+        {
+            Items =
+            [
+                new LibraryItem
+                {
+                    Kind = LibraryItemKind.Executable,
+                    Name = "Tool",
+                    ExecutablePath = @"D:\Tool.exe",
+                    PortableIdentity = new PortableGameIdentityV1("steam", "3548580")
+                }
+            ]
+        };
+        await File.WriteAllTextAsync(
+            paths.LibraryFile,
+            JsonSerializer.Serialize(state, new JsonSerializerOptions
+            {
+                PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+            }));
+
+        await Assert.ThrowsExceptionAsync<InvalidDataException>(() =>
+            new ApplicationLibrary(paths, new RecordingAppsWriter()).LoadAsync());
+
+        state.Items[0].PortableIdentity = null;
+        state.Items[0].LayoutBinding = new LayoutBindingV1("NOT-A-UUID", 0);
+        await File.WriteAllTextAsync(
+            paths.LibraryFile,
+            JsonSerializer.Serialize(state, new JsonSerializerOptions
+            {
+                PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+            }));
+        await Assert.ThrowsExceptionAsync<InvalidDataException>(() =>
+            new ApplicationLibrary(paths, new RecordingAppsWriter()).LoadAsync());
+    }
+
+    [TestMethod]
     public async Task ManualOrderPersistsCanonicalOrderAndSyncProjection()
     {
         var paths = new LigasePaths(_temporaryDirectory);
@@ -333,6 +417,61 @@ public sealed class ApplicationLibraryTests
         Assert.AreEqual(item.Id.ToString(), app.GetProperty("uuid").GetString());
         StringAssert.Contains(app.GetProperty("cmd").GetString(), "--steam-app-id 42");
         Assert.IsFalse(app.GetProperty("auto-detach").GetBoolean());
+    }
+
+    [TestMethod]
+    public async Task SteamCoverAuthorityFlowsToSyncAndApolloAppAssetProjection()
+    {
+        var paths = new LigasePaths(_temporaryDirectory);
+        Directory.CreateDirectory(paths.CoversDirectory);
+        var cover = Path.Combine(paths.CoversDirectory, "steam_42_0123456789abcdef.png");
+        await File.WriteAllBytesAsync(cover,
+            Convert.FromBase64String(
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="));
+        var coverSha = Convert.ToHexString(
+            System.Security.Cryptography.SHA256.HashData(await File.ReadAllBytesAsync(cover)))
+            .ToLowerInvariant();
+        await File.WriteAllTextAsync(paths.CoverCacheAuthorityFile,
+            JsonSerializer.Serialize(new
+            {
+                schemaVersion = 1,
+                entries = new[]
+                {
+                    new
+                    {
+                        relativePath = "covers/steam_42_0123456789abcdef.png",
+                        contentSha256 = coverSha,
+                        sourceKind = "steamClientLibraryCache",
+                        sourceId = "42",
+                        usageRights = "thirdPartyArtworkLocalUseOnlyNoRedistribution",
+                        steamAppId = 42,
+                        cachedAtUtc = DateTimeOffset.UtcNow
+                    }
+                }
+            }, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase }));
+        var writer = new RecordingAppsWriter();
+        var library = new ApplicationLibrary(
+            paths,
+            writer,
+            syncWriter: new LigaseSyncDocumentWriter(paths));
+
+        var item = await library.AddSteamAsync(new SteamGame(
+            42, "Verified", "Verified", @"D:\Steam", @"D:\Steam\steamapps\appmanifest_42.acf", 1),
+            cover);
+
+        Assert.AreEqual(coverSha, item.CoverContentSha256);
+        Assert.AreEqual("steamClientLibraryCache", item.CoverSourceKind);
+        using var sync = JsonDocument.Parse(await File.ReadAllTextAsync(paths.SyncFile));
+        var projected = sync.RootElement.GetProperty("library").GetProperty("items")
+            .EnumerateArray().Single(value => value.GetProperty("id").GetGuid() == item.Id);
+        Assert.AreEqual(coverSha, projected.GetProperty("coverSha256").GetString());
+        Assert.AreEqual("42", projected.GetProperty("coverSourceId").GetString());
+        Assert.AreEqual(cover, writer.LastItems.Single(value => value.Id == item.Id).CoverImagePath);
+
+        await Assert.ThrowsExceptionAsync<InvalidOperationException>(() =>
+            library.AddSteamAsync(new SteamGame(
+                43, "Wrong game", "Wrong", @"D:\Steam",
+                @"D:\Steam\steamapps\appmanifest_43.acf", 1), cover));
     }
 
     [TestMethod]
@@ -653,12 +792,14 @@ public sealed class ApplicationLibraryTests
     private sealed class RecordingAppsWriter : IApolloAppsWriter
     {
         public int WriteCount { get; private set; }
+        public IReadOnlyList<LibraryItem> LastItems { get; private set; } = [];
 
         public Task WriteAsync(
             IReadOnlyCollection<LibraryItem> items,
             CancellationToken cancellationToken = default)
         {
             WriteCount++;
+            LastItems = items.ToArray();
             return Task.CompletedTask;
         }
     }

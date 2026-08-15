@@ -40,13 +40,31 @@ public sealed class ApplicationLibrary(
                 item.Kind == LibraryItemKind.Steam && item.SteamAppId == game.AppId);
             if (existing is not null) return existing;
 
+            var coverAuthority = CoverArtService.TryReadAuthority(paths, coverImagePath);
+            if (!string.IsNullOrWhiteSpace(coverImagePath) &&
+                (coverAuthority is null ||
+                 coverAuthority.SteamAppId != game.AppId ||
+                 !string.Equals(coverAuthority.SourceKind,
+                     "steamClientLibraryCache", StringComparison.Ordinal) ||
+                 !string.Equals(coverAuthority.SourceId,
+                     game.AppId.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                     StringComparison.Ordinal)))
+                throw new InvalidOperationException(
+                    "所选封面没有绑定当前 Steam App ID 的可验证来源，未修改游戏库。");
             var item = new LibraryItem
             {
                 Kind = LibraryItemKind.Steam,
                 Name = game.Name,
                 SteamAppId = game.AppId,
                 SteamInstallPath = game.InstallPath,
-                CoverImagePath = coverImagePath
+                PortableIdentity = new PortableGameIdentityV1(
+                    "steam",
+                    game.AppId.ToString(System.Globalization.CultureInfo.InvariantCulture)),
+                CoverImagePath = coverImagePath,
+                CoverContentSha256 = coverAuthority?.ContentSha256,
+                CoverSourceKind = coverAuthority?.SourceKind,
+                CoverSourceId = coverAuthority?.SourceId,
+                CoverUsageRights = coverAuthority?.UsageRights
             };
             state.Items.Add(item);
             return item;
@@ -70,6 +88,7 @@ public sealed class ApplicationLibrary(
                 string.Equals(item.ExecutablePath, fullExecutablePath, StringComparison.OrdinalIgnoreCase));
             if (existing is not null) return existing;
 
+            var coverAuthority = CoverArtService.TryReadAuthority(paths, coverImagePath);
             var item = new LibraryItem
             {
                 Kind = LibraryItemKind.Executable,
@@ -77,6 +96,10 @@ public sealed class ApplicationLibrary(
                 ExecutablePath = fullExecutablePath,
                 Arguments = string.IsNullOrWhiteSpace(arguments) ? null : arguments.Trim(),
                 CoverImagePath = coverImagePath,
+                CoverContentSha256 = coverAuthority?.ContentSha256,
+                CoverSourceKind = coverAuthority?.SourceKind,
+                CoverSourceId = coverAuthority?.SourceId,
+                CoverUsageRights = coverAuthority?.UsageRights,
                 WorkingDirectory = string.IsNullOrWhiteSpace(workingDirectory)
                     ? Path.GetDirectoryName(fullExecutablePath)
                     : Path.GetFullPath(workingDirectory)
@@ -131,6 +154,31 @@ public sealed class ApplicationLibrary(
             return null;
         }, cancellationToken);
     }
+
+    public Task<LibraryItem> SetLayoutBindingAsync(
+        Guid id,
+        LayoutBindingV1? binding,
+        CancellationToken cancellationToken = default) =>
+        MutateAsync(state =>
+        {
+            var item = state.Items.SingleOrDefault(candidate => candidate.Id == id)
+                       ?? throw new LibraryItemNotFoundException(id);
+            if (item.IsSystemEntry)
+                throw new SystemLibraryItemMutationException(
+                    id,
+                    "系统桌面入口不能绑定触控布局。");
+            if (binding is not null &&
+                (!LayoutContractV1Validator.TryNormalizeUuid(
+                     binding.LayoutId,
+                     out var layoutId) ||
+                 !string.Equals(layoutId, binding.LayoutId, StringComparison.Ordinal) ||
+                 !LayoutContractV1Validator.IsValidRevision(binding.Revision)))
+                throw new ArgumentException("布局绑定不是 canonical layout ID/revision。", nameof(binding));
+
+            item.LayoutBinding = binding;
+            item.UpdatedAt = DateTimeOffset.UtcNow;
+            return item;
+        }, cancellationToken);
 
     public async Task RemoveAsync(Guid id, CancellationToken cancellationToken = default)
     {
@@ -188,9 +236,45 @@ public sealed class ApplicationLibrary(
         await using var stream = File.OpenRead(paths.LibraryFile);
         var state = await JsonSerializer.DeserializeAsync<LibraryState>(stream, JsonOptions, cancellationToken)
                     ?? new LibraryState();
+        ValidateAndPopulateLayoutMetadata(state);
         EnsureSystemEntries(state);
         ApplyCanonicalOrder(state);
         return state;
+    }
+
+    private static void ValidateAndPopulateLayoutMetadata(LibraryState state)
+    {
+        foreach (var item in state.Items)
+        {
+            if (item.Kind == LibraryItemKind.Steam && item.SteamAppId is > 0)
+            {
+                var expected = new PortableGameIdentityV1(
+                    "steam",
+                    item.SteamAppId.GetValueOrDefault().ToString(
+                        System.Globalization.CultureInfo.InvariantCulture));
+                if (item.PortableIdentity is null)
+                    item.PortableIdentity = expected;
+                else if (!LayoutContractV1Validator.TryNormalizePortableIdentity(
+                             item.PortableIdentity,
+                             out var normalized) ||
+                         normalized != expected)
+                    throw new InvalidDataException(
+                        $"游戏 {item.Id:D} 的可移植身份与已验证 Steam App ID 不一致。");
+            }
+            else if (item.PortableIdentity is not null)
+            {
+                throw new InvalidDataException(
+                    $"游戏 {item.Id:D} 不能声明可移植 Steam 身份。");
+            }
+
+            if (item.LayoutBinding is { } binding &&
+                (!LayoutContractV1Validator.TryNormalizeUuid(
+                     binding.LayoutId,
+                     out var layoutId) ||
+                 !string.Equals(layoutId, binding.LayoutId, StringComparison.Ordinal) ||
+                 !LayoutContractV1Validator.IsValidRevision(binding.Revision)))
+                throw new InvalidDataException($"游戏 {item.Id:D} 的布局绑定无效。");
+        }
     }
 
     private async Task WriteCoreAsync(LibraryState state, CancellationToken cancellationToken)

@@ -56,6 +56,12 @@ public sealed class LigaseSyncDocumentWriter(LigasePaths paths)
                     Kind = item.Kind,
                     Name = item.Name,
                     SteamAppId = item.SteamAppId,
+                    PortableIdentity = item.PortableIdentity,
+                    LayoutBinding = item.LayoutBinding,
+                    CoverSha256 = item.CoverContentSha256,
+                    CoverSourceKind = item.CoverSourceKind,
+                    CoverSourceId = item.CoverSourceId,
+                    CoverUsageRights = item.CoverUsageRights,
                     System = item.IsSystemEntry,
                     PublishedToClients = item.PublishedToClients,
                     AddedAt = item.AddedAt,
@@ -65,6 +71,8 @@ public sealed class LigaseSyncDocumentWriter(LigasePaths paths)
             },
             Streaming = streaming
         };
+
+        AndroidSyncContractV1Validator.Validate(document);
 
         await _gate.WaitAsync(cancellationToken);
         try

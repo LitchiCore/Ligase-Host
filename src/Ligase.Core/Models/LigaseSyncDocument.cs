@@ -21,6 +21,12 @@ public sealed class LibrarySyncItem
     public required LibraryItemKind Kind { get; init; }
     public required string Name { get; init; }
     public uint? SteamAppId { get; init; }
+    public PortableGameIdentityV1? PortableIdentity { get; init; }
+    public LayoutBindingV1? LayoutBinding { get; init; }
+    public string? CoverSha256 { get; init; }
+    public string? CoverSourceKind { get; init; }
+    public string? CoverSourceId { get; init; }
+    public string? CoverUsageRights { get; init; }
     public required bool System { get; init; }
     public required bool PublishedToClients { get; init; }
     public required DateTimeOffset AddedAt { get; init; }

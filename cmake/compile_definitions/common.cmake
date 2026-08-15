@@ -87,6 +87,8 @@ set(SUNSHINE_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/ligase/pairing/http/attended_pairing_http.h"
         "${CMAKE_SOURCE_DIR}/src/ligase/library/http/library_applist_http.cpp"
         "${CMAKE_SOURCE_DIR}/src/ligase/library/http/library_applist_http.h"
+        "${CMAKE_SOURCE_DIR}/src/ligase/library/http/appasset_contract.cpp"
+        "${CMAKE_SOURCE_DIR}/src/ligase/library/http/appasset_contract.h"
         "${CMAKE_SOURCE_DIR}/src/ligase/library/http/library_sync_http.cpp"
         "${CMAKE_SOURCE_DIR}/src/ligase/library/http/library_sync_http.h"
         "${CMAKE_SOURCE_DIR}/src/ligase/library/http/library_sort_http.cpp"

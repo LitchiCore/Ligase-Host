@@ -1,0 +1,103 @@
+{
+  "schemaVersion": 1,
+  "validSync": {
+    "schemaVersion": 1,
+    "capabilities": { "hdrEncodingSupported": true },
+    "library": {
+      "revision": 12,
+      "updatedAt": "2026-08-16T00:00:00Z",
+      "sortMode": "manual",
+      "items": [
+        {
+          "id": "2c42a3d0-79f1-4bb6-98f8-40c18cd5bc91",
+          "kind": "steam",
+          "name": "Example",
+          "steamAppId": 123,
+          "portableIdentity": { "provider": "steam", "id": "123" },
+          "layoutBinding": {
+            "layoutId": "0b7cd40f-64ae-4eac-845a-fb41dfed80d0",
+            "revision": 7
+          },
+          "coverSha256": "431ced6916a2a21a156e38701afe55bbd7f88969fbbfc56d7fe099d47f265460",
+          "coverSourceKind": "steamClientLibraryCache",
+          "coverSourceId": "123",
+          "coverUsageRights": "thirdPartyArtworkLocalUseOnlyNoRedistribution",
+          "system": false,
+          "publishedToClients": true,
+          "addedAt": "2026-08-16T00:00:00Z",
+          "updatedAt": "2026-08-16T00:00:00Z"
+        },
+        {
+          "id": "78a25216-f239-45bd-b4aa-f41c814066e9",
+          "kind": "desktop",
+          "name": "Desktop",
+          "system": true,
+          "publishedToClients": true,
+          "addedAt": "2026-08-16T00:00:00Z",
+          "updatedAt": "2026-08-16T00:00:00Z"
+        }
+      ]
+    },
+    "streaming": {
+      "schemaVersion": 1,
+      "revision": 4,
+      "updatedAt": "2026-08-16T00:00:00Z",
+      "globalResolution": { "width": 1920, "height": 1080 },
+      "apps": {
+        "2c42a3d0-79f1-4bb6-98f8-40c18cd5bc91": {
+          "resolution": { "width": 2560, "height": 1440 }
+        }
+      }
+    }
+  },
+  "invalidSync": [
+    { "name": "portable-string", "pointer": "/library/items/0/portableIdentity", "value": "steam:123" },
+    { "name": "portable-null", "pointer": "/library/items/0/portableIdentity", "value": null },
+    { "name": "portable-leading-zero", "pointer": "/library/items/0/portableIdentity/id", "value": "0123" },
+    { "name": "portable-zero", "pointer": "/library/items/0/portableIdentity/id", "value": "0" },
+    { "name": "portable-overflow", "pointer": "/library/items/0/portableIdentity/id", "value": "4294967296" },
+    { "name": "portable-provider", "pointer": "/library/items/0/portableIdentity/provider", "value": "epic" },
+    { "name": "portable-extra", "pointer": "/library/items/0/portableIdentity/extra", "value": true },
+    { "name": "layout-null", "pointer": "/library/items/0/layoutBinding", "value": null },
+    { "name": "layout-noncanonical-uuid", "pointer": "/library/items/0/layoutBinding/layoutId", "value": "0B7CD40F-64AE-4EAC-845A-FB41DFED80D0" },
+    { "name": "layout-revision-zero", "pointer": "/library/items/0/layoutBinding/revision", "value": 0 },
+    { "name": "layout-revision-float", "pointer": "/library/items/0/layoutBinding/revision", "value": 1.5 },
+    { "name": "layout-extra", "pointer": "/library/items/0/layoutBinding/extra", "value": true },
+    { "name": "cover-incomplete", "pointer": "/library/items/0/coverSourceId", "remove": true },
+    { "name": "cover-upper-sha", "pointer": "/library/items/0/coverSha256", "value": "431CED6916A2A21A156E38701AFE55BBD7F88969FBBFC56D7FE099D47F265460" },
+    { "name": "unknown-item-key", "pointer": "/library/items/0/command", "value": "secret" }
+  ],
+  "semanticInvalid": [
+    { "name": "steam-id-mismatch", "pointer": "/library/items/0/portableIdentity/id", "value": "124" },
+    { "name": "cover-source-id-mismatch", "pointer": "/library/items/0/coverSourceId", "value": "124" },
+    { "name": "duplicate-app-uuid", "duplicateFirstItem": true }
+  ],
+  "appAssetCases": [
+    {
+      "name": "correlated-png",
+      "appUuid": "2c42a3d0-79f1-4bb6-98f8-40c18cd5bc91",
+      "syncCoverSha256": "431ced6916a2a21a156e38701afe55bbd7f88969fbbfc56d7fe099d47f265460",
+      "bodyBase64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+      "bodyLength": 68,
+      "expectedStatus": 200,
+      "expectedHeaders": {
+        "Content-Type": "image/png",
+        "Content-Length": "68",
+        "Cache-Control": "no-store",
+        "X-Ligase-App-Uuid": "2c42a3d0-79f1-4bb6-98f8-40c18cd5bc91",
+        "X-Ligase-Cover-Sha256": "431ced6916a2a21a156e38701afe55bbd7f88969fbbfc56d7fe099d47f265460"
+      }
+    },
+    { "name": "missing-app-uuid", "appUuid": "", "syncCoverSha256": "431ced6916a2a21a156e38701afe55bbd7f88969fbbfc56d7fe099d47f265460", "bodyLength": 68, "actualSha256": "431ced6916a2a21a156e38701afe55bbd7f88969fbbfc56d7fe099d47f265460", "expectedStatus": 409, "error": "assetIdentityMismatch" },
+    { "name": "missing-sync-sha", "appUuid": "2c42a3d0-79f1-4bb6-98f8-40c18cd5bc91", "syncCoverSha256": "", "bodyLength": 68, "actualSha256": "431ced6916a2a21a156e38701afe55bbd7f88969fbbfc56d7fe099d47f265460", "expectedStatus": 404, "error": "assetUnavailable" },
+    { "name": "hash-mismatch", "appUuid": "2c42a3d0-79f1-4bb6-98f8-40c18cd5bc91", "syncCoverSha256": "431ced6916a2a21a156e38701afe55bbd7f88969fbbfc56d7fe099d47f265460", "bodyLength": 68, "actualSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "expectedStatus": 409, "error": "assetCorrelationMismatch" },
+    { "name": "missing-file", "appUuid": "2c42a3d0-79f1-4bb6-98f8-40c18cd5bc91", "syncCoverSha256": "431ced6916a2a21a156e38701afe55bbd7f88969fbbfc56d7fe099d47f265460", "bodyLength": 0, "fileReadable": false, "expectedStatus": 404, "error": "assetUnavailable" },
+    { "name": "oversized", "appUuid": "2c42a3d0-79f1-4bb6-98f8-40c18cd5bc91", "syncCoverSha256": "431ced6916a2a21a156e38701afe55bbd7f88969fbbfc56d7fe099d47f265460", "bodyLength": 8388609, "actualSha256": "431ced6916a2a21a156e38701afe55bbd7f88969fbbfc56d7fe099d47f265460", "expectedStatus": 413, "error": "assetTooLarge" }
+  ],
+  "layoutBindingOutcomes": [
+    { "state": "missing", "code": "noExplicitBinding", "fallbackAllowed": false },
+    { "state": "unknown", "code": "bindingNotFound", "fallbackAllowed": false },
+    { "state": "retired", "code": "bindingRetired", "fallbackAllowed": false },
+    { "state": "draftNotInstalled", "code": "bindingDraftNotInstalled", "fallbackAllowed": false }
+  ]
+}

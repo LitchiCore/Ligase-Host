@@ -14,7 +14,13 @@ public sealed class LibraryItem
     public string? WorkingDirectory { get; init; }
     public uint? SteamAppId { get; init; }
     public string? SteamInstallPath { get; init; }
+    public PortableGameIdentityV1? PortableIdentity { get; set; }
+    public LayoutBindingV1? LayoutBinding { get; set; }
     public string? CoverImagePath { get; init; }
+    public string? CoverContentSha256 { get; init; }
+    public string? CoverSourceKind { get; init; }
+    public string? CoverSourceId { get; init; }
+    public string? CoverUsageRights { get; init; }
     public bool PublishedToClients { get; set; } = true;
     public DateTimeOffset AddedAt { get; init; } = DateTimeOffset.UtcNow;
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
@@ -35,6 +41,16 @@ public sealed class LibraryItem
         LibraryItemKind.Steam => $"Steam · App ID {SteamAppId}",
         _ => "本地应用"
     };
+
+    [JsonIgnore]
+    public string LayoutIdentityLabel => PortableIdentity is null
+        ? "仅此 Host 实例"
+        : $"{PortableIdentity.Provider}:{PortableIdentity.Id}";
+
+    [JsonIgnore]
+    public string LayoutBindingLabel => LayoutBinding is null
+        ? "自动精确匹配"
+        : $"{LayoutBinding.LayoutId} · 修订 {LayoutBinding.Revision}";
 
     [JsonIgnore]
     public string LocationLabel => Kind switch

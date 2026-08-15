@@ -28,6 +28,7 @@
 
 // local includes
 #include "config.h"
+#include "ligase/library/http/appasset_contract.h"
 #include "ligase/library/http/library_applist_http.h"
 #include "ligase/library/http/library_sync_http.h"
 #include "ligase/library/http/library_sort_http.h"
@@ -1577,6 +1578,12 @@ namespace nvhttp {
           {"id", item.at("id")},
           {"kind", item.at("kind")},
           {"steamAppId", item.value("steamAppId", nlohmann::json(nullptr))},
+          {"portableIdentity", item.value("portableIdentity", nlohmann::json(nullptr))},
+          {"layoutBinding", item.value("layoutBinding", nlohmann::json(nullptr))},
+          {"coverSha256", item.value("coverSha256", nlohmann::json(nullptr))},
+          {"coverSourceKind", item.value("coverSourceKind", nlohmann::json(nullptr))},
+          {"coverSourceId", item.value("coverSourceId", nlohmann::json(nullptr))},
+          {"coverUsageRights", item.value("coverUsageRights", nlohmann::json(nullptr))},
           {"publishedToClients", item.value("publishedToClients", true)}
         });
       }
@@ -2081,6 +2088,61 @@ namespace nvhttp {
       }
     );
   }
+
+#ifdef _WIN32
+  nlohmann::json managed_virtual_display_json(
+    const proc::managed_virtual_display_state_t &state
+  ) {
+    return {
+      {"schemaVersion", 1},
+      {"state", state.state},
+      {"reason", state.reason},
+      {"displayName", state.display_name},
+      {"driverReady", state.driver_ready},
+      {"windowsDisplayPresent", state.windows_display_present},
+      {"streamingAvailable", state.streaming_available},
+      {"usedByActiveStream", state.used_by_active_stream},
+      {"streamSource", "apolloVirtualDisplayApp"}
+    };
+  }
+
+  void ligase_virtual_display_status_local(resp_http_t response, req_http_t request) {
+    print_req<SimpleWeb::HTTP>(request);
+    if (!ligase_request_is_loopback(request)) {
+      send_ligase_json(response, SimpleWeb::StatusCode::client_error_forbidden,
+        {{"error", "loopbackOnly"}});
+      return;
+    }
+    send_ligase_json(response, SimpleWeb::StatusCode::success_ok,
+      managed_virtual_display_json(proc::read_managed_virtual_display()));
+  }
+
+  void ligase_virtual_display_enable_local(resp_http_t response, req_http_t request) {
+    print_req<SimpleWeb::HTTP>(request);
+    if (!ligase_request_is_loopback(request)) {
+      send_ligase_json(response, SimpleWeb::StatusCode::client_error_forbidden,
+        {{"error", "loopbackOnly"}});
+      return;
+    }
+    const auto state = proc::enable_managed_virtual_display();
+    send_ligase_json(response,
+      state.state == "unavailable" ? SimpleWeb::StatusCode::server_error_service_unavailable : SimpleWeb::StatusCode::success_ok,
+      managed_virtual_display_json(state));
+  }
+
+  void ligase_virtual_display_disable_local(resp_http_t response, req_http_t request) {
+    print_req<SimpleWeb::HTTP>(request);
+    if (!ligase_request_is_loopback(request)) {
+      send_ligase_json(response, SimpleWeb::StatusCode::client_error_forbidden,
+        {{"error", "loopbackOnly"}});
+      return;
+    }
+    const auto state = proc::disable_managed_virtual_display();
+    send_ligase_json(response,
+      state.state == "unavailable" ? SimpleWeb::StatusCode::server_error_service_unavailable : SimpleWeb::StatusCode::success_ok,
+      managed_virtual_display_json(state));
+  }
+#endif
 
   void ligase_authority_readback_local(resp_http_t response, req_http_t request) {
     print_req<SimpleWeb::HTTP>(request);
@@ -2609,13 +2671,94 @@ namespace nvhttp {
     }
 
     auto args = request->parse_query_string();
-    auto app_image = proc::proc.get_app_image(util::from_view(get_arg(args, "appid")));
+    const auto app_id_text = std::string(get_arg(args, "appid"));
+    if (!ligase::library::http::is_canonical_appasset_id(app_id_text)) {
+      fg.disable();
+      send_ligase_json(
+        response,
+        SimpleWeb::StatusCode::client_error_bad_request,
+        {{"error", "invalidAppId"}}
+      );
+      return;
+    }
+    const auto app_id = std::stoi(app_id_text);
+    auto app_image = proc::proc.get_app_image(app_id);
+    auto app_uuid = proc::proc.get_app_uuid(app_id);
+    if (app_uuid.empty()) {
+      fg.disable();
+      send_ligase_json(
+        response,
+        SimpleWeb::StatusCode::client_error_not_found,
+        {{"error", "appNotFound"}}
+      );
+      return;
+    }
+
+    std::string expected_sha;
+    try {
+      const auto sync = read_ligase_json(ligase_sync_path());
+      std::size_t matches = 0;
+      for (const auto &item : sync.at("library").at("items")) {
+        if (item.value("id", "") != app_uuid) continue;
+        ++matches;
+        if (item.contains("coverSha256") && item.at("coverSha256").is_string() &&
+            item.contains("coverSourceKind") && item.at("coverSourceKind").is_string() &&
+            item.contains("coverSourceId") && item.at("coverSourceId").is_string() &&
+            item.contains("coverUsageRights") && item.at("coverUsageRights").is_string()) {
+          expected_sha = item.at("coverSha256").get<std::string>();
+        }
+      }
+      if (matches != 1) expected_sha.clear();
+    } catch (const std::exception &) {
+      fg.disable();
+      send_ligase_json(
+        response,
+        static_cast<SimpleWeb::StatusCode>(503),
+        {{"error", "assetAuthorityUnavailable"}}
+      );
+      return;
+    }
+
+    std::error_code file_error;
+    const auto readable = fs::is_regular_file(app_image, file_error) && !file_error;
+    const auto content_length = readable ? fs::file_size(app_image, file_error) : 0;
+    auto cover_sha = readable && !file_error
+      ? proc::calculate_sha256(app_image)
+      : std::nullopt;
+    const auto contract = ligase::library::http::validate_appasset({
+      .app_uuid = app_uuid,
+      .expected_sha256 = expected_sha,
+      .actual_sha256 = cover_sha.value_or(""),
+      .content_length = file_error ? 0 : content_length,
+      .file_readable = readable && !file_error
+    });
+    if (!contract.accepted()) {
+      fg.disable();
+      send_ligase_json(
+        response,
+        static_cast<SimpleWeb::StatusCode>(contract.status),
+        {{"error", contract.code}}
+      );
+      return;
+    }
 
     fg.disable();
 
     std::ifstream in(app_image, std::ios::binary);
+    if (!in.is_open()) {
+      send_ligase_json(
+        response,
+        static_cast<SimpleWeb::StatusCode>(503),
+        {{"error", "assetReadFailed"}}
+      );
+      return;
+    }
     SimpleWeb::CaseInsensitiveMultimap headers;
     headers.emplace("Content-Type", "image/png");
+    headers.emplace("Content-Length", std::to_string(content_length));
+    headers.emplace("Cache-Control", "no-store");
+    headers.emplace("X-Ligase-App-Uuid", app_uuid);
+    headers.emplace("X-Ligase-Cover-Sha256", cover_sha.value());
     response->write(SimpleWeb::StatusCode::success_ok, in, headers);
     response->close_connection_after_response = true;
   }
@@ -2877,6 +3020,11 @@ namespace nvhttp {
       "^/ligase/v1/devices/[0-9a-f-]+/end-session-and-delete$"]["POST"] =
       ligase_device_delete_local;
     http_server.resource["^/ligase/v1/session/cancel$"]["POST"] = ligase_cancel_session_local;
+#ifdef _WIN32
+    http_server.resource["^/ligase/v1/virtual-display$"]["GET"] = ligase_virtual_display_status_local;
+    http_server.resource["^/ligase/v1/virtual-display/enable$"]["POST"] = ligase_virtual_display_enable_local;
+    http_server.resource["^/ligase/v1/virtual-display/disable$"]["POST"] = ligase_virtual_display_disable_local;
+#endif
     http_server.resource["^/ligase/v1/authority/readback$"]["POST"] = ligase_authority_readback_local;
     http_server.resource["^/ligase/v1/authority/reload$"]["POST"] = ligase_authority_reload_local;
     if (attended_enabled) {

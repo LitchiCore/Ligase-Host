@@ -54,6 +54,13 @@ but Android must not treat them as authoritative library metadata.
 
 `GET /ligase/v1/sync`
 
+The only machine-readable Sync authority is
+[`android-sync-v1.schema.json`](android-sync-v1.schema.json). The fixed
+positive and negative consumer inputs are
+[`../../tests/fixtures/android-sync-v1-vectors.json`](../../tests/fixtures/android-sync-v1-vectors.json).
+An Android consumer must validate the complete response before projecting an
+item; a second locally maintained field model is not an authority.
+
 ```json
 {
   "schemaVersion": 1,
@@ -70,6 +77,11 @@ but Android must not treat them as authoritative library metadata.
         "kind": "steam",
         "name": "Example",
         "steamAppId": 123,
+        "portableIdentity": { "provider": "steam", "id": "123" },
+        "layoutBinding": {
+          "layoutId": "0b7cd40f-64ae-4eac-845a-fb41dfed80d0",
+          "revision": 7
+        },
         "system": false,
         "publishedToClients": true,
         "addedAt": "2026-07-23T05:00:00Z",
@@ -97,6 +109,59 @@ but Android must not treat them as authoritative library metadata.
   }
 }
 ```
+
+`portableIdentity` has exactly one wire shape: the object
+`{"provider":"steam","id":"<canonical decimal>"}`. The provider enum is
+currently only `steam`; `id` is the verified Steam App ID in canonical decimal
+form (`1..4294967295`, no sign and no leading zero). A string such as
+`"steam:123"`, `null`, an unknown key/provider, or a value that differs from
+the item's integer `steamAppId` invalidates the snapshot. There is no legacy or
+dual-shape compatibility branch.
+
+`portableIdentity` and `layoutBinding` are optional Host-authored fields owned
+by [`layout-contract-v1.md`](layout-contract-v1.md). Absence preserves
+instance-only/no-explicit-binding semantics; explicit JSON `null` is not a
+valid v1 wire value. A binding contains exactly lowercase canonical UUID D
+`layoutId` and integer `revision` in `1..9007199254740991`. Android must not
+reconstruct either field from name, `steamAppId`, numeric launch ID, asset
+path, or a device-local preference.
+
+When `layoutBinding` is present, Android resolves only that exact
+`(layoutId,revision)`. Unknown, retired, or missing local draft revisions return
+`bindingNotFound`, `bindingRetired`, or `bindingDraftNotInstalled` respectively
+and never fall back to name, Steam identity, launch ID, or automatic portable
+matching. When the field is absent, the state is `noExplicitBinding`; portable
+matching is a separate later decision. This Host source stage does not claim
+the Android product consumer or real layout rendering has passed; that remains
+a coordinated cross-client gate.
+
+## Cover and appasset correlation
+
+A cover is present in Sync only when all four fields are present:
+`coverSha256`, `coverSourceKind`, `coverSourceId`, and `coverUsageRights`.
+Partial cover metadata, uppercase/malformed SHA, or provider/source mismatch
+invalidates the snapshot. The app UUID is `library.items[].id` and must match
+the `UUID` from `applist` exactly.
+
+`GET /appasset?appid=<numeric-applist-ID>` returns `200` only when all three
+facts agree: the selected app's canonical UUID, that UUID's Sync
+`coverSha256`, and SHA-256 of the exact response bytes. A successful response
+has exactly these authority headers (in addition to normal transport headers):
+
+- `Content-Type: image/png`;
+- `Content-Length: <exact decimal byte length>`;
+- `Cache-Control: no-store`;
+- `X-Ligase-App-Uuid: <lowercase canonical UUID D>`;
+- `X-Ligase-Cover-Sha256: <lowercase 64-hex SHA-256>`.
+
+The maximum response body is 8 MiB. Canonical numeric `appid` input is required.
+The closed failures are `400 invalidAppId`, `404 appNotFound`,
+`404 assetUnavailable`, `409 assetIdentityMismatch`,
+`409 assetCorrelationMismatch`, `413 assetTooLarge`, and
+`503 assetAuthorityUnavailable`/`assetReadFailed`. Missing UUID or Sync SHA can
+never produce `200`. Android verifies header UUID against the Sync/applist UUID,
+header SHA against Sync, `Content-Length` against received bytes, and the
+computed byte SHA before caching or decoding.
 
 Host paths, working directories, and commands are intentionally excluded.
 
