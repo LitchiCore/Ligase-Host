@@ -160,6 +160,121 @@ public sealed class CoverArtServiceTests
         }
     }
 
+    [TestMethod]
+    public async Task FindSteamAsync_AcceptsExactLocalizedHalfSizeClientCapsule()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "ligase-steam-cover-tests", Guid.NewGuid().ToString("N"));
+        var steam = Path.Combine(root, "Steam");
+        var library = Path.Combine(root, "Library");
+        var manifest = Path.Combine(library, "steamapps", "appmanifest_3548580.acf");
+        var cover = Path.Combine(steam, "appcache", "librarycache", "3548580",
+            "1b5ad8544076c2db8ba8810f79737575fef28191", "library_capsule_schinese.jpg");
+        Directory.CreateDirectory(Path.GetDirectoryName(manifest)!);
+        Directory.CreateDirectory(Path.GetDirectoryName(cover)!);
+        File.WriteAllText(manifest,
+            "\"AppState\"\n{\n\"appid\" \"3548580\"\n\"name\" \"Chill\"\n" +
+            "\"installdir\" \"Chill\"\n\"UserConfig\" { \"language\" \"schinese\" }\n}");
+        File.WriteAllBytes(cover, await MakeJpegAsync(300, 450));
+        try
+        {
+            var paths = new LigasePaths(Path.Combine(root, "Data"));
+            var service = new CoverArtService(
+                new HttpClient(new Handler(_ => throw new AssertFailedException("HTTP must not run"))),
+                paths,
+                new FixedSteamLocator(steam));
+            var game = new SteamGame(3548580, "Chill", "Chill", library, manifest, 1);
+
+            var candidates = await service.FindSteamAsync(game);
+
+            Assert.AreEqual(1, candidates.Count);
+            Assert.AreEqual(Path.GetFullPath(cover), new Uri(candidates[0].DownloadUrl).LocalPath);
+            var cached = await service.DownloadAsync(candidates[0]);
+            Assert.AreEqual((uint)3548580, CoverArtService.TryReadAuthority(paths, cached)!.SteamAppId);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    [TestMethod]
+    public async Task FindSteamAsync_RejectsWrongLanguageAndAmbiguousLocalizedCapsules()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "ligase-steam-cover-tests", Guid.NewGuid().ToString("N"));
+        var steam = Path.Combine(root, "Steam");
+        var library = Path.Combine(root, "Library");
+        var manifest = Path.Combine(library, "steamapps", "appmanifest_3548580.acf");
+        var appCache = Path.Combine(steam, "appcache", "librarycache", "3548580");
+        Directory.CreateDirectory(Path.GetDirectoryName(manifest)!);
+        File.WriteAllText(manifest,
+            "\"AppState\"\n{\n\"appid\" \"3548580\"\n\"name\" \"Chill\"\n" +
+            "\"installdir\" \"Chill\"\n\"UserConfig\" { \"language\" \"schinese\" }\n}");
+        var wrongLanguage = Path.Combine(appCache,
+            "1b5ad8544076c2db8ba8810f79737575fef28191", "library_capsule_english.jpg");
+        Directory.CreateDirectory(Path.GetDirectoryName(wrongLanguage)!);
+        File.WriteAllBytes(wrongLanguage, await MakeJpegAsync(300, 450));
+        try
+        {
+            var service = new CoverArtService(
+                new HttpClient(new Handler(_ => throw new AssertFailedException("HTTP must not run"))),
+                new LigasePaths(Path.Combine(root, "Data")),
+                new FixedSteamLocator(steam));
+            var game = new SteamGame(3548580, "Chill", "Chill", library, manifest, 1);
+
+            Assert.AreEqual(0, (await service.FindSteamAsync(game)).Count);
+
+            foreach (var cacheKey in new[]
+                     {
+                         "2b5ad8544076c2db8ba8810f79737575fef28191",
+                         "3b5ad8544076c2db8ba8810f79737575fef28191"
+                     })
+            {
+                var duplicate = Path.Combine(appCache, cacheKey, "library_capsule_schinese.jpg");
+                Directory.CreateDirectory(Path.GetDirectoryName(duplicate)!);
+                File.WriteAllBytes(duplicate, await MakeJpegAsync(300, 450));
+            }
+
+            Assert.AreEqual(0, (await service.FindSteamAsync(game)).Count);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    [TestMethod]
+    public async Task DownloadAsync_RejectsLocalizedCapsuleWithWrongDimensions()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "ligase-steam-cover-tests", Guid.NewGuid().ToString("N"));
+        var steam = Path.Combine(root, "Steam");
+        var library = Path.Combine(root, "Library");
+        var manifest = Path.Combine(library, "steamapps", "appmanifest_3548580.acf");
+        var cover = Path.Combine(steam, "appcache", "librarycache", "3548580",
+            "1b5ad8544076c2db8ba8810f79737575fef28191", "library_capsule_schinese.jpg");
+        Directory.CreateDirectory(Path.GetDirectoryName(manifest)!);
+        Directory.CreateDirectory(Path.GetDirectoryName(cover)!);
+        File.WriteAllText(manifest,
+            "\"AppState\"\n{\n\"appid\" \"3548580\"\n\"name\" \"Chill\"\n" +
+            "\"installdir\" \"Chill\"\n\"UserConfig\" { \"language\" \"schinese\" }\n}");
+        File.WriteAllBytes(cover, await MakeJpegAsync(300, 449));
+        try
+        {
+            var service = new CoverArtService(
+                new HttpClient(new Handler(_ => throw new AssertFailedException("HTTP must not run"))),
+                new LigasePaths(Path.Combine(root, "Data")),
+                new FixedSteamLocator(steam));
+            var game = new SteamGame(3548580, "Chill", "Chill", library, manifest, 1);
+            var candidate = (await service.FindSteamAsync(game)).Single();
+
+            await Assert.ThrowsExceptionAsync<InvalidOperationException>(
+                () => service.DownloadAsync(candidate));
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
     private static HttpResponseMessage Json(string json) => new(HttpStatusCode.OK)
     {
         Content = new StringContent(json, Encoding.UTF8, "application/json")

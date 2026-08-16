@@ -40,11 +40,7 @@ public sealed class CoverArtService(
         if (steamRoot is null)
             return Task.FromResult<IReadOnlyList<CoverCandidate>>([]);
 
-        var source = Path.Combine(
-            steamRoot, "appcache", "librarycache",
-            game.AppId.ToString(System.Globalization.CultureInfo.InvariantCulture),
-            "library_600x900.jpg");
-        if (!IsExactSafeSteamCacheFile(steamRoot, game.AppId, source))
+        if (!TryResolveExactSteamCacheFile(steamRoot, game, out var source))
             return Task.FromResult<IReadOnlyList<CoverCandidate>>([]);
 
         IReadOnlyList<CoverCandidate> result =
@@ -311,18 +307,67 @@ public sealed class CoverArtService(
         }
     }
 
+    private static bool TryResolveExactSteamCacheFile(
+        string steamRoot, SteamGame game, out string source)
+    {
+        source = string.Empty;
+        try
+        {
+            if (!IsVerifiedSteamManifest(game)) return false;
+            var appDirectory = Path.GetFullPath(Path.Combine(
+                steamRoot, "appcache", "librarycache",
+                game.AppId.ToString(System.Globalization.CultureInfo.InvariantCulture)));
+            var current = new DirectoryInfo(Path.GetFullPath(steamRoot));
+            foreach (var segment in new[] { "appcache", "librarycache",
+                         game.AppId.ToString(System.Globalization.CultureInfo.InvariantCulture) })
+            {
+                if (!current.Exists || current.Attributes.HasFlag(FileAttributes.ReparsePoint))
+                    return false;
+                current = new DirectoryInfo(Path.Combine(current.FullName, segment));
+            }
+            if (!current.Exists || current.Attributes.HasFlag(FileAttributes.ReparsePoint) ||
+                !string.Equals(current.FullName, appDirectory, StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            var legacy = Path.Combine(appDirectory, "library_600x900.jpg");
+            if (IsSafeRegularFile(legacy))
+            {
+                source = legacy;
+                return true;
+            }
+
+            var state = VdfParser.Parse(File.ReadAllText(game.ManifestPath)).GetObject("AppState");
+            var language = state?.GetObject("UserConfig")?.GetString("language");
+            if (!IsCanonicalSteamLanguage(language)) return false;
+            var fileName = $"library_capsule_{language}.jpg";
+            var matches = current.EnumerateDirectories()
+                .Where(directory =>
+                    IsLowerHexSha1(directory.Name) &&
+                    !directory.Attributes.HasFlag(FileAttributes.ReparsePoint))
+                .Select(directory => Path.Combine(directory.FullName, fileName))
+                .Where(IsSafeRegularFile)
+                .Take(2)
+                .ToArray();
+            if (matches.Length != 1) return false;
+            source = matches[0];
+            return true;
+        }
+        catch (Exception exception) when (
+            exception is IOException or UnauthorizedAccessException or ArgumentException or
+                FormatException)
+        {
+            return false;
+        }
+    }
+
     private static bool IsExactSafeSteamCacheFile(
         string steamRoot, uint appId, string candidate)
     {
         try
         {
-            var expected = Path.GetFullPath(Path.Combine(
+            var appDirectory = Path.GetFullPath(Path.Combine(
                 steamRoot, "appcache", "librarycache",
-                appId.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                "library_600x900.jpg"));
-            var actual = Path.GetFullPath(candidate);
-            if (!string.Equals(expected, actual, StringComparison.OrdinalIgnoreCase) ||
-                !File.Exists(actual)) return false;
+                appId.ToString(System.Globalization.CultureInfo.InvariantCulture)));
             var current = new DirectoryInfo(Path.GetFullPath(steamRoot));
             foreach (var segment in new[] { "appcache", "librarycache",
                          appId.ToString(System.Globalization.CultureInfo.InvariantCulture) })
@@ -331,14 +376,49 @@ public sealed class CoverArtService(
                     return false;
                 current = new DirectoryInfo(Path.Combine(current.FullName, segment));
             }
-            return current.Exists && !current.Attributes.HasFlag(FileAttributes.ReparsePoint) &&
-                   !File.GetAttributes(actual).HasFlag(FileAttributes.ReparsePoint);
+            if (!current.Exists || current.Attributes.HasFlag(FileAttributes.ReparsePoint) ||
+                !string.Equals(current.FullName, appDirectory, StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            var actual = Path.GetFullPath(candidate);
+            var legacy = Path.Combine(appDirectory, "library_600x900.jpg");
+            if (string.Equals(actual, legacy, StringComparison.OrdinalIgnoreCase))
+                return IsSafeRegularFile(actual);
+
+            var relative = Path.GetRelativePath(appDirectory, actual);
+            var segments = relative.Split(Path.DirectorySeparatorChar);
+            if (segments.Length != 2 || !IsLowerHexSha1(segments[0]) ||
+                !IsLocalizedCapsuleFileName(segments[1])) return false;
+            var parent = new DirectoryInfo(Path.Combine(appDirectory, segments[0]));
+            return parent.Exists && !parent.Attributes.HasFlag(FileAttributes.ReparsePoint) &&
+                   IsSafeRegularFile(actual);
         }
         catch (Exception exception) when (
             exception is IOException or UnauthorizedAccessException or ArgumentException)
         {
             return false;
         }
+    }
+
+    private static bool IsSafeRegularFile(string path) =>
+        File.Exists(path) && !File.GetAttributes(path).HasFlag(FileAttributes.ReparsePoint);
+
+    private static bool IsCanonicalSteamLanguage(string? value) =>
+        !string.IsNullOrEmpty(value) && value.Length <= 32 &&
+        value.All(character => char.IsAsciiLetterOrDigit(character) || character == '_') &&
+        string.Equals(value, value.ToLowerInvariant(), StringComparison.Ordinal);
+
+    private static bool IsLowerHexSha1(string value) =>
+        value.Length == 40 && value.All(character =>
+            character is >= '0' and <= '9' or >= 'a' and <= 'f');
+
+    private static bool IsLocalizedCapsuleFileName(string value)
+    {
+        const string prefix = "library_capsule_";
+        const string suffix = ".jpg";
+        return value.StartsWith(prefix, StringComparison.Ordinal) &&
+               value.EndsWith(suffix, StringComparison.Ordinal) &&
+               IsCanonicalSteamLanguage(value[prefix.Length..^suffix.Length]);
     }
 
     private static byte[] ReadStable(string path)
@@ -368,8 +448,8 @@ public sealed class CoverArtService(
         }
         input.Seek(0);
         var decoder = await BitmapDecoder.CreateAsync(input).AsTask(cancellationToken);
-        if (decoder.PixelWidth != 600 || decoder.PixelHeight != 900)
-            throw new InvalidOperationException("Steam library capsule 尺寸不是 600×900。");
+        if (!IsSteamLibraryCapsuleSize(decoder.PixelWidth, decoder.PixelHeight))
+            throw new InvalidOperationException("Steam library capsule 尺寸不是 600×900 或 300×450。");
         using var output = new InMemoryRandomAccessStream();
         var pixelData = await decoder.GetPixelDataAsync(
                 BitmapPixelFormat.Bgra8,
@@ -419,9 +499,12 @@ public sealed class CoverArtService(
         if (decoder.PixelWidth == 0 || decoder.PixelHeight == 0 ||
             (ulong)decoder.PixelWidth * decoder.PixelHeight > MaximumPixels ||
             (requireSteamCapsuleSize &&
-             (decoder.PixelWidth != 600 || decoder.PixelHeight != 900)))
+             !IsSteamLibraryCapsuleSize(decoder.PixelWidth, decoder.PixelHeight)))
             throw new InvalidOperationException("PNG 封面尺寸无效。");
     }
+
+    private static bool IsSteamLibraryCapsuleSize(uint width, uint height) =>
+        (width == 600 && height == 900) || (width == 300 && height == 450);
 
     private async Task<CoverCandidate?> LoadCandidateAsync(
         string id, CancellationToken cancellationToken)

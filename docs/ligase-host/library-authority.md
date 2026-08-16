@@ -158,16 +158,21 @@ Steam 游戏封面不按名称查询或模糊关联。唯一身份链是：
 1. `SteamLibraryService` 从本机 `appmanifest_<appid>.acf` 读取十进制 App ID；
 2. `CoverArtService.FindSteamAsync` 再次读取同一 manifest，并要求文件名与内容里的
    `appid` 都等于 `SteamGame.AppId`；
-3. 只接受同一 Steam 安装根下
-   `appcache/librarycache/<appid>/library_600x900.jpg`，路径链和文件均不得是
-   reparse point；
+3. 只接受同一 Steam 安装根下两种精确 client-cache 形状：旧式
+   `appcache/librarycache/<appid>/library_600x900.jpg`，或当前客户端的
+   `appcache/librarycache/<appid>/<40位小写十六进制缓存键>/library_capsule_<manifest-language>.jpg`；
+   后者的语言必须来自同一 app manifest，缓存键、文件名、路径层级均不做模糊搜索，
+   路径链和文件均不得是 reparse point；
 4. retained read 期间禁止写入或替换，JPEG 必须能由 Windows Imaging Component
-   解码且尺寸恰为 Steam Library Capsule 的 600×900；
+   解码且尺寸恰为 Steam Library Capsule 的 600×900，或 Steam 自动生成的
+   300×450 半尺寸版本；
 5. 转码后只把经过 PNG signature、decoder、pixel-count 和 12 MiB 上限验证的 PNG
    原子写到权威 DataRoot 的 `covers/`。
 
 Steam 官方把 [600×900 Library Capsule](https://partner.steamgames.com/doc/store/assets/libraryassets)
-定义为 Steam Library 的主要竖版封面素材。
+定义为 Steam Library 的主要竖版封面素材，并明确会自动生成 300×450 半尺寸版本。
+Steam 没有把客户端 `librarycache` 的内部目录布局发布为稳定 API；上述 hashed-child
+形状因此只是本机客户端字节的严格、fail-closed 消费规则，不是对未来缓存布局的猜测。
 Ligase 只读取用户本机 Steam client cache，不随安装包分发、上传或声明拥有这些第三方
 图片。`cover-cache-authority-v1.json` 记录相对缓存路径、内容 SHA-256、Steam App ID、
 来源和 `thirdPartyArtworkLocalUseOnlyNoRedistribution` 使用边界；machine schema 是
