@@ -180,6 +180,73 @@ public sealed class ApplicationLibrary(
             return item;
         }, cancellationToken);
 
+    public Task<LibraryItem> UpdateSteamCoverAsync(
+        Guid id,
+        PortableGameIdentityV1 expectedPortableIdentity,
+        string coverImagePath,
+        CancellationToken cancellationToken = default) =>
+        MutateAsync(state =>
+        {
+            var index = state.Items.FindIndex(candidate => candidate.Id == id);
+            if (index < 0) throw new LibraryItemNotFoundException(id);
+            var current = state.Items[index];
+            if (current.Kind != LibraryItemKind.Steam ||
+                current.SteamAppId is not uint appId ||
+                current.PortableIdentity is null ||
+                current.PortableIdentity != expectedPortableIdentity ||
+                !string.Equals(expectedPortableIdentity.Provider, "steam", StringComparison.Ordinal) ||
+                !string.Equals(expectedPortableIdentity.Id,
+                    appId.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    StringComparison.Ordinal))
+                throw new ExistingItemCoverUpdateException(
+                    "portableIdentityMismatch",
+                    "游戏身份已变化，未更新封面。请刷新游戏库后重试。");
+
+            var authority = CoverArtService.TryReadAuthority(paths, coverImagePath);
+            if (authority is null ||
+                authority.SteamAppId != appId ||
+                !string.Equals(authority.SourceKind,
+                    "steamClientLibraryCache", StringComparison.Ordinal) ||
+                !string.Equals(authority.SourceId,
+                    expectedPortableIdentity.Id, StringComparison.Ordinal))
+                throw new ExistingItemCoverUpdateException(
+                    "coverAuthorityMismatch",
+                    "封面与当前 Steam App ID 的已验证来源不一致，未更新游戏库。");
+
+            var idempotent = string.Equals(
+                current.CoverContentSha256, authority.ContentSha256, StringComparison.Ordinal) &&
+                string.Equals(current.CoverSourceKind, authority.SourceKind, StringComparison.Ordinal) &&
+                string.Equals(current.CoverSourceId, authority.SourceId, StringComparison.Ordinal) &&
+                string.Equals(current.CoverUsageRights, authority.UsageRights, StringComparison.Ordinal) &&
+                string.Equals(current.CoverImagePath, coverImagePath, StringComparison.OrdinalIgnoreCase);
+            if (idempotent) return current;
+
+            var updated = new LibraryItem
+            {
+                Id = current.Id,
+                Kind = current.Kind,
+                Name = current.Name,
+                ExecutablePath = current.ExecutablePath,
+                Arguments = current.Arguments,
+                WorkingDirectory = current.WorkingDirectory,
+                SteamAppId = current.SteamAppId,
+                SteamInstallPath = current.SteamInstallPath,
+                PortableIdentity = current.PortableIdentity,
+                LayoutBinding = current.LayoutBinding,
+                CoverImagePath = coverImagePath,
+                CoverContentSha256 = authority.ContentSha256,
+                CoverSourceKind = authority.SourceKind,
+                CoverSourceId = authority.SourceId,
+                CoverUsageRights = authority.UsageRights,
+                PublishedToClients = current.PublishedToClients,
+                AddedAt = current.AddedAt,
+                UpdatedAt = DateTimeOffset.UtcNow,
+                LastPlayedAt = current.LastPlayedAt
+            };
+            state.Items[index] = updated;
+            return updated;
+        }, cancellationToken);
+
     public async Task RemoveAsync(Guid id, CancellationToken cancellationToken = default)
     {
         await MutateAsync<object?>(state =>

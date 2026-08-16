@@ -24,5 +24,10 @@ public interface IApplicationLibrary
         Guid id,
         bool published,
         CancellationToken cancellationToken = default);
+    Task<LibraryItem> UpdateSteamCoverAsync(
+        Guid id,
+        PortableGameIdentityV1 expectedPortableIdentity,
+        string coverImagePath,
+        CancellationToken cancellationToken = default);
     Task RemoveAsync(Guid id, CancellationToken cancellationToken = default);
 }

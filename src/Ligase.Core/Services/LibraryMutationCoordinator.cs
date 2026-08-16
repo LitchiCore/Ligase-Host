@@ -5,14 +5,16 @@ namespace Ligase.Host.Core.Services;
 public sealed class LibraryMutationCoordinator(
     LigasePaths paths,
     IApplicationLibrary repository,
-    ILibraryAuthorityService authorityService)
+    ILibraryAuthorityService authorityService,
+    ICoverArtifactService? coverArtService = null)
 {
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly string[] _projectionFiles =
     [
         paths.LibraryFile,
         paths.SyncFile,
-        paths.ApolloAppsFile
+        paths.ApolloAppsFile,
+        paths.CoverCacheAuthorityFile
     ];
 
     public Task<LibraryItem> AddSteamAsync(
@@ -87,6 +89,151 @@ public sealed class LibraryMutationCoordinator(
                 readback.Apps.All(candidate =>
                     !candidate.Uuid.Equals(id.ToString("D"), StringComparison.OrdinalIgnoreCase)),
             cancellationToken);
+
+    public async Task<ExistingItemCoverUpdateResult> UpdateExistingSteamCoverAsync(
+        ExistingItemCoverUpdateRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        if (coverArtService is null)
+            throw new ExistingItemCoverUpdateException(
+                "coverServiceUnavailable",
+                "封面服务不可用，游戏库未发生变化。");
+        if (!LayoutContractV1Validator.TryNormalizePortableIdentity(
+                request.PortableIdentity,
+                out var normalized) ||
+            normalized != request.PortableIdentity ||
+            !string.Equals(normalized.Provider, "steam", StringComparison.Ordinal) ||
+            !uint.TryParse(normalized.Id,
+                System.Globalization.NumberStyles.None,
+                System.Globalization.CultureInfo.InvariantCulture,
+                out var appId) ||
+            request.Candidate.SteamAppId != appId ||
+            !string.Equals(request.Candidate.SourceKind,
+                "steamClientLibraryCache", StringComparison.Ordinal) ||
+            !string.Equals(request.Candidate.SourceId, normalized.Id, StringComparison.Ordinal))
+            throw new ExistingItemCoverUpdateException(
+                "coverRequestCorrelationMismatch",
+                "所选封面与当前游戏 UUID、Steam App ID 或来源不一致，未更新游戏库。");
+
+        PreparedCoverArtifact? prepared = null;
+        CoverMutationOutcome outcome;
+        try
+        {
+            outcome = await MutateAsync(
+                async token =>
+                {
+                    var beforeState = await repository.LoadAsync(token);
+                    var beforeItem = beforeState.Items.SingleOrDefault(candidate =>
+                        candidate.Id == request.LibraryItemId)
+                        ?? throw new LibraryItemNotFoundException(request.LibraryItemId);
+                    if (beforeItem.Kind != LibraryItemKind.Steam ||
+                        beforeItem.SteamAppId != appId ||
+                        beforeItem.PortableIdentity != normalized)
+                        throw new ExistingItemCoverUpdateException(
+                            "libraryIdentityChanged",
+                            "游戏身份已变化，未更新封面。请刷新游戏库后重试。");
+
+                    prepared = await coverArtService.PrepareAsync(request.Candidate, token);
+                    var authority = prepared.Authority;
+                    if (authority.SteamAppId != appId ||
+                        !string.Equals(authority.SourceKind,
+                            request.Candidate.SourceKind, StringComparison.Ordinal) ||
+                        !string.Equals(authority.SourceId,
+                            request.Candidate.SourceId, StringComparison.Ordinal) ||
+                        !string.Equals(authority.UsageRights,
+                            request.Candidate.UsageRights, StringComparison.Ordinal))
+                        throw new ExistingItemCoverUpdateException(
+                            "preparedCoverCorrelationMismatch",
+                            "封面落盘后的来源凭据不一致，已取消更新。");
+
+                    var idempotent = string.Equals(
+                        beforeItem.CoverContentSha256,
+                        authority.ContentSha256,
+                        StringComparison.Ordinal) &&
+                        string.Equals(beforeItem.CoverImagePath,
+                            prepared.Path, StringComparison.OrdinalIgnoreCase);
+                    var updated = idempotent
+                        ? beforeItem
+                        : await repository.UpdateSteamCoverAsync(
+                            request.LibraryItemId,
+                            normalized,
+                            prepared.Path,
+                            token);
+                    return new CoverMutationOutcome(
+                        updated,
+                        idempotent,
+                        idempotent ? beforeState.Revision : beforeState.Revision + 1,
+                        beforeState.Items.Select(item =>
+                            item.Id == updated.Id ? updated : item).ToArray());
+                },
+                (readback, value) =>
+                    value.Updated.Id == request.LibraryItemId &&
+                    value.Updated.PortableIdentity == normalized &&
+                    readback.LibraryRevision == value.Revision &&
+                    HasPublishedItem(readback, value.Updated) &&
+                    HasLaunchMapping(readback, value.Updated.Id),
+                cancellationToken);
+
+            prepared!.Dispose();
+            prepared = null;
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            if (prepared is not null)
+            {
+                try
+                {
+                    await coverArtService.RollbackAsync(prepared, CancellationToken.None);
+                }
+                catch (Exception rollbackException)
+                {
+                    throw new ExistingItemCoverUpdateException(
+                        "coverRollbackUnproven",
+                        "封面更新失败，且无法证明新缓存已清理；原游戏库投影已恢复，请联系支持。",
+                        new AggregateException(exception, rollbackException));
+                }
+            }
+            if (exception is ExistingItemCoverUpdateException) throw;
+            throw new ExistingItemCoverUpdateException(
+                "coverUpdateFailed",
+                "封面没有保存；游戏库和客户端同步已恢复到更新前状态。",
+                exception);
+        }
+        finally
+        {
+            prepared?.Dispose();
+        }
+
+        var cleanupCompleted = true;
+        try
+        {
+            await coverArtService.PruneUnreferencedAsync(
+                outcome.ProjectedItems, CancellationToken.None);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            cleanupCompleted = false;
+        }
+        var item = outcome.Updated;
+        return new ExistingItemCoverUpdateResult(
+            item.Id,
+            item.PortableIdentity!,
+            item.CoverImagePath!,
+            item.CoverContentSha256!,
+            item.CoverSourceKind!,
+            item.CoverSourceId!,
+            item.CoverUsageRights!,
+            item.UpdatedAt,
+            outcome.Idempotent,
+            cleanupCompleted,
+            outcome.Revision);
+    }
+
+    private sealed record CoverMutationOutcome(
+        LibraryItem Updated,
+        bool Idempotent,
+        long Revision,
+        IReadOnlyCollection<LibraryItem> ProjectedItems);
 
     private async Task<T> MutateAsync<T>(
         Func<CancellationToken, Task<T>> mutation,
@@ -169,7 +316,12 @@ public sealed class LibraryMutationCoordinator(
         readback.LibraryItems.Any(candidate =>
             candidate.Id.Equals(item.Id.ToString("D"), StringComparison.OrdinalIgnoreCase) &&
             candidate.Kind.Equals(item.Kind.ToString(), StringComparison.OrdinalIgnoreCase) &&
-            candidate.PublishedToClients);
+            candidate.PublishedToClients &&
+            string.Equals(candidate.CoverSha256, item.CoverContentSha256, StringComparison.Ordinal) &&
+            string.Equals(candidate.CoverSourceKind, item.CoverSourceKind, StringComparison.Ordinal) &&
+            string.Equals(candidate.CoverSourceId, item.CoverSourceId, StringComparison.Ordinal) &&
+            string.Equals(candidate.CoverUsageRights, item.CoverUsageRights, StringComparison.Ordinal) &&
+            Equals(candidate.PortableIdentity, item.PortableIdentity));
 
     private static bool HasLaunchMapping(
         AuthorityReadbackDocument readback,

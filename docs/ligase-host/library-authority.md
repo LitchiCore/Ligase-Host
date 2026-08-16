@@ -189,6 +189,19 @@ usageRights`。`ApolloAppsWriter` 仅把已缓存 PNG 的绝对 `image-path` 交
 Android 可把 `applist` 的 UUID、Sync 的 `coverSha256` 与 appasset bytes 三方关联。
 Host source/tests 只能证明该接口可验证；真正 Host→Android 图片显示仍是跨端真实验收门。
 
+现有 Steam 项目的“选择封面”使用唯一 `UpdateExistingSteamCoverAsync` transaction。
+前门同时锁 canonical library item UUID、当前 `{ provider: "steam", id: "<appid>" }`
+portable identity，以及候选的 App ID、source kind、source ID 和 usage rights。转码后的
+PNG 先取得 DataRoot `covers/` owned receipt；随后只替换同一 `LibraryItem` 的
+`coverImagePath/contentSha256/sourceKind/sourceId/usageRights/updatedAt`，UUID、portable
+identity、启动信息、布局绑定、发布状态及其他字段保持不变。事务在返回成功前必须完成
+`library.json`、Apollo `apps.json`、`ligase-sync.json` 的发布及 managed Core fresh
+readback。任一写入、发布或 readback 失败会恢复事务前的投影，并只清理本次创建且仍与
+receipt 内容匹配的新缓存文件；不会删除来源不明或被替换的文件。相同封面是无 revision
+写入的幂等结果。旧封面仅在新事务已提交且不再被任何 library item 引用后按 cache
+authority 清理；清理暂时失败不会伪称已回滚已成功 readback 的新封面，而会在 UI 中
+明确保留待清理状态。
+
 删除游戏成功且核心 readback 已确认后，Host 仅根据缓存 authority 清理不再被任何
 library item 引用的 `covers/` owned 文件；外部文件、reparse、未知记录均不删除。
 离线、cache 缺失或无合格图片时保持稳定占位图，不回退到名称模糊匹配。

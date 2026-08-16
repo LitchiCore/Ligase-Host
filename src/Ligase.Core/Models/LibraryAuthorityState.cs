@@ -25,7 +25,13 @@ public sealed record AuthorityReadbackLibraryItem(
     string Id,
     string Kind,
     uint? SteamAppId,
-    bool PublishedToClients);
+    bool PublishedToClients,
+    string? CoverSha256 = null,
+    string? CoverSourceKind = null,
+    string? CoverSourceId = null,
+    string? CoverUsageRights = null,
+    PortableGameIdentityV1? PortableIdentity = null,
+    LayoutBindingV1? LayoutBinding = null);
 
 public sealed record AuthorityReadbackDocument(
     int SchemaVersion,

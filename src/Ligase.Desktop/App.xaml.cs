@@ -68,6 +68,8 @@ public partial class App : Application
                     return client;
                 });
                 services.AddSingleton<CoverArtService>();
+                services.AddSingleton<ICoverArtifactService>(provider =>
+                    provider.GetRequiredService<CoverArtService>());
                 services.AddSingleton<IApolloAppsWriter, ApolloAppsWriter>();
                 services.AddSingleton<ApplicationLibrary>();
                 services.AddSingleton<IApplicationLibrary>(provider =>
@@ -107,6 +109,7 @@ public partial class App : Application
                 services.AddTransient<LayoutCatalogViewModel>();
                 services.AddTransient<HostSetupViewModel>();
                 services.AddTransient<AddApplicationViewModel>();
+                services.AddTransient<ExistingItemCoverViewModel>();
                 services.AddTransient<StreamMonitorViewModel>();
                 services.AddTransient<DevicesViewModel>();
                 services.AddTransient<AttendedPairingViewModel>();

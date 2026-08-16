@@ -248,6 +248,12 @@ public sealed class LibraryAuthorityTests
             throw new NotSupportedException();
         public Task SetPublishedToClientsAsync(Guid id, bool published, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
+        public Task<LibraryItem> UpdateSteamCoverAsync(
+            Guid id,
+            PortableGameIdentityV1 expectedPortableIdentity,
+            string coverImagePath,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
         public Task RemoveAsync(Guid id, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
     }

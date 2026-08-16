@@ -343,6 +343,17 @@ acceptance steps require `UPDATED` in the same commit. Planned and
 - The add page exposes the same result set so the user can search again and
   choose a different cover before adding. Failure to search or download a
   cover never blocks adding the application.
+- An existing Steam item exposes **Select cover** from its public Manage menu.
+  The Host refreshes the current library item and Steam manifest, previews only
+  the local verified capsule for the same App ID, and writes nothing until the
+  user confirms **Use this cover**. Success reports the persisted library
+  revision and content digest; a failed transaction reports that the prior
+  library and Sync projections were retained rather than reusing the add-page
+  in-memory “selected” message.
+- Existing-item replacement preserves the canonical app UUID. Android refreshes
+  the same UUID and validates the new `/appasset` bytes against the Sync cover
+  digest; the exact transaction is owned by
+  [`library-authority.md`](library-authority.md).
 - Downloaded artwork is restricted to HTTPS images from `images.igdb.com`,
   validated as PNG, size-limited, and stored under the managed Ligase data
   root. The canonical path is written to Apollo `image-path`, so GameStream

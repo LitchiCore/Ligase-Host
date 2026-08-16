@@ -95,6 +95,50 @@ public sealed class CoverArtServiceTests
     }
 
     [TestMethod]
+    public async Task PrepareAsyncRetainsNoWriteLeaseAndRollbackDeletesOnlyCreatedArtifact()
+    {
+        var png = Convert.FromBase64String(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=");
+        using var fixture = new Fixture(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = Png(png)
+        });
+        var candidate = new CoverCandidate(
+            "Example", "retained", "https://images.igdb.com/preview.jpg",
+            "https://images.igdb.com/cover.png");
+
+        var prepared = await fixture.Service.PrepareAsync(candidate);
+
+        await Assert.ThrowsExceptionAsync<IOException>(() =>
+            File.WriteAllBytesAsync(prepared.Path, [1, 2, 3]));
+        await fixture.Service.RollbackAsync(prepared);
+        Assert.IsFalse(File.Exists(prepared.Path));
+    }
+
+    [TestMethod]
+    public async Task PrepareAsyncDoesNotClaimSameBytesWithoutOwnedAuthority()
+    {
+        var png = Convert.FromBase64String(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=");
+        using var fixture = new Fixture(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = Png(png)
+        });
+        var candidate = new CoverCandidate(
+            "Example", "foreign", "https://images.igdb.com/preview.jpg",
+            "https://images.igdb.com/cover.png");
+        var path = await fixture.Service.DownloadAsync(candidate);
+        File.Delete(fixture.Paths.CoverCacheAuthorityFile);
+        var before = await File.ReadAllBytesAsync(path);
+
+        var error = await Assert.ThrowsExceptionAsync<ExistingItemCoverUpdateException>(() =>
+            fixture.Service.PrepareAsync(candidate));
+
+        Assert.AreEqual("coverDestinationCollision", error.Code);
+        CollectionAssert.AreEqual(before, await File.ReadAllBytesAsync(path));
+    }
+
+    [TestMethod]
     public async Task PruneUnreferencedAsync_DeletesOnlyOwnedCachedCover()
     {
         var png = Convert.FromBase64String(

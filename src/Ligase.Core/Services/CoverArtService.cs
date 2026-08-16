@@ -11,7 +11,7 @@ namespace Ligase.Host.Core.Services;
 public sealed class CoverArtService(
     HttpClient httpClient,
     LigasePaths paths,
-    ISteamInstallationLocator steamInstallationLocator)
+    ISteamInstallationLocator steamInstallationLocator) : ICoverArtifactService
 {
     private const string DatabaseRoot =
         "https://raw.githubusercontent.com/LizardByte/GameDB/gh-pages";
@@ -97,6 +97,14 @@ public sealed class CoverArtService(
         CoverCandidate candidate,
         CancellationToken cancellationToken = default)
     {
+        using var prepared = await PrepareAsync(candidate, cancellationToken);
+        return prepared.Path;
+    }
+
+    public async Task<PreparedCoverArtifact> PrepareAsync(
+        CoverCandidate candidate,
+        CancellationToken cancellationToken = default)
+    {
         byte[] png;
         if (string.Equals(candidate.SourceKind, SteamSourceKind, StringComparison.Ordinal))
         {
@@ -138,17 +146,44 @@ public sealed class CoverArtService(
         var contentSha = Convert.ToHexString(SHA256.HashData(png)).ToLowerInvariant();
         var destination = Path.Combine(
             paths.CoversDirectory, $"{safeKey}_{contentSha[..16]}.png");
-        var temporary = destination + $".{Guid.NewGuid():N}.tmp";
-        await using (var stream = new FileStream(
-                         temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None,
-                         64 * 1024, FileOptions.WriteThrough | FileOptions.Asynchronous))
+        var createdOwned = !File.Exists(destination);
+        CoverCacheAuthority? existingAuthority = null;
+        if (!createdOwned)
         {
-            await stream.WriteAsync(png, cancellationToken);
-            await stream.FlushAsync(cancellationToken);
-            stream.Flush(true);
+            existingAuthority = TryReadAuthority(paths, destination);
+            if (existingAuthority is null ||
+                !string.Equals(existingAuthority.ContentSha256, contentSha, StringComparison.Ordinal) ||
+                !string.Equals(existingAuthority.SourceKind, candidate.SourceKind, StringComparison.Ordinal) ||
+                !string.Equals(existingAuthority.SourceId,
+                    string.IsNullOrWhiteSpace(candidate.SourceId) ? candidate.Key : candidate.SourceId,
+                    StringComparison.Ordinal) ||
+                !string.Equals(existingAuthority.UsageRights, candidate.UsageRights, StringComparison.Ordinal) ||
+                existingAuthority.SteamAppId != candidate.SteamAppId)
+                throw new ExistingItemCoverUpdateException(
+                    "coverDestinationCollision",
+                    "封面缓存目标已被其他文件占用，未覆盖现有文件。");
         }
-        File.Move(temporary, destination, true);
-        await RecordAuthorityAsync(new CoverCacheAuthority(
+        else
+        {
+            var temporary = destination + $".{Guid.NewGuid():N}.tmp";
+            try
+            {
+                await using (var stream = new FileStream(
+                                 temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None,
+                                 64 * 1024, FileOptions.WriteThrough | FileOptions.Asynchronous))
+                {
+                    await stream.WriteAsync(png, cancellationToken);
+                    await stream.FlushAsync(cancellationToken);
+                    stream.Flush(true);
+                }
+                File.Move(temporary, destination, false);
+            }
+            finally
+            {
+                if (File.Exists(temporary)) File.Delete(temporary);
+            }
+        }
+        var authority = new CoverCacheAuthority(
             Path.GetRelativePath(paths.RootDirectory, destination)
                 .Replace(Path.DirectorySeparatorChar, '/'),
             contentSha,
@@ -156,8 +191,52 @@ public sealed class CoverArtService(
             string.IsNullOrWhiteSpace(candidate.SourceId) ? candidate.Key : candidate.SourceId,
             candidate.UsageRights,
             candidate.SteamAppId,
-            DateTimeOffset.UtcNow), cancellationToken);
-        return destination;
+            DateTimeOffset.UtcNow);
+        try
+        {
+            if (existingAuthority is null ||
+                !string.Equals(existingAuthority.ContentSha256,
+                    authority.ContentSha256, StringComparison.Ordinal) ||
+                !string.Equals(existingAuthority.SourceKind,
+                    authority.SourceKind, StringComparison.Ordinal) ||
+                !string.Equals(existingAuthority.SourceId,
+                    authority.SourceId, StringComparison.Ordinal) ||
+                !string.Equals(existingAuthority.UsageRights,
+                    authority.UsageRights, StringComparison.Ordinal) ||
+                existingAuthority.SteamAppId != authority.SteamAppId)
+                await RecordAuthorityAsync(authority, cancellationToken);
+            else
+                authority = existingAuthority;
+            var lease = new FileStream(
+                destination, FileMode.Open, FileAccess.Read, FileShare.Read,
+                64 * 1024, FileOptions.SequentialScan);
+            return new PreparedCoverArtifact(destination, authority, createdOwned, lease);
+        }
+        catch
+        {
+            if (createdOwned && File.Exists(destination) &&
+                string.Equals(
+                    Convert.ToHexString(SHA256.HashData(ReadStable(destination))).ToLowerInvariant(),
+                    contentSha,
+                    StringComparison.Ordinal))
+                File.Delete(destination);
+            throw;
+        }
+    }
+
+    public Task RollbackAsync(
+        PreparedCoverArtifact artifact,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        artifact.Dispose();
+        if (!artifact.CreatedOwned || !File.Exists(artifact.Path)) return Task.CompletedTask;
+        if (File.GetAttributes(artifact.Path).HasFlag(FileAttributes.ReparsePoint)) return Task.CompletedTask;
+        var actual = Convert.ToHexString(SHA256.HashData(ReadStable(artifact.Path)))
+            .ToLowerInvariant();
+        if (string.Equals(actual, artifact.Authority.ContentSha256, StringComparison.Ordinal))
+            File.Delete(artifact.Path);
+        return Task.CompletedTask;
     }
 
     public async Task PruneUnreferencedAsync(
@@ -267,9 +346,16 @@ public sealed class CoverArtService(
     {
         Directory.CreateDirectory(paths.RootDirectory);
         var temporary = paths.CoverCacheAuthorityFile + $".{Guid.NewGuid():N}.tmp";
-        await File.WriteAllBytesAsync(temporary,
-            JsonSerializer.SerializeToUtf8Bytes(document, CacheJson), cancellationToken);
-        File.Move(temporary, paths.CoverCacheAuthorityFile, true);
+        try
+        {
+            await File.WriteAllBytesAsync(temporary,
+                JsonSerializer.SerializeToUtf8Bytes(document, CacheJson), cancellationToken);
+            File.Move(temporary, paths.CoverCacheAuthorityFile, true);
+        }
+        finally
+        {
+            if (File.Exists(temporary)) File.Delete(temporary);
+        }
     }
 
     private bool TryResolveOwnedCachePath(string relative, out string fullPath)

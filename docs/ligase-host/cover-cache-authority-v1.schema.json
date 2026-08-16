@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ligase.local/schemas/cover-cache-authority-v1.schema.json",
+  "title": "Ligase Host cover cache authority v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "entries"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "relativePath",
+          "contentSha256",
+          "sourceKind",
+          "sourceId",
+          "usageRights",
+          "steamAppId",
+          "cachedAtUtc"
+        ],
+        "properties": {
+          "relativePath": {
+            "type": "string",
+            "pattern": "^covers/[A-Za-z0-9_-]+_[0-9a-f]{16}\\.png$"
+          },
+          "contentSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "sourceKind": {
+            "enum": ["steamClientLibraryCache", "gameDbIgdb"]
+          },
+          "sourceId": { "type": "string", "minLength": 1, "maxLength": 128 },
+          "usageRights": {
+            "enum": [
+              "thirdPartyArtworkLocalUseOnlyNoRedistribution",
+              "thirdPartyArtworkLocalCacheOnly"
+            ]
+          },
+          "steamAppId": {
+            "type": ["integer", "null"],
+            "minimum": 1,
+            "maximum": 4294967295
+          },
+          "cachedAtUtc": { "type": "string", "format": "date-time" }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": { "sourceKind": { "const": "steamClientLibraryCache" } },
+              "required": ["sourceKind"]
+            },
+            "then": {
+              "properties": {
+                "steamAppId": { "type": "integer", "minimum": 1 },
+                "sourceId": { "pattern": "^[1-9][0-9]{0,9}$" },
+                "usageRights": {
+                  "const": "thirdPartyArtworkLocalUseOnlyNoRedistribution"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": { "sourceKind": { "const": "gameDbIgdb" } },
+              "required": ["sourceKind"]
+            },
+            "then": {
+              "properties": {
+                "steamAppId": { "type": "null" },
+                "usageRights": { "const": "thirdPartyArtworkLocalCacheOnly" }
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}

@@ -1,9 +1,11 @@
 using Ligase.Host.Desktop.ViewModels;
 using Ligase.Host.Core.Models;
+using Ligase.Host.Core.Services;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Media.Imaging;
 using Microsoft.UI.Xaml.Navigation;
 
 namespace Ligase.Host.Desktop.Pages;
@@ -51,18 +53,94 @@ public sealed partial class GameLibraryPage : Page
         {
             XamlRoot = XamlRoot,
             Title = $"管理“{item.Name}”",
-            Content = "删除后，这个项目会从 Host 以及所有客户端的游戏库中消失。程序文件本身不会被删除。",
-            PrimaryButtonText = "从游戏库删除",
+            Content = item.Kind == LibraryItemKind.Steam
+                ? "可以为现有游戏选择与当前 Steam App ID 绑定的本机 Library Capsule，或从游戏库删除项目。"
+                : "删除后，这个项目会从 Host 以及所有客户端的游戏库中消失。程序文件本身不会被删除。",
+            PrimaryButtonText = item.Kind == LibraryItemKind.Steam ? "选择封面" : "从游戏库删除",
+            SecondaryButtonText = item.Kind == LibraryItemKind.Steam ? "从游戏库删除" : null,
             CloseButtonText = "取消",
             DefaultButton = ContentDialogButton.Close
         };
 
-        if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
+        var manageResult = await dialog.ShowAsync();
+        if (manageResult == ContentDialogResult.None) return;
+        if (item.Kind == LibraryItemKind.Steam && manageResult == ContentDialogResult.Primary)
+        {
+            await ShowExistingCoverPickerAsync(item);
+            return;
+        }
+        if (item.Kind == LibraryItemKind.Steam && manageResult != ContentDialogResult.Secondary) return;
+        if (item.Kind != LibraryItemKind.Steam && manageResult != ContentDialogResult.Primary) return;
         if (!await ViewModel.RemoveAsync(item)) return;
 
         await ShowMessageAsync(
             "已从游戏库删除",
             $"“{item.Name}”已从 Host 和客户端同步游戏库中移除。");
+    }
+
+    private async Task ShowExistingCoverPickerAsync(LibraryItem item)
+    {
+        var coverViewModel = ((App)Application.Current).Services
+            .GetRequiredService<ExistingItemCoverViewModel>();
+        try
+        {
+            var candidates = await coverViewModel.FindVerifiedAsync(item);
+            if (candidates.Count == 0)
+            {
+                await ShowMessageAsync(
+                    "没有可验证的本机封面",
+                    $"Steam App ID {item.SteamAppId} 当前没有可验证的本机 Library Capsule；游戏库未发生变化。");
+                return;
+            }
+
+            var candidate = candidates.Single();
+            var preview = new Image
+            {
+                Width = 200,
+                Height = 300,
+                Stretch = Microsoft.UI.Xaml.Media.Stretch.Uniform,
+                Source = new BitmapImage(new Uri(candidate.PreviewUrl))
+            };
+            AutomationProperties.SetName(
+                preview,
+                $"{item.Name} 的已验证 Steam Library Capsule 预览");
+            var content = new StackPanel { Spacing = 12, MaxWidth = 440 };
+            content.Children.Add(preview);
+            content.Children.Add(new TextBlock
+            {
+                Text = $"来源：本机 Steam 缓存 · App ID {candidate.SteamAppId}\n确认后将更新同一游戏 UUID，并同步到 Host 与 Android。",
+                TextWrapping = TextWrapping.Wrap
+            });
+            var confirm = new ContentDialog
+            {
+                XamlRoot = XamlRoot,
+                Title = $"为“{item.Name}”选择封面",
+                Content = content,
+                PrimaryButtonText = "使用此封面",
+                CloseButtonText = "取消",
+                DefaultButton = ContentDialogButton.Primary
+            };
+            if (await confirm.ShowAsync() != ContentDialogResult.Primary) return;
+
+            var result = await coverViewModel.ApplyAsync(item, candidate);
+            await ViewModel.RefreshAsync();
+            await ShowMessageAsync(
+                result.Idempotent ? "封面已经是最新" : "封面已保存并同步",
+                $"同一游戏 UUID 已完成持久化与核心回读（库修订 {result.LibraryRevision}，内容 {result.CoverContentSha256[..12]}…）。" +
+                (result.SupersededCoverCleanupCompleted
+                    ? string.Empty
+                    : " 旧封面缓存暂未清理，不影响当前封面；Host 会在后续维护中重试。"));
+        }
+        catch (ExistingItemCoverUpdateException exception)
+        {
+            await ShowMessageAsync("封面未更新", exception.Message);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            await ShowMessageAsync(
+                "封面未更新",
+                $"封面事务未完成，原游戏库与同步状态已保留。{exception.Message}");
+        }
     }
 
     private void OnReorderModeButtonClick(object sender, RoutedEventArgs e)
