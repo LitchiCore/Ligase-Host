@@ -45,12 +45,15 @@ New-Item -ItemType Junction -Path $launchDirectory -Target $desktop |
 $executable = Join-Path $launchDirectory "Ligase.Host.Desktop.exe"
 
 $previousDataRoot = $env:LIGASE_DATA_ROOT
+$previousInstanceKey = $env:LIGASE_STARTUP_VALIDATION_INSTANCE_KEY
 $process = $null
 $outcomeCode = "desktopReadyTimeout"
 $outcomeSuccess = $false
 $exitCode = 12
 try {
   $env:LIGASE_DATA_ROOT = $dataRoot
+  $env:LIGASE_STARTUP_VALIDATION_INSTANCE_KEY =
+    "Ligase.Host.Desktop.StartupValidation." + [Guid]::NewGuid().ToString("N")
   $process = Start-Process `
     -FilePath $executable `
     -WorkingDirectory $workingDirectory `
@@ -104,6 +107,12 @@ try {
     Remove-Item Env:LIGASE_DATA_ROOT -ErrorAction SilentlyContinue
   } else {
     $env:LIGASE_DATA_ROOT = $previousDataRoot
+  }
+  if ($null -eq $previousInstanceKey) {
+    Remove-Item Env:LIGASE_STARTUP_VALIDATION_INSTANCE_KEY `
+      -ErrorAction SilentlyContinue
+  } else {
+    $env:LIGASE_STARTUP_VALIDATION_INSTANCE_KEY = $previousInstanceKey
   }
   if (Test-Path -LiteralPath $gateRoot) {
     for ($attempt = 0; $attempt -lt 10; $attempt++) {

@@ -13,6 +13,28 @@ namespace Ligase.Host.Desktop.Tests;
 public sealed class FreshInstallPackagingTests
 {
     [TestMethod]
+    public void DesktopStartupGateUsesStrictIsolatedAppInstanceKey()
+    {
+        var repo = FindRepositoryRoot();
+        var singleInstance = File.ReadAllText(Path.Combine(
+            repo, "src", "Ligase.Desktop", "Services",
+            "SingleInstanceService.cs"));
+        var desktopStartupGate = File.ReadAllText(Path.Combine(
+            repo, "packaging", "windows", "ligase",
+            "Test-LigaseDesktopStartup.ps1"));
+
+        StringAssert.Contains(singleInstance,
+            "LIGASE_STARTUP_VALIDATION_INSTANCE_KEY");
+        StringAssert.Contains(singleInstance, "Guid.TryParseExact(");
+        StringAssert.Contains(singleInstance,
+            "StartupValidationInstancePrefix.Length..");
+        StringAssert.Contains(desktopStartupGate,
+            "Ligase.Host.Desktop.StartupValidation.");
+        StringAssert.Contains(desktopStartupGate,
+            "Remove-Item Env:LIGASE_STARTUP_VALIDATION_INSTANCE_KEY");
+    }
+
+    [TestMethod]
     public void SecureStorePreflightSourceHasClosedUnsignedDevelopmentBoundary()
     {
         var root = FindRepositoryRoot();

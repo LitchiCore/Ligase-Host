@@ -5,6 +5,8 @@ namespace Ligase.Host.Desktop.Services;
 public sealed class SingleInstanceService : IDisposable
 {
     private const string InstanceKey = "Ligase.Host.Desktop.Primary";
+    private const string StartupValidationInstancePrefix =
+        "Ligase.Host.Desktop.StartupValidation.";
     private AppInstance? _primary;
     private int _isExiting;
 
@@ -14,7 +16,7 @@ public sealed class SingleInstanceService : IDisposable
         TryAcquireAsync()
     {
         var arguments = AppInstance.GetCurrent().GetActivatedEventArgs();
-        var primary = AppInstance.FindOrRegisterForKey(InstanceKey);
+        var primary = AppInstance.FindOrRegisterForKey(GetInstanceKey());
         if (!primary.IsCurrent)
         {
             await primary.RedirectActivationToAsync(arguments);
@@ -27,6 +29,25 @@ public sealed class SingleInstanceService : IDisposable
     }
 
     public void BeginExit() => Interlocked.Exchange(ref _isExiting, 1);
+
+    private static string GetInstanceKey()
+    {
+        var requested = Environment.GetEnvironmentVariable(
+            "LIGASE_STARTUP_VALIDATION_INSTANCE_KEY");
+        if (requested is not null &&
+            requested.StartsWith(
+                StartupValidationInstancePrefix,
+                StringComparison.Ordinal) &&
+            Guid.TryParseExact(
+                requested[StartupValidationInstancePrefix.Length..],
+                "N",
+                out _))
+        {
+            return requested;
+        }
+
+        return InstanceKey;
+    }
 
     private void OnActivated(object? sender, AppActivationArguments arguments)
     {
