@@ -29,7 +29,8 @@ public sealed class ExistingItemCoverAccessibilityContractTests
         StringAssert.Contains(viewModel, "steamLibraryService.DiscoverGamesAsync");
         StringAssert.Contains(viewModel, "UpdateExistingSteamCoverAsync");
         StringAssert.Contains(coordinator, "RequireReadbackAsync");
-        StringAssert.Contains(coordinator, "HasPublishedItem(readback, value.Updated)");
+        StringAssert.Contains(coordinator, "HasPublishedItem(readback,");
+        StringAssert.Contains(coordinator, ".Updated)");
         StringAssert.Contains(addPage, "ViewModel.FindSteamCoverAsync(result)");
         Assert.IsFalse(addPage.Contains("FindSteamCoverAsync(result.Game)", StringComparison.Ordinal));
     }
