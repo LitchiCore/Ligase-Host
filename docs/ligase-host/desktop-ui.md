@@ -343,7 +343,11 @@ acceptance steps require `UPDATED` in the same commit. Planned and
 - The add page exposes the same result set so the user can search again and
   choose a different cover before adding. Failure to search or download a
   cover never blocks adding the application.
-- An existing Steam item exposes **Select cover** from its public Manage menu.
+- An existing Steam item exposes **Select cover** both from its public Manage
+  menu and from the **Added** group on the add page. Both entries resolve the
+  canonical library item UUID from the card membership and use the same
+  existing-item transaction; the add-page preview-only selection path is
+  reserved for games that are not yet in the library.
   The Host refreshes the current library item and Steam manifest, previews only
   the local verified capsule for the same App ID, and writes nothing until the
   user confirms **Use this cover**. Success reports the persisted library

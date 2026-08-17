@@ -110,6 +110,8 @@ public partial class App : Application
                 services.AddTransient<HostSetupViewModel>();
                 services.AddTransient<AddApplicationViewModel>();
                 services.AddTransient<ExistingItemCoverViewModel>();
+                services.AddTransient<IExistingItemCoverWorkflow>(provider =>
+                    provider.GetRequiredService<ExistingItemCoverViewModel>());
                 services.AddTransient<StreamMonitorViewModel>();
                 services.AddTransient<DevicesViewModel>();
                 services.AddTransient<AttendedPairingViewModel>();

@@ -24,7 +24,9 @@ public enum WindowsShortcutErrorCode
     CommandShellTarget,
     InstallerTarget,
     UnsupportedTarget,
-    InvalidSteamShortcut
+    InvalidSteamShortcut,
+    ReparsePoint,
+    AuthorityChanged
 }
 
 public sealed class WindowsShortcutPreview
@@ -39,6 +41,7 @@ public sealed class WindowsShortcutPreview
     public string? IconSource { get; init; }
     public uint? SteamAppId { get; init; }
     public string? CanonicalTargetArgumentsKey { get; init; }
+    public string? AuthoritySha256 { get; internal set; }
 
     public bool CanConfirmExecutable => Kind == WindowsShortcutPreviewKind.Executable;
 

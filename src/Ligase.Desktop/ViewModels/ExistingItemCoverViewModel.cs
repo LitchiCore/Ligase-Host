@@ -3,12 +3,40 @@ using Ligase.Host.Core.Services;
 
 namespace Ligase.Host.Desktop.ViewModels;
 
+public interface IExistingItemCoverWorkflow
+{
+    Task<IReadOnlyList<CoverCandidate>> FindVerifiedAsync(
+        Guid libraryItemId,
+        uint steamAppId,
+        CancellationToken cancellationToken = default);
+
+    Task<ExistingItemCoverUpdateResult> ApplyAsync(
+        Guid libraryItemId,
+        uint steamAppId,
+        CoverCandidate candidate,
+        CancellationToken cancellationToken = default);
+}
+
 public sealed class ExistingItemCoverViewModel(
     IApplicationLibrary applicationLibrary,
     ISteamLibraryService steamLibraryService,
     CoverArtService coverArtService,
-    LibraryMutationCoordinator mutationCoordinator)
+    LibraryMutationCoordinator mutationCoordinator) : IExistingItemCoverWorkflow
 {
+    public async Task<IReadOnlyList<CoverCandidate>> FindVerifiedAsync(
+        Guid libraryItemId,
+        uint steamAppId,
+        CancellationToken cancellationToken = default)
+    {
+        var item = (await applicationLibrary.LoadAsync(cancellationToken)).Items
+            .SingleOrDefault(candidate => candidate.Id == libraryItemId);
+        if (item is null || item.SteamAppId != steamAppId)
+            throw new ExistingItemCoverUpdateException(
+                "libraryIdentityChanged",
+                "游戏库项目已变化，请刷新后再选择封面。");
+        return await FindVerifiedAsync(item, cancellationToken);
+    }
+
     public async Task<IReadOnlyList<CoverCandidate>> FindVerifiedAsync(
         LibraryItem item,
         CancellationToken cancellationToken = default)
@@ -64,5 +92,20 @@ public sealed class ExistingItemCoverViewModel(
                 item.PortableIdentity,
                 candidate),
             cancellationToken);
+    }
+
+    public async Task<ExistingItemCoverUpdateResult> ApplyAsync(
+        Guid libraryItemId,
+        uint steamAppId,
+        CoverCandidate candidate,
+        CancellationToken cancellationToken = default)
+    {
+        var item = (await applicationLibrary.LoadAsync(cancellationToken)).Items
+            .SingleOrDefault(value => value.Id == libraryItemId);
+        if (item is null || item.SteamAppId != steamAppId || item.PortableIdentity is null)
+            throw new ExistingItemCoverUpdateException(
+                "libraryIdentityChanged",
+                "游戏库项目已变化，请刷新后再选择封面。");
+        return await ApplyAsync(item, candidate, cancellationToken);
     }
 }

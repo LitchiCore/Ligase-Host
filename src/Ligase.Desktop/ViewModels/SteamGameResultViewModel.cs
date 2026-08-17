@@ -29,6 +29,10 @@ public sealed class SteamGameResultViewModel : INotifyPropertyChanged
     public string InstallPath => Game.InstallPath;
     public string AppIdLabel => Game.AppIdLabel;
     public string SizeLabel => Game.SizeLabel;
+    public string CardAccessibleName => $"{Name}，Steam App ID {AppId}，{StatusText}";
+    public string CoverActionAccessibleName => $"为 {Name} 选择封面";
+    public string AddActionAccessibleName => $"将 {Name} 添加到 Ligase 游戏库";
+    public string RemoveActionAccessibleName => $"从 Ligase 游戏库移除 {Name}";
     public Guid? LibraryItemId => _libraryItemId;
     public bool IsAdded => _libraryItemId.HasValue;
     public bool IsBusy => _isBusy;
@@ -98,6 +102,7 @@ public sealed class SteamGameResultViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(IsBusy));
         OnPropertyChanged(nameof(CanMutate));
         OnPropertyChanged(nameof(StatusText));
+        OnPropertyChanged(nameof(CardAccessibleName));
         OnPropertyChanged(nameof(AddedVisibility));
         OnPropertyChanged(nameof(AddVisibility));
         OnPropertyChanged(nameof(RemoveVisibility));

@@ -3,8 +3,12 @@ using Ligase.Host.Desktop.Controls;
 using Ligase.Host.Desktop.ViewModels;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Navigation;
+using Windows.ApplicationModel.DataTransfer;
+using Windows.Storage;
 using Windows.Storage.Pickers;
 using WinRT.Interop;
 
@@ -30,6 +34,37 @@ public sealed partial class AddApplicationPage : Page
 
     private MainWindow MainWindow => ((App)Application.Current).Services
         .GetRequiredService<MainWindow>();
+
+    private void OnSteamGameSearchLoaded(object sender, RoutedEventArgs e)
+    {
+        if (sender is not AutoSuggestBox searchBox) return;
+        var editor = FindDescendantTextBox(searchBox);
+        if (editor is null) return;
+
+        // AutoSuggestBox delegates keyboard focus to its template TextBox.
+        // Put the accessible identity on that real focus owner as well as the
+        // public control so UI Automation never reports the unrelated cover
+        // search field when the Steam editor has focus.
+        AutomationProperties.SetName(editor, "搜索 Steam 游戏");
+        AutomationProperties.SetHelpText(
+            editor,
+            "按 Steam 游戏名称、App ID 或安装目录筛选结果");
+        AutomationProperties.SetLabeledBy(editor, SteamGameSearchLabel);
+        editor.IsTabStop = true;
+        editor.TabIndex = 0;
+    }
+
+    private static TextBox? FindDescendantTextBox(DependencyObject root)
+    {
+        for (var index = 0; index < VisualTreeHelper.GetChildrenCount(root); index++)
+        {
+            var child = VisualTreeHelper.GetChild(root, index);
+            if (child is TextBox editor) return editor;
+            var nested = FindDescendantTextBox(child);
+            if (nested is not null) return nested;
+        }
+        return null;
+    }
 
     private void OnBack(object sender, RoutedEventArgs e) =>
         MainWindow.NavigateBackToLibrary();
@@ -73,6 +108,52 @@ public sealed partial class AddApplicationPage : Page
         if (file is not null) ViewModel.SetExecutablePath(file.Path);
     }
 
+    private void OnShortcutDragOver(object sender, DragEventArgs e)
+    {
+        e.AcceptedOperation = e.DataView.Contains(StandardDataFormats.StorageItems)
+            ? DataPackageOperation.Copy
+            : DataPackageOperation.None;
+        e.DragUIOverride.Caption = "预览快捷方式（不会自动添加）";
+        e.DragUIOverride.IsCaptionVisible = true;
+    }
+
+    private async void OnShortcutDrop(object sender, DragEventArgs e)
+    {
+        if (!e.DataView.Contains(StandardDataFormats.StorageItems))
+        {
+            ViewModel.PreviewShortcutPaths([]);
+            return;
+        }
+
+        var items = await e.DataView.GetStorageItemsAsync();
+        ViewModel.PreviewShortcutPaths(
+            items.OfType<StorageFile>().Select(file => file.Path).ToArray());
+    }
+
+    private async void OnBrowseShortcut(object sender, RoutedEventArgs e)
+    {
+        var picker = new FileOpenPicker();
+        picker.FileTypeFilter.Add(".lnk");
+        InitializeWithWindow.Initialize(picker, WindowNative.GetWindowHandle(MainWindow));
+        var file = await picker.PickSingleFileAsync();
+        if (file is not null) ViewModel.PreviewShortcutPaths([file.Path]);
+    }
+
+    private async void OnConfirmShortcut(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            await ViewModel.ConfirmShortcutAsync();
+        }
+        catch (Exception exception)
+        {
+            ViewModel.Message = exception.Message;
+        }
+    }
+
+    private void OnCancelShortcut(object sender, RoutedEventArgs e) =>
+        ViewModel.CancelShortcutPreview();
+
     private async void OnAddExecutable(object sender, RoutedEventArgs e)
     {
         try
@@ -104,6 +185,6 @@ public sealed partial class AddApplicationPage : Page
     private async void OnFindSteamCover(object sender, RoutedEventArgs e)
     {
         if (sender is SteamGameResultCard { Result: { } result })
-            await ViewModel.SearchCoversAsync(result.Name);
+            await ViewModel.FindSteamCoverAsync(result);
     }
 }

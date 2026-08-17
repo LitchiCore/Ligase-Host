@@ -15,6 +15,8 @@ public sealed class ExistingItemCoverAccessibilityContractTests
             root, "src", "Ligase.Desktop", "ViewModels", "ExistingItemCoverViewModel.cs"));
         var coordinator = File.ReadAllText(Path.Combine(
             root, "src", "Ligase.Core", "Services", "LibraryMutationCoordinator.cs"));
+        var addPage = File.ReadAllText(Path.Combine(
+            root, "src", "Ligase.Desktop", "Pages", "AddApplicationPage.xaml.cs"));
 
         StringAssert.Contains(page, "PrimaryButtonText = item.Kind == LibraryItemKind.Steam ? \"选择封面\"");
         StringAssert.Contains(page, "ShowExistingCoverPickerAsync(item)");
@@ -28,6 +30,8 @@ public sealed class ExistingItemCoverAccessibilityContractTests
         StringAssert.Contains(viewModel, "UpdateExistingSteamCoverAsync");
         StringAssert.Contains(coordinator, "RequireReadbackAsync");
         StringAssert.Contains(coordinator, "HasPublishedItem(readback, value.Updated)");
+        StringAssert.Contains(addPage, "ViewModel.FindSteamCoverAsync(result)");
+        Assert.IsFalse(addPage.Contains("FindSteamCoverAsync(result.Game)", StringComparison.Ordinal));
     }
 
     private static string RepositoryRoot()

@@ -6,7 +6,35 @@
     xmlns:controls="using:Ligase.Host.Desktop.Controls"
     xmlns:models="using:Ligase.Host.Core.Models"
     xmlns:viewModels="using:Ligase.Host.Desktop.ViewModels">
-    <Grid Margin="28,24,28,28" Background="{ThemeResource LigaseWindowBrush}">
+    <Grid
+        x:Name="PageLayout"
+        Margin="28,24,28,28"
+        Background="{ThemeResource LigaseWindowBrush}">
+        <VisualStateManager.VisualStateGroups>
+            <VisualStateGroup x:Name="WindowWidthStates">
+                <VisualState x:Name="NarrowWindow">
+                    <VisualState.StateTriggers>
+                        <AdaptiveTrigger MinWindowWidth="0" />
+                    </VisualState.StateTriggers>
+                    <VisualState.Setters>
+                        <Setter Target="PageLayout.Margin" Value="16,16,16,20" />
+                        <Setter Target="CoverSearchButton.(Grid.Row)" Value="1" />
+                        <Setter Target="CoverSearchButton.(Grid.Column)" Value="0" />
+                        <Setter Target="CoverSearchButton.HorizontalAlignment" Value="Stretch" />
+                        <Setter Target="CoverSearchButton.Margin" Value="0,10,0,0" />
+                        <Setter Target="SteamScanButton.(Grid.Row)" Value="1" />
+                        <Setter Target="SteamScanButton.(Grid.Column)" Value="0" />
+                        <Setter Target="SteamScanButton.HorizontalAlignment" Value="Stretch" />
+                        <Setter Target="SteamScanButton.Margin" Value="0,10,0,0" />
+                    </VisualState.Setters>
+                </VisualState>
+                <VisualState x:Name="WideWindow">
+                    <VisualState.StateTriggers>
+                        <AdaptiveTrigger MinWindowWidth="760" />
+                    </VisualState.StateTriggers>
+                </VisualState>
+            </VisualStateGroup>
+        </VisualStateManager.VisualStateGroups>
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
@@ -33,7 +61,8 @@
                 <TextBlock Style="{StaticResource LigasePageTitleStyle}" Text="添加游戏或应用" />
                 <TextBlock
                     Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                    Text="Steam 游戏会启用生命周期监控；其他程序直接由 Apollo 启动和跟踪。" />
+                    Text="Steam 游戏会启用生命周期监控；其他程序直接由 Apollo 启动和跟踪。"
+                    TextWrapping="Wrap" />
             </StackPanel>
         </Grid>
 
@@ -60,15 +89,20 @@
             Margin="0,14,0,0"
             Style="{StaticResource LigaseToolbarStyle}">
             <StackPanel Spacing="10">
-                <Grid ColumnSpacing="10">
+                <Grid x:Name="CoverSearchGrid" ColumnSpacing="10">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*" />
                         <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
                     <TextBox
-                        PlaceholderText="封面名称（留空时添加会按游戏名称自动匹配第一张）"
+                        PlaceholderText="非 Steam 应用封面名称（Steam 封面只按已验证 App ID）"
                         Text="{x:Bind ViewModel.CoverSearchText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
                     <Button
+                        x:Name="CoverSearchButton"
                         Grid.Column="1"
                         Click="OnSearchCovers"
                         Style="{StaticResource LigaseSecondaryButtonStyle}"
@@ -107,6 +141,13 @@
                                         Text="{x:Bind Name}"
                                         TextAlignment="Center"
                                         TextTrimming="CharacterEllipsis" />
+                                    <TextBlock
+                                        MaxWidth="96"
+                                        FontSize="10"
+                                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                        Text="{x:Bind SourceId}"
+                                        TextAlignment="Center"
+                                        TextTrimming="CharacterEllipsis" />
                                 </StackPanel>
                             </Button>
                         </DataTemplate>
@@ -127,18 +168,38 @@
                         <RowDefinition Height="*" />
                     </Grid.RowDefinitions>
                     <Border Style="{StaticResource LigaseToolbarStyle}">
-                        <Grid ColumnSpacing="12">
+                        <Grid x:Name="SteamSearchGrid" ColumnSpacing="12">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*" />
                                 <ColumnDefinition Width="Auto" />
                             </Grid.ColumnDefinitions>
-                            <AutoSuggestBox
-                                PlaceholderText="搜索 Steam 名称、App ID 或目录"
-                                QueryIcon="Find"
-                                Style="{StaticResource LigaseSearchBoxStyle}"
-                                Text="{x:Bind ViewModel.SteamSearchText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                            <StackPanel Grid.Column="0" Spacing="6">
+                                <TextBlock
+                                    x:Name="SteamGameSearchLabel"
+                                    FontWeight="SemiBold"
+                                    Text="搜索 Steam 游戏" />
+                                <AutoSuggestBox
+                                    x:Name="SteamGameSearchBox"
+                                    AutomationProperties.HelpText="按 Steam 游戏名称、App ID 或安装目录筛选结果"
+                                    AutomationProperties.LabeledBy="{Binding ElementName=SteamGameSearchLabel}"
+                                    AutomationProperties.Name="搜索 Steam 游戏"
+                                    IsTabStop="True"
+                                    Loaded="OnSteamGameSearchLoaded"
+                                    PlaceholderText="搜索 Steam 名称、App ID 或目录"
+                                    QueryIcon="Find"
+                                    Style="{StaticResource LigaseSearchBoxStyle}"
+                                    TabIndex="0"
+                                    Text="{x:Bind ViewModel.SteamSearchText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                            </StackPanel>
                             <Button
+                                x:Name="SteamScanButton"
                                 Grid.Column="1"
+                                AutomationProperties.Name="重新扫描 Steam 游戏库"
+                                VerticalAlignment="Bottom"
                                 Click="OnScanSteam"
                                 Style="{StaticResource LigaseSecondaryButtonStyle}">
                                 <StackPanel Orientation="Horizontal" Spacing="7">
@@ -234,15 +295,79 @@
 
             <TabViewItem Header="非 Steam 应用" IsClosable="False">
                 <ScrollViewer Padding="2,16,2,0">
-                    <Border Width="760" HorizontalAlignment="Left" Style="{StaticResource LigaseCardStyle}">
+                    <Border
+                        MaxWidth="760"
+                        HorizontalAlignment="Stretch"
+                        Style="{StaticResource LigaseCardStyle}">
                         <StackPanel Spacing="16">
                             <StackPanel Spacing="5">
                                 <TextBlock FontSize="18" FontWeight="SemiBold" Text="添加本地程序" />
                                 <TextBlock
                                     Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                                    Text="选择 EXE，并按需填写启动参数与工作目录。"
+                                    Text="可选择 EXE 手动填写，也可拖入一个 .lnk，核对安全预览后再确认添加。拖入本身不会修改游戏库。"
                                     TextWrapping="Wrap" />
                             </StackPanel>
+                            <Border
+                                x:Name="ShortcutDropZone"
+                                MinHeight="96"
+                                AllowDrop="True"
+                                AutomationProperties.HelpText="拖入一个本机 Windows 快捷方式，或使用按钮通过键盘选择"
+                                AutomationProperties.Name="预览 Windows 快捷方式"
+                                BorderBrush="{ThemeResource LigaseBorderBrush}"
+                                BorderThickness="1"
+                                CornerRadius="10"
+                                DragOver="OnShortcutDragOver"
+                                Drop="OnShortcutDrop"
+                                Padding="16">
+                                <Grid ColumnSpacing="12">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Spacing="4">
+                                        <TextBlock FontWeight="SemiBold" Text="拖入一个 .lnk 以安全预览" />
+                                        <TextBlock
+                                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                            Text="不会执行快捷方式，也不会在确认前写入游戏库。"
+                                            TextWrapping="Wrap" />
+                                    </StackPanel>
+                                    <Button
+                                        Grid.Column="1"
+                                        AutomationProperties.Name="选择 Windows 快捷方式进行预览"
+                                        Click="OnBrowseShortcut"
+                                        Content="选择 .lnk…"
+                                        Style="{StaticResource LigaseSecondaryButtonStyle}" />
+                                </Grid>
+                            </Border>
+                            <Border
+                                AutomationProperties.LiveSetting="Polite"
+                                Style="{StaticResource LigaseToolbarStyle}"
+                                Visibility="{x:Bind ViewModel.ShortcutPreviewVisibility, Mode=OneWay}">
+                                <StackPanel Spacing="10">
+                                    <TextBlock FontSize="16" FontWeight="SemiBold" Text="快捷方式预览（尚未添加）" />
+                                    <TextBlock Text="{x:Bind ViewModel.ShortcutPreview.DisplayName, Mode=OneWay}" />
+                                    <TextBlock
+                                        FontFamily="Consolas"
+                                        Text="{x:Bind ViewModel.ShortcutPreview.TargetExecutable, Mode=OneWay}"
+                                        TextWrapping="WrapWholeWords" />
+                                    <TextBlock Text="{x:Bind ViewModel.ShortcutPreview.Arguments, Mode=OneWay, TargetNullValue=无启动参数}" TextWrapping="Wrap" />
+                                    <TextBlock Text="{x:Bind ViewModel.ShortcutPreview.WorkingDirectory, Mode=OneWay, TargetNullValue=使用程序所在目录}" TextWrapping="WrapWholeWords" />
+                                    <TextBlock Text="{x:Bind ViewModel.ShortcutPreview.IconSource, Mode=OneWay, TargetNullValue=使用程序图标}" TextWrapping="WrapWholeWords" />
+                                    <StackPanel Orientation="Horizontal" Spacing="10">
+                                        <Button
+                                            AutomationProperties.Name="确认将预览的快捷方式加入游戏库"
+                                            Click="OnConfirmShortcut"
+                                            Content="确认添加"
+                                            IsEnabled="{x:Bind ViewModel.CanConfirmShortcut, Mode=OneWay}"
+                                            Style="{StaticResource LigaseQuietButtonStyle}" />
+                                        <Button
+                                            AutomationProperties.Name="取消快捷方式预览"
+                                            Click="OnCancelShortcut"
+                                            Content="取消"
+                                            Style="{StaticResource LigaseSecondaryButtonStyle}" />
+                                    </StackPanel>
+                                </StackPanel>
+                            </Border>
                             <StackPanel Spacing="7">
                                 <TextBlock FontWeight="SemiBold" Text="显示名称" />
                                 <TextBox

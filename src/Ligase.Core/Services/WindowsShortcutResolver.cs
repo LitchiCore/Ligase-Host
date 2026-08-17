@@ -44,13 +44,16 @@ public sealed partial class WindowsShortcutResolver
             canonicalShortcut = Path.GetFullPath(Environment.ExpandEnvironmentVariables(shortcutPath.Trim()));
         }
         catch (Exception exception) when (
-            exception is ArgumentException or NotSupportedException or PathTooLongException)
+            exception is ArgumentException or NotSupportedException or PathTooLongException or
+            IOException or UnauthorizedAccessException)
         {
             return Failure(shortcutPath, displayName, WindowsShortcutErrorCode.NotShortcut);
         }
 
         if (IsNetworkPath(canonicalShortcut))
             return Failure(canonicalShortcut, displayName, WindowsShortcutErrorCode.NetworkLocation);
+        if (ContainsReparsePoint(canonicalShortcut))
+            return Failure(canonicalShortcut, displayName, WindowsShortcutErrorCode.ReparsePoint);
         if (!File.Exists(canonicalShortcut))
             return Failure(canonicalShortcut, displayName, WindowsShortcutErrorCode.ShortcutNotFound);
 
@@ -67,10 +70,14 @@ public sealed partial class WindowsShortcutResolver
 
         try
         {
-            return Classify(canonicalShortcut, displayName, data);
+            var preview = Classify(canonicalShortcut, displayName, data);
+            if (preview.CanConfirmExecutable)
+                preview.AuthoritySha256 = CaptureAuthority(preview);
+            return preview;
         }
         catch (Exception exception) when (
-            exception is ArgumentException or NotSupportedException or PathTooLongException)
+            exception is ArgumentException or NotSupportedException or PathTooLongException or
+            IOException or UnauthorizedAccessException)
         {
             return Failure(canonicalShortcut, displayName, WindowsShortcutErrorCode.DamagedShortcut);
         }
@@ -108,6 +115,8 @@ public sealed partial class WindowsShortcutResolver
         }
         if (IsNetworkPath(target))
             return Failure(shortcutPath, displayName, WindowsShortcutErrorCode.NetworkLocation);
+        if (ContainsReparsePoint(target))
+            return Failure(shortcutPath, displayName, WindowsShortcutErrorCode.ReparsePoint);
         if (Directory.Exists(target))
             return Failure(shortcutPath, displayName, WindowsShortcutErrorCode.TargetIsDirectory);
         if (Path.GetFileName(target).Equals("steam.exe", StringComparison.OrdinalIgnoreCase) &&
@@ -139,7 +148,11 @@ public sealed partial class WindowsShortcutResolver
             data.WorkingDirectory, target, shortcutPath);
         if (workingDirectory is not null && IsNetworkPath(workingDirectory))
             return Failure(shortcutPath, displayName, WindowsShortcutErrorCode.NetworkLocation);
+        if (workingDirectory is not null && ContainsReparsePoint(workingDirectory))
+            return Failure(shortcutPath, displayName, WindowsShortcutErrorCode.ReparsePoint);
         var iconSource = NormalizeIcon(data.IconLocation, shortcutPath);
+        if (iconSource is not null && ContainsReparsePoint(iconSource))
+            return Failure(shortcutPath, displayName, WindowsShortcutErrorCode.ReparsePoint);
         return new WindowsShortcutPreview
         {
             ShortcutPath = shortcutPath,
@@ -152,6 +165,76 @@ public sealed partial class WindowsShortcutResolver
             IconSource = iconSource ?? target,
             CanonicalTargetArgumentsKey = CreateCanonicalTargetArgumentsKey(target, arguments)
         };
+    }
+
+    public WindowsShortcutPreview Revalidate(WindowsShortcutPreview preview)
+    {
+        ArgumentNullException.ThrowIfNull(preview);
+        var current = Resolve(preview.ShortcutPath);
+        if (!current.CanConfirmExecutable ||
+            string.IsNullOrWhiteSpace(preview.AuthoritySha256) ||
+            !string.Equals(current.AuthoritySha256, preview.AuthoritySha256, StringComparison.Ordinal))
+            return Failure(
+                preview.ShortcutPath,
+                preview.DisplayName,
+                WindowsShortcutErrorCode.AuthorityChanged);
+        return current;
+    }
+
+    private static string CaptureAuthority(WindowsShortcutPreview preview)
+    {
+        var shortcutHash = HashFile(preview.ShortcutPath);
+        var targetHash = HashFile(preview.TargetExecutable!);
+        var iconHash = preview.IconSource is { } icon && File.Exists(icon)
+            ? HashFile(icon)
+            : string.Empty;
+        var projection = string.Join("\n",
+        [
+            "windowsShortcutImportV1",
+            Path.GetFullPath(preview.ShortcutPath).ToUpperInvariant(),
+            shortcutHash,
+            Path.GetFullPath(preview.TargetExecutable!).ToUpperInvariant(),
+            targetHash,
+            preview.Arguments ?? string.Empty,
+            preview.WorkingDirectory?.ToUpperInvariant() ?? string.Empty,
+            preview.IconSource?.ToUpperInvariant() ?? string.Empty,
+            iconHash
+        ]);
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(projection)));
+    }
+
+    private static string HashFile(string path)
+    {
+        using var stream = new FileStream(
+            path,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.Read | FileShare.Delete);
+        return Convert.ToHexString(SHA256.HashData(stream));
+    }
+
+    private static bool ContainsReparsePoint(string path)
+    {
+        try
+        {
+            var current = Path.GetFullPath(path);
+            if (!File.Exists(current) && !Directory.Exists(current)) return false;
+            while (!string.IsNullOrWhiteSpace(current))
+            {
+                if ((File.GetAttributes(current) & FileAttributes.ReparsePoint) != 0)
+                    return true;
+                var parent = Path.GetDirectoryName(current);
+                if (string.Equals(parent, current, StringComparison.OrdinalIgnoreCase)) break;
+                current = parent ?? string.Empty;
+            }
+            return false;
+        }
+        catch (Exception exception) when (
+            exception is IOException or UnauthorizedAccessException or ArgumentException or
+            NotSupportedException)
+        {
+            return true;
+        }
     }
 
     public static string CreateCanonicalTargetArgumentsKey(string target, string? arguments)
@@ -223,7 +306,8 @@ public sealed partial class WindowsShortcutResolver
                 WindowsShortcutErrorCode.CommandShellTarget or
                 WindowsShortcutErrorCode.InstallerTarget or
                 WindowsShortcutErrorCode.ScriptTarget or
-                WindowsShortcutErrorCode.NetworkLocation => WindowsShortcutPreviewKind.Risk,
+                WindowsShortcutErrorCode.NetworkLocation or
+                WindowsShortcutErrorCode.ReparsePoint => WindowsShortcutPreviewKind.Risk,
                 WindowsShortcutErrorCode.NotShortcut or
                 WindowsShortcutErrorCode.ShortcutNotFound or
                 WindowsShortcutErrorCode.DamagedShortcut or
