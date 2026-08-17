@@ -749,7 +749,25 @@ public sealed class ApplicationLibraryTests
         Assert.AreEqual("2560x1440x120", device.DisplayMode);
         Assert.AreEqual(119480064u, device.Permissions);
         Assert.IsTrue(device.AllowClientCommands);
-        Assert.IsTrue(device.Connected);
+        Assert.AreEqual(true, device.Connected);
+    }
+
+    [TestMethod]
+    public void ApolloDeviceSnapshotKeepsMissingConnectionStateUnknown()
+    {
+        const string json = """
+            {
+              "schemaVersion": 1,
+              "devices": [{
+                "name": "legacy",
+                "uuid": "00000000-0000-0000-0000-000000000001"
+              }]
+            }
+            """;
+
+        var device = ApolloDeviceService.DeserializeSnapshot(json).Devices.Single();
+
+        Assert.IsNull(device.Connected);
     }
 
     [TestMethod]

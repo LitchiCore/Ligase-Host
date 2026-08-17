@@ -68,9 +68,12 @@ public partial class OverviewViewModel(
         {
             var snapshot = await devices.GetDevicesAsync(cancellationToken);
             pairedCount = snapshot.Count.ToString();
-            var online = snapshot.Count(device => device.Connected);
+            var online = snapshot.Count(device => device.Connected == true);
+            var unknown = snapshot.Count(device => device.Connected is null);
             deviceDescription = online > 0
                 ? $"{online} 台在线，可立即连接"
+                : unknown > 0
+                    ? $"{unknown} 台设备状态未知，请稍后刷新"
                 : snapshot.Count > 0
                     ? "均已配对，当前没有在线设备"
                     : "还没有配对设备";

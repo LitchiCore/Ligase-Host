@@ -14,6 +14,7 @@ public sealed partial class DevicesPage : Page
     public DevicesViewModel ViewModel { get; }
     public AttendedPairingViewModel PairingViewModel { get; }
     private readonly AttendedPairingCoordinator _pairing;
+    private readonly DevicePresenceCoordinator _presence;
 
     public DevicesPage()
     {
@@ -21,6 +22,7 @@ public sealed partial class DevicesPage : Page
         ViewModel = services.GetRequiredService<DevicesViewModel>();
         PairingViewModel = services.GetRequiredService<AttendedPairingViewModel>();
         _pairing = services.GetRequiredService<AttendedPairingCoordinator>();
+        _presence = services.GetRequiredService<DevicePresenceCoordinator>();
         InitializeComponent();
         Loaded += OnLoaded;
         Unloaded += OnUnloaded;
@@ -58,14 +60,18 @@ public sealed partial class DevicesPage : Page
     {
         _pairing.ProjectionChanged += OnProjectionChanged;
         _pairing.AvailabilityChanged += OnAvailabilityChanged;
+        _presence.ProjectionChanged += OnDeviceProjectionChanged;
         if (_pairing.Current is not null)
             PairingViewModel.Apply(_pairing.Current);
+        if (_presence.Current is not null)
+            ViewModel.Apply(_presence.Current);
     }
 
     private void OnUnloaded(object sender, RoutedEventArgs e)
     {
         _pairing.ProjectionChanged -= OnProjectionChanged;
         _pairing.AvailabilityChanged -= OnAvailabilityChanged;
+        _presence.ProjectionChanged -= OnDeviceProjectionChanged;
     }
 
     private void OnProjectionChanged(AttendedPairingProjection projection) =>
@@ -73,6 +79,9 @@ public sealed partial class DevicesPage : Page
 
     private void OnAvailabilityChanged(string message) =>
         DispatcherQueue.TryEnqueue(() => PairingViewModel.SetUnavailable(message));
+
+    private void OnDeviceProjectionChanged(DevicePresenceProjection projection) =>
+        DispatcherQueue.TryEnqueue(() => ViewModel.Apply(projection));
 
     private async void OnAllow(object sender, RoutedEventArgs e)
     {
@@ -111,6 +120,11 @@ public sealed partial class DevicesPage : Page
         {
             Text = device.Name,
             FontSize = 18,
+            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold
+        });
+        content.Children.Add(new TextBlock
+        {
+            Text = $"当前状态：{device.Status}",
             FontWeight = Microsoft.UI.Text.FontWeights.SemiBold
         });
         content.Children.Add(new TextBlock

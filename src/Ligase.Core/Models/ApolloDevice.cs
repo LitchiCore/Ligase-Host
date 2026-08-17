@@ -22,7 +22,7 @@ public sealed class ApolloDevice
     [JsonPropertyName("always_use_virtual_display")]
     public bool AlwaysUseVirtualDisplay { get; init; }
 
-    public bool Connected { get; init; }
+    public bool? Connected { get; init; }
 }
 
 public sealed class ApolloDeviceSnapshot

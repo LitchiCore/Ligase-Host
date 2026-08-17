@@ -230,10 +230,26 @@ Web UI product model.
 - Paired device cards show **Operate** or **Observe only** and expose a
   management dialog. Permission changes and device deletion are core-owned
   loopback operations, not direct edits of `state.json`.
+- Online presence is owned only by the Core device projection. The Core sets
+  `connected=true` when the paired UUID is present in its current RTSP session
+  UUID set and `connected=false` when it is not. Desktop does not infer online
+  state from IP address, last-seen time, window state, cached data, or pairing.
+- An explicit `true` displays **Online** and an explicit `false` displays
+  **Offline**. A missing `connected` field or a failed/stale device readback
+  displays **Status unknown**; it never defaults to Online or Offline. Offline
+  retains pairing and is independent of the Operate/Observe permission.
+- The Desktop polls the loopback projection once per second through one
+  cancellable coordinator. It updates cards in place by stable device UUID,
+  deduplicates unchanged projections, and keeps the name/UUID ordering stable
+  when only presence changes. Core or Host restart temporarily produces
+  unknown until a fresh authoritative projection arrives.
+- Device cards and the management detail both display presence text. Card
+  automation names/help text include the same state and the changing status is
+  a polite live region; color and glyph are only supplementary cues.
 - Device deletion names the device and explains that pairing must be repeated.
   An active device is not silently disconnected: the first delete returns a
   conflict and the UI separately offers **End stream and delete**.
-- Displays name, stable device UUID, connected/paired state, display policy,
+- Displays name, stable device UUID, online/offline/unknown state, display policy,
   permission mask, and whether client commands are allowed.
 - The local endpoint rejects non-loopback callers.
 - Empty, core-not-running, interface-unavailable, and read-failure states remain
