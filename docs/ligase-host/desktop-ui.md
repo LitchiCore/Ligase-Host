@@ -267,6 +267,10 @@ the frozen cross-client semantics, pairing protocol, and shared color tokens.
   a second UI or Apollo instance.
 - The tray menu can show the window, start or stop the Ligase streaming core,
   or exit the product.
+- A single left click on the tray icon restores the one existing window. A
+  Windows double-click sequence is coalesced into that same single restore;
+  it never creates or activates a second window. Right click remains reserved
+  for the tray menu.
 - The Settings page also exposes an explicit exit action. A full exit removes
   the tray icon and stops only the Ligase-owned Apollo process.
 - Optional Windows startup uses the current-user Run key with `--minimized`, so

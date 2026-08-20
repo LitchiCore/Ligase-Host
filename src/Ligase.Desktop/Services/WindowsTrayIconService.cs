@@ -13,6 +13,7 @@ public sealed class WindowsTrayIconService : IDisposable
     private const uint NifMessage = 0x00000001;
     private const uint NifIcon = 0x00000002;
     private const uint NifTip = 0x00000004;
+    private const uint WmLbuttonUp = 0x0202;
     private const uint WmLbuttonDblclk = 0x0203;
     private const uint WmRbuttonUp = 0x0205;
     private const uint WmContextMenu = 0x007B;
@@ -30,6 +31,8 @@ public sealed class WindowsTrayIconService : IDisposable
 
     private readonly WindowProcedure _windowProcedure;
     private readonly ApolloInstanceManager _core;
+    private readonly TrayActivationDeduplicator _activationDeduplicator;
+    private Microsoft.UI.Dispatching.DispatcherQueue? _dispatcherQueue;
     private IntPtr _windowHandle;
     private IntPtr _previousWindowProcedure;
     private bool _initialized;
@@ -41,12 +44,15 @@ public sealed class WindowsTrayIconService : IDisposable
     public WindowsTrayIconService(ApolloInstanceManager core)
     {
         _core = core;
+        _activationDeduplicator = new TrayActivationDeduplicator(
+            TimeSpan.FromMilliseconds(GetDoubleClickTime()));
         _windowProcedure = WindowMessageHandler;
     }
 
     public void Initialize(Window window)
     {
         if (_initialized) return;
+        _dispatcherQueue = window.DispatcherQueue;
         _windowHandle = WinRT.Interop.WindowNative.GetWindowHandle(window);
         _previousWindowProcedure = SetWindowLongPtr(
             _windowHandle,
@@ -94,6 +100,8 @@ public sealed class WindowsTrayIconService : IDisposable
         }
 
         _initialized = false;
+        _activationDeduplicator.Dispose();
+        _dispatcherQueue = null;
         _previousWindowProcedure = IntPtr.Zero;
         _windowHandle = IntPtr.Zero;
     }
@@ -107,9 +115,15 @@ public sealed class WindowsTrayIconService : IDisposable
         if (message == CallbackMessage)
         {
             var notification = unchecked((uint)lParam.ToInt64());
+            if (notification == WmLbuttonUp)
+            {
+                _activationDeduplicator.OnLeftButtonUp(RequestRestoreOnUiThread);
+                return IntPtr.Zero;
+            }
             if (notification == WmLbuttonDblclk)
             {
-                RestoreWindow();
+                _activationDeduplicator.OnLeftButtonDoubleClick(
+                    RequestRestoreOnUiThread);
                 return IntPtr.Zero;
             }
 
@@ -121,6 +135,14 @@ public sealed class WindowsTrayIconService : IDisposable
         }
 
         return CallWindowProc(_previousWindowProcedure, window, message, wParam, lParam);
+    }
+
+    private void RequestRestoreOnUiThread()
+    {
+        var dispatcher = _dispatcherQueue;
+        if (dispatcher is null) return;
+        if (dispatcher.HasThreadAccess) RestoreWindow();
+        else _ = dispatcher.TryEnqueue(RestoreWindow);
     }
 
     private void ShowContextMenu()
@@ -290,4 +312,74 @@ public sealed class WindowsTrayIconService : IDisposable
 
     [DllImport("user32.dll")]
     private static extern bool GetCursorPos(out Point point);
+
+    [DllImport("user32.dll")]
+    private static extern uint GetDoubleClickTime();
+}
+
+internal sealed class TrayActivationDeduplicator(TimeSpan singleClickDelay) : IDisposable
+{
+    private readonly object _sync = new();
+    private CancellationTokenSource? _pending;
+    private bool _suppressTrailingUp;
+
+    public void OnLeftButtonUp(Action restore)
+    {
+        CancellationTokenSource pending;
+        lock (_sync)
+        {
+            if (_suppressTrailingUp)
+            {
+                _suppressTrailingUp = false;
+                return;
+            }
+            _pending?.Cancel();
+            pending = _pending = new CancellationTokenSource();
+        }
+
+        _ = CompleteSingleClickAsync(pending, restore);
+    }
+
+    public void OnLeftButtonDoubleClick(Action restore)
+    {
+        lock (_sync)
+        {
+            _pending?.Cancel();
+            _pending = null;
+            _suppressTrailingUp = true;
+        }
+        restore();
+    }
+
+    private async Task CompleteSingleClickAsync(
+        CancellationTokenSource pending,
+        Action restore)
+    {
+        try
+        {
+            await Task.Delay(singleClickDelay, pending.Token);
+            lock (_sync)
+            {
+                if (!ReferenceEquals(_pending, pending)) return;
+                _pending = null;
+            }
+            restore();
+        }
+        catch (OperationCanceledException) when (pending.IsCancellationRequested)
+        {
+        }
+        finally
+        {
+            pending.Dispose();
+        }
+    }
+
+    public void Dispose()
+    {
+        lock (_sync)
+        {
+            _pending?.Cancel();
+            _pending = null;
+        }
+    }
 }
