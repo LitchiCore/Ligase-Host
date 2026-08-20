@@ -27,6 +27,11 @@ $sourceHead = (& git -C $sourceRoot rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or $sourceHead -notmatch '^[0-9a-f]{40}$') {
   throw "sourceRootInvalid"
 }
+$windowsPowerShell = Join-Path $env:SystemRoot (
+  "System32\WindowsPowerShell\v1.0\powershell.exe")
+if (-not (Test-Path -LiteralPath $windowsPowerShell -PathType Leaf)) {
+  throw "windowsPowerShell51Missing"
+}
 
 function Get-Sha256([byte[]]$Bytes) {
   $sha = [Security.Cryptography.SHA256]::Create()
@@ -151,7 +156,7 @@ if (`$result.code -cne 'nsisCompilerEvidenceCaptured') { exit 98 }
 [IO.File]::WriteAllText('$failureEvidence\caller-consumed.marker', [string]`$result.exitCode)
 exit [int]`$result.exitCode
 "@, [Text.UTF8Encoding]::new($false))
-$failureRun = Invoke-Bounded "powershell.exe" @(
+$failureRun = Invoke-Bounded $windowsPowerShell @(
   "-NoLogo","-NoProfile","-NonInteractive","-ExecutionPolicy","Bypass",
   "-File",$failureDriver) @{}
 if ($failureRun.exitCode -ne 37 -or
@@ -188,7 +193,7 @@ if (`$result.code -cne 'nsisCompilerEvidenceCaptured' -or [int]`$result.exitCode
 [IO.File]::WriteAllText('$successEvidence\caller-continued.marker', 'signatureValidationReachable')
 exit 0
 "@, [Text.UTF8Encoding]::new($false))
-$successRun = Invoke-Bounded "powershell.exe" @(
+$successRun = Invoke-Bounded $windowsPowerShell @(
   "-NoLogo","-NoProfile","-NonInteractive","-ExecutionPolicy","Bypass",
   "-File",$successDriver) @{}
 if ($successRun.exitCode -ne 0 -or -not (Test-Path -LiteralPath $successArtifact) -or
@@ -305,17 +310,12 @@ if ($emit.exitCode -ne 0 -or $emit.stderr.Length -ne 0) {
   throw "resultConsumerFixtureGenerationFailed"
 }
 $manage = Join-Path $PSScriptRoot "Manage-LigaseInstallation.ps1"
-$windowsPowerShell = Join-Path $env:SystemRoot (
-  "System32\WindowsPowerShell\v1.0\powershell.exe")
-if (-not (Test-Path -LiteralPath $windowsPowerShell -PathType Leaf)) {
-  throw "windowsPowerShell51Missing"
-}
 $consumerEnvironment = @{ LIGASE_INSTALL_VALIDATION_HARNESS="1" }
 foreach ($case in @(
     @{name="valid"; accepted=$true},
     @{name="missing-branch"; accepted=$false},
     @{name="contradictory-branch"; accepted=$false})) {
-  $run = Invoke-Bounded "powershell.exe" @(
+  $run = Invoke-Bounded $windowsPowerShell @(
     "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $manage,
     "-Action", "ValidateVirtualDisplayResultContract",
     "-InstallDirectory", $consumerRoot, "-ValidationRoot", $consumerRoot,
@@ -707,7 +707,7 @@ foreach ($fault in @("timeout", "overflow", "dualPipePending",
     LIGASE_VDISPLAY_RUNNER_FAULT=$fault
     LIGASE_VDISPLAY_CALLER_FIXTURE=$fixtureMode
   }
-  $run = Invoke-Bounded "powershell.exe" @(
+  $run = Invoke-Bounded $windowsPowerShell @(
     "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $manage,
     "-Action", "InstallVirtualDisplay", "-InstallDirectory", $runnerRoot,
     "-ValidationRoot", $runnerRoot) $environment 10000
@@ -723,7 +723,7 @@ $sequenceEnvironment = @{
   LIGASE_VDISPLAY_RUNNER_VALIDATION="1"
   LIGASE_VDISPLAY_CALLER_FIXTURE="verifiedProvisionFailure"
 }
-$provisionSequence = Invoke-Bounded "powershell.exe" @(
+$provisionSequence = Invoke-Bounded $windowsPowerShell @(
   "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $manage,
   "-Action", "InstallVirtualDisplay", "-InstallDirectory", $runnerRoot,
   "-ValidationRoot", $runnerRoot) $sequenceEnvironment 10000
@@ -732,7 +732,7 @@ if ($provisionSequence.exitCode -ne 20) {
 }
 $sequenceEnvironment.LIGASE_VDISPLAY_CALLER_FIXTURE =
   "verifiedUninstallRecovery"
-$uninstallSequence = Invoke-Bounded "powershell.exe" @(
+$uninstallSequence = Invoke-Bounded $windowsPowerShell @(
   "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $manage,
   "-Action", "UninstallVirtualDisplay", "-InstallDirectory", $runnerRoot,
   "-ValidationRoot", $runnerRoot) $sequenceEnvironment 10000

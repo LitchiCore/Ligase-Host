@@ -1587,6 +1587,9 @@ public sealed class FreshInstallPackagingTests
             repo, "packaging", "windows", "ligase", "Build-LigaseInstaller.ps1"));
         var capture = File.ReadAllText(Path.Combine(
             repo, "packaging", "windows", "ligase", "Invoke-NsisCompiler.ps1"));
+        var runtime = File.ReadAllText(Path.Combine(
+            repo, "packaging", "windows", "ligase",
+            "Test-LigaseInstallDirectoryRuntime.ps1"));
 
         StringAssert.Contains(build, "Invoke-NsisCompiler.ps1");
         Assert.IsFalse(System.Text.RegularExpressions.Regex.IsMatch(build,
@@ -1603,6 +1606,11 @@ public sealed class FreshInstallPackagingTests
             @"(?m)^\s*exit(?:\s|$)"));
         StringAssert.Contains(build, "$nsisResult = &");
         StringAssert.Contains(build, "nsisBuildFailed:$([int]$nsisResult.exitCode)");
+        StringAssert.Contains(runtime,
+            "System32\\WindowsPowerShell\\v1.0\\powershell.exe");
+        StringAssert.Contains(runtime, "Invoke-Bounded $windowsPowerShell");
+        Assert.IsFalse(runtime.Contains("Invoke-Bounded \"powershell.exe\"",
+            StringComparison.Ordinal));
     }
 
     [TestMethod]
