@@ -153,6 +153,25 @@
                         </DataTemplate>
                     </ListView.ItemTemplate>
                 </ListView>
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                    <Button
+                        AutomationProperties.HelpText="现有游戏仅在库和同步回读成功后显示保存成功"
+                        AutomationProperties.Name="保存封面更改"
+                        Click="OnSaveCoverSelection"
+                        Content="保存封面"
+                        IsEnabled="{x:Bind ViewModel.CanSaveCoverSelection, Mode=OneWay}"
+                        Style="{StaticResource LigaseQuietButtonStyle}" />
+                    <Button
+                        AutomationProperties.Name="预览默认封面"
+                        Click="OnPreviewDefaultCover"
+                        Content="使用默认封面"
+                        Style="{StaticResource LigaseSecondaryButtonStyle}" />
+                    <Button
+                        AutomationProperties.Name="取消封面更改"
+                        Click="OnCancelCoverSelection"
+                        Content="取消"
+                        Style="{StaticResource LigaseSecondaryButtonStyle}" />
+                </StackPanel>
             </StackPanel>
         </Border>
         <Border

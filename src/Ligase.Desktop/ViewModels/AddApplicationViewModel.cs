@@ -16,6 +16,8 @@ public partial class AddApplicationViewModel(
     IExistingItemCoverWorkflow? existingItemCoverWorkflow = null) : ObservableObject
 {
     private (Guid LibraryItemId, uint SteamAppId)? _existingCoverTarget;
+    private CoverCandidate? _pendingCoverCandidate;
+    private bool _pendingDefaultCover;
     public SteamGameResultsViewModel SteamResults { get; } = new();
     public ObservableCollection<CoverCandidate> CoverCandidates { get; } = [];
 
@@ -81,6 +83,8 @@ public partial class AddApplicationViewModel(
         : Visibility.Collapsed;
     public bool CanConfirmShortcut =>
         CanModifyLibrary && ShortcutPreview?.CanConfirmExecutable == true && !IsConfirmingShortcut;
+    public bool CanSaveCoverSelection =>
+        (_pendingCoverCandidate is not null || _pendingDefaultCover) && !IsSearchingCovers;
 
     partial void OnSteamSearchTextChanged(string value) =>
         SteamResults.ApplyFilter(value);
@@ -95,6 +99,8 @@ public partial class AddApplicationViewModel(
     }
     partial void OnMessageChanged(string? value) => OnPropertyChanged(nameof(HasMessage));
     partial void OnIsScanningChanged(bool value) => OnPropertyChanged(nameof(ScanningVisibility));
+    partial void OnIsSearchingCoversChanged(bool value) =>
+        OnPropertyChanged(nameof(CanSaveCoverSelection));
     partial void OnCanModifyLibraryChanged(bool value)
     {
         SteamResults.SetCanModifyLibrary(value);
@@ -322,6 +328,7 @@ public partial class AddApplicationViewModel(
         SelectedCoverSteamAppId = result.AppId;
         SelectedCoverPath = null;
         SelectedCoverPreviewUrl = null;
+        ClearPendingCover();
         try
         {
             IReadOnlyList<CoverCandidate> candidates;
@@ -362,10 +369,44 @@ public partial class AddApplicationViewModel(
         }
     }
 
-    public async Task SelectCoverAsync(
+    public Task SelectCoverAsync(
         CoverCandidate candidate,
         CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (_existingCoverTarget is { } target && candidate.SteamAppId != target.SteamAppId)
+            throw new ExistingItemCoverUpdateException(
+                "coverRequestCorrelationMismatch",
+                "该封面不属于当前 Steam 游戏，未保存。");
+        _pendingCoverCandidate = candidate;
+        _pendingDefaultCover = false;
+        SelectedCoverPreviewUrl = candidate.PreviewUrl;
+        SelectedCoverSteamAppId = candidate.SteamAppId;
+        Message = $"正在预览“{candidate.Name}”。请确认保存，或选择默认封面/取消。";
+        OnPropertyChanged(nameof(CanSaveCoverSelection));
+        return Task.CompletedTask;
+    }
+
+    public void PreviewDefaultCover()
+    {
+        _pendingCoverCandidate = null;
+        _pendingDefaultCover = true;
+        SelectedCoverPreviewUrl = null;
+        Message = "正在预览 Ligase 默认封面。请确认保存，或取消本次更改。";
+        OnPropertyChanged(nameof(CanSaveCoverSelection));
+    }
+
+    public void CancelCoverSelection()
+    {
+        ClearPendingCover();
+        _existingCoverTarget = null;
+        Message = "已取消封面更改；游戏库和同步内容未发生变化。";
+    }
+
+    public async Task SaveCoverSelectionAsync(
+        CancellationToken cancellationToken = default)
+    {
+        if (!CanSaveCoverSelection) return;
         IsSearchingCovers = true;
         try
         {
@@ -375,30 +416,63 @@ public partial class AddApplicationViewModel(
                     throw new ExistingItemCoverUpdateException(
                         "existingCoverWorkflowUnavailable",
                         "现有游戏封面事务当前不可用，游戏库未发生变化。");
-                var result = await existingItemCoverWorkflow.ApplyAsync(
-                    target.LibraryItemId,
-                    target.SteamAppId,
-                    candidate,
-                    cancellationToken);
-                SelectedCoverPath = result.CoverImagePath;
-                SelectedCoverPreviewUrl = new Uri(result.CoverImagePath).AbsoluteUri;
-                SelectedCoverSteamAppId = target.SteamAppId;
-                Message = result.Idempotent
-                    ? $"“{candidate.Name}”已经是当前持久化封面（库修订 {result.LibraryRevision}）。"
-                    : $"已持久化“{candidate.Name}”并完成 Host/Android 同步回读（库修订 {result.LibraryRevision}）。";
+                if (_pendingDefaultCover)
+                {
+                    var reset = await existingItemCoverWorkflow.ResetAsync(
+                        target.LibraryItemId, target.SteamAppId, cancellationToken);
+                    SelectedCoverPath = null;
+                    SelectedCoverPreviewUrl = null;
+                    SelectedCoverSteamAppId = target.SteamAppId;
+                    Message = reset.Idempotent
+                        ? $"当前已使用默认封面（库修订 {reset.LibraryRevision}）。"
+                        : $"已恢复默认封面并完成 Host/Android 同步回读（库修订 {reset.LibraryRevision}）。";
+                }
+                else
+                {
+                    var candidate = _pendingCoverCandidate!;
+                    var result = await existingItemCoverWorkflow.ApplyAsync(
+                        target.LibraryItemId,
+                        target.SteamAppId,
+                        candidate,
+                        cancellationToken);
+                    SelectedCoverPath = result.CoverImagePath;
+                    SelectedCoverPreviewUrl = new Uri(result.CoverImagePath).AbsoluteUri;
+                    SelectedCoverSteamAppId = target.SteamAppId;
+                    Message = result.Idempotent
+                        ? $"“{candidate.Name}”已经是当前持久化封面（库修订 {result.LibraryRevision}）。"
+                        : $"已持久化“{candidate.Name}”并完成 Host/Android 同步回读（库修订 {result.LibraryRevision}）。";
+                }
                 _existingCoverTarget = null;
-                return;
             }
-
-            SelectedCoverPath = await coverArtService.DownloadAsync(candidate, cancellationToken);
-            SelectedCoverPreviewUrl = new Uri(SelectedCoverPath).AbsoluteUri;
-            SelectedCoverSteamAppId = candidate.SteamAppId;
-            Message = $"已选择“{candidate.Name}”的封面。";
+            else if (_pendingDefaultCover)
+            {
+                SelectedCoverPath = null;
+                SelectedCoverPreviewUrl = null;
+                SelectedCoverSteamAppId = null;
+                Message = "添加时将使用 Ligase 默认封面；尚未写入游戏库。";
+            }
+            else
+            {
+                var candidate = _pendingCoverCandidate!;
+                SelectedCoverPath = await coverArtService.DownloadAsync(
+                    candidate, cancellationToken);
+                SelectedCoverPreviewUrl = new Uri(SelectedCoverPath).AbsoluteUri;
+                SelectedCoverSteamAppId = candidate.SteamAppId;
+                Message = $"已准备“{candidate.Name}”；仅在确认添加游戏后写入游戏库。";
+            }
+            ClearPendingCover();
         }
         finally
         {
             IsSearchingCovers = false;
         }
+    }
+
+    private void ClearPendingCover()
+    {
+        _pendingCoverCandidate = null;
+        _pendingDefaultCover = false;
+        OnPropertyChanged(nameof(CanSaveCoverSelection));
     }
 
     public void SetExecutablePath(string path)
@@ -492,6 +566,7 @@ public partial class AddApplicationViewModel(
 
     private void ResetCoverSelection()
     {
+        ClearPendingCover();
         _existingCoverTarget = null;
         SelectedCoverPath = null;
         SelectedCoverPreviewUrl = null;

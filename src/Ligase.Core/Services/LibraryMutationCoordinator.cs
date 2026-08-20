@@ -272,6 +272,81 @@ public sealed class LibraryMutationCoordinator(
             outcome.Revision);
     }
 
+    public async Task<ExistingItemCoverResetResult> ResetExistingSteamCoverAsync(
+        Guid libraryItemId,
+        PortableGameIdentityV1 portableIdentity,
+        CancellationToken cancellationToken = default)
+    {
+        if (!LayoutContractV1Validator.TryNormalizePortableIdentity(
+                portableIdentity, out var normalized) ||
+            normalized != portableIdentity ||
+            !string.Equals(normalized.Provider, "steam", StringComparison.Ordinal))
+            throw new ExistingItemCoverUpdateException(
+                "coverRequestCorrelationMismatch",
+                "当前游戏身份无效，未恢复默认封面。");
+
+        var outcome = await MutateAsync(
+            async token =>
+            {
+                var beforeState = await repository.LoadAsync(token);
+                var beforeItem = beforeState.Items.SingleOrDefault(item =>
+                    item.Id == libraryItemId)
+                    ?? throw new LibraryItemNotFoundException(libraryItemId);
+                if (beforeItem.PortableIdentity != normalized)
+                    throw new ExistingItemCoverUpdateException(
+                        "libraryIdentityChanged",
+                        "游戏身份已变化，未恢复默认封面。");
+                var idempotent = beforeItem.CoverImagePath is null &&
+                    beforeItem.CoverContentSha256 is null &&
+                    beforeItem.CoverSourceKind is null &&
+                    beforeItem.CoverSourceId is null &&
+                    beforeItem.CoverUsageRights is null;
+                var updated = idempotent
+                    ? beforeItem
+                    : await repository.ResetSteamCoverAsync(
+                        libraryItemId, normalized, token);
+                return new CoverMutationOutcome(
+                    updated,
+                    idempotent,
+                    idempotent ? beforeState.Revision : beforeState.Revision + 1,
+                    beforeState.Items.Select(item =>
+                        item.Id == updated.Id ? updated : item).ToArray());
+            },
+            (readback, value) =>
+                value.Updated.Id == libraryItemId &&
+                value.Updated.PortableIdentity == normalized &&
+                value.Updated.CoverImagePath is null &&
+                value.Updated.CoverContentSha256 is null &&
+                value.Updated.CoverSourceKind is null &&
+                value.Updated.CoverSourceId is null &&
+                value.Updated.CoverUsageRights is null &&
+                readback.LibraryRevision == value.Revision &&
+                HasPublishedItem(readback, value.Updated) &&
+                HasLaunchMapping(readback, value.Updated.Id),
+            cancellationToken);
+
+        var cleanupCompleted = true;
+        if (coverArtService is not null)
+        {
+            try
+            {
+                await coverArtService.PruneUnreferencedAsync(
+                    outcome.ProjectedItems, CancellationToken.None);
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                cleanupCompleted = false;
+            }
+        }
+        return new ExistingItemCoverResetResult(
+            outcome.Updated.Id,
+            outcome.Updated.PortableIdentity!,
+            outcome.Updated.UpdatedAt,
+            outcome.Idempotent,
+            cleanupCompleted,
+            outcome.Revision);
+    }
+
     private sealed record CoverMutationOutcome(
         LibraryItem Updated,
         bool Idempotent,

@@ -181,6 +181,30 @@ public sealed class ExistingItemCoverUpdateTests
         CollectionAssert.AreEqual(syncBytes, await File.ReadAllBytesAsync(fixture.Paths.SyncFile));
     }
 
+    [TestMethod]
+    public async Task RestoreDefaultClearsAllCoverFieldsAfterCoreReadback()
+    {
+        var fixture = await Fixture.CreateAsync(_root, seedOldCover: true);
+        var oldPath = fixture.Item.CoverImagePath!;
+
+        var result = await fixture.Coordinator.ResetExistingSteamCoverAsync(
+            fixture.Item.Id, fixture.Item.PortableIdentity!);
+
+        Assert.IsFalse(result.Idempotent);
+        Assert.IsTrue(result.SupersededCoverCleanupCompleted);
+        Assert.IsFalse(File.Exists(oldPath));
+        var persisted = (await fixture.Library.LoadAsync()).Items.Single(item =>
+            item.Id == fixture.Item.Id);
+        Assert.IsNull(persisted.CoverImagePath);
+        Assert.IsNull(persisted.CoverContentSha256);
+        Assert.IsNull(persisted.CoverSourceKind);
+        Assert.IsNull(persisted.CoverSourceId);
+        Assert.IsNull(persisted.CoverUsageRights);
+        var readback = fixture.Authority.LastReadback!.LibraryItems.Single(item =>
+            item.Id.Equals(fixture.Item.Id.ToString("D"), StringComparison.OrdinalIgnoreCase));
+        Assert.IsNull(readback.CoverSha256);
+    }
+
     private const uint AppId = 3548580;
 
     private sealed class Fixture

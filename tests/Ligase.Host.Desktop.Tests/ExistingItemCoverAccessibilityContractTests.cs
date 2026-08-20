@@ -21,6 +21,7 @@ public sealed class ExistingItemCoverAccessibilityContractTests
         StringAssert.Contains(page, "PrimaryButtonText = item.Kind == LibraryItemKind.Steam ? \"选择封面\"");
         StringAssert.Contains(page, "ShowExistingCoverPickerAsync(item)");
         StringAssert.Contains(page, "PrimaryButtonText = \"使用此封面\"");
+        StringAssert.Contains(page, "SecondaryButtonText = \"使用默认封面\"");
         Assert.IsTrue(
             page.IndexOf("confirm.ShowAsync()", StringComparison.Ordinal) <
             page.IndexOf("coverViewModel.ApplyAsync", StringComparison.Ordinal));
@@ -30,9 +31,12 @@ public sealed class ExistingItemCoverAccessibilityContractTests
         StringAssert.Contains(viewModel, "UpdateExistingSteamCoverAsync");
         StringAssert.Contains(coordinator, "RequireReadbackAsync");
         StringAssert.Contains(coordinator, "HasPublishedItem(readback,");
+        StringAssert.Contains(coordinator, "ResetExistingSteamCoverAsync");
         StringAssert.Contains(coordinator, ".Updated)");
         StringAssert.Contains(addPage, "ViewModel.FindSteamCoverAsync(result)");
         Assert.IsFalse(addPage.Contains("FindSteamCoverAsync(result.Game)", StringComparison.Ordinal));
+        StringAssert.Contains(addPage, "ViewModel.SaveCoverSelectionAsync()");
+        StringAssert.Contains(addPage, "ViewModel.CancelCoverSelection()");
     }
 
     private static string RepositoryRoot()

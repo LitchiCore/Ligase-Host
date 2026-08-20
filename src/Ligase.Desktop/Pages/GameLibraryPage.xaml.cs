@@ -125,10 +125,26 @@ public sealed partial class GameLibraryPage : Page
                 Title = $"为“{item.Name}”选择封面",
                 Content = content,
                 PrimaryButtonText = "使用此封面",
+                SecondaryButtonText = "使用默认封面",
                 CloseButtonText = "取消",
                 DefaultButton = ContentDialogButton.Primary
             };
-            if (await confirm.ShowAsync() != ContentDialogResult.Primary) return;
+            var selection = await confirm.ShowAsync();
+            if (selection == ContentDialogResult.None) return;
+
+            if (selection == ContentDialogResult.Secondary)
+            {
+                var reset = await coverViewModel.ResetAsync(
+                    item.Id, item.SteamAppId!.Value);
+                await ViewModel.RefreshAsync();
+                await ShowMessageAsync(
+                    reset.Idempotent ? "当前已使用默认封面" : "已恢复默认封面并同步",
+                    $"同一游戏 UUID 已完成持久化与核心回读（库修订 {reset.LibraryRevision}）。" +
+                    (reset.SupersededCoverCleanupCompleted
+                        ? string.Empty
+                        : " 旧封面缓存暂未清理，不影响默认封面；Host 会在后续维护中重试。"));
+                return;
+            }
 
             var result = await coverViewModel.ApplyAsync(item, candidate);
             await ViewModel.RefreshAsync();

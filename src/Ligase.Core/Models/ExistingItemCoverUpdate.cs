@@ -18,6 +18,14 @@ public sealed record ExistingItemCoverUpdateResult(
     bool SupersededCoverCleanupCompleted,
     long LibraryRevision);
 
+public sealed record ExistingItemCoverResetResult(
+    Guid LibraryItemId,
+    PortableGameIdentityV1 PortableIdentity,
+    DateTimeOffset UpdatedAt,
+    bool Idempotent,
+    bool SupersededCoverCleanupCompleted,
+    long LibraryRevision);
+
 public sealed class ExistingItemCoverUpdateException(
     string code,
     string message,

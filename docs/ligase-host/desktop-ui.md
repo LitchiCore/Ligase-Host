@@ -96,6 +96,16 @@ Back, Steam search focus, and an explicit Expand tools action available. The
 96/24 pixel collapse/expand hysteresis prevents layout oscillation near the
 boundary; the Steam search editor retains its UI Automation name and label.
 
+Cover actions use four distinct states: selecting a candidate is preview only;
+**Save cover** performs the library/Core/Sync transaction; **Use default
+cover** is itself a preview until saved; and **Cancel** performs no library
+mutation. Existing Steam items report success only after the same UUID and
+portable identity have been read back from Core. Restoring the default clears
+all five cover authority fields atomically and prunes only an unreferenced
+Ligase-owned cached artifact. For a not-yet-added item, saving a preview only
+prepares local artwork; the UI says that the library write occurs when Add is
+confirmed.
+
 ## Local Windows shortcut preview boundary
 
 The first shortcut-import boundary accepts only local `.lnk` files that the

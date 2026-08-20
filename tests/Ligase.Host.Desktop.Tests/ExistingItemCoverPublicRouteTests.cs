@@ -23,11 +23,42 @@ public sealed class ExistingItemCoverPublicRouteTests
         await viewModel.SelectCoverAsync(candidate);
 
         Assert.AreEqual(1, workflow.FindCalls);
+        Assert.AreEqual(0, workflow.ApplyCalls);
+        StringAssert.Contains(viewModel.Message, "正在预览");
+
+        await viewModel.SaveCoverSelectionAsync();
+
         Assert.AreEqual(1, workflow.ApplyCalls);
         Assert.AreEqual(itemId, workflow.AppliedLibraryItemId);
         Assert.AreEqual(appId, workflow.AppliedSteamAppId);
         Assert.AreEqual(artifact, viewModel.SelectedCoverPath);
         StringAssert.Contains(viewModel.Message, "已持久化");
+        StringAssert.Contains(viewModel.Message, "同步回读");
+    }
+
+    [TestMethod]
+    public async Task CancelNeverMutatesAndDefaultRequiresExplicitSave()
+    {
+        var itemId = Guid.NewGuid();
+        var appId = 3548580u;
+        var candidate = Candidate(appId);
+        var workflow = new RecordingWorkflow(candidate, "D:\\cover.png");
+        var viewModel = new AddApplicationViewModel(
+            null!, null!, null!, null!, null!, null!, workflow);
+        var card = new SteamGameResultViewModel(Game(appId), itemId);
+
+        await viewModel.FindSteamCoverAsync(card);
+        await viewModel.SelectCoverAsync(candidate);
+        viewModel.CancelCoverSelection();
+        await viewModel.SaveCoverSelectionAsync();
+        Assert.AreEqual(0, workflow.ApplyCalls);
+        Assert.AreEqual(0, workflow.ResetCalls);
+
+        await viewModel.FindSteamCoverAsync(card);
+        viewModel.PreviewDefaultCover();
+        Assert.AreEqual(0, workflow.ResetCalls);
+        await viewModel.SaveCoverSelectionAsync();
+        Assert.AreEqual(1, workflow.ResetCalls);
         StringAssert.Contains(viewModel.Message, "同步回读");
     }
 
@@ -91,6 +122,7 @@ public sealed class ExistingItemCoverPublicRouteTests
     {
         public int FindCalls { get; private set; }
         public int ApplyCalls { get; private set; }
+        public int ResetCalls { get; private set; }
         public Guid AppliedLibraryItemId { get; private set; }
         public uint AppliedSteamAppId { get; private set; }
 
@@ -124,6 +156,21 @@ public sealed class ExistingItemCoverPublicRouteTests
                 false,
                 true,
                 2));
+        }
+
+        public Task<ExistingItemCoverResetResult> ResetAsync(
+            Guid libraryItemId,
+            uint steamAppId,
+            CancellationToken cancellationToken = default)
+        {
+            ResetCalls++;
+            return Task.FromResult(new ExistingItemCoverResetResult(
+                libraryItemId,
+                new PortableGameIdentityV1("steam", steamAppId.ToString()),
+                DateTimeOffset.UtcNow,
+                false,
+                true,
+                3));
         }
     }
 }

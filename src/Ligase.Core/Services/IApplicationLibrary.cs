@@ -33,5 +33,10 @@ public interface IApplicationLibrary
         PortableGameIdentityV1 expectedPortableIdentity,
         string coverImagePath,
         CancellationToken cancellationToken = default);
+    Task<LibraryItem> ResetSteamCoverAsync(
+        Guid id,
+        PortableGameIdentityV1 expectedPortableIdentity,
+        CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException();
     Task RemoveAsync(Guid id, CancellationToken cancellationToken = default);
 }

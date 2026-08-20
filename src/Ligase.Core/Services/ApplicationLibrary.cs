@@ -247,6 +247,58 @@ public sealed class ApplicationLibrary(
             return updated;
         }, cancellationToken);
 
+    public Task<LibraryItem> ResetSteamCoverAsync(
+        Guid id,
+        PortableGameIdentityV1 expectedPortableIdentity,
+        CancellationToken cancellationToken = default) =>
+        MutateAsync(state =>
+        {
+            var index = state.Items.FindIndex(item => item.Id == id);
+            if (index < 0) throw new LibraryItemNotFoundException(id);
+            var current = state.Items[index];
+            if (current.Kind != LibraryItemKind.Steam ||
+                current.SteamAppId is not uint appId ||
+                current.PortableIdentity != expectedPortableIdentity ||
+                !string.Equals(expectedPortableIdentity.Provider, "steam", StringComparison.Ordinal) ||
+                !string.Equals(expectedPortableIdentity.Id,
+                    appId.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    StringComparison.Ordinal))
+                throw new ExistingItemCoverUpdateException(
+                    "portableIdentityMismatch",
+                    "游戏身份已变化，未恢复默认封面。请刷新游戏库后重试。");
+            if (current.CoverImagePath is null &&
+                current.CoverContentSha256 is null &&
+                current.CoverSourceKind is null &&
+                current.CoverSourceId is null &&
+                current.CoverUsageRights is null)
+                return current;
+
+            var updated = new LibraryItem
+            {
+                Id = current.Id,
+                Kind = current.Kind,
+                Name = current.Name,
+                ExecutablePath = current.ExecutablePath,
+                Arguments = current.Arguments,
+                WorkingDirectory = current.WorkingDirectory,
+                SteamAppId = current.SteamAppId,
+                SteamInstallPath = current.SteamInstallPath,
+                PortableIdentity = current.PortableIdentity,
+                LayoutBinding = current.LayoutBinding,
+                CoverImagePath = null,
+                CoverContentSha256 = null,
+                CoverSourceKind = null,
+                CoverSourceId = null,
+                CoverUsageRights = null,
+                PublishedToClients = current.PublishedToClients,
+                AddedAt = current.AddedAt,
+                UpdatedAt = DateTimeOffset.UtcNow,
+                LastPlayedAt = current.LastPlayedAt
+            };
+            state.Items[index] = updated;
+            return updated;
+        }, cancellationToken);
+
     public async Task RemoveAsync(Guid id, CancellationToken cancellationToken = default)
     {
         await MutateAsync<object?>(state =>

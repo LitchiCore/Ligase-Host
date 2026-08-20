@@ -211,6 +211,24 @@ public sealed partial class AddApplicationPage : Page
         }
     }
 
+    private async void OnSaveCoverSelection(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            await ViewModel.SaveCoverSelectionAsync();
+        }
+        catch (Exception exception)
+        {
+            ViewModel.Message = $"无法保存封面：{exception.Message}";
+        }
+    }
+
+    private void OnPreviewDefaultCover(object sender, RoutedEventArgs e) =>
+        ViewModel.PreviewDefaultCover();
+
+    private void OnCancelCoverSelection(object sender, RoutedEventArgs e) =>
+        ViewModel.CancelCoverSelection();
+
     private async void OnFindSteamCover(object sender, RoutedEventArgs e)
     {
         if (sender is SteamGameResultCard { Result: { } result })
