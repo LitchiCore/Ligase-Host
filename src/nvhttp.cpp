@@ -12,6 +12,7 @@
 #include <format>
 #include <fstream>
 #include <iomanip>
+#include <map>
 #include <mutex>
 #include <regex>
 #include <sstream>
@@ -21,6 +22,7 @@
 // lib includes
 #include <boost/asio/ssl/context.hpp>
 #include <boost/asio/ssl/context_base.hpp>
+#include <boost/algorithm/string/predicate.hpp>
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
 #include <boost/property_tree/xml_parser.hpp>
@@ -786,6 +788,95 @@ namespace nvhttp {
     return !!(client.perm & PERM::launch);
   }
 
+  namespace {
+    using presence_clock = std::chrono::steady_clock;
+    constexpr auto presence_timeout = 15000ms;
+    const auto presence_core_started = presence_clock::now();
+    std::mutex presence_mutex;
+    std::map<std::string, presence_clock::time_point, std::less<>> presence_receipts;
+
+    std::string_view presence_state_name(device_presence_state state) {
+      switch (state) {
+        case device_presence_state::online: return "online"sv;
+        case device_presence_state::offline: return "offline"sv;
+        default: return "unknown"sv;
+      }
+    }
+
+    std::optional<presence_clock::time_point> presence_receipt(
+      std::string_view uuid
+    ) {
+      std::lock_guard lock(presence_mutex);
+      const auto found = presence_receipts.find(uuid);
+      return found == presence_receipts.end()
+        ? std::nullopt
+        : std::optional(found->second);
+    }
+
+    void record_presence(std::string_view uuid, presence_clock::time_point now) {
+      std::lock_guard lock(presence_mutex);
+      presence_receipts[std::string(uuid)] = now;
+    }
+
+    template<class Request>
+    bool exact_header(
+      const std::shared_ptr<Request> &request,
+      std::string_view name,
+      std::string_view expected
+    ) {
+      std::size_t count = 0;
+      for (const auto &[key, value] : request->header) {
+        if (boost::iequals(key, name)) {
+          ++count;
+          if (value != expected) return false;
+        }
+      }
+      return count == 1;
+    }
+  }
+
+  device_presence_projection project_device_presence(
+    std::optional<std::chrono::milliseconds> receipt_age,
+    std::chrono::milliseconds core_uptime
+  ) {
+    if (receipt_age && *receipt_age < presence_timeout) {
+      return {
+        device_presence_state::online,
+        std::max<std::int64_t>(
+          1,
+          (presence_timeout - *receipt_age).count())
+      };
+    }
+    if (!receipt_age && core_uptime < presence_timeout) {
+      return {device_presence_state::unknown, std::nullopt};
+    }
+    return {device_presence_state::offline, 0};
+  }
+
+  bool valid_device_presence_heartbeat(std::string_view body) {
+    if (body.empty() || body.size() > 64 || body.starts_with("\xEF\xBB\xBF")) {
+      return false;
+    }
+    std::size_t schema_keys = 0;
+    const auto callback = [&schema_keys](
+      int,
+      nlohmann::json::parse_event_t event,
+      nlohmann::json &value
+    ) {
+      if (event == nlohmann::json::parse_event_t::key &&
+          value.is_string() && value.get_ref<const std::string &>() == "schemaVersion") {
+        ++schema_keys;
+      }
+      return true;
+    };
+    const auto parsed = nlohmann::json::parse(
+      body.begin(), body.end(), callback, false, true);
+    return !parsed.is_discarded() && parsed.is_object() && parsed.size() == 1 &&
+      schema_keys == 1 && parsed.contains("schemaVersion") &&
+      parsed["schemaVersion"].is_number_integer() &&
+      parsed["schemaVersion"].get<int>() == 1;
+  }
+
   template <class T>
   void print_req(std::shared_ptr<typename SimpleWeb::ServerBase<T>::Request> request) {
     BOOST_LOG(debug) << "TUNNEL :: "sv << tunnel<T>::to_string;
@@ -1245,7 +1336,10 @@ namespace nvhttp {
   nlohmann::json get_all_clients() {
     nlohmann::json named_cert_nodes = nlohmann::json::array();
     client_t &client = client_root;
-    std::list<std::string> connected_uuids = rtsp_stream::get_all_session_uuids();
+    const auto session_uuids = rtsp_stream::get_all_session_uuids();
+    const auto now = presence_clock::now();
+    const auto uptime = std::chrono::duration_cast<std::chrono::milliseconds>(
+      now - presence_core_started);
 
     for (auto &named_cert : client.named_devices) {
       nlohmann::json named_cert_node;
@@ -1277,20 +1371,25 @@ namespace nvhttp {
         named_cert_node["undo"] = undo_cmds_node;
       }
 
-      // Determine connection status
-      bool connected = false;
-      if (connected_uuids.empty()) {
-        connected = false;
-      } else {
-        for (auto it = connected_uuids.begin(); it != connected_uuids.end(); ++it) {
-          if (*it == named_cert->uuid) {
-            connected = true;
-            connected_uuids.erase(it);
-            break;
-          }
-        }
-      }
-      named_cert_node["connected"] = connected;
+      const auto receipt = presence_receipt(named_cert->uuid);
+      const auto age = receipt
+        ? std::optional(std::chrono::duration_cast<std::chrono::milliseconds>(
+            now - *receipt))
+        : std::nullopt;
+      const auto presence = project_device_presence(age, uptime);
+      named_cert_node["presenceState"] = presence_state_name(presence.state);
+      named_cert_node["presenceExpiresInMs"] = presence.expires_in_ms
+        ? nlohmann::json(*presence.expires_in_ms)
+        : nlohmann::json(nullptr);
+
+      const bool has_session = std::find(
+        session_uuids.begin(), session_uuids.end(), named_cert->uuid) !=
+        session_uuids.end();
+      named_cert_node["sessionState"] = !has_session
+        ? "none"
+        : ligase_client_access_mode(*named_cert) == "observe"
+            ? "observing"
+            : "streaming";
 
       named_cert_nodes.push_back(named_cert_node);
     }
@@ -1377,6 +1476,54 @@ namespace nvhttp {
       headers.emplace("Cache-Control", "no-store");
       response->write(status, document.dump(), headers);
       response->close_connection_after_response = true;
+    }
+
+    void ligase_device_presence_heartbeat(
+      resp_https_t response,
+      req_https_t request
+    ) {
+      print_req<SunshineHTTPS>(request);
+      if (!exact_header(request, "Content-Type", "application/json") ||
+          !exact_header(request, "Accept", "application/json")) {
+        send_ligase_json(
+          response,
+          SimpleWeb::StatusCode::client_error_unsupported_media_type,
+          {{"error", "heartbeatEnvelopeInvalid"}}
+        );
+        return;
+      }
+
+      const auto body = request->content.string();
+      if (!valid_device_presence_heartbeat(body)) {
+        send_ligase_json(
+          response,
+          SimpleWeb::StatusCode::client_error_bad_request,
+          {{"error", "heartbeatBodyInvalid"}}
+        );
+        return;
+      }
+
+      auto named_cert_p = get_verified_cert(request);
+      if (!named_cert_p || named_cert_p->uuid.empty()) {
+        send_ligase_json(
+          response,
+          SimpleWeb::StatusCode::client_error_unauthorized,
+          {{"error", "clientIdentityUnavailable"}}
+        );
+        return;
+      }
+
+      record_presence(named_cert_p->uuid, presence_clock::now());
+      send_ligase_json(
+        response,
+        SimpleWeb::StatusCode::success_ok,
+        {
+          {"schemaVersion", 1},
+          {"presenceState", "online"},
+          {"heartbeatIntervalMs", 5000},
+          {"presenceTimeoutMs", 15000}
+        }
+      );
     }
 
     SimpleWeb::StatusCode attended_status(int status) {
@@ -2989,6 +3136,8 @@ namespace nvhttp {
     https_server.resource["^/pair$"]["GET"] = pair<SunshineHTTPS>;
     https_server.resource["^/applist$"]["GET"] = applist;
     https_server.resource["^/ligase/v1/sync$"]["GET"] = ligase_sync;
+    https_server.resource["^/ligase/v1/device-presence/heartbeat$"]["POST"] =
+      ligase_device_presence_heartbeat;
     https_server.resource["^/ligase/v1/streaming$"]["POST"] = ligase_update_streaming;
     https_server.resource["^/ligase/v1/library/sort$"]["POST"] = ligase_update_library_sort;
     https_server.resource["^/appasset$"]["GET"] = appasset;

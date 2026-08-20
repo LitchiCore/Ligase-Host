@@ -73,7 +73,23 @@ The game-library toolbar separates local view sorting from shared Host order:
 - Manual order is shared. After the user chooses **Start sorting**, whole cards
   can be dragged; displaced cards show the prospective order and dropping
   persists the complete published UUID sequence through the managed authority
-  transaction.
+transaction.
+
+## Device presence and active sessions
+
+The Devices page consumes the Core projection defined by
+[`device-presence-v1.md`](device-presence-v1.md) and its adjacent machine
+schema. A valid authenticated heartbeat makes a paired device **online** for
+the bounded monotonic window. No heartbeat after Core warm-up is **offline**;
+an unreadable or warming Core is **unknown**. Pairing, an address, cached UI
+state, and a prior timestamp never upgrade a card to online.
+
+Presence and RTSP session state are separate. The same card can show
+**在线 · 无活动会话**, **在线 · 正在串流**, or **在线 · 正在观察**. Ending a
+stream does not make a still-heartbeating Android client offline. Cards update
+in place, retain stable ordering, and expose the complete state through UI
+Automation name, help text, and polite live announcements; color and glyphs
+are supplementary only.
 - Name A-Z/Z-A, added newest/oldest, and last played are deterministic local
   view choices. They do not change the library revision or Sync.
 

@@ -1,0 +1,155 @@
+{
+  "validHeartbeatRequests": [
+    { "schemaVersion": 1 }
+  ],
+  "invalidHeartbeatRequests": [
+    null,
+    {},
+    { "schemaVersion": 0 },
+    { "schemaVersion": "1" },
+    { "schemaVersion": 1, "deviceUuid": "00000000-0000-0000-0000-000000000001" },
+    { "schemaVersion": 1, "clientTimestamp": "2026-08-20T00:00:00Z" }
+  ],
+  "validHeartbeatResults": [
+    {
+      "schemaVersion": 1,
+      "presenceState": "online",
+      "heartbeatIntervalMs": 5000,
+      "presenceTimeoutMs": 15000
+    }
+  ],
+  "invalidHeartbeatResults": [
+    {
+      "schemaVersion": 1,
+      "presenceState": "offline",
+      "heartbeatIntervalMs": 5000,
+      "presenceTimeoutMs": 15000
+    },
+    {
+      "schemaVersion": 1,
+      "presenceState": "online",
+      "heartbeatIntervalMs": 10000,
+      "presenceTimeoutMs": 15000
+    },
+    {
+      "schemaVersion": 1,
+      "presenceState": "online",
+      "heartbeatIntervalMs": 5000,
+      "presenceTimeoutMs": 30000
+    }
+  ],
+  "httpExchangeCases": [
+    {
+      "name": "exact200",
+      "value": { "method": "POST", "path": "/ligase/v1/device-presence/heartbeat", "requestContentType": "application/json", "accept": "application/json", "followRedirects": false, "requestTimeoutMs": 3000, "maxResponseBytes": 512, "status": 200, "responseContentType": "application/json", "bodyObjectCount": 1, "bodyBytes": 96, "bodyValid": true, "generationCurrent": true },
+      "accepted": true
+    },
+    {
+      "name": "redirect",
+      "value": { "method": "POST", "path": "/ligase/v1/device-presence/heartbeat", "requestContentType": "application/json", "accept": "application/json", "followRedirects": false, "requestTimeoutMs": 3000, "maxResponseBytes": 512, "status": 302, "responseContentType": "application/json", "bodyObjectCount": 1, "bodyBytes": 96, "bodyValid": true, "generationCurrent": true },
+      "accepted": false
+    },
+    {
+      "name": "wrongContentType",
+      "value": { "method": "POST", "path": "/ligase/v1/device-presence/heartbeat", "requestContentType": "application/json", "accept": "application/json", "followRedirects": false, "requestTimeoutMs": 3000, "maxResponseBytes": 512, "status": 200, "responseContentType": "text/html", "bodyObjectCount": 1, "bodyBytes": 96, "bodyValid": true, "generationCurrent": true },
+      "accepted": false
+    },
+    {
+      "name": "emptyBody",
+      "value": { "method": "POST", "path": "/ligase/v1/device-presence/heartbeat", "requestContentType": "application/json", "accept": "application/json", "followRedirects": false, "requestTimeoutMs": 3000, "maxResponseBytes": 512, "status": 200, "responseContentType": "application/json", "bodyObjectCount": 0, "bodyBytes": 0, "bodyValid": false, "generationCurrent": true },
+      "accepted": false
+    },
+    {
+      "name": "duplicateBody",
+      "value": { "method": "POST", "path": "/ligase/v1/device-presence/heartbeat", "requestContentType": "application/json", "accept": "application/json", "followRedirects": false, "requestTimeoutMs": 3000, "maxResponseBytes": 512, "status": 200, "responseContentType": "application/json", "bodyObjectCount": 2, "bodyBytes": 192, "bodyValid": false, "generationCurrent": true },
+      "accepted": false
+    },
+    {
+      "name": "oversize",
+      "value": { "method": "POST", "path": "/ligase/v1/device-presence/heartbeat", "requestContentType": "application/json", "accept": "application/json", "followRedirects": false, "requestTimeoutMs": 3000, "maxResponseBytes": 512, "status": 200, "responseContentType": "application/json", "bodyObjectCount": 1, "bodyBytes": 513, "bodyValid": false, "generationCurrent": true },
+      "accepted": false
+    },
+    {
+      "name": "lateGeneration",
+      "value": { "method": "POST", "path": "/ligase/v1/device-presence/heartbeat", "requestContentType": "application/json", "accept": "application/json", "followRedirects": false, "requestTimeoutMs": 3000, "maxResponseBytes": 512, "status": 200, "responseContentType": "application/json", "bodyObjectCount": 1, "bodyBytes": 96, "bodyValid": true, "generationCurrent": false },
+      "accepted": false
+    }
+  ],
+  "clientLifecycleCases": [
+    { "foreground": true, "activeStreamHostId": null, "selectedHostId": "host-a", "authenticatedHostIds": ["host-a", "host-b"], "requestInFlight": false, "generationCurrent": true, "expectedTargetHostId": "host-a", "expectedSend": true },
+    { "foreground": true, "activeStreamHostId": "host-b", "selectedHostId": "host-a", "authenticatedHostIds": ["host-a", "host-b"], "requestInFlight": false, "generationCurrent": true, "expectedTargetHostId": "host-b", "expectedSend": true },
+    { "foreground": false, "activeStreamHostId": "host-b", "selectedHostId": "host-a", "authenticatedHostIds": ["host-a", "host-b"], "requestInFlight": false, "generationCurrent": true, "expectedTargetHostId": "host-b", "expectedSend": true },
+    { "foreground": false, "activeStreamHostId": "host-x", "selectedHostId": "host-a", "authenticatedHostIds": ["host-a", "host-b"], "requestInFlight": false, "generationCurrent": true, "expectedTargetHostId": null, "expectedSend": false },
+    { "foreground": false, "activeStreamHostId": null, "selectedHostId": "host-a", "authenticatedHostIds": ["host-a", "host-b"], "requestInFlight": false, "generationCurrent": true, "expectedTargetHostId": null, "expectedSend": false },
+    { "foreground": true, "activeStreamHostId": null, "selectedHostId": "host-a", "authenticatedHostIds": ["host-a"], "requestInFlight": true, "generationCurrent": true, "expectedTargetHostId": "host-a", "expectedSend": false },
+    { "foreground": true, "activeStreamHostId": null, "selectedHostId": "host-a", "authenticatedHostIds": ["host-a"], "requestInFlight": false, "generationCurrent": false, "expectedTargetHostId": null, "expectedSend": false },
+    { "foreground": true, "activeStreamHostId": null, "selectedHostId": "host-x", "authenticatedHostIds": ["host-a"], "requestInFlight": false, "generationCurrent": true, "expectedTargetHostId": null, "expectedSend": false }
+  ],
+  "deadlineCases": [
+    { "ageMs": 14999, "coreUptimeMs": 14999, "hasReceipt": true, "expectedPresence": "online" },
+    { "ageMs": 15000, "coreUptimeMs": 15000, "hasReceipt": true, "expectedPresence": "offline" },
+    { "ageMs": 15001, "coreUptimeMs": 15001, "hasReceipt": true, "expectedPresence": "offline" },
+    { "ageMs": null, "coreUptimeMs": 14999, "hasReceipt": false, "expectedPresence": "unknown" },
+    { "ageMs": null, "coreUptimeMs": 15000, "hasReceipt": false, "expectedPresence": "offline" },
+    { "ageMs": null, "coreUptimeMs": 15001, "hasReceipt": false, "expectedPresence": "offline" }
+  ],
+  "validDeviceProjections": [
+    {
+      "uuid": "00000000-0000-0000-0000-000000000001",
+      "presenceState": "online",
+      "sessionState": "none",
+      "presenceExpiresInMs": 15000
+    },
+    {
+      "uuid": "00000000-0000-0000-0000-000000000001",
+      "presenceState": "online",
+      "sessionState": "streaming",
+      "presenceExpiresInMs": 1
+    },
+    {
+      "uuid": "00000000-0000-0000-0000-000000000001",
+      "presenceState": "offline",
+      "sessionState": "none",
+      "presenceExpiresInMs": 0
+    },
+    {
+      "uuid": "00000000-0000-0000-0000-000000000001",
+      "presenceState": "unknown",
+      "sessionState": "none",
+      "presenceExpiresInMs": null
+    }
+  ],
+  "invalidDeviceProjections": [
+    {
+      "uuid": "00000000-0000-0000-0000-000000000001",
+      "presenceState": "online",
+      "sessionState": "none",
+      "presenceExpiresInMs": 0
+    },
+    {
+      "uuid": "00000000-0000-0000-0000-000000000001",
+      "presenceState": "offline",
+      "sessionState": "streaming",
+      "presenceExpiresInMs": null
+    },
+    {
+      "uuid": "00000000-0000-0000-0000-000000000001",
+      "presenceState": "unknown",
+      "sessionState": "none",
+      "presenceExpiresInMs": 0
+    },
+    {
+      "uuid": "00000000-0000-0000-0000-000000000001",
+      "presenceState": "online",
+      "sessionState": "active",
+      "presenceExpiresInMs": 12000
+    },
+    {
+      "uuid": "00000000-0000-0000-0000-000000000001",
+      "presenceState": "online",
+      "sessionState": "none",
+      "presenceExpiresInMs": 12000,
+      "lastSeen": "2026-08-20T00:00:00Z"
+    }
+  ]
+}

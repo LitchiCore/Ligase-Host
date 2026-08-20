@@ -5,9 +5,23 @@ using Ligase.Host.Core.Models;
 
 namespace Ligase.Host.Core.Services;
 
+public interface IApolloDeviceService
+{
+    Task<IReadOnlyList<ApolloDevice>> GetDevicesAsync(
+        CancellationToken cancellationToken = default);
+    Task SetAccessModeAsync(
+        string uuid,
+        string mode,
+        CancellationToken cancellationToken = default);
+    Task DeleteAsync(
+        string uuid,
+        bool endActiveSession,
+        CancellationToken cancellationToken = default);
+}
+
 public sealed class ApolloDeviceService(
     ApolloCoreLocator coreLocator,
-    IManagedPairingCoreResolver managedResolver)
+    IManagedPairingCoreResolver managedResolver) : IApolloDeviceService
 {
     private static readonly JsonSerializerOptions JsonOptions = new()
     {

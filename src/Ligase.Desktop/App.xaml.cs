@@ -98,6 +98,8 @@ public partial class App : Application
                 services.AddSingleton<LigaseSyncDocumentWriter>();
                 services.AddSingleton<StreamingSettingsService>();
                 services.AddSingleton<ApolloDeviceService>();
+                services.AddSingleton<IApolloDeviceService>(provider =>
+                    provider.GetRequiredService<ApolloDeviceService>());
                 services.AddSingleton<ApolloSessionService>();
                 services.AddSingleton<IVirtualDisplayControlService,
                     VirtualDisplayControlService>();
@@ -106,6 +108,7 @@ public partial class App : Application
                 services.AddSingleton<InstallerShutdownService>();
                 services.AddSingleton<WindowsTrayIconService>();
                 services.AddSingleton<AttendedPairingCoordinator>();
+                services.AddSingleton<DevicePresenceCoordinator>();
                 services.AddSingleton<IPairingNotificationPlatform,
                     WindowsPairingNotificationPlatform>();
                 services.AddSingleton<PairingNotificationEvidenceStore>();
@@ -189,6 +192,7 @@ public partial class App : Application
             await managedCore.StartAsync();
         window.StartCoreReadiness();
         _host.Services.GetRequiredService<AttendedPairingCoordinator>().Start();
+        _host.Services.GetRequiredService<DevicePresenceCoordinator>().Start();
         if (Environment.GetCommandLineArgs().Any(argument =>
                 string.Equals(argument, "--minimized", StringComparison.OrdinalIgnoreCase)))
         {
@@ -205,6 +209,10 @@ public partial class App : Application
         try
         {
             await Services.GetRequiredService<AttendedPairingCoordinator>()
+                .DisposeAsync()
+                .AsTask()
+                .WaitAsync(TimeSpan.FromSeconds(3));
+            await Services.GetRequiredService<DevicePresenceCoordinator>()
                 .DisposeAsync()
                 .AsTask()
                 .WaitAsync(TimeSpan.FromSeconds(3));
@@ -251,6 +259,8 @@ public partial class App : Application
         {
             var pairingTask = Services.GetRequiredService<AttendedPairingCoordinator>()
                 .DisposeAsync().AsTask();
+            var presenceTask = Services.GetRequiredService<DevicePresenceCoordinator>()
+                .DisposeAsync().AsTask();
             var coreTask = Services.GetRequiredService<ApolloInstanceManager>()
                 .StopForInstallerAsync();
             try
@@ -275,6 +285,12 @@ public partial class App : Application
             if (pairingBudget > TimeSpan.Zero)
             {
                 try { await pairingTask.WaitAsync(pairingBudget); }
+                catch { cleanupState = cleanupState == "completed" ? "deferred" : cleanupState; }
+            }
+            var presenceBudget = TimeSpan.FromSeconds(6) - clock.Elapsed;
+            if (presenceBudget > TimeSpan.Zero)
+            {
+                try { await presenceTask.WaitAsync(presenceBudget); }
                 catch { cleanupState = cleanupState == "completed" ? "deferred" : cleanupState; }
             }
         }

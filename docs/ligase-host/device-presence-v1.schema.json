@@ -1,0 +1,124 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ligase.local/schemas/device-presence-v1.schema.json",
+  "title": "Ligase authenticated device presence v1",
+  "$defs": {
+    "heartbeatRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion"],
+      "properties": {
+        "schemaVersion": { "const": 1 }
+      }
+    },
+    "heartbeatResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "presenceState",
+        "heartbeatIntervalMs",
+        "presenceTimeoutMs"
+      ],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "presenceState": { "const": "online" },
+        "heartbeatIntervalMs": { "const": 5000 },
+        "presenceTimeoutMs": { "const": 15000 }
+      }
+    },
+    "httpExchangeEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "method", "path", "requestContentType", "accept",
+        "followRedirects", "requestTimeoutMs", "maxResponseBytes",
+        "status", "responseContentType", "bodyObjectCount",
+        "bodyBytes", "bodyValid", "generationCurrent"
+      ],
+      "properties": {
+        "method": { "const": "POST" },
+        "path": { "const": "/ligase/v1/device-presence/heartbeat" },
+        "requestContentType": { "const": "application/json" },
+        "accept": { "const": "application/json" },
+        "followRedirects": { "const": false },
+        "requestTimeoutMs": { "const": 3000 },
+        "maxResponseBytes": { "const": 512 },
+        "status": { "type": "integer", "minimum": 100, "maximum": 599 },
+        "responseContentType": { "type": ["string", "null"] },
+        "bodyObjectCount": { "type": "integer", "minimum": 0, "maximum": 2 },
+        "bodyBytes": { "type": "integer", "minimum": 0, "maximum": 513 },
+        "bodyValid": { "type": "boolean" },
+        "generationCurrent": { "type": "boolean" }
+      }
+    },
+    "clientLifecycleCase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "foreground", "activeStreamHostId", "selectedHostId",
+        "authenticatedHostIds", "requestInFlight", "generationCurrent",
+        "expectedTargetHostId", "expectedSend"
+      ],
+      "properties": {
+        "foreground": { "type": "boolean" },
+        "activeStreamHostId": { "type": ["string", "null"], "minLength": 1 },
+        "selectedHostId": { "type": ["string", "null"], "minLength": 1 },
+        "authenticatedHostIds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "requestInFlight": { "type": "boolean" },
+        "generationCurrent": { "type": "boolean" },
+        "expectedTargetHostId": { "type": ["string", "null"], "minLength": 1 },
+        "expectedSend": { "type": "boolean" }
+      }
+    },
+    "deviceProjection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "uuid",
+        "presenceState",
+        "sessionState",
+        "presenceExpiresInMs"
+      ],
+      "properties": {
+        "uuid": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "presenceState": {
+          "enum": ["online", "offline", "unknown"]
+        },
+        "sessionState": {
+          "enum": ["none", "streaming", "observing"]
+        },
+        "presenceExpiresInMs": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "maximum": 15000
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "presenceState": { "const": "online" } } },
+          "then": {
+            "properties": {
+              "presenceExpiresInMs": { "type": "integer", "minimum": 1 }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "presenceState": { "const": "offline" } } },
+          "then": { "properties": { "presenceExpiresInMs": { "const": 0 } } }
+        },
+        {
+          "if": { "properties": { "presenceState": { "const": "unknown" } } },
+          "then": { "properties": { "presenceExpiresInMs": { "type": "null" } } }
+        }
+      ]
+    }
+  }
+}

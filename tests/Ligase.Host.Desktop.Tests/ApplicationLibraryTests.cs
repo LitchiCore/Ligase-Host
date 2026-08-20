@@ -738,7 +738,9 @@ public sealed class ApplicationLibraryTests
                 "perm": 119480064,
                 "allow_client_commands": true,
                 "always_use_virtual_display": false,
-                "connected": true
+                "presenceState": "online",
+                "sessionState": "none",
+                "presenceExpiresInMs": 12000
               }]
             }
             """;
@@ -749,7 +751,9 @@ public sealed class ApplicationLibraryTests
         Assert.AreEqual("2560x1440x120", device.DisplayMode);
         Assert.AreEqual(119480064u, device.Permissions);
         Assert.IsTrue(device.AllowClientCommands);
-        Assert.IsTrue(device.Connected);
+        Assert.AreEqual("online", device.PresenceState);
+        Assert.AreEqual("none", device.SessionState);
+        Assert.AreEqual(12000, device.PresenceExpiresInMs);
     }
 
     [TestMethod]

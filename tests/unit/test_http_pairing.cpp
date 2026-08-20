@@ -9,6 +9,37 @@
 
 using namespace nvhttp;
 
+TEST(DevicePresence, ExactHeartbeatBodyRejectsExtraDuplicateAndWrongTypes) {
+  EXPECT_TRUE(valid_device_presence_heartbeat(R"({"schemaVersion":1})"));
+  EXPECT_TRUE(valid_device_presence_heartbeat(" { \"schemaVersion\" : 1 } "));
+  EXPECT_FALSE(valid_device_presence_heartbeat(""));
+  EXPECT_FALSE(valid_device_presence_heartbeat(R"({"schemaVersion":0})"));
+  EXPECT_FALSE(valid_device_presence_heartbeat(R"({"schemaVersion":"1"})"));
+  EXPECT_FALSE(valid_device_presence_heartbeat(
+    R"({"schemaVersion":1,"schemaVersion":1})"));
+  EXPECT_FALSE(valid_device_presence_heartbeat(
+    R"({"schemaVersion":1,"deviceUuid":"00000000-0000-0000-0000-000000000001"})"));
+}
+
+TEST(DevicePresence, MonotonicFreshnessAndWarmupBoundariesAreExact) {
+  using namespace std::chrono_literals;
+  auto value = project_device_presence(14999ms, 14999ms);
+  EXPECT_EQ(value.state, device_presence_state::online);
+  EXPECT_EQ(value.expires_in_ms, 1);
+
+  value = project_device_presence(15000ms, 15000ms);
+  EXPECT_EQ(value.state, device_presence_state::offline);
+  EXPECT_EQ(value.expires_in_ms, 0);
+
+  value = project_device_presence(std::nullopt, 14999ms);
+  EXPECT_EQ(value.state, device_presence_state::unknown);
+  EXPECT_EQ(value.expires_in_ms, std::nullopt);
+
+  value = project_device_presence(std::nullopt, 15000ms);
+  EXPECT_EQ(value.state, device_presence_state::offline);
+  EXPECT_EQ(value.expires_in_ms, 0);
+}
+
 TEST(HttpServerInfo, LigaseClientAccessModeFailsClosed) {
   crypto::named_cert_t client;
   client.perm = crypto::PERM::_all;

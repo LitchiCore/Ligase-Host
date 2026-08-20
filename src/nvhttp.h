@@ -10,6 +10,7 @@
 #include <string_view>
 #include <chrono>
 #include <list>
+#include <optional>
 
 // lib includes
 #include <boost/property_tree/ptree.hpp>
@@ -77,6 +78,28 @@ namespace nvhttp {
    */
   bool
   ligase_client_can_mutate(const crypto::named_cert_t &client);
+
+  enum class device_presence_state {
+    online,
+    offline,
+    unknown
+  };
+
+  struct device_presence_projection {
+    device_presence_state state;
+    std::optional<std::int64_t> expires_in_ms;
+  };
+
+  /** Project the accepted v1 monotonic freshness and Core warm-up rules. */
+  device_presence_projection
+  project_device_presence(
+    std::optional<std::chrono::milliseconds> receipt_age,
+    std::chrono::milliseconds core_uptime
+  );
+
+  /** Validate the exact v1 heartbeat JSON body, including duplicate keys. */
+  bool
+  valid_device_presence_heartbeat(std::string_view body);
 
   /**
    * @brief Start the nvhttp server.

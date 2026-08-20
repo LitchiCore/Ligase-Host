@@ -153,7 +153,10 @@
                         </ItemsRepeater.Layout>
                         <ItemsRepeater.ItemTemplate>
                             <DataTemplate x:DataType="viewModels:DeviceCard">
-                                <Border Style="{StaticResource LigaseCardStyle}">
+                                <Border
+                                    AutomationProperties.HelpText="{x:Bind AccessibleHelpText, Mode=OneWay}"
+                                    AutomationProperties.Name="{x:Bind AccessibleName, Mode=OneWay}"
+                                    Style="{StaticResource LigaseCardStyle}">
                                     <Grid ColumnSpacing="16">
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="44" />
@@ -192,15 +195,34 @@
                                                 Height="28"
                                                 Padding="10,0"
                                                 Background="{ThemeResource LigaseSuccessSubtleBrush}"
-                                                CornerRadius="10">
+                                                CornerRadius="10"
+                                                Visibility="{x:Bind OnlineVisibility, Mode=OneWay}">
                                                 <StackPanel VerticalAlignment="Center" Orientation="Horizontal" Spacing="6">
                                                     <FontIcon
                                                         FontSize="12"
                                                         Foreground="{ThemeResource LigaseSuccessBrush}"
-                                                        Glyph="{x:Bind StatusGlyph}" />
+                                                        Glyph="{x:Bind StatusGlyph, Mode=OneWay}" />
                                                     <TextBlock
+                                                        AutomationProperties.LiveSetting="Polite"
                                                         Foreground="{ThemeResource LigaseSuccessBrush}"
-                                                        Text="{x:Bind Status}" />
+                                                        Text="{x:Bind Status, Mode=OneWay}" />
+                                                </StackPanel>
+                                            </Border>
+                                            <Border
+                                                Height="28"
+                                                Padding="10,0"
+                                                Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}"
+                                                CornerRadius="10"
+                                                Visibility="{x:Bind NotOnlineVisibility, Mode=OneWay}">
+                                                <StackPanel VerticalAlignment="Center" Orientation="Horizontal" Spacing="6">
+                                                    <FontIcon
+                                                        FontSize="12"
+                                                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                                        Glyph="{x:Bind StatusGlyph, Mode=OneWay}" />
+                                                    <TextBlock
+                                                        AutomationProperties.LiveSetting="Polite"
+                                                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                                        Text="{x:Bind Status, Mode=OneWay}" />
                                                 </StackPanel>
                                             </Border>
                                             <Button

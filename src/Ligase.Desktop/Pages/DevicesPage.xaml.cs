@@ -14,6 +14,7 @@ public sealed partial class DevicesPage : Page
     public DevicesViewModel ViewModel { get; }
     public AttendedPairingViewModel PairingViewModel { get; }
     private readonly AttendedPairingCoordinator _pairing;
+    private readonly DevicePresenceCoordinator _presence;
     private readonly PairingNotificationService _notifications;
 
     public DevicesPage()
@@ -22,6 +23,7 @@ public sealed partial class DevicesPage : Page
         ViewModel = services.GetRequiredService<DevicesViewModel>();
         PairingViewModel = services.GetRequiredService<AttendedPairingViewModel>();
         _pairing = services.GetRequiredService<AttendedPairingCoordinator>();
+        _presence = services.GetRequiredService<DevicePresenceCoordinator>();
         _notifications = services.GetRequiredService<PairingNotificationService>();
         InitializeComponent();
         Loaded += OnLoaded;
@@ -60,16 +62,20 @@ public sealed partial class DevicesPage : Page
     {
         _pairing.ProjectionChanged += OnProjectionChanged;
         _pairing.AvailabilityChanged += OnAvailabilityChanged;
+        _presence.ProjectionChanged += OnDeviceProjectionChanged;
         _notifications.StatusChanged += OnNotificationStatusChanged;
         PairingViewModel.RefreshNotificationStatus();
         if (_pairing.Current is not null)
             PairingViewModel.Apply(_pairing.Current);
+        if (_presence.Current is not null)
+            ViewModel.Apply(_presence.Current);
     }
 
     private void OnUnloaded(object sender, RoutedEventArgs e)
     {
         _pairing.ProjectionChanged -= OnProjectionChanged;
         _pairing.AvailabilityChanged -= OnAvailabilityChanged;
+        _presence.ProjectionChanged -= OnDeviceProjectionChanged;
         _notifications.StatusChanged -= OnNotificationStatusChanged;
     }
 
@@ -78,6 +84,9 @@ public sealed partial class DevicesPage : Page
 
     private void OnAvailabilityChanged(string message) =>
         DispatcherQueue.TryEnqueue(() => PairingViewModel.SetUnavailable(message));
+
+    private void OnDeviceProjectionChanged(DevicePresenceProjection projection) =>
+        DispatcherQueue.TryEnqueue(() => ViewModel.Apply(projection));
 
     private void OnNotificationStatusChanged() =>
         DispatcherQueue.TryEnqueue(PairingViewModel.RefreshNotificationStatus);
@@ -120,6 +129,11 @@ public sealed partial class DevicesPage : Page
             Text = device.Name,
             FontSize = 18,
             FontWeight = Microsoft.UI.Text.FontWeights.SemiBold
+        });
+        content.Children.Add(new TextBlock
+        {
+            Text = $"当前状态：{device.Status}",
+            TextWrapping = TextWrapping.Wrap
         });
         content.Children.Add(new TextBlock
         {
