@@ -43,7 +43,7 @@
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
-        <Grid>
+        <Grid x:Name="HeroHeader">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="*" />
@@ -84,9 +84,9 @@
             Severity="Warning"
             Title="游戏库暂时只读" />
 
+        <Grid Grid.Row="3" Margin="0,14,0,0">
         <Border
-            Grid.Row="3"
-            Margin="0,14,0,0"
+            x:Name="CoverSearchPanel"
             Style="{StaticResource LigaseToolbarStyle}">
             <StackPanel Spacing="10">
                 <Grid x:Name="CoverSearchGrid" ColumnSpacing="10">
@@ -155,6 +155,37 @@
                 </ListView>
             </StackPanel>
         </Border>
+        <Border
+            x:Name="CompactHeader"
+            AutomationProperties.LiveSetting="Polite"
+            Style="{StaticResource LigaseToolbarStyle}"
+            Visibility="Collapsed">
+            <Grid ColumnSpacing="10">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <Button
+                    AutomationProperties.Name="返回游戏库"
+                    Click="OnBack"
+                    Content="返回" />
+                <Button
+                    Grid.Column="1"
+                    AutomationProperties.HelpText="将键盘焦点移动到 Steam 游戏搜索框"
+                    AutomationProperties.Name="搜索 Steam 游戏"
+                    Click="OnFocusSteamSearch"
+                    Content="搜索"
+                    Style="{StaticResource LigaseSecondaryButtonStyle}" />
+                <Button
+                    Grid.Column="2"
+                    AutomationProperties.Name="展开添加游戏工具"
+                    Click="OnExpandChrome"
+                    Content="展开工具"
+                    Style="{StaticResource LigaseSecondaryButtonStyle}" />
+            </Grid>
+        </Border>
+        </Grid>
 
         <TabView
             Grid.Row="4"
@@ -215,8 +246,10 @@
                         IsIndeterminate="True"
                         Visibility="{x:Bind ViewModel.ScanningVisibility, Mode=OneWay}" />
                     <ScrollViewer
+                        x:Name="SteamResultsScrollViewer"
                         Grid.Row="2"
                         Margin="0,12,0,0"
+                        ViewChanged="OnSteamResultsViewChanged"
                         VerticalScrollBarVisibility="Auto">
                         <StackPanel Spacing="12">
                             <TextBlock

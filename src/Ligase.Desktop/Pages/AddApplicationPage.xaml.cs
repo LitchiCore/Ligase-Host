@@ -1,5 +1,6 @@
 using Ligase.Host.Core.Models;
 using Ligase.Host.Desktop.Controls;
+using Ligase.Host.Desktop.Services;
 using Ligase.Host.Desktop.ViewModels;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.UI.Xaml;
@@ -16,6 +17,7 @@ namespace Ligase.Host.Desktop.Pages;
 
 public sealed partial class AddApplicationPage : Page
 {
+    private readonly AddApplicationChromeState _chrome = new();
     public AddApplicationViewModel ViewModel { get; }
 
     public AddApplicationPage()
@@ -68,6 +70,33 @@ public sealed partial class AddApplicationPage : Page
 
     private void OnBack(object sender, RoutedEventArgs e) =>
         MainWindow.NavigateBackToLibrary();
+
+    private void OnSteamResultsViewChanged(object sender, ScrollViewerViewChangedEventArgs e)
+    {
+        if (sender is ScrollViewer scrollViewer &&
+            _chrome.Update(scrollViewer.VerticalOffset))
+            ApplyChromeState();
+    }
+
+    private void OnExpandChrome(object sender, RoutedEventArgs e)
+    {
+        _chrome.Expand();
+        SteamResultsScrollViewer.ChangeView(null, 0, null, true);
+        ApplyChromeState();
+    }
+
+    private void OnFocusSteamSearch(object sender, RoutedEventArgs e)
+    {
+        _ = SteamGameSearchBox.Focus(FocusState.Keyboard);
+    }
+
+    private void ApplyChromeState()
+    {
+        var compact = _chrome.IsCompact;
+        HeroHeader.Visibility = compact ? Visibility.Collapsed : Visibility.Visible;
+        CoverSearchPanel.Visibility = compact ? Visibility.Collapsed : Visibility.Visible;
+        CompactHeader.Visibility = compact ? Visibility.Visible : Visibility.Collapsed;
+    }
 
     private async void OnScanSteam(object sender, RoutedEventArgs e) =>
         await ViewModel.ScanSteamAsync();

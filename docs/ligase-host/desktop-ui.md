@@ -90,6 +90,12 @@ Each page emphasizes one primary action. Error text explains what happened and
 what the user can do next without exposing HTTP status codes, paths, secrets,
 arguments, or exception text.
 
+On the Add game page, scrolling the Steam result list past the header collapses
+the large title and cover toolbar. A compact, keyboard-accessible row keeps
+Back, Steam search focus, and an explicit Expand tools action available. The
+96/24 pixel collapse/expand hysteresis prevents layout oscillation near the
+boundary; the Steam search editor retains its UI Automation name and label.
+
 ## Local Windows shortcut preview boundary
 
 The first shortcut-import boundary accepts only local `.lnk` files that the
