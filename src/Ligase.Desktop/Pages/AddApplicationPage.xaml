@@ -405,6 +405,22 @@
                                     <TextBlock Text="{x:Bind ViewModel.ShortcutPreview.Arguments, Mode=OneWay, TargetNullValue=无启动参数}" TextWrapping="Wrap" />
                                     <TextBlock Text="{x:Bind ViewModel.ShortcutPreview.WorkingDirectory, Mode=OneWay, TargetNullValue=使用程序所在目录}" TextWrapping="WrapWholeWords" />
                                     <TextBlock Text="{x:Bind ViewModel.ShortcutPreview.IconSource, Mode=OneWay, TargetNullValue=使用程序图标}" TextWrapping="WrapWholeWords" />
+                                    <StackPanel
+                                        Spacing="4"
+                                        Visibility="{x:Bind ViewModel.ShortcutMatchVisibility, Mode=OneWay}">
+                                        <TextBlock FontWeight="SemiBold" Text="本机安装匹配" />
+                                        <TextBlock Text="{x:Bind ViewModel.ShortcutMatch.Summary, Mode=OneWay}" TextWrapping="Wrap" />
+                                        <TextBlock Text="{x:Bind ViewModel.ShortcutMatch.ProductName, Mode=OneWay}" />
+                                        <TextBlock Text="{x:Bind ViewModel.ShortcutMatch.FileVersion, Mode=OneWay}" />
+                                        <TextBlock Text="{x:Bind ViewModel.ShortcutMatch.CompanyName, Mode=OneWay}" />
+                                        <CheckBox
+                                            AutomationProperties.HelpText="只有本机 Steam manifest 匹配不唯一时才需要；不会执行快捷方式"
+                                            AutomationProperties.Name="确认按普通本地应用添加"
+                                            Checked="OnShortcutFallbackConfirmationChanged"
+                                            Content="匹配不唯一时，确认按普通本地应用添加"
+                                            IsChecked="{x:Bind ViewModel.ShortcutFallbackConfirmed, Mode=OneWay}"
+                                            Unchecked="OnShortcutFallbackConfirmationChanged" />
+                                    </StackPanel>
                                     <StackPanel Orientation="Horizontal" Spacing="10">
                                         <Button
                                             AutomationProperties.Name="确认将预览的快捷方式加入游戏库"

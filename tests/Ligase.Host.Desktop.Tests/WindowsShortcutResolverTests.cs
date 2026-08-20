@@ -266,6 +266,127 @@ public sealed class WindowsShortcutResolverTests
         Assert.IsFalse(preview.CanConfirmExecutable);
     }
 
+    [TestMethod]
+    public void LocalMatchUsesOnlyVerifiedSteamInstallContainment()
+    {
+        var library = Directory.CreateDirectory(Path.Combine(_root, "steamlib")).FullName;
+        var install = Directory.CreateDirectory(Path.Combine(
+            library, "steamapps", "common", "Game")).FullName;
+        var target = Path.Combine(install, "bin", "game.exe");
+        Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+        File.WriteAllBytes(target, [0]);
+        var preview = ExecutablePreview(target);
+        var game = new SteamGame(
+            3548580, "Chill", "Game", library,
+            Path.Combine(_root, "appmanifest_3548580.acf"), 1);
+
+        var match = new WindowsShortcutLocalMatchService().Inspect(preview, [game]);
+
+        Assert.AreEqual(WindowsShortcutMatchKind.ExactSteamInstall, match.Kind);
+        Assert.AreEqual((uint)3548580, match.SteamAppId);
+        Assert.IsFalse(match.RequiresExplicitFallbackConfirmation);
+    }
+
+    [TestMethod]
+    public void MultipleInstallAuthoritiesRequireExplicitLocalFallback()
+    {
+        var library = Directory.CreateDirectory(Path.Combine(_root, "steamlib")).FullName;
+        var parent = Directory.CreateDirectory(Path.Combine(
+            library, "steamapps", "common", "Parent")).FullName;
+        var nested = Directory.CreateDirectory(Path.Combine(parent, "Nested")).FullName;
+        var target = Path.Combine(nested, "game.exe");
+        File.WriteAllBytes(target, [0]);
+        var games = new[]
+        {
+            new SteamGame(1, "Parent", "Parent", library, Path.Combine(_root, "one.acf"), 1),
+            new SteamGame(2, "Nested", "Parent\\Nested", library, Path.Combine(_root, "two.acf"), 1)
+        };
+
+        var match = new WindowsShortcutLocalMatchService().Inspect(
+            ExecutablePreview(target), games);
+
+        Assert.AreEqual(WindowsShortcutMatchKind.MultipleSteamInstalls, match.Kind);
+        Assert.IsNull(match.SteamAppId);
+        Assert.IsTrue(match.RequiresExplicitFallbackConfirmation);
+    }
+
+    [TestMethod]
+    public void SimilarNameOrPathPrefixNeverCreatesSteamAuthority()
+    {
+        var library = Directory.CreateDirectory(Path.Combine(_root, "steamlib")).FullName;
+        var common = Directory.CreateDirectory(Path.Combine(library, "steamapps", "common")).FullName;
+        var install = Directory.CreateDirectory(Path.Combine(common, "Game")).FullName;
+        var sibling = Directory.CreateDirectory(Path.Combine(common, "Game-Other")).FullName;
+        var target = Path.Combine(sibling, "game.exe");
+        File.WriteAllBytes(target, [0]);
+        var game = new SteamGame(
+            42, "game", "Game", library, Path.Combine(_root, "42.acf"), 1);
+
+        var match = new WindowsShortcutLocalMatchService().Inspect(
+            ExecutablePreview(target), [game]);
+
+        Assert.AreEqual(WindowsShortcutMatchKind.LocalExecutable, match.Kind);
+        Assert.IsNull(match.SteamAppId);
+    }
+
+    [TestMethod]
+    public void PublicShortcutRouteRequiresAsyncLocalAuthorityAndExplicitConfirmation()
+    {
+        var root = RepositoryRoot();
+        var page = File.ReadAllText(Path.Combine(
+            root, "src", "Ligase.Desktop", "Pages", "AddApplicationPage.xaml.cs"));
+        var viewModel = File.ReadAllText(Path.Combine(
+            root, "src", "Ligase.Desktop", "ViewModels", "AddApplicationViewModel.cs"));
+
+        Assert.AreEqual(3, Count(page, "PreviewShortcutPathsAsync("));
+        Assert.IsFalse(page.Contains("PreviewShortcutPaths(", StringComparison.Ordinal));
+        StringAssert.Contains(viewModel, "shortcutResolver.Revalidate(pending)");
+        StringAssert.Contains(viewModel, "_shortcutMatchService.Inspect(current, games)");
+        StringAssert.Contains(viewModel, "currentMatch != ShortcutMatch");
+        StringAssert.Contains(viewModel, "RequiresExplicitFallbackConfirmation");
+        StringAssert.Contains(viewModel, "mutationCoordinator.AddSteamAsync");
+        StringAssert.Contains(viewModel, "mutationCoordinator.AddExecutableAsync");
+        Assert.IsFalse(viewModel.Contains("Process.Start", StringComparison.Ordinal));
+        Assert.IsFalse(viewModel.Contains("ShellExecute", StringComparison.Ordinal));
+    }
+
+    private static WindowsShortcutPreview ExecutablePreview(string target) => new()
+    {
+        ShortcutPath = target + ".lnk",
+        DisplayName = Path.GetFileNameWithoutExtension(target),
+        Kind = WindowsShortcutPreviewKind.Executable,
+        Code = WindowsShortcutErrorCode.None,
+        TargetExecutable = target
+    };
+
+    private static int Count(string value, string needle)
+    {
+        var count = 0;
+        var offset = 0;
+        while ((offset = value.IndexOf(needle, offset, StringComparison.Ordinal)) >= 0)
+        {
+            count++;
+            offset += needle.Length;
+        }
+        return count;
+    }
+
+    private static string RepositoryRoot()
+    {
+        var configured = Environment.GetEnvironmentVariable("LIGASE_SOURCE_ROOT");
+        if (!string.IsNullOrWhiteSpace(configured)) return Path.GetFullPath(configured);
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory is not null)
+        {
+            var gitMarker = Path.Combine(directory.FullName, ".git");
+            if ((Directory.Exists(gitMarker) || File.Exists(gitMarker)) &&
+                File.Exists(Path.Combine(directory.FullName, "CMakeLists.txt")))
+                return directory.FullName;
+            directory = directory.Parent;
+        }
+        throw new DirectoryNotFoundException("repositoryRootUnavailable");
+    }
+
     private void AssertClassification(
         WindowsShortcutResolver resolver,
         string target,

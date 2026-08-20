@@ -150,12 +150,12 @@ public sealed partial class AddApplicationPage : Page
     {
         if (!e.DataView.Contains(StandardDataFormats.StorageItems))
         {
-            ViewModel.PreviewShortcutPaths([]);
+            await ViewModel.PreviewShortcutPathsAsync([]);
             return;
         }
 
         var items = await e.DataView.GetStorageItemsAsync();
-        ViewModel.PreviewShortcutPaths(
+        await ViewModel.PreviewShortcutPathsAsync(
             items.OfType<StorageFile>().Select(file => file.Path).ToArray());
     }
 
@@ -165,7 +165,7 @@ public sealed partial class AddApplicationPage : Page
         picker.FileTypeFilter.Add(".lnk");
         InitializeWithWindow.Initialize(picker, WindowNative.GetWindowHandle(MainWindow));
         var file = await picker.PickSingleFileAsync();
-        if (file is not null) ViewModel.PreviewShortcutPaths([file.Path]);
+        if (file is not null) await ViewModel.PreviewShortcutPathsAsync([file.Path]);
     }
 
     private async void OnConfirmShortcut(object sender, RoutedEventArgs e)
@@ -182,6 +182,14 @@ public sealed partial class AddApplicationPage : Page
 
     private void OnCancelShortcut(object sender, RoutedEventArgs e) =>
         ViewModel.CancelShortcutPreview();
+
+    private void OnShortcutFallbackConfirmationChanged(
+        object sender,
+        RoutedEventArgs e)
+    {
+        if (sender is CheckBox checkBox)
+            ViewModel.SetShortcutFallbackConfirmation(checkBox.IsChecked == true);
+    }
 
     private async void OnAddExecutable(object sender, RoutedEventArgs e)
     {

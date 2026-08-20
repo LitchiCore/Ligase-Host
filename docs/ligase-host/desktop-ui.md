@@ -133,10 +133,21 @@ preview needed for a later confirmed add; preview `ToString`, logs, errors, and
 documentation must not include their complete value. The duplicate identity is
 a digest, not a printable target/argument concatenation.
 
-This service does not add applications. A later UI integration must show a
-preview and require explicit confirmation, then use
-`LibraryMutationCoordinator` under managed authority. Duplicate detection is
-based on canonical target plus arguments, never display name.
+The add page now exposes both drag/drop and a keyboard-accessible file picker.
+Either route creates an in-memory preview only; dropping a shortcut never
+writes the library. For a local executable the page also shows signed/local
+`FileVersionInfo` metadata and compares the canonical target against install
+directories proved by the existing Steam manifest/library parser. Exactly one
+containing Steam install uses the canonical Steam add path. Zero matches uses
+the ordinary local-executable path; multiple matches are never guessed and
+require a second explicit fallback confirmation.
+
+Confirmation re-resolves the Shell Link and Steam installation set and rejects
+any shortcut, target, or match drift before invoking `LibraryMutationCoordinator`.
+The resolver never executes the target, performs a web lookup, or infers an App
+ID from display name. Duplicate detection remains canonical target plus
+arguments, never display name. Cancel clears the preview and performs no
+library mutation.
 
 The Stream Monitor page provides an explicit **End stream** action. It requires
 confirmation, disconnects the active session without deleting pairing or

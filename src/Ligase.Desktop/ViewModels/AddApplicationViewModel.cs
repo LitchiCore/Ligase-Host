@@ -13,8 +13,11 @@ public partial class AddApplicationViewModel(
     LibraryMutationCoordinator mutationCoordinator,
     CoverArtService coverArtService,
     WindowsShortcutResolver shortcutResolver,
-    IExistingItemCoverWorkflow? existingItemCoverWorkflow = null) : ObservableObject
+    IExistingItemCoverWorkflow? existingItemCoverWorkflow = null,
+    WindowsShortcutLocalMatchService? shortcutMatchService = null) : ObservableObject
 {
+    private readonly WindowsShortcutLocalMatchService _shortcutMatchService =
+        shortcutMatchService ?? new WindowsShortcutLocalMatchService();
     private (Guid LibraryItemId, uint SteamAppId)? _existingCoverTarget;
     private CoverCandidate? _pendingCoverCandidate;
     private bool _pendingDefaultCover;
@@ -71,6 +74,15 @@ public partial class AddApplicationViewModel(
     private WindowsShortcutPreview? _shortcutPreview;
 
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(ShortcutMatchVisibility))]
+    [NotifyPropertyChangedFor(nameof(CanConfirmShortcut))]
+    private WindowsShortcutLocalMatch? _shortcutMatch;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(CanConfirmShortcut))]
+    private bool _shortcutFallbackConfirmed;
+
+    [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(CanConfirmShortcut))]
     private bool _isConfirmingShortcut;
 
@@ -81,8 +93,14 @@ public partial class AddApplicationViewModel(
     public Visibility ShortcutPreviewVisibility => HasShortcutPreview
         ? Visibility.Visible
         : Visibility.Collapsed;
+    public Visibility ShortcutMatchVisibility => ShortcutMatch is null
+        ? Visibility.Collapsed
+        : Visibility.Visible;
     public bool CanConfirmShortcut =>
-        CanModifyLibrary && ShortcutPreview?.CanConfirmExecutable == true && !IsConfirmingShortcut;
+        CanModifyLibrary && ShortcutPreview?.CanConfirmExecutable == true &&
+        !IsConfirmingShortcut &&
+        (ShortcutMatch?.RequiresExplicitFallbackConfirmation != true ||
+         ShortcutFallbackConfirmed);
     public bool CanSaveCoverSelection =>
         (_pendingCoverCandidate is not null || _pendingDefaultCover) && !IsSearchingCovers;
 
@@ -107,15 +125,35 @@ public partial class AddApplicationViewModel(
         OnPropertyChanged(nameof(CanConfirmShortcut));
     }
 
-    public void PreviewShortcutPaths(IReadOnlyList<string> paths)
+    public async Task PreviewShortcutPathsAsync(
+        IReadOnlyList<string> paths,
+        CancellationToken cancellationToken = default)
+    {
+        if (!PreviewShortcutCore(paths)) return;
+        try
+        {
+            var games = await steamLibraryService.DiscoverGamesAsync(cancellationToken);
+            ShortcutMatch = _shortcutMatchService.Inspect(ShortcutPreview!, games);
+            Message = ShortcutMatch.Summary + " 请核对预览后明确确认添加。";
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            ShortcutMatch = null;
+            Message = $"本机安装匹配暂不可用：{exception.Message} 未执行目标，也未修改游戏库。";
+        }
+    }
+
+    private bool PreviewShortcutCore(IReadOnlyList<string> paths)
     {
         ShortcutPreview = null;
+        ShortcutMatch = null;
+        ShortcutFallbackConfirmed = false;
         if (paths.Count != 1)
         {
             Message = paths.Count == 0
                 ? "请选择一个 Windows 快捷方式（.lnk）。"
                 : "一次只能预览一个快捷方式；拖入不会自动修改游戏库。";
-            return;
+            return false;
         }
 
         var preview = shortcutResolver.Resolve(paths[0]);
@@ -124,18 +162,24 @@ public partial class AddApplicationViewModel(
             Message = preview.Kind == WindowsShortcutPreviewKind.SteamShortcut
                 ? "Steam 快捷方式请使用 Steam 游戏页添加。"
                 : DescribeShortcutFailure(preview.Code);
-            return;
+            return false;
         }
 
         ShortcutPreview = preview;
         Message = "快捷方式已安全解析。请核对目标、参数和工作目录，再明确确认添加。";
+        return true;
     }
 
     public void CancelShortcutPreview()
     {
         ShortcutPreview = null;
+        ShortcutMatch = null;
+        ShortcutFallbackConfirmed = false;
         Message = "已取消快捷方式导入；游戏库未发生变化。";
     }
+
+    public void SetShortcutFallbackConfirmation(bool confirmed) =>
+        ShortcutFallbackConfirmed = confirmed;
 
     public async Task ConfirmShortcutAsync(CancellationToken cancellationToken = default)
     {
@@ -152,18 +196,41 @@ public partial class AddApplicationViewModel(
                     "快捷方式或目标在预览后发生变化。未写入游戏库，请重新选择并核对。");
             }
 
-            var coverPath = await ResolveAutomaticCoverAsync(
-                current.DisplayName,
-                cancellationToken);
-            await mutationCoordinator.AddExecutableAsync(
-                current.DisplayName,
-                current.TargetExecutable!,
-                current.Arguments,
-                current.WorkingDirectory,
-                coverPath,
-                cancellationToken);
+            var games = await steamLibraryService.DiscoverGamesAsync(cancellationToken);
+            var currentMatch = _shortcutMatchService.Inspect(current, games);
+            if (currentMatch != ShortcutMatch)
+            {
+                ShortcutPreview = null;
+                ShortcutMatch = null;
+                throw new InvalidOperationException(
+                    "本机安装匹配在预览后发生变化。未写入游戏库，请重新选择并核对。");
+            }
+
+            if (currentMatch.Kind == WindowsShortcutMatchKind.ExactSteamInstall &&
+                currentMatch.SteamAppId is uint appId)
+            {
+                var game = games.Single(value => value.AppId == appId);
+                var coverPath = await ResolveAutomaticSteamCoverAsync(game, cancellationToken);
+                await mutationCoordinator.AddSteamAsync(game, coverPath, cancellationToken);
+            }
+            else
+            {
+                if (currentMatch.RequiresExplicitFallbackConfirmation &&
+                    !ShortcutFallbackConfirmed)
+                    throw new InvalidOperationException(
+                        "存在多个本机 Steam 候选；请先确认按普通本地应用添加。");
+                await mutationCoordinator.AddExecutableAsync(
+                    current.DisplayName,
+                    current.TargetExecutable!,
+                    current.Arguments,
+                    current.WorkingDirectory,
+                    SelectedCoverPath,
+                    cancellationToken);
+            }
             Message = $"已将“{current.DisplayName}”添加并同步到当前 Ligase 核心。";
             ShortcutPreview = null;
+            ShortcutMatch = null;
+            ShortcutFallbackConfirmed = false;
             ResetCoverSelection();
         }
         finally
