@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ligase.local/schemas/device-presence-diagnostics-v1.schema.json",
+  "title": "Ligase device presence safe diagnostics v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "coreUptimeMs", "maxResponseBytes", "counters", "devices"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "coreUptimeMs": { "$ref": "#/$defs/safeInteger" },
+    "maxResponseBytes": { "const": 65536 },
+    "counters": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tlsRouteAuthRejected", "handlerEntered", "rejected415",
+        "rejected400", "rejected401", "accepted200"
+      ],
+      "properties": {
+        "tlsRouteAuthRejected": { "$ref": "#/$defs/safeInteger" },
+        "handlerEntered": { "$ref": "#/$defs/safeInteger" },
+        "rejected415": { "$ref": "#/$defs/safeInteger" },
+        "rejected400": { "$ref": "#/$defs/safeInteger" },
+        "rejected401": { "$ref": "#/$defs/safeInteger" },
+        "accepted200": { "$ref": "#/$defs/safeInteger" }
+      }
+    },
+    "devices": {
+      "type": "array",
+      "maxItems": 1024,
+      "items": { "$ref": "#/$defs/device" }
+    }
+  },
+  "$defs": {
+    "safeInteger": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "device": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "deviceCorrelationSha256", "acceptedCount",
+        "lastReceiptAgeMs", "currentProjection"
+      ],
+      "properties": {
+        "deviceCorrelationSha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "acceptedCount": { "$ref": "#/$defs/safeInteger" },
+        "lastReceiptAgeMs": {
+          "anyOf": [
+            { "$ref": "#/$defs/safeInteger" },
+            { "type": "null" }
+          ]
+        },
+        "currentProjection": { "enum": ["online", "offline", "unknown"] }
+      }
+    }
+  }
+}

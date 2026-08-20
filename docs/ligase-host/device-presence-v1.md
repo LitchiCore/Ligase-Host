@@ -84,3 +84,20 @@ Heartbeat parsing is exact: extra keys and wrong types are rejected. Rate or
 transport failures do not mutate pairing or session state. Logs and UI may
 record the schema version and a one-way request correlation, but never client
 certificate bytes, addresses, secrets, or a client-supplied timestamp.
+
+## Safe Host diagnostics
+
+`device-presence-diagnostics-v1.schema.json` owns the loopback-only diagnostic
+projection at `GET /ligase/v1/device-presence/diagnostics`. It does not change
+the heartbeat wire contract or grant presence credit. The projection is
+process-local, nonpersistent, `Cache-Control: no-store`, and capped at 65536
+bytes.
+
+The counters distinguish TLS route authentication rejection from authenticated
+handler entry and the handler's exact 415, 400, 401, and accepted 200 branches.
+For every paired device, the projection contains only a domain-separated SHA-256
+correlation of the certificate-derived UUID, its accepted count, monotonic
+receipt age, and current Core projection. Raw UUIDs, names, addresses,
+certificates, request bodies, wall-clock receipt times, and exception text are
+forbidden. The handler counter partition is exact:
+`handlerEntered = rejected415 + rejected400 + rejected401 + accepted200`.

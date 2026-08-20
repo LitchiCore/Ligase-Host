@@ -9,8 +9,10 @@
 #include <string>
 #include <string_view>
 #include <chrono>
+#include <cstdint>
 #include <list>
 #include <optional>
+#include <vector>
 
 // lib includes
 #include <boost/property_tree/ptree.hpp>
@@ -100,6 +102,33 @@ namespace nvhttp {
   /** Validate the exact v1 heartbeat JSON body, including duplicate keys. */
   bool
   valid_device_presence_heartbeat(std::string_view body);
+
+  struct device_presence_diagnostic_counters {
+    std::uint64_t tls_route_auth_rejected;
+    std::uint64_t handler_entered;
+    std::uint64_t rejected_415;
+    std::uint64_t rejected_400;
+    std::uint64_t rejected_401;
+    std::uint64_t accepted_200;
+  };
+
+  /** Return a one-way, domain-separated correlation for a cert-derived UUID. */
+  std::string
+  device_presence_diagnostic_correlation(std::string_view uuid);
+
+#if defined SUNSHINE_TESTS
+  void reset_device_presence_diagnostics_for_tests();
+  void record_device_presence_diagnostic_for_tests(
+    int status,
+    std::string_view uuid = {});
+  device_presence_diagnostic_counters
+  device_presence_diagnostic_counters_for_tests();
+  nlohmann::json
+  device_presence_diagnostics_document_for_tests(
+    const std::vector<std::string> &paired_uuids,
+    std::chrono::milliseconds core_uptime,
+    std::chrono::milliseconds receipt_age = std::chrono::milliseconds(-1));
+#endif
 
   /**
    * @brief Start the nvhttp server.

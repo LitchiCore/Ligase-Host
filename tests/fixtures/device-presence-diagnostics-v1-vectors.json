@@ -1,0 +1,138 @@
+{
+  "valid": [
+    {
+      "schemaVersion": 1,
+      "coreUptimeMs": 20000,
+      "maxResponseBytes": 65536,
+      "counters": {
+        "tlsRouteAuthRejected": 1,
+        "handlerEntered": 4,
+        "rejected415": 1,
+        "rejected400": 1,
+        "rejected401": 1,
+        "accepted200": 1
+      },
+      "devices": [
+        {
+          "deviceCorrelationSha256": "76866f488f5428267d2d1da89976e3ab8086781870d0e0220b5d87a5ad487868",
+          "acceptedCount": 1,
+          "lastReceiptAgeMs": 1200,
+          "currentProjection": "online"
+        }
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "coreUptimeMs": 14999,
+      "maxResponseBytes": 65536,
+      "counters": {
+        "tlsRouteAuthRejected": 0,
+        "handlerEntered": 0,
+        "rejected415": 0,
+        "rejected400": 0,
+        "rejected401": 0,
+        "accepted200": 0
+      },
+      "devices": []
+    }
+  ],
+  "invalid": [
+    {
+      "schemaVersion": 1,
+      "coreUptimeMs": 1,
+      "maxResponseBytes": 65536,
+      "counters": {
+        "tlsRouteAuthRejected": 0,
+        "handlerEntered": "1",
+        "rejected415": 0,
+        "rejected400": 0,
+        "rejected401": 0,
+        "accepted200": 0
+      },
+      "devices": []
+    },
+    {
+      "schemaVersion": 1,
+      "coreUptimeMs": 1,
+      "maxResponseBytes": 65536,
+      "counters": {
+        "tlsRouteAuthRejected": 0,
+        "handlerEntered": 0,
+        "rejected415": 0,
+        "rejected400": 0,
+        "rejected401": 0,
+        "accepted200": 0
+      },
+      "devices": [{
+        "deviceCorrelationSha256": "D6866F488F5428267D2D1DA89976E3AB8086781870D0E0220B5D87A5AD487868",
+        "acceptedCount": 0,
+        "lastReceiptAgeMs": null,
+        "currentProjection": "unknown"
+      }]
+    },
+    {
+      "schemaVersion": 1,
+      "coreUptimeMs": -1,
+      "maxResponseBytes": 65536,
+      "counters": {
+        "tlsRouteAuthRejected": 0,
+        "handlerEntered": 0,
+        "rejected415": 0,
+        "rejected400": 0,
+        "rejected401": 0,
+        "accepted200": 0
+      },
+      "devices": []
+    },
+    {
+      "schemaVersion": 1,
+      "coreUptimeMs": 1,
+      "maxResponseBytes": 65536,
+      "counters": {
+        "tlsRouteAuthRejected": 0,
+        "handlerEntered": 0,
+        "rejected415": 0,
+        "rejected400": 0,
+        "rejected401": 0,
+        "accepted200": 0
+      },
+      "devices": [],
+      "deviceUuid": "d9689efb-3220-0509-9510-2d9770d483e8"
+    }
+  ],
+  "semanticInvalid": [
+    {
+      "schemaVersion": 1,
+      "coreUptimeMs": 20000,
+      "maxResponseBytes": 65536,
+      "counters": {
+        "tlsRouteAuthRejected": 0,
+        "handlerEntered": 2,
+        "rejected415": 0,
+        "rejected400": 0,
+        "rejected401": 0,
+        "accepted200": 1
+      },
+      "devices": []
+    },
+    {
+      "schemaVersion": 1,
+      "coreUptimeMs": 20000,
+      "maxResponseBytes": 65536,
+      "counters": {
+        "tlsRouteAuthRejected": 0,
+        "handlerEntered": 1,
+        "rejected415": 0,
+        "rejected400": 0,
+        "rejected401": 0,
+        "accepted200": 1
+      },
+      "devices": [{
+        "deviceCorrelationSha256": "76866f488f5428267d2d1da89976e3ab8086781870d0e0220b5d87a5ad487868",
+        "acceptedCount": 1,
+        "lastReceiptAgeMs": 15000,
+        "currentProjection": "online"
+      }]
+    }
+  ]
+}

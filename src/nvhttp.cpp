@@ -7,6 +7,8 @@
 
 // standard includes
 #include <cctype>
+#include <atomic>
+#include <algorithm>
 #include <cstdlib>
 #include <filesystem>
 #include <format>
@@ -791,9 +793,54 @@ namespace nvhttp {
   namespace {
     using presence_clock = std::chrono::steady_clock;
     constexpr auto presence_timeout = 15000ms;
+    constexpr std::uint64_t diagnostic_max_integer = 9007199254740991ULL;
+    constexpr std::size_t diagnostic_max_response_bytes = 65536;
     const auto presence_core_started = presence_clock::now();
     std::mutex presence_mutex;
     std::map<std::string, presence_clock::time_point, std::less<>> presence_receipts;
+
+    struct device_diagnostic_entry {
+      std::uint64_t accepted_count {};
+      presence_clock::time_point last_receipt {};
+      bool has_receipt {};
+    };
+
+    device_presence_diagnostic_counters presence_diagnostic_counters;
+
+    std::map<std::string, device_diagnostic_entry, std::less<>>
+      presence_diagnostic_devices;
+
+    void diagnostic_increment(std::uint64_t &value) {
+      if (value < diagnostic_max_integer) ++value;
+    }
+
+    device_presence_diagnostic_counters diagnostic_counter_snapshot() {
+      std::lock_guard lock(presence_mutex);
+      return presence_diagnostic_counters;
+    }
+
+    void record_tls_route_auth_rejected() {
+      std::lock_guard lock(presence_mutex);
+      diagnostic_increment(presence_diagnostic_counters.tls_route_auth_rejected);
+    }
+
+    void record_handler_rejection(int status) {
+      std::lock_guard lock(presence_mutex);
+      diagnostic_increment(presence_diagnostic_counters.handler_entered);
+      switch (status) {
+        case 400:
+          diagnostic_increment(presence_diagnostic_counters.rejected_400);
+          break;
+        case 401:
+          diagnostic_increment(presence_diagnostic_counters.rejected_401);
+          break;
+        case 415:
+          diagnostic_increment(presence_diagnostic_counters.rejected_415);
+          break;
+        default:
+          throw std::invalid_argument("unsupported heartbeat rejection status");
+      }
+    }
 
     std::string_view presence_state_name(device_presence_state state) {
       switch (state) {
@@ -815,7 +862,62 @@ namespace nvhttp {
 
     void record_presence(std::string_view uuid, presence_clock::time_point now) {
       std::lock_guard lock(presence_mutex);
+      diagnostic_increment(presence_diagnostic_counters.handler_entered);
       presence_receipts[std::string(uuid)] = now;
+      auto &diagnostic = presence_diagnostic_devices[std::string(uuid)];
+      if (diagnostic.accepted_count < diagnostic_max_integer) {
+        ++diagnostic.accepted_count;
+      }
+      diagnostic.last_receipt = now;
+      diagnostic.has_receipt = true;
+      diagnostic_increment(presence_diagnostic_counters.accepted_200);
+    }
+
+    nlohmann::json device_presence_diagnostics_document(
+      const std::vector<std::string> &paired_uuids,
+      presence_clock::time_point now,
+      std::chrono::milliseconds core_uptime
+    ) {
+      nlohmann::json devices = nlohmann::json::array();
+      std::lock_guard lock(presence_mutex);
+      const auto counters = presence_diagnostic_counters;
+      for (const auto &uuid : paired_uuids) {
+        const auto found = presence_diagnostic_devices.find(uuid);
+        std::optional<std::chrono::milliseconds> age;
+        std::uint64_t accepted_count = 0;
+        if (found != presence_diagnostic_devices.end() && found->second.has_receipt) {
+          age = std::chrono::duration_cast<std::chrono::milliseconds>(
+            now - found->second.last_receipt);
+          if (*age < 0ms) age = 0ms;
+          accepted_count = found->second.accepted_count;
+        }
+        const auto projection = project_device_presence(age, core_uptime);
+        devices.push_back({
+          {"deviceCorrelationSha256", device_presence_diagnostic_correlation(uuid)},
+          {"acceptedCount", accepted_count},
+          {"lastReceiptAgeMs", age
+            ? nlohmann::json(std::min<std::uint64_t>(
+                static_cast<std::uint64_t>(age->count()), diagnostic_max_integer))
+            : nlohmann::json(nullptr)},
+          {"currentProjection", presence_state_name(projection.state)}
+        });
+      }
+      return {
+        {"schemaVersion", 1},
+        {"coreUptimeMs", std::min<std::uint64_t>(
+          static_cast<std::uint64_t>(std::max(core_uptime, 0ms).count()),
+          diagnostic_max_integer)},
+        {"maxResponseBytes", diagnostic_max_response_bytes},
+        {"counters", {
+          {"tlsRouteAuthRejected", counters.tls_route_auth_rejected},
+          {"handlerEntered", counters.handler_entered},
+          {"rejected415", counters.rejected_415},
+          {"rejected400", counters.rejected_400},
+          {"rejected401", counters.rejected_401},
+          {"accepted200", counters.accepted_200}
+        }},
+        {"devices", std::move(devices)}
+      };
     }
 
     template<class Request>
@@ -876,6 +978,72 @@ namespace nvhttp {
       parsed["schemaVersion"].is_number_integer() &&
       parsed["schemaVersion"].get<int>() == 1;
   }
+
+  std::string device_presence_diagnostic_correlation(std::string_view uuid) {
+    std::string canonical(uuid);
+    std::transform(canonical.begin(), canonical.end(), canonical.begin(), [](unsigned char ch) {
+      return static_cast<char>(std::tolower(ch));
+    });
+    std::string preimage = "ligase-device-presence-diagnostic-v1";
+    preimage.push_back('\0');
+    preimage += canonical;
+    auto result = util::hex(crypto::hash(preimage), true).to_string();
+    std::transform(result.begin(), result.end(), result.begin(), [](unsigned char ch) {
+      return static_cast<char>(std::tolower(ch));
+    });
+    return result;
+  }
+
+#if defined SUNSHINE_TESTS
+  void reset_device_presence_diagnostics_for_tests() {
+    std::lock_guard lock(presence_mutex);
+    presence_diagnostic_counters = {};
+    presence_receipts.clear();
+    presence_diagnostic_devices.clear();
+  }
+
+  void record_device_presence_diagnostic_for_tests(int status, std::string_view uuid) {
+    if (status == -1) {
+      record_tls_route_auth_rejected();
+      return;
+    }
+    switch (status) {
+      case 200:
+        record_presence(uuid, presence_clock::now());
+        break;
+      case 400:
+      case 401:
+      case 415:
+        record_handler_rejection(status);
+        break;
+      default:
+        throw std::invalid_argument("unsupported diagnostic test status");
+    }
+  }
+
+  device_presence_diagnostic_counters
+  device_presence_diagnostic_counters_for_tests() {
+    return diagnostic_counter_snapshot();
+  }
+
+  nlohmann::json device_presence_diagnostics_document_for_tests(
+    const std::vector<std::string> &paired_uuids,
+    std::chrono::milliseconds core_uptime,
+    std::chrono::milliseconds receipt_age
+  ) {
+    const auto now = presence_clock::now();
+    if (receipt_age >= 0ms) {
+      std::lock_guard lock(presence_mutex);
+      for (const auto &uuid : paired_uuids) {
+        auto &entry = presence_diagnostic_devices[uuid];
+        entry.last_receipt = now - receipt_age;
+        entry.has_receipt = true;
+        presence_receipts[uuid] = entry.last_receipt;
+      }
+    }
+    return device_presence_diagnostics_document(paired_uuids, now, core_uptime);
+  }
+#endif
 
   template <class T>
   void print_req(std::shared_ptr<typename SimpleWeb::ServerBase<T>::Request> request) {
@@ -1485,6 +1653,7 @@ namespace nvhttp {
       print_req<SunshineHTTPS>(request);
       if (!exact_header(request, "Content-Type", "application/json") ||
           !exact_header(request, "Accept", "application/json")) {
+        record_handler_rejection(415);
         send_ligase_json(
           response,
           SimpleWeb::StatusCode::client_error_unsupported_media_type,
@@ -1495,6 +1664,7 @@ namespace nvhttp {
 
       const auto body = request->content.string();
       if (!valid_device_presence_heartbeat(body)) {
+        record_handler_rejection(400);
         send_ligase_json(
           response,
           SimpleWeb::StatusCode::client_error_bad_request,
@@ -1505,6 +1675,7 @@ namespace nvhttp {
 
       auto named_cert_p = get_verified_cert(request);
       if (!named_cert_p || named_cert_p->uuid.empty()) {
+        record_handler_rejection(401);
         send_ligase_json(
           response,
           SimpleWeb::StatusCode::client_error_unauthorized,
@@ -1523,6 +1694,49 @@ namespace nvhttp {
           {"heartbeatIntervalMs", 5000},
           {"presenceTimeoutMs", 15000}
         }
+      );
+    }
+
+    template<class Request>
+    bool ligase_request_is_loopback(const std::shared_ptr<Request> &request);
+
+    void ligase_device_presence_diagnostics_local(
+      resp_http_t response,
+      req_http_t request
+    ) {
+      print_req<SimpleWeb::HTTP>(request);
+      if (!ligase_request_is_loopback(request)) {
+        send_ligase_json(
+          response,
+          SimpleWeb::StatusCode::client_error_forbidden,
+          {{"error", "loopbackOnly"}}
+        );
+        return;
+      }
+
+      std::vector<std::string> uuids;
+      uuids.reserve(client_root.named_devices.size());
+      for (const auto &device : client_root.named_devices) {
+        if (device && !device->uuid.empty()) uuids.push_back(device->uuid);
+      }
+      const auto now = presence_clock::now();
+      auto document = device_presence_diagnostics_document(
+        uuids,
+        now,
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+          now - presence_core_started));
+      if (document.dump().size() > diagnostic_max_response_bytes) {
+        send_ligase_json(
+          response,
+          SimpleWeb::StatusCode::server_error_service_unavailable,
+          {{"error", "diagnosticsResponseTooLarge"}}
+        );
+        return;
+      }
+      send_ligase_json(
+        response,
+        SimpleWeb::StatusCode::success_ok,
+        document
       );
     }
 
@@ -3117,6 +3331,10 @@ namespace nvhttp {
     };
 
     https_server.on_verify_failed = [](resp_https_t resp, req_https_t req) {
+      if (req && req->method == "POST" &&
+          req->path == "/ligase/v1/device-presence/heartbeat") {
+        record_tls_route_auth_rejected();
+      }
       pt::ptree tree;
       auto g = util::fail_guard([&]() {
         std::ostringstream data;
@@ -3159,6 +3377,8 @@ namespace nvhttp {
     http_server.resource["^/serverinfo$"]["GET"] = serverinfo<SimpleWeb::HTTP>;
     http_server.resource["^/pair$"]["GET"] = pair<SimpleWeb::HTTP>;
     http_server.resource["^/ligase/v1/devices$"]["GET"] = ligase_devices_local;
+    http_server.resource["^/ligase/v1/device-presence/diagnostics$"]["GET"] =
+      ligase_device_presence_diagnostics_local;
     http_server.resource[
       "^/ligase/v1/devices/[0-9a-f-]+/access$"]["PUT"] =
       ligase_device_access_local;

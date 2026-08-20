@@ -7,6 +7,9 @@
 
 #include <src/nvhttp.h>
 
+#include <atomic>
+#include <thread>
+
 using namespace nvhttp;
 
 TEST(DevicePresence, ExactHeartbeatBodyRejectsExtraDuplicateAndWrongTypes) {
@@ -38,6 +41,88 @@ TEST(DevicePresence, MonotonicFreshnessAndWarmupBoundariesAreExact) {
   value = project_device_presence(std::nullopt, 15000ms);
   EXPECT_EQ(value.state, device_presence_state::offline);
   EXPECT_EQ(value.expires_in_ms, 0);
+}
+
+TEST(DevicePresenceDiagnostics, CorrelationIsCanonicalDomainSeparatedSha256) {
+  EXPECT_EQ(
+    device_presence_diagnostic_correlation(
+      "D9689EFB-3220-0509-9510-2D9770D483E8"),
+    "76866f488f5428267d2d1da89976e3ab8086781870d0e0220b5d87a5ad487868");
+  EXPECT_EQ(
+    device_presence_diagnostic_correlation(
+      "d9689efb-3220-0509-9510-2d9770d483e8"),
+    "76866f488f5428267d2d1da89976e3ab8086781870d0e0220b5d87a5ad487868");
+}
+
+TEST(DevicePresenceDiagnostics, CountersPartitionAndReceiptProjectionAreExact) {
+  reset_device_presence_diagnostics_for_tests();
+  record_device_presence_diagnostic_for_tests(-1);
+  record_device_presence_diagnostic_for_tests(415);
+  record_device_presence_diagnostic_for_tests(400);
+  record_device_presence_diagnostic_for_tests(401);
+  record_device_presence_diagnostic_for_tests(
+    200, "d9689efb-3220-0509-9510-2d9770d483e8");
+
+  const auto counters = device_presence_diagnostic_counters_for_tests();
+  EXPECT_EQ(counters.tls_route_auth_rejected, 1);
+  EXPECT_EQ(counters.handler_entered, 4);
+  EXPECT_EQ(counters.rejected_415, 1);
+  EXPECT_EQ(counters.rejected_400, 1);
+  EXPECT_EQ(counters.rejected_401, 1);
+  EXPECT_EQ(counters.accepted_200, 1);
+  EXPECT_EQ(counters.handler_entered,
+    counters.rejected_415 + counters.rejected_400 +
+    counters.rejected_401 + counters.accepted_200);
+
+  auto document = device_presence_diagnostics_document_for_tests(
+    {"d9689efb-3220-0509-9510-2d9770d483e8"}, 20000ms, 14999ms);
+  ASSERT_EQ(document["devices"].size(), 1);
+  EXPECT_EQ(document["devices"][0]["acceptedCount"], 1);
+  EXPECT_EQ(document["devices"][0]["lastReceiptAgeMs"], 14999);
+  EXPECT_EQ(document["devices"][0]["currentProjection"], "online");
+  EXPECT_FALSE(document.dump().contains("d9689efb"));
+
+  document = device_presence_diagnostics_document_for_tests(
+    {"d9689efb-3220-0509-9510-2d9770d483e8"}, 20000ms, 15000ms);
+  EXPECT_EQ(document["devices"][0]["currentProjection"], "offline");
+
+  reset_device_presence_diagnostics_for_tests();
+  document = device_presence_diagnostics_document_for_tests(
+    {"d9689efb-3220-0509-9510-2d9770d483e8"}, 14999ms);
+  EXPECT_EQ(document["devices"][0]["lastReceiptAgeMs"], nullptr);
+  EXPECT_EQ(document["devices"][0]["currentProjection"], "unknown");
+}
+
+TEST(DevicePresenceDiagnostics, ConcurrentCountersDoNotLoseUpdates) {
+  reset_device_presence_diagnostics_for_tests();
+  std::atomic<bool> writers_done {false};
+  std::atomic<bool> partition_drift {false};
+  std::thread reader([&]() {
+    while (!writers_done.load()) {
+      const auto counters = device_presence_diagnostic_counters_for_tests();
+      if (counters.handler_entered !=
+          counters.rejected_415 + counters.rejected_400 +
+          counters.rejected_401 + counters.accepted_200) {
+        partition_drift.store(true);
+      }
+    }
+  });
+  std::vector<std::thread> workers;
+  for (int worker = 0; worker < 8; ++worker) {
+    workers.emplace_back([]() {
+      for (int value = 0; value < 100; ++value) {
+        record_device_presence_diagnostic_for_tests(400);
+      }
+    });
+  }
+  for (auto &worker : workers) worker.join();
+  writers_done.store(true);
+  reader.join();
+  const auto counters = device_presence_diagnostic_counters_for_tests();
+  EXPECT_FALSE(partition_drift.load());
+  EXPECT_EQ(counters.handler_entered, 800);
+  EXPECT_EQ(counters.rejected_400, 800);
+  EXPECT_EQ(counters.rejected_415 + counters.rejected_401 + counters.accepted_200, 0);
 }
 
 TEST(HttpServerInfo, LigaseClientAccessModeFailsClosed) {
