@@ -191,9 +191,22 @@ namespace proc {
   std::optional<std::string> calculate_sha256(const std::string &filename);
 
   std::string validate_app_image_path(std::string app_image_path);
-  void refresh(const std::string &file_name, bool needs_terminate = true);
+  struct refresh_result_t {
+    bool completed;
+    std::string stage;
+    std::string reason_code;
+  };
+
+  refresh_result_t refresh(
+    const std::string &file_name,
+    bool needs_terminate = true,
+    bool initialize_virtual_display = true,
+    bool strict_catalog_only = false);
   void migrate_apps(nlohmann::json* fileTree_p, nlohmann::json* inputTree_p);
-  std::optional<proc::proc_t> parse(const std::string &file_name);
+  std::optional<proc::proc_t> parse(
+    const std::string &file_name,
+    bool strict_catalog_only = false,
+    std::string *failure_reason = nullptr);
 
   /**
    * @brief Initialize proc functions

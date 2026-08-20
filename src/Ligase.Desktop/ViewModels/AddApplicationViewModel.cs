@@ -293,14 +293,17 @@ public partial class AddApplicationViewModel(
                 coverPath,
                 cancellationToken);
             SteamResults.MarkAdded(result, item.Id);
-            Message = $"已将“{result.Name}”添加到游戏库。它现在位于下方“已添加”分组。";
+            Message = mutationCoordinator.LastOutcomePersistenceStatus.ResultCode ==
+                      "persistenceUnavailable"
+                ? $"已将“{result.Name}”添加到游戏库并完成核心回读，但本次诊断结果无法持久化。"
+                : $"已将“{result.Name}”添加到游戏库。它现在位于下方“已添加”分组。";
             ResetCoverSelection();
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             await PruneCoverCacheAsync(CancellationToken.None);
             ResetCoverSelection();
-            Message = $"未能添加“{result.Name}”：{exception.Message} 请确认 Host 核心正在运行后重试；其他搜索结果不受影响。";
+            Message = $"未能添加“{result.Name}”：{exception.Message} 其他搜索结果不受影响。";
         }
         finally
         {

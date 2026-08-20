@@ -124,7 +124,7 @@ public sealed class LibraryAuthorityTests
         var authority = new FakeAuthority(ManagedState, failReadbackNumber: 2);
         var coordinator = new LibraryMutationCoordinator(paths, repository, authority);
 
-        await Assert.ThrowsExceptionAsync<InvalidOperationException>(() =>
+        await Assert.ThrowsExceptionAsync<LibraryAuthorityReadbackException>(() =>
             coordinator.AddSteamAsync(Game));
 
         Assert.AreEqual("old-library", File.ReadAllText(paths.LibraryFile));
@@ -132,6 +132,245 @@ public sealed class LibraryAuthorityTests
         Assert.AreEqual("old-apps", File.ReadAllText(paths.ApolloAppsFile));
         Assert.AreEqual("old-layout", File.ReadAllText(paths.LayoutCatalogFile));
         Assert.AreEqual(3, authority.ReadbackCount);
+        using var outcome = System.Text.Json.JsonDocument.Parse(
+            File.ReadAllText(paths.LibraryMutationOutcomeFile));
+        Assert.AreEqual("addSteam", outcome.RootElement.GetProperty("operation").GetString());
+        Assert.AreEqual("rolledBack", outcome.RootElement.GetProperty("state").GetString());
+        Assert.AreEqual("deadlineExceeded", outcome.RootElement.GetProperty("primary")
+            .GetProperty("reasonCode").GetString());
+        Assert.AreEqual("completed", outcome.RootElement.GetProperty("rollback")
+            .GetProperty("resultCode").GetString());
+        Assert.IsFalse(File.Exists(paths.LibraryMutationOutcomeFile + ".tmp"));
+    }
+
+    [TestMethod]
+    public async Task RollbackReadbackFailurePersistsPrimaryAndUnprovenRollback()
+    {
+        var paths = CreateProjectionFiles();
+        var repository = new FakeRepository(paths);
+        var authority = new FakeAuthority(ManagedState, failReadbackNumbers: [2, 3]);
+        var coordinator = new LibraryMutationCoordinator(paths, repository, authority);
+
+        await Assert.ThrowsExceptionAsync<LibraryAuthorityReadbackException>(() =>
+            coordinator.AddSteamAsync(Game));
+
+        using var outcome = System.Text.Json.JsonDocument.Parse(
+            File.ReadAllText(paths.LibraryMutationOutcomeFile));
+        Assert.AreEqual("rollbackUnproven", outcome.RootElement.GetProperty("state").GetString());
+        Assert.AreEqual("deadlineExceeded", outcome.RootElement.GetProperty("primary")
+            .GetProperty("reasonCode").GetString());
+        Assert.AreEqual("deadlineExceeded", outcome.RootElement.GetProperty("rollback")
+            .GetProperty("reasonCode").GetString());
+        Assert.AreEqual(3, authority.ReadbackCount);
+        Assert.IsFalse(File.Exists(paths.LibraryMutationOutcomeFile + ".tmp"));
+    }
+
+    [TestMethod]
+    public async Task RollbackWriteFailureStillPersistsPrimaryAndRollbackStage()
+    {
+        var paths = CreateProjectionFiles();
+        Directory.CreateDirectory(paths.LibraryFile + ".rollback.tmp");
+        var repository = new FakeRepository(paths);
+        var authority = new FakeAuthority(ManagedState, failReadbackNumber: 2);
+        var coordinator = new LibraryMutationCoordinator(paths, repository, authority);
+
+        var primary = await Assert.ThrowsExceptionAsync<LibraryAuthorityReadbackException>(() =>
+            coordinator.AddSteamAsync(Game));
+
+        using var outcome = System.Text.Json.JsonDocument.Parse(
+            File.ReadAllText(paths.LibraryMutationOutcomeFile));
+        Assert.AreEqual("rollbackUnproven", outcome.RootElement.GetProperty("state").GetString());
+        Assert.AreEqual("deadlineExceeded", outcome.RootElement.GetProperty("primary")
+            .GetProperty("reasonCode").GetString());
+        Assert.AreEqual("rollback.mutation", outcome.RootElement.GetProperty("rollback")
+            .GetProperty("stage").GetString());
+        Assert.AreEqual("mutationFailed", outcome.RootElement.GetProperty("rollback")
+            .GetProperty("reasonCode").GetString());
+        Assert.AreEqual(2, authority.ReadbackCount);
+        CollectionAssert.Contains(
+            LibraryMutationCoordinator.SecondaryFailures(primary).ToList(),
+            new LibraryMutationSecondaryFailure("rollback.mutation", "mutationFailed"));
+    }
+
+    [TestMethod]
+    public async Task CommittedProjectionIsNotReinterpretedWhenOutcomePersistenceFails()
+    {
+        var paths = CreateProjectionFiles();
+        var repository = new FakeRepository(paths);
+        var authority = new SuccessfulAddAuthority();
+        var coordinator = new LibraryMutationCoordinator(
+            paths,
+            repository,
+            authority,
+            outcomeStore: new ThrowingOutcomeStore());
+
+        var item = await coordinator.AddSteamAsync(Game);
+
+        Assert.AreEqual(Guid.Parse("f3d67f4d-b1fe-4c5d-a77e-b78a51051c1a"), item.Id);
+        Assert.AreEqual("new-library", File.ReadAllText(paths.LibraryFile));
+        Assert.AreEqual("persistenceUnavailable",
+            coordinator.LastOutcomePersistenceStatus.ResultCode);
+        Assert.AreEqual("unknown", coordinator.LastOutcomePersistenceStatus.State);
+        Assert.AreEqual(2, authority.ReadbackCount);
+    }
+
+    [TestMethod]
+    public void AtomicOutcomeStoreUsesHandleReadbackAndFailsClosedAtEveryStage()
+    {
+        var stages = Enum.GetValues<LibraryMutationOutcomeStoreStage>()
+            .Where(stage => stage != LibraryMutationOutcomeStoreStage.CleanupTemporary)
+            .ToArray();
+        foreach (var injected in stages)
+        {
+            var root = Path.Combine(_root, injected.ToString());
+            var paths = new LigasePaths(root);
+            var store = new AtomicLibraryMutationOutcomeStore(
+                paths,
+                stage =>
+                {
+                    if (stage == injected) throw new IOException($"injected {stage}");
+                });
+
+            var error = Assert.ThrowsException<LibraryMutationOutcomeStoreException>(() =>
+                store.PersistAndReadback(CommittedOutcome()));
+
+            Assert.AreEqual(injected, error.Stage);
+            Assert.IsFalse(error.CleanupFailed);
+            Assert.AreEqual(0, Directory.Exists(root)
+                ? Directory.GetFiles(root, "*.tmp", SearchOption.TopDirectoryOnly).Length
+                : 0, $"temporary residue after {injected}");
+        }
+    }
+
+    [TestMethod]
+    public void AtomicOutcomeStoreReportsCleanupFailureWithoutMaskingPrimaryStage()
+    {
+        var paths = new LigasePaths(Path.Combine(_root, "cleanup-failure"));
+        var store = new AtomicLibraryMutationOutcomeStore(
+            paths,
+            stage =>
+            {
+                if (stage is LibraryMutationOutcomeStoreStage.WriteTemporary or
+                    LibraryMutationOutcomeStoreStage.CleanupTemporary)
+                    throw new IOException($"injected {stage}");
+            });
+
+        var error = Assert.ThrowsException<LibraryMutationOutcomeStoreException>(() =>
+            store.PersistAndReadback(CommittedOutcome()));
+
+        Assert.AreEqual(LibraryMutationOutcomeStoreStage.WriteTemporary, error.Stage);
+        Assert.IsTrue(error.CleanupFailed);
+        Assert.AreEqual(1, Directory.GetFiles(paths.RootDirectory, "*.tmp").Length);
+    }
+
+    [TestMethod]
+    public void AtomicOutcomeStoreRoundTripsOnlySemanticallyValidDocument()
+    {
+        var paths = new LigasePaths(Path.Combine(_root, "valid-roundtrip"));
+        var store = new AtomicLibraryMutationOutcomeStore(paths);
+
+        var readback = store.PersistAndReadback(CommittedOutcome());
+
+        LibraryMutationOutcomeSemanticValidator.Validate(readback);
+        Assert.AreEqual(CommittedOutcome(), readback);
+        Assert.AreEqual(0, Directory.GetFiles(paths.RootDirectory, "*.tmp").Length);
+
+        var invalid = CommittedOutcome() with
+        {
+            Primary = new LibraryMutationAttempt(
+                "completed", "reload.readback", "none", 201, 1)
+        };
+        Assert.ThrowsException<InvalidDataException>(() => store.PersistAndReadback(invalid));
+    }
+
+    [TestMethod]
+    public async Task RolledBackProjectionKeepsOriginalPrimaryWhenOutcomePersistenceFails()
+    {
+        var paths = CreateProjectionFiles();
+        var repository = new FakeRepository(paths);
+        var authority = new FakeAuthority(ManagedState, failReadbackNumber: 2);
+        var coordinator = new LibraryMutationCoordinator(
+            paths, repository, authority, outcomeStore: new ThrowingOutcomeStore());
+
+        var primary = await Assert.ThrowsExceptionAsync<LibraryAuthorityReadbackException>(() =>
+            coordinator.AddSteamAsync(Game));
+
+        Assert.AreEqual("deadlineExceeded", primary.Failure.ReasonCode);
+        Assert.AreEqual("old-library", File.ReadAllText(paths.LibraryFile));
+        CollectionAssert.AreEqual(
+            new[] { new LibraryMutationSecondaryFailure(
+                "outcome.persistence", "writeOrReadbackFailed") },
+            LibraryMutationCoordinator.SecondaryFailures(primary).ToArray());
+        Assert.AreEqual("persistenceUnavailable",
+            coordinator.LastOutcomePersistenceStatus.ResultCode);
+    }
+
+    [TestMethod]
+    public async Task RollbackAndPersistenceFailuresRemainSecondaryToOriginalPrimary()
+    {
+        var paths = CreateProjectionFiles();
+        Directory.CreateDirectory(paths.LibraryFile + ".rollback.tmp");
+        var repository = new FakeRepository(paths);
+        var authority = new FakeAuthority(ManagedState, failReadbackNumber: 2);
+        var coordinator = new LibraryMutationCoordinator(
+            paths, repository, authority, outcomeStore: new ThrowingOutcomeStore());
+
+        var primary = await Assert.ThrowsExceptionAsync<LibraryAuthorityReadbackException>(() =>
+            coordinator.AddSteamAsync(Game));
+
+        Assert.AreEqual("deadlineExceeded", primary.Failure.ReasonCode);
+        CollectionAssert.AreEquivalent(
+            new[]
+            {
+                new LibraryMutationSecondaryFailure("rollback.mutation", "mutationFailed"),
+                new LibraryMutationSecondaryFailure("outcome.persistence", "writeOrReadbackFailed")
+            },
+            LibraryMutationCoordinator.SecondaryFailures(primary).ToArray());
+        Assert.AreEqual("persistenceUnavailable",
+            coordinator.LastOutcomePersistenceStatus.ResultCode);
+    }
+
+    [TestMethod]
+    public async Task ExceptionDispatchInfoPreservesExactPrimaryAcrossRollbackAndPersistenceFailures()
+    {
+        var paths = CreateProjectionFiles();
+        Directory.CreateDirectory(paths.LibraryFile + ".rollback.tmp");
+        var expected = new InvalidOperationException("injected primary mutation failure");
+        var coordinator = new LibraryMutationCoordinator(
+            paths,
+            new ThrowingRepository(expected),
+            new FakeAuthority(ManagedState),
+            outcomeStore: new ThrowingOutcomeStore());
+
+        var actual = await Assert.ThrowsExceptionAsync<InvalidOperationException>(() =>
+            coordinator.AddSteamAsync(Game));
+
+        Assert.AreSame(expected, actual);
+        CollectionAssert.AreEquivalent(
+            new[]
+            {
+                new LibraryMutationSecondaryFailure("rollback.mutation", "mutationFailed"),
+                new LibraryMutationSecondaryFailure("outcome.persistence", "writeOrReadbackFailed")
+            },
+            LibraryMutationCoordinator.SecondaryFailures(actual).ToArray());
+    }
+
+    [TestMethod]
+    public async Task OutcomeReadbackMismatchIsPersistenceUnavailableWithoutRollback()
+    {
+        var paths = CreateProjectionFiles();
+        var repository = new FakeRepository(paths);
+        var coordinator = new LibraryMutationCoordinator(
+            paths,
+            repository,
+            new SuccessfulAddAuthority(),
+            outcomeStore: new MismatchingOutcomeStore());
+
+        await coordinator.AddSteamAsync(Game);
+
+        Assert.AreEqual("new-library", File.ReadAllText(paths.LibraryFile));
+        Assert.AreEqual("persistenceUnavailable",
+            coordinator.LastOutcomePersistenceStatus.ResultCode);
     }
 
     [TestMethod]
@@ -223,6 +462,14 @@ public sealed class LibraryAuthorityTests
         Assert.AreEqual(BindingCore.UniqueId, saved.Instance.HostUniqueId);
         Assert.AreEqual(binding, saved.Binding);
         Assert.AreEqual(2, authority.ReadbackCount);
+        using var outcome = System.Text.Json.JsonDocument.Parse(
+            File.ReadAllText(paths.LibraryMutationOutcomeFile));
+        Assert.AreEqual("setLayoutBinding", outcome.RootElement.GetProperty("operation").GetString());
+        Assert.AreEqual("committed", outcome.RootElement.GetProperty("state").GetString());
+        Assert.AreEqual("completed", outcome.RootElement.GetProperty("primary")
+            .GetProperty("resultCode").GetString());
+        Assert.AreEqual("notAttempted", outcome.RootElement.GetProperty("rollback")
+            .GetProperty("resultCode").GetString());
     }
 
     private LigasePaths CreateProjectionFiles()
@@ -235,6 +482,14 @@ public sealed class LibraryAuthorityTests
         File.WriteAllText(paths.LayoutCatalogFile, "old-layout");
         return paths;
     }
+
+    private static LibraryMutationOutcomeDocument CommittedOutcome() => new(
+        1,
+        "addSteam",
+        "committed",
+        new LibraryMutationAttempt("completed", "reload.readback", "none", 200, 1),
+        LibraryMutationAttempt.NotAttempted,
+        new DateTimeOffset(2026, 8, 21, 5, 0, 0, TimeSpan.Zero));
 
     private static readonly SteamGame Game = new(
         3548580,
@@ -340,7 +595,8 @@ public sealed class LibraryAuthorityTests
 
     private sealed class FakeAuthority(
         LibraryAuthorityState state,
-        int? failReadbackNumber = null) : ILibraryAuthorityService
+        int? failReadbackNumber = null,
+        IReadOnlyCollection<int>? failReadbackNumbers = null) : ILibraryAuthorityService
     {
         public int ReadbackCount { get; private set; }
 
@@ -353,10 +609,17 @@ public sealed class LibraryAuthorityTests
             CancellationToken cancellationToken = default)
         {
             ReadbackCount++;
-            if (ReadbackCount == failReadbackNumber)
-                throw new InvalidOperationException("readback failed");
+            if (ReadbackCount == failReadbackNumber ||
+                failReadbackNumbers?.Contains(ReadbackCount) == true)
+                throw new LibraryAuthorityReadbackException(
+                    new LibraryAuthorityReadbackFailure(
+                        "timeout", "reload.transport", "deadlineExceeded", null, 3000),
+                    "readback failed");
             return Task.FromResult(new AuthorityReadbackDocument(
-                1, "token", "nonce", "root", "host", [], []));
+                1, "token", "nonce", "root", "host", [], [],
+                Reload: reload
+                    ? new AuthorityReloadResult(1, "completed", "readback", "none", 4)
+                    : null));
         }
     }
 
@@ -400,5 +663,70 @@ public sealed class LibraryAuthorityTests
                 items,
                 []));
         }
+    }
+
+    private sealed class SuccessfulAddAuthority : ILibraryAuthorityService
+    {
+        public int ReadbackCount { get; private set; }
+
+        public Task<LibraryAuthorityState> GetStateAsync(
+            CancellationToken cancellationToken = default) => Task.FromResult(ManagedState);
+
+        public Task<AuthorityReadbackDocument> RequireReadbackAsync(
+            ApolloCoreEndpoint core,
+            bool reload,
+            CancellationToken cancellationToken = default)
+        {
+            ReadbackCount++;
+            var items = ReadbackCount == 1
+                ? Array.Empty<AuthorityReadbackLibraryItem>()
+                : [new AuthorityReadbackLibraryItem(
+                    "f3d67f4d-b1fe-4c5d-a77e-b78a51051c1a", "Steam", 3548580, true)];
+            var apps = ReadbackCount == 1
+                ? Array.Empty<AuthorityReadbackApp>()
+                : [new AuthorityReadbackApp(
+                    "f3d67f4d-b1fe-4c5d-a77e-b78a51051c1a", "123")];
+            return Task.FromResult(new AuthorityReadbackDocument(
+                1, "token", "nonce", "root", "host", items, apps,
+                Reload: reload
+                    ? new AuthorityReloadResult(1, "completed", "readback", "none", 4)
+                    : null));
+        }
+    }
+
+    private sealed class ThrowingOutcomeStore : ILibraryMutationOutcomeStore
+    {
+        public LibraryMutationOutcomeDocument PersistAndReadback(
+            LibraryMutationOutcomeDocument outcome) =>
+            throw new IOException("injected outcome persistence failure");
+    }
+
+    private sealed class MismatchingOutcomeStore : ILibraryMutationOutcomeStore
+    {
+        public LibraryMutationOutcomeDocument PersistAndReadback(
+            LibraryMutationOutcomeDocument outcome) => outcome with { State = "rolledBack" };
+    }
+
+    private sealed class ThrowingRepository(Exception expected) : IApplicationLibrary
+    {
+        public Task<LibraryState> LoadAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult(new LibraryState());
+        public Task<LibraryItem> AddSteamAsync(SteamGame game, string? coverImagePath = null,
+            CancellationToken cancellationToken = default) => Task.FromException<LibraryItem>(expected);
+        public Task<LibraryItem> AddExecutableAsync(string name, string executablePath,
+            string? arguments, string? workingDirectory, string? coverImagePath = null,
+            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public Task<LibraryState> SetManualOrderAsync(long baseRevision,
+            IReadOnlyList<Guid> orderedPublishedAppIds,
+            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public Task SetPublishedToClientsAsync(Guid id, bool published,
+            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public Task<LibraryItem> SetLayoutBindingAsync(Guid id, LayoutBindingV1? binding,
+            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public Task<LibraryItem> UpdateSteamCoverAsync(Guid id,
+            PortableGameIdentityV1 expectedPortableIdentity, string coverImagePath,
+            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public Task RemoveAsync(Guid id, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
     }
 }

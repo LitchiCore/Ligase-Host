@@ -2548,12 +2548,27 @@ namespace nvhttp {
   }
 
   void ligase_authority_reload_local(resp_http_t response, req_http_t request) {
+    const auto reload_started = std::chrono::steady_clock::now();
+    const auto reload_result = [&](
+      const std::string &result_code,
+      const std::string &stage,
+      const std::string &reason_code) {
+      return nlohmann::json {
+        {"schemaVersion", 1},
+        {"resultCode", result_code},
+        {"stage", stage},
+        {"reasonCode", reason_code},
+        {"elapsedMs", std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::steady_clock::now() - reload_started).count()}
+      };
+    };
     print_req<SimpleWeb::HTTP>(request);
     if (!ligase_request_is_loopback(request)) {
       send_ligase_json(
         response,
         SimpleWeb::StatusCode::client_error_forbidden,
-        {{"error", "loopbackOnly"}}
+        {{"error", "loopbackOnly"},
+         {"reload", reload_result("rejected", "requestValidation", "loopbackOnly")}}
       );
       return;
     }
@@ -2571,7 +2586,8 @@ namespace nvhttp {
         send_ligase_json(
           response,
           SimpleWeb::StatusCode::client_error_forbidden,
-          {{"error", "authorityMismatch"}}
+          {{"error", "authorityMismatch"},
+           {"reload", reload_result("rejected", "authorityValidation", "authorityMismatch")}}
         );
         return;
       }
@@ -2579,7 +2595,8 @@ namespace nvhttp {
       send_ligase_json(
         response,
         SimpleWeb::StatusCode::client_error_not_found,
-        {{"error", "authorityUnavailable"}}
+        {{"error", "authorityUnavailable"},
+         {"reload", reload_result("unavailable", "authorityValidation", "authorityUnavailable")}}
       );
       return;
     }
@@ -2588,23 +2605,39 @@ namespace nvhttp {
       send_ligase_json(
         response,
         SimpleWeb::StatusCode::client_error_conflict,
-        {{"error", "sessionActive"}}
+        {{"error", "sessionActive"},
+         {"reload", reload_result("rejected", "precondition", "sessionActive")}}
       );
       return;
     }
 
     try {
-      proc::refresh(config::stream.file_apps, false);
+      // A library reload only reparses apps.json. Virtual-display discovery can
+      // take up to five seconds and is unrelated to this bounded transaction.
+      const auto refresh = proc::refresh(
+        config::stream.file_apps, false, false, true);
+      if (!refresh.completed) {
+        send_ligase_json(
+          response,
+          SimpleWeb::StatusCode::server_error_internal_server_error,
+          {{"error", refresh.reason_code},
+           {"reload", reload_result("failed", refresh.stage, refresh.reason_code)}}
+        );
+        return;
+      }
+      auto readback = build_ligase_authority_readback(authority);
+      readback["reload"] = reload_result("completed", "readback", "none");
       send_ligase_json(
         response,
         SimpleWeb::StatusCode::success_ok,
-        build_ligase_authority_readback(authority)
+        readback
       );
     } catch (const std::exception &) {
       send_ligase_json(
         response,
         SimpleWeb::StatusCode::server_error_internal_server_error,
-        {{"error", "reloadFailed"}}
+        {{"error", "reloadFailed"},
+         {"reload", reload_result("failed", "appCatalogReload", "reloadFailed")}}
       );
     }
   }

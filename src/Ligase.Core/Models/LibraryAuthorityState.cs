@@ -43,4 +43,12 @@ public sealed record AuthorityReadbackDocument(
     IReadOnlyList<AuthorityReadbackApp> Apps,
     long LibraryRevision = 0,
     string LibrarySortMode = "",
-    IReadOnlyList<string>? LibraryOrder = null);
+    IReadOnlyList<string>? LibraryOrder = null,
+    AuthorityReloadResult? Reload = null);
+
+public sealed record AuthorityReloadResult(
+    int SchemaVersion,
+    string ResultCode,
+    string Stage,
+    string ReasonCode,
+    long ElapsedMs);

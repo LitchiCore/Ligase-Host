@@ -1345,7 +1345,10 @@ namespace proc {
     }
   }
 
-  std::optional<proc::proc_t> parse(const std::string &file_name) {
+  std::optional<proc::proc_t> parse(
+    const std::string &file_name,
+    bool strict_catalog_only,
+    std::string *failure_reason) {
 
     // Prepare environment variables.
     auto this_env = boost::this_process::environment();
@@ -1359,15 +1362,40 @@ namespace proc {
       // Read the JSON file into a tree.
       nlohmann::json tree;
       try {
-        std::string content = file_handler::read_file(file_name.c_str());
+        std::string content;
+        if (strict_catalog_only) {
+          std::ifstream input(file_name, std::ios::binary);
+          if (!input.is_open()) {
+            if (failure_reason) *failure_reason = "catalogUnreadable";
+            return std::nullopt;
+          }
+          std::ostringstream bytes;
+          bytes << input.rdbuf();
+          if (input.bad()) {
+            if (failure_reason) *failure_reason = "catalogUnreadable";
+            return std::nullopt;
+          }
+          content = bytes.str();
+        } else {
+          content = file_handler::read_file(file_name.c_str());
+        }
         tree = nlohmann::json::parse(content);
+      } catch (const nlohmann::json::parse_error& e) {
+        BOOST_LOG(warning) << "Couldn't parse apps.json properly! Apps will not be loaded."sv;
+        if (failure_reason) *failure_reason = "catalogMalformed";
+        if (strict_catalog_only) return std::nullopt;
+        break;
       } catch (const std::exception& e) {
         BOOST_LOG(warning) << "Couldn't read apps.json properly! Apps will not be loaded."sv;
+        if (failure_reason) *failure_reason = "catalogUnreadable";
+        if (strict_catalog_only) return std::nullopt;
         break;
       }
 
       try {
-        migrate(tree, file_name);
+        if (!strict_catalog_only) {
+          migrate(tree, file_name);
+        }
 
         if (tree.contains("env") && tree["env"].is_object()) {
           for (auto &item : tree["env"].items()) {
@@ -1378,6 +1406,8 @@ namespace proc {
         // Ensure the "apps" array exists.
         if (!tree.contains("apps") || !tree["apps"].is_array()) {
           BOOST_LOG(warning) << "No apps were defined in apps.json!!!"sv;
+          if (failure_reason) *failure_reason = "catalogLoadFailed";
+          if (strict_catalog_only) return std::nullopt;
           break;
         }
 
@@ -1500,6 +1530,11 @@ namespace proc {
         fail_count = 0;
       } catch (std::exception &e) {
         BOOST_LOG(error) << "Error happened during app loading: "sv << e.what();
+
+        if (strict_catalog_only) {
+          if (failure_reason) *failure_reason = "catalogLoadFailed";
+          return std::nullopt;
+        }
 
         fail_count += 1;
 
@@ -1680,28 +1715,46 @@ namespace proc {
     };
   }
 
-  void refresh(const std::string &file_name, bool needs_terminate) {
+  refresh_result_t refresh(
+    const std::string &file_name,
+    bool needs_terminate,
+    bool initialize_virtual_display,
+    bool strict_catalog_only) {
     if (needs_terminate) {
       proc.terminate(false, false);
     }
 
   #ifdef _WIN32
-    size_t fail_count = 0;
-    while (fail_count < 5 && vDisplayDriverStatus != VDISPLAY::DRIVER_STATUS::OK) {
-      initVDisplayDriver();
-      if (vDisplayDriverStatus == VDISPLAY::DRIVER_STATUS::OK) {
-        break;
-      }
+    if (initialize_virtual_display) {
+      size_t fail_count = 0;
+      while (fail_count < 5 && vDisplayDriverStatus != VDISPLAY::DRIVER_STATUS::OK) {
+        initVDisplayDriver();
+        if (vDisplayDriverStatus == VDISPLAY::DRIVER_STATUS::OK) {
+          break;
+        }
 
-      fail_count += 1;
-      std::this_thread::sleep_for(1s);
+        fail_count += 1;
+        std::this_thread::sleep_for(1s);
+      }
     }
   #endif
 
-    auto proc_opt = proc::parse(file_name);
+    std::string failure_reason;
+    auto proc_opt = proc::parse(file_name, strict_catalog_only, &failure_reason);
 
-    if (proc_opt) {
-      proc = std::move(*proc_opt);
+    if (!proc_opt) {
+      return {
+        false,
+        failure_reason == "catalogMalformed" ? "appCatalogParse" : "appCatalogLoad",
+        failure_reason.empty() ? "catalogLoadFailed" : failure_reason
+      };
     }
+
+    try {
+      proc = std::move(*proc_opt);
+    } catch (const std::exception&) {
+      return {false, "appCatalogSwap", "catalogSwapFailed"};
+    }
+    return {true, "readback", "none"};
   }
 }  // namespace proc

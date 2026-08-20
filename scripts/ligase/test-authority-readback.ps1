@@ -47,6 +47,34 @@ function Invoke-AuthorityPost {
     return $payload | ConvertFrom-Json
 }
 
+function Invoke-AuthorityPostRaw {
+    param([string]$Path, [string]$Body)
+    $content = [System.Net.Http.StringContent]::new($Body, $utf8, "application/json")
+    $response = $httpClient.PostAsync(
+        "http://127.0.0.1:$Port$Path", $content).GetAwaiter().GetResult()
+    $payload = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+    [pscustomobject]@{
+        Status = [int]$response.StatusCode
+        Body = $payload | ConvertFrom-Json
+    }
+}
+
+function Assert-ReloadFailurePreservesOldState {
+    param([string]$Reason, [string]$Stage, [string]$Body)
+    $failed = Invoke-AuthorityPostRaw "/ligase/v1/authority/reload" $Body
+    if ($failed.Status -ne 500 -or
+        $failed.Body.reload.resultCode -ne "failed" -or
+        $failed.Body.reload.stage -ne $Stage -or
+        $failed.Body.reload.reasonCode -ne $Reason) {
+        throw "Unexpected typed reload failure for $Reason`: $($failed | ConvertTo-Json -Depth 8 -Compress)"
+    }
+    $unchanged = Invoke-AuthorityPost "/ligase/v1/authority/readback" $Body
+    if (-not ($unchanged.apps | Where-Object uuid -EQ $gameUuid) -or
+        ($unchanged.apps | Where-Object uuid -EQ $fixtureUuid)) {
+        throw "Failed reload $Reason replaced the active app catalog."
+    }
+}
+
 Write-Json (Join-Path $root "ligase-authority.json") ([ordered]@{
     schemaVersion = 1
     token = $token
@@ -133,6 +161,26 @@ try {
         throw "Initial core read-back did not match the managed projection."
     }
 
+    $appsPath = Join-Path $configRoot "apps.json"
+    [IO.File]::WriteAllText($appsPath, "{malformed", $utf8)
+    Assert-ReloadFailurePreservesOldState "catalogMalformed" "appCatalogParse" $body
+
+    Write-Json $appsPath $apps
+    $held = [IO.File]::Open($appsPath, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+    try {
+        Assert-ReloadFailurePreservesOldState "catalogUnreadable" "appCatalogLoad" $body
+    }
+    finally {
+        $held.Dispose()
+    }
+
+    Write-Json $appsPath ([ordered]@{
+        version = 2
+        env = @{}
+        apps = @([ordered]@{ name = "missing UUID" })
+    })
+    Assert-ReloadFailurePreservesOldState "catalogLoadFailed" "appCatalogLoad" $body
+
     $apps.apps += [ordered]@{
         uuid = $fixtureUuid
         name = "Authority fixture"
@@ -141,7 +189,7 @@ try {
         "wait-all" = $true
         "auto-detach" = $false
     }
-    Write-Json (Join-Path $configRoot "apps.json") $apps
+    Write-Json $appsPath $apps
     $reloaded = Invoke-AuthorityPost "/ligase/v1/authority/reload" $body
     if (-not ($reloaded.apps | Where-Object uuid -EQ $fixtureUuid)) {
         throw "Core reload did not expose the new UUID."
@@ -154,6 +202,9 @@ try {
         InitialGameUuid = $gameUuid
         InitialAppId = ($readback.apps | Where-Object uuid -EQ $gameUuid).appId
         ReloadedFixture = $true
+        MalformedRejected = $true
+        UnreadableRejected = $true
+        LoadFailureRejected = $true
         Root = $root
     }
 }

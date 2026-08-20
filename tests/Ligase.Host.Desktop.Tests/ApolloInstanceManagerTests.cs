@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using System.Net;
+using System.Text;
 using Ligase.Host.Core.Domain.Installation;
 using Ligase.Host.Core.Models;
 using Ligase.Host.Core.Services;
@@ -331,6 +333,207 @@ public sealed class ApolloInstanceManagerTests
         Assert.AreEqual(1, discoveryCount);
         Assert.IsFalse(state.CanWrite);
         Assert.IsFalse(state.Message.Contains("多个", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public async Task ReloadPreservesSessionActiveTypedFailure()
+    {
+        var service = AuthorityService(new HttpResponseMessage(HttpStatusCode.Conflict)
+        {
+            Content = Json("""
+                {"error":"sessionActive","reload":{"schemaVersion":1,"resultCode":"rejected","stage":"precondition","reasonCode":"sessionActive","elapsedMs":7}}
+                """)
+        });
+
+        var error = await Assert.ThrowsExceptionAsync<LibraryAuthorityReadbackException>(
+            () => service.RequireReadbackAsync(Endpoint, reload: true));
+
+        Assert.AreEqual("rejected", error.Failure.ResultCode);
+        Assert.AreEqual("reload.precondition", error.Failure.Stage);
+        Assert.AreEqual("sessionActive", error.Failure.ReasonCode);
+        Assert.AreEqual(409, error.Failure.HttpStatusCode);
+        Assert.AreEqual(7L, error.Failure.ElapsedMs);
+        StringAssert.Contains(error.Message, "活动串流");
+    }
+
+    [TestMethod]
+    public async Task ReloadPreservesServerFailureAndTransportTimeout()
+    {
+        var failed = AuthorityService(new HttpResponseMessage(HttpStatusCode.InternalServerError)
+        {
+            Content = Json("""
+                {"error":"reloadFailed","reload":{"schemaVersion":1,"resultCode":"failed","stage":"appCatalogReload","reasonCode":"reloadFailed","elapsedMs":11}}
+                """)
+        });
+        var serverError = await Assert.ThrowsExceptionAsync<LibraryAuthorityReadbackException>(
+            () => failed.RequireReadbackAsync(Endpoint, reload: true));
+        Assert.AreEqual("reload.appCatalogReload", serverError.Failure.Stage);
+        Assert.AreEqual("reloadFailed", serverError.Failure.ReasonCode);
+        Assert.AreEqual("failed", serverError.Failure.ResultCode);
+        Assert.AreEqual(500, serverError.Failure.HttpStatusCode);
+
+        var timeout = AuthorityService(new ThrowingHandler(new TaskCanceledException()));
+        var timeoutError = await Assert.ThrowsExceptionAsync<LibraryAuthorityReadbackException>(
+            () => timeout.RequireReadbackAsync(Endpoint, reload: true));
+        Assert.AreEqual("timeout", timeoutError.Failure.ResultCode);
+        Assert.AreEqual("reload.transport", timeoutError.Failure.Stage);
+        Assert.AreEqual("deadlineExceeded", timeoutError.Failure.ReasonCode);
+        Assert.IsNull(timeoutError.Failure.HttpStatusCode);
+    }
+
+    [TestMethod]
+    public async Task ReloadRequiresExactCompletedMetadata()
+    {
+        var service = AuthorityService(new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = Json("""
+                {"schemaVersion":1,"authorityToken":"token","startNonce":"nonce","rootFingerprint":"root","hostUniqueId":"host-id","libraryItems":[],"apps":[],"reload":{"schemaVersion":1,"resultCode":"completed","stage":"readback","reasonCode":"wrong","elapsedMs":1}}
+                """)
+        });
+
+        var error = await Assert.ThrowsExceptionAsync<LibraryAuthorityReadbackException>(
+            () => service.RequireReadbackAsync(Endpoint, reload: true));
+        Assert.AreEqual("invalidResponse", error.Failure.ResultCode);
+        Assert.AreEqual("reload.semantic", error.Failure.Stage);
+        Assert.AreEqual("reloadMetadataMismatch", error.Failure.ReasonCode);
+    }
+
+    [TestMethod]
+    public async Task ReloadRejectsStatusMetadataCrossSplice()
+    {
+        var service = AuthorityService(new HttpResponseMessage(HttpStatusCode.Conflict)
+        {
+            Content = Json("""
+                {"error":"sessionActive","reload":{"schemaVersion":1,"resultCode":"failed","stage":"appCatalogReload","reasonCode":"reloadFailed","elapsedMs":3}}
+                """)
+        });
+
+        var error = await Assert.ThrowsExceptionAsync<LibraryAuthorityReadbackException>(
+            () => service.RequireReadbackAsync(Endpoint, reload: true));
+        Assert.AreEqual("invalidResponse", error.Failure.ResultCode);
+        Assert.AreEqual("reload.semantic", error.Failure.Stage);
+        Assert.AreEqual("reloadMetadataMismatch", error.Failure.ReasonCode);
+        Assert.AreEqual(409, error.Failure.HttpStatusCode);
+    }
+
+    [TestMethod]
+    public async Task ReloadNormalizesEveryUnexpectedHttpStatusToClosedTuple()
+    {
+        foreach (var status in new[]
+                 {
+                     HttpStatusCode.Created,
+                     HttpStatusCode.NoContent,
+                     (HttpStatusCode)418,
+                     HttpStatusCode.BadGateway
+                 })
+        {
+            var service = AuthorityService(new HttpResponseMessage(status)
+            {
+                Content = Json("{}")
+            });
+            var error = await Assert.ThrowsExceptionAsync<LibraryAuthorityReadbackException>(
+                () => service.RequireReadbackAsync(Endpoint, reload: true));
+            Assert.AreEqual("invalidResponse", error.Failure.ResultCode);
+            Assert.AreEqual("reload.response", error.Failure.Stage);
+            Assert.AreEqual("unexpectedHttpStatus", error.Failure.ReasonCode);
+            Assert.AreEqual((int)status, error.Failure.HttpStatusCode);
+            LibraryMutationOutcomeSemanticValidator.ValidateAttempt(
+                new LibraryMutationAttempt(
+                    error.Failure.ResultCode,
+                    error.Failure.Stage,
+                    error.Failure.ReasonCode,
+                    error.Failure.HttpStatusCode,
+                    error.Failure.ElapsedMs),
+                "addSteam");
+        }
+    }
+
+    [TestMethod]
+    public async Task ReloadNormalizesTransportExceptionWithStatusToClosedTuple()
+    {
+        var service = AuthorityService(new ThrowingHandler(
+            new HttpRequestException(
+                "injected status transport failure", null, HttpStatusCode.BadGateway)));
+
+        var error = await Assert.ThrowsExceptionAsync<LibraryAuthorityReadbackException>(
+            () => service.RequireReadbackAsync(Endpoint, reload: true));
+
+        Assert.AreEqual("transportFailed", error.Failure.ResultCode);
+        Assert.AreEqual("reload.transport", error.Failure.Stage);
+        Assert.AreEqual("httpStatusFailure", error.Failure.ReasonCode);
+        Assert.AreEqual(502, error.Failure.HttpStatusCode);
+        LibraryMutationOutcomeSemanticValidator.ValidateAttempt(
+            new LibraryMutationAttempt(
+                error.Failure.ResultCode,
+                error.Failure.Stage,
+                error.Failure.ReasonCode,
+                error.Failure.HttpStatusCode,
+                error.Failure.ElapsedMs),
+            "addSteam");
+    }
+
+    [TestMethod]
+    public async Task ReloadFailureMessagesDescribeTheTypedBranchWithoutGenericCoreAdvice()
+    {
+        var cases = new[]
+        {
+            (HttpStatusCode.Conflict, "rejected", "precondition", "sessionActive", "结束会话"),
+            (HttpStatusCode.InternalServerError, "failed", "appCatalogParse", "catalogMalformed", "格式无效"),
+            (HttpStatusCode.InternalServerError, "failed", "appCatalogLoad", "catalogUnreadable", "无法读取"),
+            (HttpStatusCode.Forbidden, "rejected", "authorityValidation", "authorityMismatch", "身份校验失败")
+        };
+        foreach (var (status, result, stage, reason, expectedText) in cases)
+        {
+            var service = AuthorityService(new HttpResponseMessage(status)
+            {
+                Content = Json(
+                    "{\"error\":\"" + reason +
+                    "\",\"reload\":{\"schemaVersion\":1,\"resultCode\":\"" + result +
+                    "\",\"stage\":\"" + stage +
+                    "\",\"reasonCode\":\"" + reason +
+                    "\",\"elapsedMs\":2}}")
+            });
+            var error = await Assert.ThrowsExceptionAsync<LibraryAuthorityReadbackException>(
+                () => service.RequireReadbackAsync(Endpoint, reload: true));
+            StringAssert.Contains(error.Message, expectedText);
+            Assert.IsFalse(error.Message.Contains(
+                "请确认 Host 核心正在运行后重试", StringComparison.Ordinal));
+        }
+    }
+
+    private static readonly ApolloCoreEndpoint Endpoint = new(
+        LigaseEndpoint.Create(LigaseEndpointScheme.Http, "127.0.0.1", 48989,
+            source: LigaseEndpointSource.Loopback),
+        "host-id",
+        "Ligase Host");
+
+    private static LibraryAuthorityService AuthorityService(HttpResponseMessage response) =>
+        AuthorityService(new FixedHandler(response));
+
+    private static LibraryAuthorityService AuthorityService(HttpMessageHandler handler)
+    {
+        var manager = Manager(new FakeProcess());
+        return new LibraryAuthorityService(
+            manager,
+            _ => Task.FromResult<IReadOnlyList<ApolloCoreEndpoint>>([Endpoint]),
+            client: new HttpClient(handler));
+    }
+
+    private static StringContent Json(string value) =>
+        new(value, Encoding.UTF8, "application/json");
+
+    private sealed class FixedHandler(HttpResponseMessage response) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken) => Task.FromResult(response);
+    }
+
+    private sealed class ThrowingHandler(Exception exception) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken) => Task.FromException<HttpResponseMessage>(exception);
     }
 
     private static ApolloInstanceManager Manager(FakeProcess? process = null)

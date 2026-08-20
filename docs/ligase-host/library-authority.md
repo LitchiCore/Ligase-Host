@@ -128,13 +128,69 @@ session. Read-back returns the current Host UUID, start nonce, root fingerprint,
 Sync library projection, and the actual `proc::proc.get_apps()` UUID/numeric-ID
 view. It never returns the filesystem path and is not a second mutation API.
 
+Reload responses also carry a closed `reload` projection with `schemaVersion`,
+`resultCode`, `stage`, `reasonCode`, and monotonic `elapsedMs`. In particular,
+an active session is `rejected/precondition/sessionActive`; strict catalog
+failures distinguish `failed/appCatalogParse/catalogMalformed`,
+`failed/appCatalogLoad/catalogUnreadable|catalogLoadFailed`, and
+`failed/appCatalogSwap/catalogSwapFailed`; success is `completed/readback/none`.
+Desktop retains the HTTP status and these typed fields
+instead of collapsing every failure into a generic read-back error. Its existing
+three-second deadline is unchanged. The reload path now reparses only the
+application catalog; virtual-display initialization remains part of normal Core
+startup/refresh and is not performed inside this bounded library transaction.
+
+Only exact HTTP `200` can carry `completed/readback/none`. Other successful-class
+statuses, including `201` and `204`, and unexpected `4xx`/`5xx` responses are
+closed as `invalidResponse/reload.response/unexpectedHttpStatus` with the bounded
+numeric status retained. An `HttpRequestException` that carries a valid HTTP
+status is closed separately as
+`transportFailed/reload.transport/httpStatusFailure`; one without a status remains
+`transportFailed/reload.transport/httpRequestFailed`. Neither branch can create
+an ad-hoc result, stage, reason, or out-of-range status. The production semantic
+validator used by the HTTP producer is also run before outcome persistence and
+again on the committed read-back.
+
+Every mutation that reaches the projection-write stage attempts to atomically replace
+`library-mutation-outcome-v1.json` under the owned DataRoot. The safe record
+contains only the operation, `committed`/`rolledBack`/`rollbackUnproven` state,
+typed primary and rollback status/reason/elapsed fields, and write time. It does
+not contain tokens, executable paths, cover paths, item names, or raw HTTP
+content. Its exact machine shape and state cross-checks are owned by
+[`library-mutation-outcome-v1.schema.json`](library-mutation-outcome-v1.schema.json).
+UI success is still emitted only after the post-reload projection read-back;
+rollback success likewise requires a fresh restored read-back. Outcome persistence
+is an injectable atomic write-and-readback boundary. If it is unavailable after a
+committed projection, the mutation remains committed and the UI reports the
+diagnostic persistence warning instead of rolling data back. During mutation
+failure, rollback and outcome persistence failures are attached as secondary
+facts; the original typed exception and stack remain the caller-visible primary.
+An unavailable outcome file therefore means `persistenceUnavailable/state unknown`,
+not that a previously read-back projection failed.
+
+The outcome writer creates a unique temporary file in the destination directory
+with `CreateNew`, denies sharing while writing, uses `WriteThrough` plus
+`Flush(true)`, and hashes bytes read back through that same temporary handle.
+Existing records are replaced with the platform's same-volume atomic replace;
+the first publication uses a same-directory atomic rename. The committed record
+is then opened once, fully read and hashed through that handle, deserialized, and
+validated before persistence is reported complete. Every failure attempts to
+remove only its unique temporary file, and a cleanup failure remains a typed
+`persistenceUnavailable/state unknown` fact. This contract proves process-visible
+atomic publication and handle-bound byte read-back on the supported Windows/NTFS
+deployment. It does **not** claim power-loss durability for directory metadata,
+because .NET does not expose a portable directory-handle flush for this sequence.
+
 Run the isolated route smoke test with:
 
 ```powershell
 .\scripts\ligase\test-authority-readback.ps1 -Binary <built-sunshine.exe>
 ```
 
-The test uses an isolated data root and port, then stops only its own process.
+The test uses an isolated data root and port, proves malformed, unreadable, and
+semantically unloadable catalog inputs each return typed `500` while the prior
+in-memory catalog remains unchanged, then proves a valid parse-and-swap. It stops
+only its own process.
 
 ## P1 cross-device evidence boundary
 

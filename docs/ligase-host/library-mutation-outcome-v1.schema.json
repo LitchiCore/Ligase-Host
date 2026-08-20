@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ligase.local/schemas/library-mutation-outcome-v1.schema.json",
+  "title": "Ligase library mutation safe outcome v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "operation", "state", "primary", "rollback", "writtenAtUtc"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "operation": { "$ref": "#/$defs/operation" },
+    "state": { "enum": ["committed", "rolledBack", "rollbackUnproven"] },
+    "primary": { "$ref": "#/$defs/attempt" },
+    "rollback": { "$ref": "#/$defs/attempt" },
+    "writtenAtUtc": { "type": "string", "format": "date-time", "maxLength": 40 }
+  },
+  "$defs": {
+    "operation": { "enum": ["addSteam", "addExecutable", "setManualOrder", "setPublished", "remove", "setLayoutBinding", "updateSteamCover", "resetSteamCover"] },
+    "shape": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["resultCode", "stage", "reasonCode", "httpStatusCode", "elapsedMs"],
+      "properties": {
+        "resultCode": {}, "stage": {}, "reasonCode": {}, "httpStatusCode": {}, "elapsedMs": {}
+      }
+    },
+    "elapsed": { "type": "integer", "minimum": 0, "maximum": 2147483647 },
+    "attempt": {
+      "allOf": [{ "$ref": "#/$defs/shape" }],
+      "oneOf": [
+        { "$ref": "#/$defs/completed" }, { "$ref": "#/$defs/notAttempted" },
+        { "$ref": "#/$defs/sessionActive" }, { "$ref": "#/$defs/loopbackOnly" },
+        { "$ref": "#/$defs/authorityMismatch" }, { "$ref": "#/$defs/authorityUnavailable" },
+        { "$ref": "#/$defs/reloadFailed" }, { "$ref": "#/$defs/catalogMalformed" },
+        { "$ref": "#/$defs/catalogUnreadable" }, { "$ref": "#/$defs/catalogLoadFailed" },
+        { "$ref": "#/$defs/catalogSwapFailed" }, { "$ref": "#/$defs/timeout" },
+        { "$ref": "#/$defs/transportFailed" }, { "$ref": "#/$defs/transportStatusFailure" },
+        { "$ref": "#/$defs/unexpectedHttpStatus" }, { "$ref": "#/$defs/invalidJson" },
+        { "$ref": "#/$defs/reloadMetadataMismatch" }, { "$ref": "#/$defs/projectionMismatch" },
+        { "$ref": "#/$defs/rollbackProjectionMismatch" }, { "$ref": "#/$defs/mutationFailed" },
+        { "$ref": "#/$defs/rollbackMutationFailed" }
+      ]
+    },
+    "completed": { "properties": { "resultCode": { "const": "completed" }, "stage": { "const": "reload.readback" }, "reasonCode": { "const": "none" }, "httpStatusCode": { "const": 200 }, "elapsedMs": { "$ref": "#/$defs/elapsed" } }, "required": ["resultCode", "stage", "reasonCode", "httpStatusCode", "elapsedMs"] },
+    "notAttempted": { "properties": { "resultCode": { "const": "notAttempted" }, "stage": { "const": "none" }, "reasonCode": { "const": "none" }, "httpStatusCode": { "type": "null" }, "elapsedMs": { "type": "null" } }, "required": ["resultCode", "stage", "reasonCode", "httpStatusCode", "elapsedMs"] },
+    "sessionActive": { "properties": { "resultCode": { "const": "rejected" }, "stage": { "const": "reload.precondition" }, "reasonCode": { "const": "sessionActive" }, "httpStatusCode": { "const": 409 }, "elapsedMs": { "$ref": "#/$defs/elapsed" } } },
+    "loopbackOnly": { "properties": { "resultCode": { "const": "rejected" }, "stage": { "const": "reload.requestValidation" }, "reasonCode": { "const": "loopbackOnly" }, "httpStatusCode": { "const": 403 }, "elapsedMs": { "$ref": "#/$defs/elapsed" } } },
+    "authorityMismatch": { "properties": { "resultCode": { "const": "rejected" }, "stage": { "const": "reload.authorityValidation" }, "reasonCode": { "const": "authorityMismatch" }, "httpStatusCode": { "const": 403 }, "elapsedMs": { "$ref": "#/$defs/elapsed" } } },
+    "authorityUnavailable": { "properties": { "resultCode": { "const": "unavailable" }, "stage": { "const": "reload.authorityValidation" }, "reasonCode": { "const": "authorityUnavailable" }, "httpStatusCode": { "const": 404 }, "elapsedMs": { "$ref": "#/$defs/elapsed" } } },
+    "reloadFailed": { "properties": { "resultCode": { "const": "failed" }, "stage": { "const": "reload.appCatalogReload" }, "reasonCode": { "const": "reloadFailed" }, "httpStatusCode": { "const": 500 }, "elapsedMs": { "$ref": "#/$defs/elapsed" } } },
+    "catalogMalformed": { "properties": { "resultCode": { "const": "failed" }, "stage": { "const": "reload.appCatalogParse" }, "reasonCode": { "const": "catalogMalformed" }, "httpStatusCode": { "const": 500 }, "elapsedMs": { "$ref": "#/$defs/elapsed" } } },
+    "catalogUnreadable": { "properties": { "resultCode": { "const": "failed" }, "stage": { "const": "reload.appCatalogLoad" }, "reasonCode": { "const": "catalogUnreadable" }, "httpStatusCode": { "const": 500 }, "elapsedMs": { "$ref": "#/$defs/elapsed" } } },
+    "catalogLoadFailed": { "properties": { "resultCode": { "const": "failed" }, "stage": { "const": "reload.appCatalogLoad" }, "reasonCode": { "const": "catalogLoadFailed" }, "httpStatusCode": { "const": 500 }, "elapsedMs": { "$ref": "#/$defs/elapsed" } } },
+    "catalogSwapFailed": { "properties": { "resultCode": { "const": "failed" }, "stage": { "const": "reload.appCatalogSwap" }, "reasonCode": { "const": "catalogSwapFailed" }, "httpStatusCode": { "const": 500 }, "elapsedMs": { "$ref": "#/$defs/elapsed" } } },
+    "timeout": { "properties": { "resultCode": { "const": "timeout" }, "stage": { "const": "reload.transport" }, "reasonCode": { "const": "deadlineExceeded" }, "httpStatusCode": { "type": "null" }, "elapsedMs": { "$ref": "#/$defs/elapsed" } } },
+    "transportFailed": { "properties": { "resultCode": { "const": "transportFailed" }, "stage": { "const": "reload.transport" }, "reasonCode": { "const": "httpRequestFailed" }, "httpStatusCode": { "type": "null" }, "elapsedMs": { "$ref": "#/$defs/elapsed" } } },
+    "transportStatusFailure": { "properties": { "resultCode": { "const": "transportFailed" }, "stage": { "const": "reload.transport" }, "reasonCode": { "const": "httpStatusFailure" }, "httpStatusCode": { "type": "integer", "minimum": 100, "maximum": 599 }, "elapsedMs": { "$ref": "#/$defs/elapsed" } } },
+    "unexpectedHttpStatus": { "properties": { "resultCode": { "const": "invalidResponse" }, "stage": { "const": "reload.response" }, "reasonCode": { "const": "unexpectedHttpStatus" }, "httpStatusCode": { "type": "integer", "minimum": 100, "maximum": 599 }, "elapsedMs": { "$ref": "#/$defs/elapsed" } } },
+    "invalidJson": { "properties": { "resultCode": { "const": "invalidResponse" }, "stage": { "const": "reload.deserialize" }, "reasonCode": { "const": "invalidJson" }, "httpStatusCode": { "const": 200 }, "elapsedMs": { "$ref": "#/$defs/elapsed" } } },
+    "reloadMetadataMismatch": { "properties": { "resultCode": { "const": "invalidResponse" }, "stage": { "const": "reload.semantic" }, "reasonCode": { "const": "reloadMetadataMismatch" }, "httpStatusCode": { "enum": [200, 403, 404, 409, 500] }, "elapsedMs": { "$ref": "#/$defs/elapsed" } } },
+    "projectionMismatch": { "properties": { "resultCode": { "const": "projectionMismatch" }, "stage": { "const": "reload.readback" }, "reasonCode": { "const": "projectionMismatch" }, "httpStatusCode": { "type": "null" }, "elapsedMs": { "type": "null" } } },
+    "rollbackProjectionMismatch": { "properties": { "resultCode": { "const": "projectionMismatch" }, "stage": { "const": "rollback.verify" }, "reasonCode": { "const": "projectionMismatch" }, "httpStatusCode": { "type": "null" }, "elapsedMs": { "anyOf": [{ "$ref": "#/$defs/elapsed" }, { "type": "null" }] } } },
+    "mutationFailed": { "properties": { "resultCode": { "const": "failed" }, "stage": { "enum": ["addSteam.mutation", "addExecutable.mutation", "setManualOrder.mutation", "setPublished.mutation", "remove.mutation", "setLayoutBinding.mutation", "updateSteamCover.mutation", "resetSteamCover.mutation"] }, "reasonCode": { "const": "mutationFailed" }, "httpStatusCode": { "type": "null" }, "elapsedMs": { "type": "null" } } },
+    "rollbackMutationFailed": { "properties": { "resultCode": { "const": "failed" }, "stage": { "const": "rollback.mutation" }, "reasonCode": { "const": "mutationFailed" }, "httpStatusCode": { "type": "null" }, "elapsedMs": { "type": "null" } } },
+    "primaryFailure": { "allOf": [{ "$ref": "#/$defs/attempt" }, { "not": { "anyOf": [{ "$ref": "#/$defs/completed" }, { "$ref": "#/$defs/notAttempted" }] } }] },
+    "rollbackFailure": { "allOf": [{ "$ref": "#/$defs/attempt" }, { "not": { "anyOf": [{ "$ref": "#/$defs/completed" }, { "$ref": "#/$defs/notAttempted" }] } }] }
+  },
+  "oneOf": [
+    { "properties": { "state": { "const": "committed" }, "primary": { "$ref": "#/$defs/completed" }, "rollback": { "$ref": "#/$defs/notAttempted" } } },
+    { "properties": { "state": { "const": "rolledBack" }, "primary": { "$ref": "#/$defs/primaryFailure" }, "rollback": { "$ref": "#/$defs/completed" } } },
+    { "properties": { "state": { "const": "rollbackUnproven" }, "primary": { "$ref": "#/$defs/primaryFailure" }, "rollback": { "$ref": "#/$defs/rollbackFailure" } } }
+  ],
+  "allOf": [
+    { "if": { "properties": { "operation": { "const": "addSteam" }, "primary": { "properties": { "reasonCode": { "const": "mutationFailed" } }, "required": ["reasonCode"] } }, "required": ["operation", "primary"] }, "then": { "properties": { "primary": { "properties": { "stage": { "const": "addSteam.mutation" } } } } } },
+    { "if": { "properties": { "operation": { "const": "addExecutable" }, "primary": { "properties": { "reasonCode": { "const": "mutationFailed" } }, "required": ["reasonCode"] } }, "required": ["operation", "primary"] }, "then": { "properties": { "primary": { "properties": { "stage": { "const": "addExecutable.mutation" } } } } } },
+    { "if": { "properties": { "operation": { "const": "setManualOrder" }, "primary": { "properties": { "reasonCode": { "const": "mutationFailed" } }, "required": ["reasonCode"] } }, "required": ["operation", "primary"] }, "then": { "properties": { "primary": { "properties": { "stage": { "const": "setManualOrder.mutation" } } } } } },
+    { "if": { "properties": { "operation": { "const": "setPublished" }, "primary": { "properties": { "reasonCode": { "const": "mutationFailed" } }, "required": ["reasonCode"] } }, "required": ["operation", "primary"] }, "then": { "properties": { "primary": { "properties": { "stage": { "const": "setPublished.mutation" } } } } } },
+    { "if": { "properties": { "operation": { "const": "remove" }, "primary": { "properties": { "reasonCode": { "const": "mutationFailed" } }, "required": ["reasonCode"] } }, "required": ["operation", "primary"] }, "then": { "properties": { "primary": { "properties": { "stage": { "const": "remove.mutation" } } } } } },
+    { "if": { "properties": { "operation": { "const": "setLayoutBinding" }, "primary": { "properties": { "reasonCode": { "const": "mutationFailed" } }, "required": ["reasonCode"] } }, "required": ["operation", "primary"] }, "then": { "properties": { "primary": { "properties": { "stage": { "const": "setLayoutBinding.mutation" } } } } } },
+    { "if": { "properties": { "operation": { "const": "updateSteamCover" }, "primary": { "properties": { "reasonCode": { "const": "mutationFailed" } }, "required": ["reasonCode"] } }, "required": ["operation", "primary"] }, "then": { "properties": { "primary": { "properties": { "stage": { "const": "updateSteamCover.mutation" } } } } } },
+    { "if": { "properties": { "operation": { "const": "resetSteamCover" }, "primary": { "properties": { "reasonCode": { "const": "mutationFailed" } }, "required": ["reasonCode"] } }, "required": ["operation", "primary"] }, "then": { "properties": { "primary": { "properties": { "stage": { "const": "resetSteamCover.mutation" } } } } } }
+  ]
+}

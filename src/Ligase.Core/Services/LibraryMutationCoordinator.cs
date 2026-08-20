@@ -1,5 +1,9 @@
 using Ligase.Host.Core.Application.LayoutCatalog;
 using Ligase.Host.Core.Models;
+using System.Runtime.ExceptionServices;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
 
 namespace Ligase.Host.Core.Services;
 
@@ -8,7 +12,8 @@ public sealed class LibraryMutationCoordinator(
     IApplicationLibrary repository,
     ILibraryAuthorityService authorityService,
     ICoverArtifactService? coverArtService = null,
-    LayoutCatalogService? layoutCatalogService = null)
+    LayoutCatalogService? layoutCatalogService = null,
+    ILibraryMutationOutcomeStore? outcomeStore = null)
 {
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly string[] _projectionFiles =
@@ -19,12 +24,18 @@ public sealed class LibraryMutationCoordinator(
         paths.LayoutCatalogFile,
         paths.CoverCacheAuthorityFile
     ];
+    private readonly ILibraryMutationOutcomeStore _outcomeStore =
+        outcomeStore ?? new AtomicLibraryMutationOutcomeStore(paths);
+
+    public LibraryMutationPersistenceStatus LastOutcomePersistenceStatus { get; private set; } =
+        LibraryMutationPersistenceStatus.NotAttempted;
 
     public Task<LibraryItem> AddSteamAsync(
         SteamGame game,
         string? coverImagePath = null,
         CancellationToken cancellationToken = default) =>
         MutateAsync(
+            "addSteam",
             (_, token) => repository.AddSteamAsync(game, coverImagePath, token),
             (readback, item) => HasPublishedItem(readback, item) &&
                                 readback.LibraryItems.Single(candidate =>
@@ -41,6 +52,7 @@ public sealed class LibraryMutationCoordinator(
         string? coverImagePath = null,
         CancellationToken cancellationToken = default) =>
         MutateAsync(
+            "addExecutable",
             (_, token) => repository.AddExecutableAsync(
                 name, executablePath, arguments, workingDirectory, coverImagePath, token),
             (readback, item) =>
@@ -52,6 +64,7 @@ public sealed class LibraryMutationCoordinator(
         IReadOnlyList<Guid> orderedPublishedAppIds,
         CancellationToken cancellationToken = default) =>
         MutateAsync(
+            "setManualOrder",
             (_, token) => repository.SetManualOrderAsync(
                 baseRevision, orderedPublishedAppIds, token),
             static (readback, state) => MatchesCanonicalOrder(readback, state),
@@ -62,6 +75,7 @@ public sealed class LibraryMutationCoordinator(
         bool published,
         CancellationToken cancellationToken = default) =>
         MutateAsync<object?>(
+            "setPublished",
             async (_, token) =>
             {
                 await repository.SetPublishedToClientsAsync(id, published, token);
@@ -82,6 +96,7 @@ public sealed class LibraryMutationCoordinator(
         CancellationToken cancellationToken = default)
     {
         await MutateAsync<object?>(
+            "remove",
             async (_, token) =>
             {
                 await repository.RemoveAsync(id, token);
@@ -105,6 +120,7 @@ public sealed class LibraryMutationCoordinator(
         LayoutBindingV1? binding,
         CancellationToken cancellationToken = default) =>
         MutateAsync(
+            "setLayoutBinding",
             async (core, token) =>
             {
                 if (layoutCatalogService is null)
@@ -157,6 +173,7 @@ public sealed class LibraryMutationCoordinator(
         try
         {
             outcome = await MutateAsync(
+                "updateSteamCover",
                 async (_, token) =>
                 {
                     var beforeState = await repository.LoadAsync(token);
@@ -286,6 +303,7 @@ public sealed class LibraryMutationCoordinator(
                 "当前游戏身份无效，未恢复默认封面。");
 
         var outcome = await MutateAsync(
+            "resetSteamCover",
             async (_, token) =>
             {
                 var beforeState = await repository.LoadAsync(token);
@@ -354,6 +372,7 @@ public sealed class LibraryMutationCoordinator(
         IReadOnlyCollection<LibraryItem> ProjectedItems);
 
     private async Task<T> MutateAsync<T>(
+        string operation,
         Func<ApolloCoreEndpoint, CancellationToken, Task<T>> mutation,
         Func<AuthorityReadbackDocument, T, bool> verify,
         CancellationToken cancellationToken)
@@ -361,6 +380,7 @@ public sealed class LibraryMutationCoordinator(
         await _gate.WaitAsync(cancellationToken);
         try
         {
+            LastOutcomePersistenceStatus = LibraryMutationPersistenceStatus.NotAttempted;
             var authority = await authorityService.GetStateAsync(cancellationToken);
             if (!authority.CanWrite || authority.Core is null)
                 throw new LibraryAuthorityException(authority.Code, authority.Message);
@@ -370,10 +390,12 @@ public sealed class LibraryMutationCoordinator(
                 reload: false,
                 cancellationToken);
             var snapshots = SnapshotFiles();
+            T result;
+            AuthorityReadbackDocument readback;
             try
             {
-                var result = await mutation(authority.Core, cancellationToken);
-                var readback = await authorityService.RequireReadbackAsync(
+                result = await mutation(authority.Core, cancellationToken);
+                readback = await authorityService.RequireReadbackAsync(
                     authority.Core,
                     reload: true,
                     cancellationToken);
@@ -382,28 +404,124 @@ public sealed class LibraryMutationCoordinator(
                         authority.Core.UniqueId,
                         StringComparison.OrdinalIgnoreCase) ||
                     !verify(readback, result))
-                    throw new InvalidOperationException(
+                    throw new LibraryProjectionMismatchException(
                         "核心读取到的游戏库与刚才的修改不一致。已恢复更新前状态，请重新启动 Ligase Host 后再试。");
-                return result;
             }
-            catch
+            catch (Exception primary)
             {
-                RestoreFiles(snapshots);
-                var restored = await authorityService.RequireReadbackAsync(
-                    authority.Core,
-                    reload: true,
-                    CancellationToken.None);
-                if (!EquivalentProjection(before, restored))
-                    throw new InvalidOperationException(
-                        "游戏库回滚后核心仍未恢复原状态。请保持 Ligase Host 运行并联系支持。");
+                var primaryDispatch = ExceptionDispatchInfo.Capture(primary);
+                LibraryMutationOutcomeDocument outcome;
+                try
+                {
+                    RestoreFiles(snapshots);
+                    var restored = await authorityService.RequireReadbackAsync(
+                        authority.Core,
+                        reload: true,
+                        CancellationToken.None);
+                    if (!EquivalentProjection(before, restored))
+                    {
+                        outcome = new LibraryMutationOutcomeDocument(
+                            1, operation, "rollbackUnproven", AttemptFromException(primary, operation),
+                            new LibraryMutationAttempt(
+                                "projectionMismatch", "rollback.verify", "projectionMismatch",
+                                null, restored.Reload?.ElapsedMs), DateTimeOffset.UtcNow);
+                        AttachSecondary(primary, "rollback.verify", "projectionMismatch");
+                    }
+                    else
+                    {
+                        outcome = new LibraryMutationOutcomeDocument(
+                            1, operation, "rolledBack", AttemptFromException(primary, operation),
+                            AttemptFromReadback(restored), DateTimeOffset.UtcNow);
+                    }
+                }
+                catch (Exception rollbackFailure) when (!ReferenceEquals(rollbackFailure, primary))
+                {
+                    AttachSecondary(primary, "rollback.mutation", "mutationFailed");
+                    outcome = new LibraryMutationOutcomeDocument(
+                        1, operation, "rollbackUnproven", AttemptFromException(primary, operation),
+                        AttemptFromException(rollbackFailure, "rollback"), DateTimeOffset.UtcNow);
+                }
+                PersistOutcome(outcome, primary);
+                primaryDispatch.Throw();
                 throw;
             }
+
+            PersistOutcome(new LibraryMutationOutcomeDocument(
+                1,
+                operation,
+                "committed",
+                AttemptFromReadback(readback),
+                LibraryMutationAttempt.NotAttempted,
+                DateTimeOffset.UtcNow));
+            return result;
         }
         finally
         {
             _gate.Release();
         }
     }
+
+    private void PersistOutcome(
+        LibraryMutationOutcomeDocument outcome,
+        Exception? primary = null)
+    {
+        try
+        {
+            LibraryMutationOutcomeSemanticValidator.Validate(outcome);
+            var readback = _outcomeStore.PersistAndReadback(outcome);
+            LibraryMutationOutcomeSemanticValidator.Validate(readback);
+            if (readback != outcome)
+                throw new InvalidDataException("library mutation outcome readback mismatch");
+            LastOutcomePersistenceStatus = new(
+                "completed", outcome.State, "none");
+        }
+        catch (Exception persistenceFailure) when (
+            persistenceFailure is not OperationCanceledException)
+        {
+            LastOutcomePersistenceStatus = new(
+                "persistenceUnavailable", "unknown", "writeOrReadbackFailed");
+            if (primary is not null)
+                AttachSecondary(primary, "outcome.persistence", "writeOrReadbackFailed");
+        }
+    }
+
+    internal static IReadOnlyList<LibraryMutationSecondaryFailure> SecondaryFailures(
+        Exception exception)
+    {
+        const string key = "Ligase.LibraryMutation.SecondaryFailures";
+        return exception.Data[key] as IReadOnlyList<LibraryMutationSecondaryFailure> ?? [];
+    }
+
+    private static void AttachSecondary(Exception primary, string stage, string reasonCode)
+    {
+        const string key = "Ligase.LibraryMutation.SecondaryFailures";
+        var failures = primary.Data[key] as List<LibraryMutationSecondaryFailure> ?? [];
+        failures.Add(new(stage, reasonCode));
+        primary.Data[key] = failures;
+    }
+
+    private static LibraryMutationAttempt AttemptFromReadback(AuthorityReadbackDocument readback) =>
+        readback.Reload is { } reload
+            ? new LibraryMutationAttempt(
+                reload.ResultCode, $"reload.{reload.Stage}", reload.ReasonCode,
+                200, reload.ElapsedMs)
+            : new LibraryMutationAttempt("completed", "reload.readback", "none", 200, 0);
+
+    private static LibraryMutationAttempt AttemptFromException(
+        Exception exception,
+        string operation) =>
+        exception is LibraryAuthorityReadbackException typed
+            ? new LibraryMutationAttempt(
+                typed.Failure.ResultCode,
+                typed.Failure.Stage,
+                typed.Failure.ReasonCode,
+                typed.Failure.HttpStatusCode,
+                typed.Failure.ElapsedMs)
+            : exception is LibraryProjectionMismatchException
+                ? new LibraryMutationAttempt(
+                    "projectionMismatch", "reload.readback", "projectionMismatch", null, null)
+            : new LibraryMutationAttempt(
+                "failed", $"{operation}.mutation", "mutationFailed", null, null);
 
     private Dictionary<string, byte[]?> SnapshotFiles() =>
         _projectionFiles.ToDictionary(
@@ -494,8 +612,167 @@ public sealed class LibraryMutationCoordinator(
                 StringComparer.OrdinalIgnoreCase));
 }
 
+public interface ILibraryMutationOutcomeStore
+{
+    LibraryMutationOutcomeDocument PersistAndReadback(LibraryMutationOutcomeDocument outcome);
+}
+
+public sealed class AtomicLibraryMutationOutcomeStore : ILibraryMutationOutcomeStore
+{
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        WriteIndented = true
+    };
+
+    private readonly LigasePaths _paths;
+    private readonly Action<LibraryMutationOutcomeStoreStage>? _fault;
+
+    public AtomicLibraryMutationOutcomeStore(LigasePaths paths) : this(paths, null) { }
+
+    internal AtomicLibraryMutationOutcomeStore(
+        LigasePaths paths,
+        Action<LibraryMutationOutcomeStoreStage>? fault)
+    {
+        _paths = paths;
+        _fault = fault;
+    }
+
+    public LibraryMutationOutcomeDocument PersistAndReadback(LibraryMutationOutcomeDocument outcome)
+    {
+        LibraryMutationOutcomeSemanticValidator.Validate(outcome);
+        Directory.CreateDirectory(_paths.RootDirectory);
+        var directory = Path.GetDirectoryName(_paths.LibraryMutationOutcomeFile)!;
+        var temporary = Path.Combine(directory,
+            $".{Path.GetFileName(_paths.LibraryMutationOutcomeFile)}.{Guid.NewGuid():N}.tmp");
+        LibraryMutationOutcomeStoreStage stage = LibraryMutationOutcomeStoreStage.CreateTemporary;
+        Exception? failure = null;
+        Exception? cleanupFailure = null;
+        LibraryMutationOutcomeDocument? readback = null;
+        try
+        {
+            var bytes = new UTF8Encoding(false, true).GetBytes(
+                JsonSerializer.Serialize(outcome, JsonOptions));
+            Invoke(stage);
+            using (var stream = new FileStream(temporary, new FileStreamOptions
+                   {
+                       Mode = FileMode.CreateNew,
+                       Access = FileAccess.ReadWrite,
+                       Share = FileShare.None,
+                       BufferSize = 4096,
+                       Options = FileOptions.WriteThrough
+                   }))
+            {
+                stage = LibraryMutationOutcomeStoreStage.WriteTemporary;
+                Invoke(stage);
+                stream.Write(bytes);
+                stage = LibraryMutationOutcomeStoreStage.FlushTemporary;
+                Invoke(stage);
+                stream.Flush(flushToDisk: true);
+                stage = LibraryMutationOutcomeStoreStage.ReadbackTemporary;
+                Invoke(stage);
+                var temporaryBytes = ReadAll(stream, bytes.Length);
+                if (!SHA256.HashData(temporaryBytes).SequenceEqual(SHA256.HashData(bytes)))
+                    throw new InvalidDataException("temporary outcome hash mismatch");
+            }
+
+            stage = LibraryMutationOutcomeStoreStage.CommitReplace;
+            Invoke(stage);
+            if (File.Exists(_paths.LibraryMutationOutcomeFile))
+                File.Replace(temporary, _paths.LibraryMutationOutcomeFile, null,
+                    ignoreMetadataErrors: true);
+            else
+                File.Move(temporary, _paths.LibraryMutationOutcomeFile, overwrite: false);
+
+            stage = LibraryMutationOutcomeStoreStage.ReadbackCommitted;
+            Invoke(stage);
+            using var committed = new FileStream(
+                _paths.LibraryMutationOutcomeFile, FileMode.Open, FileAccess.Read,
+                FileShare.Read, 4096, FileOptions.SequentialScan);
+            var committedBytes = ReadAll(committed, checked((int)committed.Length));
+            if (!SHA256.HashData(committedBytes).SequenceEqual(SHA256.HashData(bytes)))
+                throw new InvalidDataException("committed outcome hash mismatch");
+            readback = JsonSerializer.Deserialize<LibraryMutationOutcomeDocument>(
+                committedBytes, JsonOptions)
+                ?? throw new InvalidDataException("library mutation outcome readback was empty");
+            stage = LibraryMutationOutcomeStoreStage.ValidateCommitted;
+            Invoke(stage);
+            LibraryMutationOutcomeSemanticValidator.Validate(readback);
+            if (readback != outcome)
+                throw new InvalidDataException("library mutation outcome readback mismatch");
+        }
+        catch (Exception exception)
+        {
+            failure = exception;
+        }
+
+        if (File.Exists(temporary))
+        {
+            try
+            {
+                Invoke(LibraryMutationOutcomeStoreStage.CleanupTemporary);
+                File.Delete(temporary);
+            }
+            catch (Exception exception)
+            {
+                cleanupFailure = exception;
+            }
+        }
+
+        if (failure is not null || cleanupFailure is not null)
+            throw new LibraryMutationOutcomeStoreException(
+                failure is null ? LibraryMutationOutcomeStoreStage.CleanupTemporary : stage,
+                cleanupFailure is not null,
+                failure is null ? cleanupFailure! :
+                    cleanupFailure is null ? failure : new AggregateException(failure, cleanupFailure));
+        return readback!;
+    }
+
+    private void Invoke(LibraryMutationOutcomeStoreStage stage) => _fault?.Invoke(stage);
+
+    private static byte[] ReadAll(FileStream stream, int expectedLength)
+    {
+        stream.Position = 0;
+        var bytes = new byte[expectedLength];
+        var offset = 0;
+        while (offset < bytes.Length)
+        {
+            var read = stream.Read(bytes, offset, bytes.Length - offset);
+            if (read == 0) throw new EndOfStreamException("outcome readback ended early");
+            offset += read;
+        }
+        if (stream.ReadByte() != -1) throw new InvalidDataException("outcome readback grew");
+        return bytes;
+    }
+}
+
+internal enum LibraryMutationOutcomeStoreStage
+{
+    CreateTemporary,
+    WriteTemporary,
+    FlushTemporary,
+    ReadbackTemporary,
+    CommitReplace,
+    ReadbackCommitted,
+    ValidateCommitted,
+    CleanupTemporary
+}
+
+internal sealed class LibraryMutationOutcomeStoreException(
+    LibraryMutationOutcomeStoreStage stage,
+    bool cleanupFailed,
+    Exception innerException)
+    : IOException($"library mutation outcome persistence failed at {stage}", innerException)
+{
+    public LibraryMutationOutcomeStoreStage Stage { get; } = stage;
+    public bool CleanupFailed { get; } = cleanupFailed;
+}
+
 public sealed class LibraryAuthorityException(string code, string message)
     : InvalidOperationException(message)
 {
     public string Code { get; } = code;
 }
+
+internal sealed class LibraryProjectionMismatchException(string message)
+    : InvalidOperationException(message);
