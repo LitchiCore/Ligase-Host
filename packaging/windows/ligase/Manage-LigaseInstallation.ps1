@@ -849,7 +849,7 @@ function Get-VirtualDisplaySetupHelperPath($Manifest) {
       -not (Test-Path -LiteralPath $path -PathType Leaf) -or
       [bool]((Get-Item -LiteralPath $path -Force).Attributes -band
         [IO.FileAttributes]::ReparsePoint) -or
-      (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash -cne
+      (Get-FileSha256 $path) -cne
         ([string]$pins[0].signedArtifactSha256).ToUpperInvariant()) {
     throw "virtualDisplaySetupUnavailable"
   }
@@ -1087,7 +1087,7 @@ function Assert-VirtualDisplaySetupResultContract($Result, $Manifest) {
       -not (Test-Path -LiteralPath $path -PathType Leaf) -or
       [bool]((Get-Item -LiteralPath $path -Force).Attributes -band
         [IO.FileAttributes]::ReparsePoint) -or
-      (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -cne
+      (Get-FileSha256 $path) -cne
         $expected.ToUpperInvariant()) { throw 'virtualDisplaySetupResultInvalid' }
   $schemaRaw = [IO.File]::ReadAllText($path)
   if (-not [LigaseStrictJson]::HasUniqueProperties($schemaRaw)) {
@@ -2430,7 +2430,7 @@ function Get-InstallTransactionHelperPath {
   } else { "" }
   if ($matches.Count -ne 1 -or
       $expectedHelperHash -notmatch '^[0-9a-f]{64}$' -or
-      (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash -cne
+      (Get-FileSha256 $path) -cne
         $expectedHelperHash.ToUpperInvariant()) {
     throw "installTransactionUnavailable"
   }
@@ -2940,7 +2940,7 @@ function Save-InstallTransaction {
     createdUtc = $script:installTransactionCreatedUtc.ToString(
       "O", [Globalization.CultureInfo]::InvariantCulture)
     manifestSourceHead = Get-EvidenceSourceHead
-    manifestSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $manifestPath).Hash
+    manifestSha256 = Get-FileSha256 $manifestPath
     installLayout = "structured-v1"
     installDirectory = $installRoot
     launcher = [string]$script:shortcutRollback.launcher
@@ -3034,7 +3034,7 @@ function Load-InstallTransaction {
       $transactionBytes.Count -ne 32 -or
       [string]$document.manifestSourceHead -cne (Get-EvidenceSourceHead) -or
       [string]$document.manifestSha256 -cne
-        (Get-FileHash -Algorithm SHA256 -LiteralPath $manifestPath).Hash -or
+        (Get-FileSha256 $manifestPath) -or
       [string]$document.installLayout -cne "structured-v1" -or
       [string]$document.installDirectory -cne $installRoot -or
       [string]$document.launcher -cne $expectedLauncher -or
@@ -3621,6 +3621,35 @@ function Get-ByteSha256([byte[]]$Bytes) {
   }
 }
 
+function Get-FileSha256([string]$Path) {
+  $stream = [IO.File]::Open(
+    $Path,
+    [IO.FileMode]::Open,
+    [IO.FileAccess]::Read,
+    [IO.FileShare]::Read)
+  try {
+    $hasher = [Security.Cryptography.SHA256]::Create()
+    try {
+      return [BitConverter]::ToString(
+        $hasher.ComputeHash($stream)).Replace('-', '')
+    } finally {
+      $hasher.Dispose()
+    }
+  } finally {
+    $stream.Dispose()
+  }
+}
+
+function Get-AuthenticodeSignatureCompat([string]$Path) {
+  if (-not (Get-Module -Name Microsoft.PowerShell.Security)) {
+    $modulePath = Join-Path $PSHOME (
+      "Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1")
+    Import-Module -Name $modulePath -Force -ErrorAction Stop
+  }
+  return Microsoft.PowerShell.Security\Get-AuthenticodeSignature `
+    -LiteralPath $Path
+}
+
 function Get-InteractiveOperatorProfile {
   $identity = [LigaseInteractiveUser]::OpenIdentity()
   try {
@@ -3738,7 +3767,7 @@ function Get-DataRootSnapshot(
         path = $relative
         kind = "file"
         size = [int64]$item.Length
-        sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $item.FullName).Hash
+        sha256 = Get-FileSha256 $item.FullName
       })
     }
     if ($entries.Count -gt 100000 -or $totalBytes -gt 10737418240) {
@@ -4167,11 +4196,11 @@ function Test-Artifacts($Manifest) {
     }
     $available = Test-Path -LiteralPath $path -PathType Leaf
     $actual = if ($available) {
-      (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash.ToLowerInvariant()
+      (Get-FileSha256 $path).ToLowerInvariant()
     } else { "" }
     $signatureCode = "nonRelease"
     if ($available -and $Manifest.releaseKind -eq "PublicRelease") {
-      $signature = Get-AuthenticodeSignature -LiteralPath $path
+      $signature = Get-AuthenticodeSignatureCompat $path
       $signatureCode = if (
         $signature.Status -eq "Valid" -and
         $null -ne $signature.TimeStamperCertificate -and
@@ -4199,10 +4228,10 @@ function Test-Artifacts($Manifest) {
   if ($Manifest.releaseKind -eq "PublicRelease") {
     foreach ($helper in $Manifest.privilegedHelpers) {
       $path = [IO.Path]::GetFullPath((Join-Path $installRoot $helper.relativePath))
-      $signature = Get-AuthenticodeSignature -LiteralPath $path
+      $signature = Get-AuthenticodeSignatureCompat $path
       if (
         -not (Test-Path -LiteralPath $path -PathType Leaf) -or
-        (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash.ToLowerInvariant() -cne
+        (Get-FileSha256 $path).ToLowerInvariant() -cne
           ([string]$helper.signedArtifactSha256) -or
         $signature.Status -ne "Valid" -or
         $null -eq $signature.TimeStamperCertificate -or
@@ -4925,7 +4954,7 @@ function Open-LegacyForceAuthority {
             [string]$artifact[0].version) {
         throw "legacyAuthorityArtifactMismatch"
       }
-      $signature = Get-AuthenticodeSignature -LiteralPath $expectedPath
+      $signature = Get-AuthenticodeSignatureCompat $expectedPath
       if ($manifest.releaseKind -ceq "PublicRelease") {
         if ($signature.Status -ne "Valid" -or
             $null -eq $signature.SignerCertificate -or
@@ -5712,7 +5741,7 @@ try {
     }
     if ($manifest.releaseKind -eq "PublicRelease") {
       $uninstaller = Join-Path $installRoot "Uninstall.exe"
-      $signature = Get-AuthenticodeSignature -LiteralPath $uninstaller
+      $signature = Get-AuthenticodeSignatureCompat $uninstaller
       $publisher = [string]$manifest.artifacts[0].signature.signerSubject
       if (
         $signature.Status -ne "Valid" -or

@@ -1499,6 +1499,16 @@ public sealed class FreshInstallPackagingTests
             "[BitConverter]::ToString(");
         StringAssert.Contains(build,
             ".Replace('-', '').ToLowerInvariant()");
+        var management = File.ReadAllText(Path.Combine(
+            repo, "packaging", "windows", "ligase",
+            "Manage-LigaseInstallation.ps1"));
+        StringAssert.Contains(management, "function Get-FileSha256(");
+        Assert.IsFalse(management.Contains("Get-FileHash",
+            StringComparison.Ordinal));
+        StringAssert.Contains(management,
+            "function Get-AuthenticodeSignatureCompat(");
+        Assert.IsFalse(Regex.IsMatch(management,
+            @"(?m)^\s*\$signature\s*=\s*Get-AuthenticodeSignature\s"));
 
         var root = Path.Combine(
             @"D:\Development\Ligase\Build",
@@ -1530,7 +1540,11 @@ public sealed class FreshInstallPackagingTests
                 "$hasher=[Security.Cryptography.SHA256]::Create(); try { $hash=$hasher.ComputeHash($bytes); " +
                 "$hex=[BitConverter]::ToString($hash).Replace('-','').ToLowerInvariant() } finally { $hasher.Dispose() }; " +
                 "$disposedRejected=$false; try { [void]$hasher.ComputeHash($bytes) } catch [ObjectDisposedException] { $disposedRejected=$true }; " +
-                "[ordered]@{version=$PSVersionTable.PSVersion.ToString(); hash=$hex; independent=(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant(); " +
+                "$file=[IO.File]::OpenRead($path); try { $independentHasher=[Security.Cryptography.SHA256]::Create(); try { " +
+                "$independent=[BitConverter]::ToString($independentHasher.ComputeHash($file)).Replace('-','').ToLowerInvariant() " +
+                "} finally { $independentHasher.Dispose() } } finally { $file.Dispose() }; " +
+                "$fileHashCommand=[bool](Get-Command Get-FileHash -ErrorAction SilentlyContinue); " +
+                "[ordered]@{version=$PSVersionTable.PSVersion.ToString(); hash=$hex; independent=$independent; fileHashCommand=$fileHashCommand; " +
                 "length=$hex.Length; lowercase=($hex -cmatch '^[0-9a-f]{64}$'); disposedRejected=$disposedRejected} | ConvertTo-Json -Compress }");
             using var process = Process.Start(start)
                 ?? throw new InvalidOperationException("powershellStartFailed");
@@ -1548,6 +1562,8 @@ public sealed class FreshInstallPackagingTests
             Assert.AreEqual(64, value.GetProperty("length").GetInt32());
             Assert.IsTrue(value.GetProperty("lowercase").GetBoolean());
             Assert.IsTrue(value.GetProperty("disposedRejected").GetBoolean());
+            Assert.IsFalse(value.GetProperty("fileHashCommand").GetBoolean(),
+                "The controlled inherited module path must prove that the cmdlet is unavailable.");
         }
         finally
         {
