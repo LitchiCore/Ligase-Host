@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ligase.local/schemas/virtual-display-runtime-state-v1.json",
+  "title": "Ligase managed virtual display runtime state v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "state",
+    "reason",
+    "displayName",
+    "driverReady",
+    "windowsDisplayPresent",
+    "streamingAvailable",
+    "usedByActiveStream",
+    "streamSource"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "state": { "enum": ["enabled", "disabled", "unavailable"] },
+    "reason": {
+      "enum": [
+        "none",
+        "alreadyEnabled",
+        "alreadyDisabled",
+        "displayNotPresent",
+        "streamActive",
+        "driverUnavailable",
+        "createFailed",
+        "removeFailed",
+        "readbackFailed"
+      ]
+    },
+    "displayName": { "type": "string" },
+    "driverReady": { "type": "boolean" },
+    "windowsDisplayPresent": { "type": "boolean" },
+    "streamingAvailable": { "type": "boolean" },
+    "usedByActiveStream": { "type": "boolean" },
+    "streamSource": { "const": "apolloVirtualDisplayApp" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "state": { "const": "enabled" } } },
+      "then": {
+        "properties": {
+          "driverReady": { "const": true },
+          "windowsDisplayPresent": { "const": true },
+          "displayName": { "minLength": 1 }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "usedByActiveStream": { "const": true } } },
+      "then": {
+        "properties": {
+          "state": { "const": "enabled" },
+          "streamingAvailable": { "const": true }
+        }
+      }
+    }
+  ]
+}

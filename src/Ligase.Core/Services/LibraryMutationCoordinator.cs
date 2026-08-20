@@ -1,3 +1,4 @@
+using Ligase.Host.Core.Application.LayoutCatalog;
 using Ligase.Host.Core.Models;
 
 namespace Ligase.Host.Core.Services;
@@ -6,7 +7,8 @@ public sealed class LibraryMutationCoordinator(
     LigasePaths paths,
     IApplicationLibrary repository,
     ILibraryAuthorityService authorityService,
-    ICoverArtifactService? coverArtService = null)
+    ICoverArtifactService? coverArtService = null,
+    LayoutCatalogService? layoutCatalogService = null)
 {
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly string[] _projectionFiles =
@@ -14,6 +16,7 @@ public sealed class LibraryMutationCoordinator(
         paths.LibraryFile,
         paths.SyncFile,
         paths.ApolloAppsFile,
+        paths.LayoutCatalogFile,
         paths.CoverCacheAuthorityFile
     ];
 
@@ -22,7 +25,7 @@ public sealed class LibraryMutationCoordinator(
         string? coverImagePath = null,
         CancellationToken cancellationToken = default) =>
         MutateAsync(
-            token => repository.AddSteamAsync(game, coverImagePath, token),
+            (_, token) => repository.AddSteamAsync(game, coverImagePath, token),
             (readback, item) => HasPublishedItem(readback, item) &&
                                 readback.LibraryItems.Single(candidate =>
                                     candidate.Id.Equals(item.Id.ToString("D"), StringComparison.OrdinalIgnoreCase))
@@ -38,7 +41,7 @@ public sealed class LibraryMutationCoordinator(
         string? coverImagePath = null,
         CancellationToken cancellationToken = default) =>
         MutateAsync(
-            token => repository.AddExecutableAsync(
+            (_, token) => repository.AddExecutableAsync(
                 name, executablePath, arguments, workingDirectory, coverImagePath, token),
             (readback, item) =>
                 HasPublishedItem(readback, item) && HasLaunchMapping(readback, item.Id),
@@ -49,7 +52,7 @@ public sealed class LibraryMutationCoordinator(
         IReadOnlyList<Guid> orderedPublishedAppIds,
         CancellationToken cancellationToken = default) =>
         MutateAsync(
-            token => repository.SetManualOrderAsync(
+            (_, token) => repository.SetManualOrderAsync(
                 baseRevision, orderedPublishedAppIds, token),
             static (readback, state) => MatchesCanonicalOrder(readback, state),
             cancellationToken);
@@ -59,7 +62,7 @@ public sealed class LibraryMutationCoordinator(
         bool published,
         CancellationToken cancellationToken = default) =>
         MutateAsync<object?>(
-            async token =>
+            async (_, token) =>
             {
                 await repository.SetPublishedToClientsAsync(id, published, token);
                 return null;
@@ -74,11 +77,12 @@ public sealed class LibraryMutationCoordinator(
             },
             cancellationToken);
 
-    public Task RemoveAsync(
+    public async Task RemoveAsync(
         Guid id,
-        CancellationToken cancellationToken = default) =>
-        MutateAsync<object?>(
-            async token =>
+        CancellationToken cancellationToken = default)
+    {
+        await MutateAsync<object?>(
+            async (_, token) =>
             {
                 await repository.RemoveAsync(id, token);
                 return null;
@@ -88,6 +92,39 @@ public sealed class LibraryMutationCoordinator(
                     !candidate.Id.Equals(id.ToString("D"), StringComparison.OrdinalIgnoreCase)) &&
                 readback.Apps.All(candidate =>
                     !candidate.Uuid.Equals(id.ToString("D"), StringComparison.OrdinalIgnoreCase)),
+            cancellationToken);
+        if (coverArtService is not null)
+        {
+            var state = await repository.LoadAsync(cancellationToken);
+            await coverArtService.PruneUnreferencedAsync(state.Items, cancellationToken);
+        }
+    }
+
+    public Task<LibraryItem> SetLayoutBindingAsync(
+        Guid id,
+        LayoutBindingV1? binding,
+        CancellationToken cancellationToken = default) =>
+        MutateAsync(
+            async (core, token) =>
+            {
+                if (layoutCatalogService is null)
+                    throw new InvalidOperationException("布局目录服务不可用，未修改游戏库。");
+                var item = await repository.SetLayoutBindingAsync(id, binding, token);
+                await layoutCatalogService.SetBindingAsync(
+                    core.UniqueId,
+                    id,
+                    binding,
+                    token);
+                return item;
+            },
+            (readback, item) =>
+            {
+                var projected = readback.LibraryItems.SingleOrDefault(candidate =>
+                    candidate.Id.Equals(item.Id.ToString("D"), StringComparison.OrdinalIgnoreCase));
+                return projected is not null &&
+                       Equals(projected.PortableIdentity, item.PortableIdentity) &&
+                       Equals(projected.LayoutBinding, item.LayoutBinding);
+            },
             cancellationToken);
 
     public async Task<ExistingItemCoverUpdateResult> UpdateExistingSteamCoverAsync(
@@ -120,7 +157,7 @@ public sealed class LibraryMutationCoordinator(
         try
         {
             outcome = await MutateAsync(
-                async token =>
+                async (_, token) =>
                 {
                     var beforeState = await repository.LoadAsync(token);
                     var beforeItem = beforeState.Items.SingleOrDefault(candidate =>
@@ -159,19 +196,21 @@ public sealed class LibraryMutationCoordinator(
                             normalized,
                             prepared.Path,
                             token);
+                    var projectedItems = beforeState.Items
+                        .Select(item => item.Id == updated.Id ? updated : item)
+                        .ToArray();
                     return new CoverMutationOutcome(
                         updated,
                         idempotent,
                         idempotent ? beforeState.Revision : beforeState.Revision + 1,
-                        beforeState.Items.Select(item =>
-                            item.Id == updated.Id ? updated : item).ToArray());
+                        projectedItems);
                 },
-                (readback, value) =>
-                    value.Updated.Id == request.LibraryItemId &&
-                    value.Updated.PortableIdentity == normalized &&
-                    readback.LibraryRevision == value.Revision &&
-                    HasPublishedItem(readback, value.Updated) &&
-                    HasLaunchMapping(readback, value.Updated.Id),
+                (readback, outcome) =>
+                    outcome.Updated.Id == request.LibraryItemId &&
+                    outcome.Updated.PortableIdentity == normalized &&
+                    readback.LibraryRevision == outcome.Revision &&
+                    HasPublishedItem(readback, outcome.Updated) &&
+                    HasLaunchMapping(readback, outcome.Updated.Id),
                 cancellationToken);
 
             prepared!.Dispose();
@@ -210,8 +249,12 @@ public sealed class LibraryMutationCoordinator(
             await coverArtService.PruneUnreferencedAsync(
                 outcome.ProjectedItems, CancellationToken.None);
         }
-        catch (Exception exception) when (exception is not OperationCanceledException)
+        catch (Exception exception) when (
+            exception is not OperationCanceledException)
         {
+            // The library, Apollo and Sync transaction is already committed and read back.
+            // Retaining an old, now-unreferenced owned cache file is safer than reporting
+            // that the persisted cover was rolled back when it was not.
             cleanupCompleted = false;
         }
         var item = outcome.Updated;
@@ -236,7 +279,7 @@ public sealed class LibraryMutationCoordinator(
         IReadOnlyCollection<LibraryItem> ProjectedItems);
 
     private async Task<T> MutateAsync<T>(
-        Func<CancellationToken, Task<T>> mutation,
+        Func<ApolloCoreEndpoint, CancellationToken, Task<T>> mutation,
         Func<AuthorityReadbackDocument, T, bool> verify,
         CancellationToken cancellationToken)
     {
@@ -254,7 +297,7 @@ public sealed class LibraryMutationCoordinator(
             var snapshots = SnapshotFiles();
             try
             {
-                var result = await mutation(cancellationToken);
+                var result = await mutation(authority.Core, cancellationToken);
                 var readback = await authorityService.RequireReadbackAsync(
                     authority.Core,
                     reload: true,
@@ -321,7 +364,8 @@ public sealed class LibraryMutationCoordinator(
             string.Equals(candidate.CoverSourceKind, item.CoverSourceKind, StringComparison.Ordinal) &&
             string.Equals(candidate.CoverSourceId, item.CoverSourceId, StringComparison.Ordinal) &&
             string.Equals(candidate.CoverUsageRights, item.CoverUsageRights, StringComparison.Ordinal) &&
-            Equals(candidate.PortableIdentity, item.PortableIdentity));
+            Equals(candidate.PortableIdentity, item.PortableIdentity) &&
+            Equals(candidate.LayoutBinding, item.LayoutBinding));
 
     private static bool HasLaunchMapping(
         AuthorityReadbackDocument readback,

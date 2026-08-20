@@ -201,13 +201,20 @@
                                 <TextBlock Foreground="{ThemeResource TextFillColorSecondaryBrush}" Text="显式绑定" />
                                 <TextBlock x:Name="DetailBindings" TextWrapping="Wrap" />
                             </StackPanel>
+                            <Button
+                                x:Name="BindSelectedLayoutButton"
+                                AutomationProperties.HelpText="选择一个当前 Host 游戏，并明确保存或清除该游戏的布局绑定"
+                                AutomationProperties.Name="管理所选布局的游戏绑定"
+                                Click="OnManageBinding"
+                                Content="绑定到游戏…"
+                                HorizontalAlignment="Left" />
                             <Border
                                 Padding="12"
                                 Background="{ThemeResource ControlFillColorSecondaryBrush}"
                                 CornerRadius="8">
                                 <TextBlock
                                     Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                                    Text="当前仅提供只读目录。导入、发布、下载和画布编辑尚未进入 Host，不会在这里显示不可用按钮。"
+                                    Text="当前可管理已登记修订与游戏 UUID 的显式绑定。导入、发布、下载和画布编辑尚未进入 Host，不会在这里显示不可用按钮。"
                                     TextWrapping="Wrap" />
                             </Border>
                         </StackPanel>

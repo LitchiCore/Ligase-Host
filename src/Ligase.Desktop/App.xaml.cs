@@ -40,9 +40,10 @@ public partial class App : Application
                     bootstrapFile: installationLayout.BootstrapPath);
                 services.AddSingleton(installationLayout);
                 services.AddSingleton(paths);
+                services.AddSingleton<DataRootIdentityService>();
                 services.AddSingleton<ILayoutCatalogRepository>(_ =>
                     new JsonLayoutCatalogRepository(
-                        Path.Combine(paths.RootDirectory, "layout-catalog.json")));
+                        paths.LayoutCatalogFile));
                 services.AddSingleton<LayoutCatalogService>();
                 services.AddSingleton<
                     IInstallationReadbackSource,
@@ -92,16 +93,22 @@ public partial class App : Application
                 services.AddSingleton<ILibraryAuthorityService>(provider =>
                     provider.GetRequiredService<LibraryAuthorityService>());
                 services.AddSingleton<LibraryMutationCoordinator>();
+                services.AddSingleton<WindowsShortcutResolver>();
                 services.AddSingleton<HostPreferencesService>();
                 services.AddSingleton<LigaseSyncDocumentWriter>();
                 services.AddSingleton<StreamingSettingsService>();
                 services.AddSingleton<ApolloDeviceService>();
                 services.AddSingleton<ApolloSessionService>();
+                services.AddSingleton<IVirtualDisplayControlService,
+                    VirtualDisplayControlService>();
                 services.AddSingleton<IDesktopPreviewService, GdiDesktopPreviewService>();
                 services.AddSingleton<SingleInstanceService>();
                 services.AddSingleton<InstallerShutdownService>();
                 services.AddSingleton<WindowsTrayIconService>();
                 services.AddSingleton<AttendedPairingCoordinator>();
+                services.AddSingleton<IPairingNotificationPlatform,
+                    WindowsPairingNotificationPlatform>();
+                services.AddSingleton<PairingNotificationEvidenceStore>();
                 services.AddSingleton<PairingNotificationService>();
                 services.AddSingleton<AttendedPairingUiCoordinator>();
                 services.AddTransient<GameLibraryViewModel>();
@@ -180,11 +187,7 @@ public partial class App : Application
         var coreLocator = _host.Services.GetRequiredService<ApolloCoreLocator>();
         if ((await coreLocator.DiscoverAsync()).Count == 0)
             await managedCore.StartAsync();
-        // The core process can exist before serverinfo is ready. Refresh once
-        // after a short bounded readiness window so the shell does not remain
-        // in a stale read-only state for the whole session.
-        await Task.Delay(1500);
-        await window.RefreshCoreStatusAsync();
+        window.StartCoreReadiness();
         _host.Services.GetRequiredService<AttendedPairingCoordinator>().Start();
         if (Environment.GetCommandLineArgs().Any(argument =>
                 string.Equals(argument, "--minimized", StringComparison.OrdinalIgnoreCase)))
@@ -231,6 +234,9 @@ public partial class App : Application
                 true, "exitAlreadyCommitted", "inProgress",
                 "notObserved", true);
 
+        // A validated current-user pipe request is the irreversible transition.
+        // From this point activation, tray restore, readiness and new windows
+        // stay disabled even when best-effort component cleanup is incomplete.
         var window = Services.GetRequiredService<MainWindow>();
         window.AllowApplicationExit();
         Services.GetRequiredService<SingleInstanceService>().BeginExit();
@@ -277,6 +283,9 @@ public partial class App : Application
             cleanupState = "faulted";
         }
 
+        // The installer now owns actual PID and Restart Manager convergence.
+        // In-process cleanup status is evidence, never permission to re-enter
+        // the running UI state after an authenticated exit request.
         return new InstallerShutdownOutcome(
             true, "exitCommitted", cleanupState, coreStopCode, coreStillAlive);
     }

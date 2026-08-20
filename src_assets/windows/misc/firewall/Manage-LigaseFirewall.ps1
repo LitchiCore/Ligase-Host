@@ -98,6 +98,21 @@ function Test-AllConfigured {
             return $false
         }
     }
+    $plannedNames = @($plans | ForEach-Object { $_.Name })
+    foreach ($name in @($definition.ownedRuleNames)) {
+        if ($name -notin $plannedNames -and $null -ne (Get-OwnedRule -Name $name)) {
+            return $false
+        }
+    }
+    return $true
+}
+
+function Test-AllOwnedAbsent {
+    foreach ($name in @($definition.ownedRuleNames)) {
+        if ($null -ne (Get-OwnedRule -Name $name)) {
+            return $false
+        }
+    }
     return $true
 }
 
@@ -175,7 +190,14 @@ if ($Action -eq 'Remove') {
             Get-OwnedRule -Name $name |
                 Remove-NetFirewallRule -ErrorAction SilentlyContinue
         }
+        if (-not (Test-AllOwnedAbsent)) {
+            throw 'removeReadbackMismatch'
+        }
     } catch {
+        foreach ($name in @($definition.ownedRuleNames)) {
+            Get-OwnedRule -Name $name |
+                Remove-NetFirewallRule -ErrorAction SilentlyContinue
+        }
         Restore-OwnedSnapshots -Snapshots $snapshots
         throw
     }

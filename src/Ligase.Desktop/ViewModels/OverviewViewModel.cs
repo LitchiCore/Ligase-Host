@@ -19,7 +19,8 @@ public sealed record OverviewRecentItem(
 public partial class OverviewViewModel(
     ApolloInstanceManager core,
     IApplicationLibrary library,
-    ApolloDeviceService devices) : ObservableObject
+    ApolloDeviceService devices,
+    IVirtualDisplayControlService virtualDisplay) : ObservableObject
 {
     public ObservableCollection<OverviewMetric> Metrics { get; } = [];
     public ObservableCollection<OverviewRecentItem> RecentItems { get; } = [];
@@ -42,6 +43,9 @@ public partial class OverviewViewModel(
 
     [ObservableProperty]
     private string _deviceValue = "—";
+
+    [ObservableProperty]
+    private string _virtualDisplayValue = "读取中";
 
     [ObservableProperty]
     private string _recentSummary = "正在读取最近项目";
@@ -79,6 +83,18 @@ public partial class OverviewViewModel(
         {
             AppendStatusMessage(
                 $"暂时无法读取设备状态：{exception.Message}。核心恢复后会自动显示最新状态。");
+        }
+
+        try
+        {
+            var display = await virtualDisplay.GetStateAsync(cancellationToken);
+            VirtualDisplayValue = display.IsEnabled ? "已启用" :
+                display.DriverReady ? "可用" : "不可用";
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            VirtualDisplayValue = "不可用";
+            AppendStatusMessage($"暂时无法读取虚拟桌面状态：{exception.Message}");
         }
 
         CoreSummary = core.IsRunning

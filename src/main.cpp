@@ -67,8 +67,18 @@ std::map<std::string_view, std::function<int(const char *name, int argc, char **
 };
 
 #ifdef _WIN32
+constexpr UINT WM_LIGASE_MANAGED_SHUTDOWN = WM_APP + 0x4C;
+
 LRESULT CALLBACK SessionMonitorWindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
   switch (uMsg) {
+    case WM_LIGASE_MANAGED_SHUTDOWN:
+      // Ligase Desktop owns the managed Sunshine generation.  The installer
+      // shutdown IPC asks Desktop to freeze restart policy first, then Desktop
+      // forwards this private message to the exact owned core PID.  Sunshine
+      // performs its normal asynchronous teardown; no external process kill is
+      // involved.
+      lifetime::exit_sunshine(0, true);
+      return 0;
     case WM_CLOSE:
       DestroyWindow(hwnd);
       return 0;

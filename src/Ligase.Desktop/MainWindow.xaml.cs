@@ -2,6 +2,7 @@ using Ligase.Host.Desktop.Pages;
 using Ligase.Host.Desktop.Presentation.LayoutCatalog;
 using Ligase.Host.Desktop.Presentation.Onboarding;
 using Ligase.Host.Desktop.Services;
+using Ligase.Host.Core.Models;
 using Ligase.Host.Core.Services;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.UI.Windowing;
@@ -24,6 +25,8 @@ public sealed partial class MainWindow : Window
     private readonly WindowsTrayIconService _trayIcon;
     private readonly AttendedPairingUiCoordinator _pairingUi;
     private readonly AppWindow _appWindow;
+    private readonly CancellationTokenSource _windowLifetime = new();
+    private readonly CoreReadinessLoop _coreReadiness;
     private string? _pendingPairingNavigationRequestId;
     private bool _isExiting;
     private bool _installerShutdownFrozen;
@@ -44,6 +47,10 @@ public sealed partial class MainWindow : Window
         var windowHandle = WindowNative.GetWindowHandle(this);
         var windowId = Microsoft.UI.Win32Interop.GetWindowIdFromWindow(windowHandle);
         _appWindow = AppWindow.GetFromWindowId(windowId);
+        _coreReadiness = new CoreReadinessLoop(
+            RefreshCoreReadinessAttemptAsync,
+            PublishCoreReadinessTimeoutAsync,
+            DispatchCoreReadinessAsync);
         _appWindow.Closing += OnWindowClosing;
         _trayIcon.OpenRequested += ShowWindow;
         _trayIcon.ExitRequested += OnExitRequested;
@@ -67,8 +74,17 @@ public sealed partial class MainWindow : Window
     internal void AllowApplicationExit()
     {
         _isExiting = true;
-        _installerShutdownFrozen = true;
+        FreezeForInstallerShutdown();
     }
+
+    internal void FreezeForInstallerShutdown()
+    {
+        _installerShutdownFrozen = true;
+        _coreReadiness.Cancel();
+    }
+
+    internal void StartCoreReadiness() =>
+        _ = _coreReadiness.StartAsync(_windowLifetime.Token);
 
     internal Task<InstallerShutdownOutcome> InvokeInstallerShutdownAsync(
         Func<Task<InstallerShutdownOutcome>> shutdown)
@@ -260,6 +276,8 @@ public sealed partial class MainWindow : Window
     {
         if (_isExiting) return;
         _isExiting = true;
+        _windowLifetime.Cancel();
+        _coreReadiness.Cancel();
         await ((App)Application.Current).ExitAsync();
     }
 
@@ -267,31 +285,17 @@ public sealed partial class MainWindow : Window
 
     public async Task RefreshCoreStatusAsync()
     {
-        try
-        {
-            var endpoint = await _coreLocator.ResolveAsync();
-            CoreStatusText.Text = _core.IsRunning
-                ? $"运行中 · 独立端口 {endpoint.BasePort}"
-                : $"已连接 {endpoint.HostName} · 端口 {endpoint.BasePort}";
-            CoreRetryButton.Visibility = _core.IsRunning
-                ? Visibility.Collapsed
-                : Visibility.Visible;
-        }
-        catch (ApolloCoreUnavailableException)
-        {
-            CoreStatusText.Text = _core.StartupError ?? "核心未运行 · 可在概览页启动";
-            CoreRetryButton.Visibility = Visibility.Visible;
-        }
-        await RefreshLibraryAuthorityAsync();
-        if (ContentFrame.Content is GameLibraryPage libraryPage)
-            await libraryPage.ViewModel.RefreshAsync();
-        else if (ContentFrame.Content is HostSetupPage setupPage)
-            await setupPage.RefreshAsync();
+        var result = await DispatchCoreReadinessAsync(
+            RefreshCoreReadinessAttemptAsync,
+            _windowLifetime.Token);
+        if (result == CoreReadinessAttempt.Waiting)
+            StartCoreReadiness();
     }
 
     private void OnManagedCoreStatusChanged()
     {
-        DispatcherQueue.TryEnqueue(RefreshCoreStatus);
+        DispatcherQueue.TryEnqueue(
+            _core.IsRunning ? StartCoreReadiness : RefreshCoreStatus);
     }
 
     private Task RefreshPairingPageAsync() =>
@@ -302,9 +306,17 @@ public sealed partial class MainWindow : Window
     private async void OnRetryCore(object sender, RoutedEventArgs args)
     {
         CoreRetryButton.IsEnabled = false;
-        CoreStatusText.Text = "正在启动串流核心…";
+        CoreStatusText.Text = _core.IsRunning
+            ? "正在刷新设备接口状态…"
+            : "正在启动串流核心…";
         try
         {
+            if (_core.IsRunning)
+            {
+                await RefreshCoreStatusAsync();
+                return;
+            }
+
             var existing = await _coreLocator.DiscoverAsync();
             if (existing.Count > 0)
             {
@@ -314,23 +326,117 @@ public sealed partial class MainWindow : Window
             }
 
             await _core.StartAsync();
-            await Task.Delay(1500);
         }
         finally
         {
             CoreRetryButton.IsEnabled = true;
-            await RefreshCoreStatusAsync();
+            StartCoreReadiness();
         }
     }
 
-    private async Task<bool> RefreshLibraryAuthorityAsync()
+    private async Task<CoreReadinessAttempt> RefreshCoreReadinessAttemptAsync(
+        CancellationToken cancellationToken)
     {
-        var authority = await _libraryAuthority.GetStateAsync();
+        var authority = await _libraryAuthority.GetStateAsync(cancellationToken);
+        CoreReadinessAttempt result;
+        if (authority.Kind == LibraryAuthorityKind.ManagedAuthoritative &&
+            authority.Core is { } core)
+        {
+            CoreStatusText.Text = $"运行中 · 独立端口 {core.BasePort}";
+            CoreRetryButton.Visibility = Visibility.Collapsed;
+            result = CoreReadinessAttempt.Ready;
+        }
+        else if (_core.IsRunning && authority.Code == "coreStarting")
+        {
+            CoreStatusText.Text = "核心进程运行中 · 正在等待设备接口";
+            CoreRetryButton.Visibility = Visibility.Collapsed;
+            result = CoreReadinessAttempt.Waiting;
+        }
+        else
+        {
+            CoreStatusText.Text = authority.Message;
+            CoreRetryButton.Content = _core.IsRunning ? "刷新状态" : "重新启动";
+            CoreRetryButton.Visibility = Visibility.Visible;
+            result = CoreReadinessAttempt.Terminal;
+        }
         AddApplicationNavigationItem.IsEnabled = authority.CanWrite;
         ToolTipService.SetToolTip(
             AddApplicationNavigationItem,
             authority.CanWrite ? null : authority.Message);
-        return authority.CanWrite;
+        if (result != CoreReadinessAttempt.Waiting)
+            await RefreshVisibleAuthorityPageAsync(cancellationToken);
+        return result;
+    }
+
+    private async Task<bool> RefreshLibraryAuthorityAsync()
+    {
+        var result = await DispatchCoreReadinessAsync(
+            RefreshCoreReadinessAttemptAsync,
+            _windowLifetime.Token);
+        if (result == CoreReadinessAttempt.Waiting)
+            StartCoreReadiness();
+        return result == CoreReadinessAttempt.Ready;
+    }
+
+    private async Task<CoreReadinessAttempt> PublishCoreReadinessTimeoutAsync(
+        CancellationToken cancellationToken)
+    {
+        const string message =
+            "核心设备接口启动超时，游戏库仍为只读。请点击“刷新状态”重试。";
+        CoreStatusText.Text = "设备接口启动超时 · 可刷新状态";
+        CoreRetryButton.Content = "刷新状态";
+        CoreRetryButton.Visibility = Visibility.Visible;
+        AddApplicationNavigationItem.IsEnabled = false;
+        ToolTipService.SetToolTip(AddApplicationNavigationItem, message);
+        await RefreshVisibleAuthorityPageAsync(cancellationToken);
+        return CoreReadinessAttempt.Terminal;
+    }
+
+    private async Task RefreshVisibleAuthorityPageAsync(
+        CancellationToken cancellationToken)
+    {
+        if (ContentFrame.Content is GameLibraryPage libraryPage)
+            await libraryPage.ViewModel.RefreshAsync(cancellationToken);
+        else if (ContentFrame.Content is HostSetupPage setupPage)
+            await setupPage.RefreshAsync();
+    }
+
+    private Task<CoreReadinessAttempt> DispatchCoreReadinessAsync(
+        Func<CancellationToken, Task<CoreReadinessAttempt>> action,
+        CancellationToken cancellationToken)
+    {
+        if (DispatcherQueue.HasThreadAccess) return action(cancellationToken);
+
+        var completion = new TaskCompletionSource<CoreReadinessAttempt>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        if (!DispatcherQueue.TryEnqueue(
+                () => CompleteDispatchedReadinessAsync(
+                    action,
+                    cancellationToken,
+                    completion)))
+        {
+            completion.TrySetCanceled(cancellationToken);
+        }
+        return completion.Task.WaitAsync(cancellationToken);
+    }
+
+    private static async void CompleteDispatchedReadinessAsync(
+        Func<CancellationToken, Task<CoreReadinessAttempt>> action,
+        CancellationToken cancellationToken,
+        TaskCompletionSource<CoreReadinessAttempt> completion)
+    {
+        try
+        {
+            completion.TrySetResult(await action(cancellationToken));
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            completion.TrySetCanceled(cancellationToken);
+        }
+        catch (Exception exception)
+        {
+            completion.TrySetException(exception);
+        }
     }
 
 }

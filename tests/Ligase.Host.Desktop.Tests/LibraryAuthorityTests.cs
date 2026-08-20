@@ -1,3 +1,6 @@
+using Ligase.Host.Core.Application.LayoutCatalog;
+using Ligase.Host.Core.Domain.LayoutCatalog;
+using Ligase.Host.Core.Infrastructure.Storage;
 using Ligase.Host.Core.Models;
 using Ligase.Host.Core.Services;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
@@ -127,6 +130,7 @@ public sealed class LibraryAuthorityTests
         Assert.AreEqual("old-library", File.ReadAllText(paths.LibraryFile));
         Assert.AreEqual("old-sync", File.ReadAllText(paths.SyncFile));
         Assert.AreEqual("old-apps", File.ReadAllText(paths.ApolloAppsFile));
+        Assert.AreEqual("old-layout", File.ReadAllText(paths.LayoutCatalogFile));
         Assert.AreEqual(3, authority.ReadbackCount);
     }
 
@@ -176,6 +180,51 @@ public sealed class LibraryAuthorityTests
             state));
     }
 
+    [TestMethod]
+    public async Task LayoutBindingUpdatesCatalogAndRequiresExactCoreReadback()
+    {
+        var paths = new LigasePaths(_root);
+        Directory.CreateDirectory(paths.ApolloDirectory);
+        File.WriteAllText(paths.LibraryFile, "old-library");
+        File.WriteAllText(paths.SyncFile, "old-sync");
+        File.WriteAllText(paths.ApolloAppsFile, "old-apps");
+        var layoutId = "10000000-0000-4000-8000-000000000000";
+        var binding = new LayoutBindingV1(layoutId, 1);
+        var catalog = new JsonLayoutCatalogRepository(paths.LayoutCatalogFile);
+        await catalog.SaveAsync(new LayoutCatalogSnapshot(
+            1,
+            [new LayoutDescriptorV1(
+                1,
+                layoutId,
+                1,
+                [new PortableGameIdentityV1("steam", "3548580")],
+                new LayoutCompatibilityV1(1, 1),
+                "published",
+                [new LayoutVariantV1(
+                    "20000000-0000-4000-8000-000000000000",
+                    "touch",
+                    ["phone"],
+                    ["landscape"])])],
+            []));
+        var repository = new FakeRepository(paths);
+        var authority = new BindingAuthority(binding);
+        var coordinator = new LibraryMutationCoordinator(
+            paths,
+            repository,
+            authority,
+            layoutCatalogService: new LayoutCatalogService(catalog));
+
+        var item = await coordinator.SetLayoutBindingAsync(BindingAppId, binding);
+
+        Assert.AreEqual(binding, item.LayoutBinding);
+        var snapshot = await catalog.LoadAsync();
+        var saved = snapshot.ExplicitBindings.Single();
+        Assert.AreEqual(BindingAppId.ToString("D"), saved.Instance.AppUuid);
+        Assert.AreEqual(BindingCore.UniqueId, saved.Instance.HostUniqueId);
+        Assert.AreEqual(binding, saved.Binding);
+        Assert.AreEqual(2, authority.ReadbackCount);
+    }
+
     private LigasePaths CreateProjectionFiles()
     {
         var paths = new LigasePaths(_root);
@@ -183,6 +232,7 @@ public sealed class LibraryAuthorityTests
         File.WriteAllText(paths.LibraryFile, "old-library");
         File.WriteAllText(paths.SyncFile, "old-sync");
         File.WriteAllText(paths.ApolloAppsFile, "old-apps");
+        File.WriteAllText(paths.LayoutCatalogFile, "old-layout");
         return paths;
     }
 
@@ -201,6 +251,17 @@ public sealed class LibraryAuthorityTests
             49989,
             source: LigaseEndpointSource.Loopback),
         "host",
+        "Ligase");
+
+    private static readonly Guid BindingAppId =
+        Guid.Parse("30000000-0000-4000-8000-000000000000");
+    private static readonly ApolloCoreEndpoint BindingCore = new(
+        LigaseEndpoint.Create(
+            LigaseEndpointScheme.Http,
+            "127.0.0.1",
+            49989,
+            source: LigaseEndpointSource.Loopback),
+        "40000000-0000-4000-8000-000000000000",
         "Ligase");
 
     private static readonly LibraryAuthorityState ManagedState = new(
@@ -248,6 +309,25 @@ public sealed class LibraryAuthorityTests
             throw new NotSupportedException();
         public Task SetPublishedToClientsAsync(Guid id, bool published, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
+        public Task<LibraryItem> SetLayoutBindingAsync(
+            Guid id,
+            LayoutBindingV1? binding,
+            CancellationToken cancellationToken = default)
+        {
+            MutationCount++;
+            File.WriteAllText(paths.LibraryFile, "new-library-binding");
+            File.WriteAllText(paths.SyncFile, "new-sync-binding");
+            File.WriteAllText(paths.ApolloAppsFile, "new-apps-binding");
+            return Task.FromResult(new LibraryItem
+            {
+                Id = id,
+                Kind = LibraryItemKind.Steam,
+                Name = "Chill",
+                SteamAppId = 3548580,
+                PortableIdentity = new PortableGameIdentityV1("steam", "3548580"),
+                LayoutBinding = binding
+            });
+        }
         public Task<LibraryItem> UpdateSteamCoverAsync(
             Guid id,
             PortableGameIdentityV1 expectedPortableIdentity,
@@ -277,6 +357,48 @@ public sealed class LibraryAuthorityTests
                 throw new InvalidOperationException("readback failed");
             return Task.FromResult(new AuthorityReadbackDocument(
                 1, "token", "nonce", "root", "host", [], []));
+        }
+    }
+
+    private sealed class BindingAuthority(LayoutBindingV1 binding)
+        : ILibraryAuthorityService
+    {
+        public int ReadbackCount { get; private set; }
+
+        public Task<LibraryAuthorityState> GetStateAsync(
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(new LibraryAuthorityState(
+                LibraryAuthorityKind.ManagedAuthoritative,
+                "managedAuthoritative",
+                "ok",
+                BindingCore));
+
+        public Task<AuthorityReadbackDocument> RequireReadbackAsync(
+            ApolloCoreEndpoint core,
+            bool reload,
+            CancellationToken cancellationToken = default)
+        {
+            ReadbackCount++;
+            var items = ReadbackCount == 1
+                ? Array.Empty<AuthorityReadbackLibraryItem>()
+                :
+                [
+                    new AuthorityReadbackLibraryItem(
+                        BindingAppId.ToString("D"),
+                        "Steam",
+                        3548580,
+                        true,
+                        PortableIdentity: new PortableGameIdentityV1("steam", "3548580"),
+                        LayoutBinding: binding)
+                ];
+            return Task.FromResult(new AuthorityReadbackDocument(
+                1,
+                "token",
+                "nonce",
+                "root",
+                BindingCore.UniqueId,
+                items,
+                []));
         }
     }
 }

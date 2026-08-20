@@ -71,6 +71,16 @@
                         <TextBlock x:Name="DeviceValueText" FontSize="22" FontWeight="SemiBold" Text="—" />
                     </StackPanel>
                 </Border>
+                <Border
+                    Width="220"
+                    Padding="18"
+                    Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    CornerRadius="12">
+                    <StackPanel Spacing="5">
+                        <TextBlock Foreground="{ThemeResource TextFillColorSecondaryBrush}" Text="虚拟桌面" />
+                        <TextBlock x:Name="VirtualDisplayValueText" FontSize="22" FontWeight="SemiBold" Text="读取中" />
+                    </StackPanel>
+                </Border>
             </StackPanel>
 
             <Border

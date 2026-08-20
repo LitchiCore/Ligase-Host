@@ -67,6 +67,8 @@
                         <Button
                             x:Name="CoreRetryButton"
                             VerticalAlignment="Center"
+                            AutomationProperties.HelpText="核心未运行或设备接口启动超时时，重新检查核心状态"
+                            AutomationProperties.Name="刷新核心状态"
                             Click="OnRetryCore"
                             Content="重新启动"
                             Style="{StaticResource LigaseQuietButtonStyle}"

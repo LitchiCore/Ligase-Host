@@ -3,6 +3,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using Ligase.Host.Core.Application.LayoutCatalog;
 using Ligase.Host.Core.Domain.LayoutCatalog;
 using Ligase.Host.Core.Models;
+using Ligase.Host.Core.Services;
 
 namespace Ligase.Host.Desktop.Presentation.LayoutCatalog;
 
@@ -33,11 +34,25 @@ public sealed record LayoutCatalogBindingAlert(
         $"应用 {AppUuid} · {LayoutId} / 修订 {Revision} · {StatusLabel}";
 }
 
-public partial class LayoutCatalogViewModel(LayoutCatalogService catalog)
+public sealed record LayoutBindingGameOption(
+    Guid Id,
+    string Name,
+    string PortableIdentity,
+    string CurrentBinding)
+{
+    public string Label => $"{Name} · {PortableIdentity} · {CurrentBinding}";
+}
+
+public partial class LayoutCatalogViewModel(
+    LayoutCatalogService catalog,
+    IApplicationLibrary? library = null,
+    ILibraryAuthorityService? authority = null,
+    LibraryMutationCoordinator? mutation = null)
     : ObservableObject
 {
     public ObservableCollection<LayoutCatalogDescriptorCard> Items { get; } = [];
     public ObservableCollection<LayoutCatalogBindingAlert> BindingAlerts { get; } = [];
+    public ObservableCollection<LayoutBindingGameOption> BindableGames { get; } = [];
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(HasItems))]
@@ -51,9 +66,18 @@ public partial class LayoutCatalogViewModel(LayoutCatalogService catalog)
     [ObservableProperty]
     private LayoutCatalogDescriptorCard? _selectedItem;
 
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(CanEditBindings))]
+    private bool _hasWriteAuthority;
+
+    [ObservableProperty]
+    private string? _bindingAuthorityMessage;
+
     public bool HasItems => Items.Count > 0;
     public bool IsEmpty => !IsLoading && !HasItems && !HasError;
     public bool HasError => !string.IsNullOrWhiteSpace(ErrorMessage);
+    public bool CanEditBindings =>
+        HasWriteAuthority && mutation is not null && BindableGames.Count > 0;
 
     public async Task LoadAsync(CancellationToken cancellationToken = default)
     {
@@ -63,6 +87,7 @@ public partial class LayoutCatalogViewModel(LayoutCatalogService catalog)
         {
             var overview = await catalog.QueryAsync(cancellationToken);
             Apply(overview);
+            await LoadBindingGamesAsync(cancellationToken);
         }
         catch (LayoutCatalogException exception)
         {
@@ -87,6 +112,54 @@ public partial class LayoutCatalogViewModel(LayoutCatalogService catalog)
             OnPropertyChanged(nameof(IsEmpty));
             OnPropertyChanged(nameof(HasError));
         }
+    }
+
+    public async Task SetBindingAsync(
+        LayoutCatalogDescriptorCard descriptor,
+        LayoutBindingGameOption game,
+        bool clear,
+        CancellationToken cancellationToken = default)
+    {
+        if (!CanEditBindings || mutation is null)
+            throw new InvalidOperationException(
+                BindingAuthorityMessage ?? "当前不能安全修改布局绑定。");
+        if (!clear && descriptor.PublicationStatus == "retired")
+            throw new InvalidOperationException("已停用的布局修订不能建立新绑定。");
+
+        await mutation.SetLayoutBindingAsync(
+            game.Id,
+            clear ? null : new LayoutBindingV1(descriptor.LayoutId, descriptor.Revision),
+            cancellationToken);
+        await LoadAsync(cancellationToken);
+    }
+
+    private async Task LoadBindingGamesAsync(CancellationToken cancellationToken)
+    {
+        BindableGames.Clear();
+        if (library is null || authority is null)
+        {
+            HasWriteAuthority = false;
+            BindingAuthorityMessage = "当前仅提供布局目录只读视图。";
+            OnPropertyChanged(nameof(CanEditBindings));
+            return;
+        }
+
+        var state = await library.LoadAsync(cancellationToken);
+        var authorityState = await authority.GetStateAsync(cancellationToken);
+        HasWriteAuthority = authorityState.CanWrite;
+        BindingAuthorityMessage = authorityState.CanWrite ? null : authorityState.Message;
+        foreach (var item in state.Items
+                     .Where(item => !item.IsSystemEntry)
+                     .OrderBy(item => item.Name, StringComparer.CurrentCultureIgnoreCase)
+                     .ThenBy(item => item.Id))
+        {
+            BindableGames.Add(new LayoutBindingGameOption(
+                item.Id,
+                item.Name,
+                item.LayoutIdentityLabel,
+                item.LayoutBindingLabel));
+        }
+        OnPropertyChanged(nameof(CanEditBindings));
     }
 
     private void Apply(LayoutCatalogOverview overview)

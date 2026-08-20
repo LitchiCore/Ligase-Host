@@ -14,6 +14,7 @@ public sealed partial class DevicesPage : Page
     public DevicesViewModel ViewModel { get; }
     public AttendedPairingViewModel PairingViewModel { get; }
     private readonly AttendedPairingCoordinator _pairing;
+    private readonly PairingNotificationService _notifications;
 
     public DevicesPage()
     {
@@ -21,6 +22,7 @@ public sealed partial class DevicesPage : Page
         ViewModel = services.GetRequiredService<DevicesViewModel>();
         PairingViewModel = services.GetRequiredService<AttendedPairingViewModel>();
         _pairing = services.GetRequiredService<AttendedPairingCoordinator>();
+        _notifications = services.GetRequiredService<PairingNotificationService>();
         InitializeComponent();
         Loaded += OnLoaded;
         Unloaded += OnUnloaded;
@@ -58,6 +60,8 @@ public sealed partial class DevicesPage : Page
     {
         _pairing.ProjectionChanged += OnProjectionChanged;
         _pairing.AvailabilityChanged += OnAvailabilityChanged;
+        _notifications.StatusChanged += OnNotificationStatusChanged;
+        PairingViewModel.RefreshNotificationStatus();
         if (_pairing.Current is not null)
             PairingViewModel.Apply(_pairing.Current);
     }
@@ -66,6 +70,7 @@ public sealed partial class DevicesPage : Page
     {
         _pairing.ProjectionChanged -= OnProjectionChanged;
         _pairing.AvailabilityChanged -= OnAvailabilityChanged;
+        _notifications.StatusChanged -= OnNotificationStatusChanged;
     }
 
     private void OnProjectionChanged(AttendedPairingProjection projection) =>
@@ -73,6 +78,9 @@ public sealed partial class DevicesPage : Page
 
     private void OnAvailabilityChanged(string message) =>
         DispatcherQueue.TryEnqueue(() => PairingViewModel.SetUnavailable(message));
+
+    private void OnNotificationStatusChanged() =>
+        DispatcherQueue.TryEnqueue(PairingViewModel.RefreshNotificationStatus);
 
     private async void OnAllow(object sender, RoutedEventArgs e)
     {

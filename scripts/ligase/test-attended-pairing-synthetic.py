@@ -109,6 +109,7 @@ class Enrollment:
     certificate_pem: bytes
     envelope_nonce: bytes
     envelope_ciphertext: bytes
+    safety_code: str
 
 
 def create_enrollment(base: str, device_name: str) -> Enrollment:
@@ -154,6 +155,13 @@ def create_enrollment(base: str, device_name: str) -> Enrollment:
     prk = hmac.new(salt, shared, hashlib.sha256).digest()
     info = b"Ligase attended pairing v1\x00" + transcript_hash
     pairing_key = hmac.new(prk, info + b"\x01", hashlib.sha256).digest()
+    safety_digest = hmac.new(
+        pairing_key,
+        b"Ligase attended pairing SAS v1\x00" + transcript_hash,
+        hashlib.sha256,
+    ).digest()
+    safety_text = base64.b32encode(safety_digest[:5]).decode("ascii")
+    safety_code = f"{safety_text[:4]}-{safety_text[4:]}"
     pin = f"{int.from_bytes(os.urandom(2), 'big') % 10000:04d}"
     plaintext = canonical({"legacyPin": pin})
     if len(plaintext) != 20:
@@ -183,6 +191,7 @@ def create_enrollment(base: str, device_name: str) -> Enrollment:
         certificate_pem,
         nonce,
         ciphertext,
+        safety_code,
     )
 
 
@@ -550,6 +559,147 @@ def exercise_negative_routes(
     }
 
 
+def exercise_ui_toast_reject(
+    base: str, *, decision_timeout_seconds: float
+) -> bool:
+    """Create one ready request, require Host rejection, and close the request."""
+    enrollment = create_enrollment(base, "Ligase Toast Click Check")
+    salt = os.urandom(16)
+    unique_id = uuid.uuid4().hex
+    held: dict[str, object] = {}
+
+    def first_phase() -> None:
+        try:
+            held["root"] = xml_get(
+                base,
+                {
+                    "uniqueid": unique_id,
+                    "phrase": "getservercert",
+                    "salt": salt.hex(),
+                    "clientcert": enrollment.certificate_pem.hex(),
+                    "devicename": "Ligase Toast Click Check",
+                    "ligasepairingrequestid": enrollment.request_id,
+                },
+                timeout=decision_timeout_seconds + 10,
+            )
+        except BaseException as error:
+            held["error"] = error
+
+    held_thread = threading.Thread(target=first_phase, daemon=True)
+    held_thread.start()
+    ready_deadline = time.monotonic() + 10
+    while time.monotonic() < ready_deadline:
+        status, listing = json_http(base, "GET", "/ligase/v1/pairing/requests")
+        if status == 200 and any(
+            item["requestId"] == enrollment.request_id
+            and item["readyForApproval"]
+            and item["safetyCode"] == enrollment.safety_code
+            for item in listing["requests"]
+        ):
+            break
+        time.sleep(0.1)
+    else:
+        status, raw = http(
+            base,
+            "DELETE",
+            f"/ligase/v1/pairing/requests/{enrollment.request_id}",
+            token=enrollment.token,
+        )
+        held_thread.join(5)
+        if status != 204 or raw or held_thread.is_alive():
+            raise RuntimeError("unready toast request cleanup was unproven")
+        raise RuntimeError("toast request never became ready for approval")
+
+    print(
+        json.dumps(
+            {
+                "result": "WAITING_FOR_TOAST_REJECT",
+                "requestId": enrollment.request_id,
+                "safetyCode": enrollment.safety_code,
+                "decisionTimeoutSeconds": decision_timeout_seconds,
+            },
+            separators=(",", ":"),
+        ),
+        flush=True,
+    )
+
+    decision_deadline = time.monotonic() + decision_timeout_seconds
+    while time.monotonic() < decision_deadline:
+        status, terminal = json_http(
+            base,
+            "GET",
+            f"/ligase/v1/pairing/requests/{enrollment.request_id}",
+            token=enrollment.token,
+        )
+        if status != 200:
+            raise RuntimeError(f"toast terminal read failed: {status} {terminal}")
+        if terminal["state"] == "rejected":
+            break
+        if terminal["state"] != "pending":
+            raise RuntimeError(f"unexpected toast terminal: {terminal}")
+        time.sleep(0.25)
+    else:
+        status, raw = http(
+            base,
+            "DELETE",
+            f"/ligase/v1/pairing/requests/{enrollment.request_id}",
+            token=enrollment.token,
+        )
+        if status != 204 or raw:
+            raise RuntimeError(
+                f"toast timeout cleanup failed: HTTP {status} {raw!r}"
+            )
+        status, terminal = json_http(
+            base,
+            "GET",
+            f"/ligase/v1/pairing/requests/{enrollment.request_id}",
+            token=enrollment.token,
+        )
+        if status != 200 or terminal["state"] != "cancelled":
+            raise RuntimeError(f"toast timeout terminal mismatch: {status} {terminal}")
+        held_thread.join(5)
+        if held_thread.is_alive():
+            raise RuntimeError("cancelled getservercert request remained held")
+        print(
+            json.dumps(
+                {
+                    "result": "FAIL",
+                    "mode": "ui-toast-reject",
+                    "requestId": enrollment.request_id,
+                    "terminalState": "cancelled",
+                    "liveRequestRemoved": True,
+                    "reasonCode": "toastDecisionTimeout",
+                },
+                separators=(",", ":"),
+            ),
+            flush=True,
+        )
+        return False
+
+    held_thread.join(5)
+    if held_thread.is_alive():
+        raise RuntimeError("rejected getservercert request remained held")
+    status, listing = json_http(base, "GET", "/ligase/v1/pairing/requests")
+    if status != 200 or any(
+        item["requestId"] == enrollment.request_id
+        for item in listing["requests"]
+    ):
+        raise RuntimeError("rejected request remained in the live list")
+    print(
+        json.dumps(
+            {
+                "result": "PASS",
+                "mode": "ui-toast-reject",
+                "requestId": enrollment.request_id,
+                "terminalState": "rejected",
+                "liveRequestRemoved": True,
+            },
+            separators=(",", ":"),
+        )
+    )
+    return True
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--base", required=True)
@@ -563,12 +713,51 @@ def main() -> None:
             "ui-allow",
             "ui-reject",
             "ui-cancel",
+            "ui-toast-reject",
         ),
         default="full",
     )
     parser.add_argument("--wait-seconds", type=float, default=3)
+    parser.add_argument("--ui-timeout-seconds", type=float, default=90)
+    parser.add_argument(
+        "--no-request-check",
+        action="store_true",
+        help="validate the selected UI mode and exit before any HTTP request",
+    )
     args = parser.parse_args()
     base = args.base.rstrip("/")
+    if args.ui_timeout_seconds <= 0 or args.ui_timeout_seconds > 120:
+        parser.error("--ui-timeout-seconds must be in (0, 120]")
+    if args.no_request_check:
+        if args.mode != "ui-toast-reject":
+            parser.error("--no-request-check requires --mode ui-toast-reject")
+        print(
+            json.dumps(
+                {
+                    "result": "NO_REQUEST_CHECK_PASS",
+                    "mode": args.mode,
+                    "requestCalls": 0,
+                    "waitingMarker": "WAITING_FOR_TOAST_REJECT",
+                    "passTerminalFields": [
+                        "result",
+                        "mode",
+                        "requestId",
+                        "terminalState",
+                        "liveRequestRemoved",
+                    ],
+                },
+                separators=(",", ":"),
+            )
+        )
+        return
+    if args.mode == "ui-toast-reject":
+        passed = exercise_ui_toast_reject(
+            base,
+            decision_timeout_seconds=args.ui_timeout_seconds,
+        )
+        if not passed:
+            raise SystemExit(2)
+        return
     if args.mode == "timeout":
         enrollment = create_enrollment(base, "Synthetic Timeout")
         time.sleep(args.wait_seconds)

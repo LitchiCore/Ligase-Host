@@ -6,9 +6,19 @@ const require=createRequire(path.join(repo,'package.json'));
 const Ajv2020=require('ajv/dist/2020').default;
 const schema=JSON.parse(fs.readFileSync(path.join(repo,'docs','ligase-host','virtual-display-setup-result-v1.schema.json'),'utf8'));
 const requestSchema=JSON.parse(fs.readFileSync(path.join(repo,'docs','ligase-host','virtual-display-setup-request-v1.schema.json'),'utf8'));
+const runtimeSchema=JSON.parse(fs.readFileSync(path.join(repo,'docs','ligase-host','virtual-display-runtime-state-v1.schema.json'),'utf8'));
 const ajv=new Ajv2020({strictSchema:true,strictTypes:false,strictTuples:false,allErrors:true,validateFormats:false});
 const validate=ajv.compile(schema);
 const validateRequest=ajv.compile(requestSchema);
+const validateRuntime=ajv.compile(runtimeSchema);
+const runtimeEnabled={schemaVersion:1,state:'enabled',reason:'none',displayName:'\\\\.\\DISPLAY9',driverReady:true,windowsDisplayPresent:true,streamingAvailable:true,usedByActiveStream:false,streamSource:'apolloVirtualDisplayApp'};
+if(!validateRuntime(runtimeEnabled)) throw new Error('runtimeStatePositiveRejected');
+for(const invalid of [
+  {...runtimeEnabled,displayName:''},
+  {...runtimeEnabled,usedByActiveStream:true,state:'disabled'},
+  {...runtimeEnabled,streamSource:'desktop'},
+  {...runtimeEnabled,extra:true}
+]) if(validateRuntime(invalid)) throw new Error('runtimeStateNegativeAccepted');
 const z='e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
 const h='1'.repeat(64), op='2'.repeat(64), old='5'.repeat(64);
 const hashes={
@@ -24,7 +34,7 @@ const hashes={
 const clone=v=>JSON.parse(JSON.stringify(v));
 const request=operation=>({schemaVersion:1,operation,operationIdSha256:op,
   createdUtc:'2026-08-08T00:00:00Z',sourceHead:'a'.repeat(40),helperSha256:h,
-  packageSha256:h,hardwareId:'ROOT\\SUDOMAKER\\SUDOVDA',hardCapMilliseconds:120000,
+  packageSha256:h,installerToolSha256:h,hardwareId:'ROOT\\SUDOMAKER\\SUDOVDA',hardCapMilliseconds:120000,
   settleMilliseconds:500,trustSelected:operation==='provision',
   packageSelected:operation==='provision',createSelected:operation==='provision',
   legacyMarkerPolicy:'v1CertificateOnly',packageOwnershipPolicy:'provisionOperationProvenanceOnly',
@@ -46,6 +56,9 @@ for(const mutation of [
   if(validateRequest(value)) throw new Error('invalid request accepted');
 }
 const component=(state='notAttempted',code='none')=>({state,code});
+const noFailureDiagnostic=()=>({state:'none',owner:'none',category:'none',reasonCode:'none',nativeCode:0,nativeCodeHex:'none',logPath:null,logPathState:'notApplicable'});
+const trustFailureDiagnostic=()=>({state:'captured',owner:'trust',category:'trustChain',reasonCode:'win32Failure',nativeCode:5,nativeCodeHex:'0x00000005',logPath:null,logPathState:'notApplicable'});
+const packageFailureDiagnostic=()=>({state:'captured',owner:'package',category:'packageValidation',reasonCode:'packageHashMismatch',nativeCode:0,nativeCodeHex:'none',logPath:'C:\\Windows\\INF\\setupapi.dev.log',logPathState:'available'});
 const entry=(store,ownership,historical=false,cleanupState='notAttempted')=>{
   if(historical) return {store,ownership,authoritySource:'historicalMarker',preState:'historicalMarker',mutation:'none',readback:'markerExact',cleanupState};
   if(ownership==='addedByLigase') return {store,ownership,authoritySource:'currentOperation',preState:'absent',mutation:'addedByThisOperation',readback:'present',cleanupState};
@@ -56,9 +69,42 @@ const stores=(root,publisher,{historical=false,cleanup}={})=>{
   const entries=[entry('LocalMachine\\Root',root,historical,clean(root)),entry('LocalMachine\\TrustedPublisher',publisher,historical,clean(publisher))];
   return {state:'verified',entries,ownedCount:[root,publisher].filter(x=>x!=='notOwned').length,ownershipSetSha256:hashes[`${root},${publisher}`]};
 };
+const storesNotAttempted=()=>({state:'notAttempted',entries:[],ownedCount:0,ownershipSetSha256:z});
 const installed=(root='addedByLigase',publisher='addedByLigase')=>{
   const anyAdded=[root,publisher].includes('addedByLigase');
-  return {schemaVersion:1,operation:'provision',operationIdsSha256:[op],sourceHead:'3'.repeat(40),helperSha256:h,packageSha256:'4'.repeat(64),state:'completed',code:'installed',stage:'completed',firstFailureFrozen:false,writtenUtc:'2026-08-08T00:00:00Z',migration:{state:'v2Committed',source:'none',packageOwnership:'addedByLigase',certificateOwnership:anyAdded?'owned':'notOwned'},ownershipAcquisition:{state:'proven',source:'currentOperation',acquisitionOperationIndex:0,preState:'absent',mutation:'publishedByLigaseProvision',readback:'presentPinned'},certificateStores:stores(root,publisher),inventory:{state:'proven',nodes:[{present:true,bound:true}],uniqueSetSha256:h,residual:'exactOneBound'},removal:{state:'notRequired',removed:[],terminal:'none',nativeCode:-1,rebootRequired:false},zeroProof:{state:'completed',samples:[{zero:true},{zero:true},{zero:true}],windowMilliseconds:3,epochStable:true},trust:anyAdded?component('completed','added'):component('verified','alreadyOwned'),package:component('completed','installed'),create:component('completed','created'),marker:component('completed','committed'),compensation:{state:'notRequired',code:'none'},execution:{elapsedMilliseconds:10,hardCapMilliseconds:120000,resultFileState:'verified'}};
+  return {schemaVersion:1,operation:'provision',operationIdsSha256:[op],sourceHead:'3'.repeat(40),helperSha256:h,packageSha256:'4'.repeat(64),state:'completed',code:'installed',stage:'completed',firstFailureFrozen:false,writtenUtc:'2026-08-08T00:00:00Z',migration:{state:'v2Committed',source:'none',packageOwnership:'addedByLigase',certificateOwnership:anyAdded?'owned':'notOwned'},ownershipAcquisition:{state:'proven',source:'currentOperation',acquisitionOperationIndex:0,preState:'absent',mutation:'publishedByLigaseProvision',readback:'presentPinned'},certificateStores:stores(root,publisher),failureDiagnostic:noFailureDiagnostic(),inventory:{state:'proven',nodes:[{present:true,bound:true}],uniqueSetSha256:h,residual:'exactOneBound'},removal:{state:'notRequired',removed:[],terminal:'none',nativeCode:-1,rebootRequired:false},zeroProof:{state:'completed',samples:[{zero:true},{zero:true},{zero:true}],windowMilliseconds:3,epochStable:true},trust:anyAdded?component('completed','added'):component('verified','alreadyOwned'),package:component('completed','installed'),create:component('completed','created'),marker:component('completed','committed'),compensation:{state:'notRequired',code:'none'},execution:{elapsedMilliseconds:10,hardCapMilliseconds:120000,resultFileState:'verified'}};
+};
+const trustFailed=()=>{
+  const v=installed('notOwned','notOwned');
+  v.state='failed';v.code='trustFailed';v.stage='trustPackage';v.firstFailureFrozen=true;
+  v.migration={state:'notRequired',source:'none',packageOwnership:'notOwned',certificateOwnership:'notOwned'};
+  v.ownershipAcquisition={state:'none',source:'none'};
+  v.inventory={state:'proven',nodes:[],uniqueSetSha256:z,residual:'zero'};
+  v.removal={state:'notRequired',removed:[],terminal:'none',nativeCode:-1,rebootRequired:false};
+  v.zeroProof={state:'notAttempted',samples:[],windowMilliseconds:0,epochStable:false};
+  v.certificateStores=storesNotAttempted();
+  v.trust=component('failed','nativeFailure');v.package=component('verified','validated');v.create=component();v.marker=component();
+  v.compensation={state:'failed',code:'trust'};v.failureDiagnostic=trustFailureDiagnostic();
+  return v;
+};
+const packageValidationFailed=()=>{
+  const v=trustFailed();
+  v.code='packageFailed';v.stage='validatePackage';v.trust=component();v.package=component('failed','nativeFailure');
+  v.compensation={state:'notRequired',code:'none'};
+  v.failureDiagnostic=packageFailureDiagnostic();
+  return v;
+};
+const packageInstallFailed=()=>{
+  const v=installed('addedByLigase','notOwned');
+  v.state='failed';v.code='packageFailed';v.stage='installDriver';v.firstFailureFrozen=true;
+  v.migration={state:'rollbackCompleted',source:'none',packageOwnership:'notOwned',certificateOwnership:'owned'};
+  v.ownershipAcquisition={state:'none',source:'none'};
+  v.inventory={state:'proven',nodes:[],uniqueSetSha256:z,residual:'zero'};
+  v.package=component('failed','nativeFailure');v.create=component('completed','created');v.marker=component();
+  v.certificateStores.entries[0].readback='absent';v.certificateStores.entries[0].cleanupState='removed';
+  v.certificateStores.entries[1].cleanupState='retained';
+  v.compensation={state:'completed',code:'multiple'};v.failureDiagnostic={...packageFailureDiagnostic(),category:'nativeTool',reasonCode:'exitCode',nativeCode:23,nativeCodeHex:'0x00000017'};
+  return v;
 };
 const historicalAlreadyInstalled=(source,root,publisher,packageOwnership='legacyUnknown')=>{
   const v=installed(root,publisher); v.code='alreadyInstalled'; v.zeroProof={state:'notAttempted',samples:[],windowMilliseconds:0,epochStable:false}; v.removal={state:'notRequired',removed:[],terminal:'none',nativeCode:-1,rebootRequired:false}; v.trust=component('verified','alreadyOwned'); v.package=component('verified','alreadyOwned'); v.create=component('notRequired','none'); v.marker=component('verified','alreadyOwned'); v.migration={state:source==='v1'?'v1Read':'v2Read',source,packageOwnership,certificateOwnership:v.certificateStores.ownedCount?'owned':'notOwned'}; v.ownershipAcquisition={state:'none',source:'none'}; v.certificateStores=stores(root,publisher,{historical:true}); if(source==='v1'){v.certificateStores.entries=v.certificateStores.entries.map(e=>e.ownership==='notOwned'?entry(e.store,'notOwned',false):e);} return v;
@@ -76,7 +122,7 @@ const v1CommitFailedPartial=()=>{
 const uninstallShared=(root='addedByLigase',publisher='notOwned')=>{
   const cleanup=ownership=>ownership==='notOwned'?'retained':'removed';
   const hasOwned=[root,publisher].some(x=>x!=='notOwned');
-  return {schemaVersion:1,operation:'uninstall',operationIdsSha256:[op],sourceHead:'3'.repeat(40),helperSha256:h,packageSha256:'4'.repeat(64),state:'completed',code:'uninstalledSharedPackageRetained',stage:'completed',firstFailureFrozen:false,writtenUtc:'2026-08-08T00:00:00Z',migration:{state:'v2Read',source:'v2',packageOwnership:'notOwned',certificateOwnership:hasOwned?'owned':'notOwned'},ownershipAcquisition:{state:'none',source:'none'},certificateStores:stores(root,publisher,{historical:true,cleanup}),inventory:{state:'proven',nodes:[],uniqueSetSha256:z,residual:'zero'},removal:{state:'completed',removed:[{nativeCode:0,rebootRequired:false,strictDecrease:true}],terminal:'completed',nativeCode:0,rebootRequired:false},zeroProof:{state:'completed',samples:[{zero:true},{zero:true},{zero:true}],windowMilliseconds:3,epochStable:true},trust:hasOwned?{state:'completed',code:'removed',ownership:'owned'}:{state:'verified',code:'absentNotOwned',ownership:'notOwned'},package:{state:'verified',code:'retainedNotOwned',ownership:'notOwned'},create:component('notRequired','none'),marker:{state:'completed',code:'removed',ownership:'owned'},compensation:{state:'notRequired',code:'none'},execution:{elapsedMilliseconds:10,hardCapMilliseconds:120000,resultFileState:'verified'}};
+  return {schemaVersion:1,operation:'uninstall',operationIdsSha256:[op],sourceHead:'3'.repeat(40),helperSha256:h,packageSha256:'4'.repeat(64),state:'completed',code:'uninstalledSharedPackageRetained',stage:'completed',firstFailureFrozen:false,writtenUtc:'2026-08-08T00:00:00Z',migration:{state:'v2Read',source:'v2',packageOwnership:'notOwned',certificateOwnership:hasOwned?'owned':'notOwned'},ownershipAcquisition:{state:'none',source:'none'},certificateStores:stores(root,publisher,{historical:true,cleanup}),failureDiagnostic:noFailureDiagnostic(),inventory:{state:'proven',nodes:[],uniqueSetSha256:z,residual:'zero'},removal:{state:'completed',removed:[{nativeCode:0,rebootRequired:false,strictDecrease:true}],terminal:'completed',nativeCode:0,rebootRequired:false},zeroProof:{state:'completed',samples:[{zero:true},{zero:true},{zero:true}],windowMilliseconds:3,epochStable:true},trust:hasOwned?{state:'completed',code:'removed',ownership:'owned'}:{state:'verified',code:'absentNotOwned',ownership:'notOwned'},package:{state:'verified',code:'retainedNotOwned',ownership:'notOwned'},create:component('notRequired','none'),marker:{state:'completed',code:'removed',ownership:'owned'},compensation:{state:'notRequired',code:'none'},execution:{elapsedMilliseconds:10,hardCapMilliseconds:120000,resultFileState:'verified'}};
 };
 const uninstallAllNotOwnedPresent=()=>{const v=uninstallShared('notOwned','notOwned');v.trust={state:'verified',code:'retainedNotOwned',ownership:'notOwned'};return v;};
 const v1EmptyProvision=()=>{
@@ -97,7 +143,7 @@ const v1EmptyUninstall=(packagePresent=false,certificatePresent=true)=>{
 };
 const ownershipReadFailed=(operation='provision',source='unknown',reason='unreadable')=>{
   const uninstall=operation==='uninstall';
-  return {schemaVersion:1,operation,operationIdsSha256:[op],sourceHead:'3'.repeat(40),helperSha256:h,packageSha256:'4'.repeat(64),state:'failed',code:'ownershipReadFailed',stage:uninstall?'cleanupOwnership':'readOwnership',firstFailureFrozen:true,writtenUtc:'2026-08-08T00:00:00Z',migration:{state:'failed',source,packageOwnership:'unknown',certificateOwnership:'unknown'},ownershipAcquisition:{state:'none',source:'none'},ownershipReadFailure:{state:'failed',reason,count:1,source,resourceMutationCount:0},certificateStores:{state:'unavailable',entries:[],ownedCount:-1,ownershipSetSha256:z},inventory:uninstall?{state:'proven',nodes:[],uniqueSetSha256:z,residual:'zero'}:{state:'proven',nodes:[{present:true,bound:false}],uniqueSetSha256:h,residual:'exactOneUnbound'},removal:{state:'notRequired',removed:[],terminal:'none',nativeCode:-1,rebootRequired:false},zeroProof:uninstall?{state:'completed',samples:[{zero:true},{zero:true},{zero:true}],windowMilliseconds:3,epochStable:true}:{state:'notAttempted',samples:[],windowMilliseconds:0,epochStable:false},trust:component(),package:component(),create:component(uninstall?'notRequired':'notAttempted','none'),marker:{state:'failed',code:reason==='conflict'?'conflict':'readbackFailure',ownership:'unknown'},compensation:{state:'notRequired',code:'none'},execution:{elapsedMilliseconds:10,hardCapMilliseconds:120000,resultFileState:'verified'}};
+  return {schemaVersion:1,operation,operationIdsSha256:[op],sourceHead:'3'.repeat(40),helperSha256:h,packageSha256:'4'.repeat(64),state:'failed',code:'ownershipReadFailed',stage:uninstall?'cleanupOwnership':'readOwnership',firstFailureFrozen:true,writtenUtc:'2026-08-08T00:00:00Z',migration:{state:'failed',source,packageOwnership:'unknown',certificateOwnership:'unknown'},ownershipAcquisition:{state:'none',source:'none'},ownershipReadFailure:{state:'failed',reason,count:1,source,resourceMutationCount:0},certificateStores:{state:'unavailable',entries:[],ownedCount:-1,ownershipSetSha256:z},failureDiagnostic:noFailureDiagnostic(),inventory:uninstall?{state:'proven',nodes:[],uniqueSetSha256:z,residual:'zero'}:{state:'proven',nodes:[{present:true,bound:false}],uniqueSetSha256:h,residual:'exactOneUnbound'},removal:{state:'notRequired',removed:[],terminal:'none',nativeCode:-1,rebootRequired:false},zeroProof:uninstall?{state:'completed',samples:[{zero:true},{zero:true},{zero:true}],windowMilliseconds:3,epochStable:true}:{state:'notAttempted',samples:[],windowMilliseconds:0,epochStable:false},trust:component(),package:component(),create:component(uninstall?'notRequired':'notAttempted','none'),marker:{state:'failed',code:reason==='conflict'?'conflict':'readbackFailure',ownership:'unknown'},compensation:{state:'notRequired',code:'none'},execution:{elapsedMilliseconds:10,hardCapMilliseconds:120000,resultFileState:'verified'}};
 };
 const pass=(name,v)=>{if(!validate(v)) throw new Error(`${name}: ${ajv.errorsText(validate.errors,{separator:' | '})}`);};
 const reject=(name,v)=>{if(validate(v)) throw new Error(`${name}: unexpectedly accepted`);};
@@ -118,7 +164,10 @@ for(const [name,v] of [
   ['v1-empty-uninstall-package-retained',v1EmptyUninstall(true)],
   ['v1-empty-uninstall-cert-and-package-absent',v1EmptyUninstall(false,false)],
   ['provision-ownership-read-failed',ownershipReadFailed()],
-  ['uninstall-ownership-read-failed',ownershipReadFailed('uninstall')]]){pass(name,v);positive++;}
+  ['uninstall-ownership-read-failed',ownershipReadFailed('uninstall')],
+  ['trust-failure-diagnostic',trustFailed()],
+  ['package-validation-failure-diagnostic',packageValidationFailed()],
+  ['package-install-failure-diagnostic',packageInstallFailed()]]){pass(name,v);positive++;}
 {
   const base=installed('addedByLigase','notOwned');
   const cases=[];
@@ -142,6 +191,12 @@ for(const [name,v] of [
   v=v1EmptyUninstall();v.certificateStores.ownedCount=1;cases.push(['v1-empty-count-drift',v]);
   v=v1EmptyUninstall();v.certificateStores.ownershipSetSha256=z;cases.push(['v1-empty-hash-drift',v]);
   v=v1EmptyUninstall();v.migration.source='v2';cases.push(['v1-empty-source-drift',v]);
+  v=clone(base);delete v.failureDiagnostic;cases.push(['diagnostic-missing',v]);
+  v=clone(base);v.failureDiagnostic=trustFailureDiagnostic();cases.push(['diagnostic-on-success',v]);
+  v=trustFailed();v.failureDiagnostic.owner='package';cases.push(['trust-diagnostic-owner-splice',v]);
+  v=trustFailed();v.failureDiagnostic.logPath='C:\\Windows\\INF\\setupapi.dev.log';cases.push(['trust-diagnostic-log-splice',v]);
+  v=packageValidationFailed();v.failureDiagnostic.category='trustChain';cases.push(['package-diagnostic-category-splice',v]);
+  v=packageValidationFailed();v.failureDiagnostic.nativeCodeHex='5';cases.push(['diagnostic-code-domain',v]);
   for(const [name,value] of cases){reject(name,value);negative++;}
 }
 if(process.argv[3]==='--emit-consumer-fixtures'){

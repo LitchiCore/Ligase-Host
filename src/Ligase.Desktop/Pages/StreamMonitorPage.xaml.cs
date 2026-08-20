@@ -1,12 +1,14 @@
 using System.Diagnostics;
 using Ligase.Host.Desktop.Services;
 using Ligase.Host.Desktop.ViewModels;
+using Ligase.Host.Core.Services;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media.Imaging;
 using Microsoft.UI.Xaml.Navigation;
+using System.Runtime.InteropServices.WindowsRuntime;
 
 namespace Ligase.Host.Desktop.Pages;
 
@@ -15,11 +17,14 @@ public sealed partial class StreamMonitorPage : Page
     private const int PreviewWidth = 800;
     private const int PreviewHeight = 450;
     private readonly IDesktopPreviewService _previewService;
+    private readonly IVirtualDisplayControlService _virtualDisplay;
     private readonly DispatcherTimer _timer;
+    private readonly PreviewFrameGate _frameGate = new();
     private readonly Stopwatch _frameClock = Stopwatch.StartNew();
     private bool _captureInProgress;
     private int _framesSinceSample;
     private long _lastSampleMilliseconds;
+    private WriteableBitmap? _previewBitmap;
 
     public StreamMonitorViewModel ViewModel { get; }
 
@@ -28,6 +33,7 @@ public sealed partial class StreamMonitorPage : Page
         var services = ((App)Application.Current).Services;
         ViewModel = services.GetRequiredService<StreamMonitorViewModel>();
         _previewService = services.GetRequiredService<IDesktopPreviewService>();
+        _virtualDisplay = services.GetRequiredService<IVirtualDisplayControlService>();
         InitializeComponent();
 
         _timer = new DispatcherTimer
@@ -37,10 +43,11 @@ public sealed partial class StreamMonitorPage : Page
         _timer.Tick += OnPreviewTick;
     }
 
-    protected override void OnNavigatedTo(NavigationEventArgs e)
+    protected override async void OnNavigatedTo(NavigationEventArgs e)
     {
         base.OnNavigatedTo(e);
         ViewModel.RefreshCoreStatus();
+        await RefreshPreviewSourcesAsync();
         PreviewToggle.IsChecked = true;
         StartPreview();
     }
@@ -64,6 +71,36 @@ public sealed partial class StreamMonitorPage : Page
         }
     }
 
+    private void OnPreviewSourceChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (!IsLoaded || PreviewSourcePicker.SelectedItem is not DesktopPreviewSource source)
+            return;
+        _frameGate.ChangeSource(source.DeviceName);
+        ViewModel.SetPreviewStarted(source.Label);
+        if (_timer.IsEnabled) _ = CaptureFrameAsync();
+    }
+
+    private async Task RefreshPreviewSourcesAsync()
+    {
+        var sources = _previewService.GetSources().ToList();
+        try
+        {
+            var state = await _virtualDisplay.GetStateAsync();
+            if (state.IsEnabled &&
+                sources.All(source => !source.DeviceName.Equals(
+                    state.DisplayName, StringComparison.OrdinalIgnoreCase)))
+                ViewModel.SetError("虚拟桌面已启用，但 Windows 显示枚举尚未返回该显示器。");
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            ViewModel.SetError($"虚拟桌面状态不可用 · {exception.Message}");
+        }
+
+        PreviewSourcePicker.ItemsSource = sources;
+        PreviewSourcePicker.SelectedItem =
+            sources.FirstOrDefault(source => source.Primary) ?? sources.FirstOrDefault();
+    }
+
     private async void OnEndStream(object sender, RoutedEventArgs e)
     {
         var dialog = new ContentDialog
@@ -82,7 +119,9 @@ public sealed partial class StreamMonitorPage : Page
     private void StartPreview()
     {
         if (_timer.IsEnabled) return;
-        ViewModel.SetPreviewStarted();
+        var source = PreviewSourcePicker.SelectedItem as DesktopPreviewSource;
+        _frameGate.Start(source?.DeviceName);
+        ViewModel.SetPreviewStarted(source?.Label ?? "主显示器");
         EmptyState.Visibility = Visibility.Visible;
         _lastSampleMilliseconds = _frameClock.ElapsedMilliseconds;
         _framesSinceSample = 0;
@@ -92,6 +131,7 @@ public sealed partial class StreamMonitorPage : Page
 
     private void StopPreview()
     {
+        _frameGate.Stop();
         _timer.Stop();
         ViewModel.SetPreviewStopped();
     }
@@ -102,16 +142,28 @@ public sealed partial class StreamMonitorPage : Page
     {
         if (_captureInProgress || !_timer.IsEnabled) return;
         _captureInProgress = true;
+        var lease = _frameGate.Capture();
+        var source = PreviewSourcePicker.SelectedItem as DesktopPreviewSource;
         try
         {
-            var frame = await Task.Run(() => _previewService.Capture(PreviewWidth, PreviewHeight));
-            if (!_timer.IsEnabled) return;
+            var frame = await Task.Run(() => _previewService.Capture(
+                PreviewWidth,
+                PreviewHeight,
+                source?.DeviceName));
+            if (!_timer.IsEnabled || !_frameGate.CanPublish(lease)) return;
 
-            var bitmap = new BitmapImage();
-            using var bitmapStream = CreateBitmapStream(frame);
-            using var randomAccessStream = bitmapStream.AsRandomAccessStream();
-            await bitmap.SetSourceAsync(randomAccessStream);
-            PreviewImage.Source = bitmap;
+            if (_previewBitmap is null || _previewBitmap.PixelWidth != frame.Width ||
+                _previewBitmap.PixelHeight != frame.Height)
+            {
+                _previewBitmap = new WriteableBitmap(frame.Width, frame.Height);
+                PreviewImage.Source = _previewBitmap;
+            }
+            using (var pixels = _previewBitmap.PixelBuffer.AsStream())
+            {
+                pixels.Position = 0;
+                await pixels.WriteAsync(frame.Pixels);
+            }
+            _previewBitmap.Invalidate();
             EmptyState.Visibility = Visibility.Collapsed;
 
             _framesSinceSample++;
@@ -124,7 +176,7 @@ public sealed partial class StreamMonitorPage : Page
                 _framesSinceSample = 0;
             }
 
-            ViewModel.SetFrame(frame, fps);
+            ViewModel.SetFrame(frame, fps, source?.Label ?? "主显示器");
         }
         catch (Exception exception)
         {
@@ -138,35 +190,4 @@ public sealed partial class StreamMonitorPage : Page
         }
     }
 
-    private static MemoryStream CreateBitmapStream(DesktopPreviewFrame frame)
-    {
-        const int fileHeaderSize = 14;
-        const int infoHeaderSize = 40;
-        var pixelDataSize = frame.Pixels.Length;
-        var stream = new MemoryStream(fileHeaderSize + infoHeaderSize + pixelDataSize);
-        using (var writer = new BinaryWriter(stream, System.Text.Encoding.UTF8, leaveOpen: true))
-        {
-            writer.Write((ushort)0x4D42);
-            writer.Write(fileHeaderSize + infoHeaderSize + pixelDataSize);
-            writer.Write((ushort)0);
-            writer.Write((ushort)0);
-            writer.Write(fileHeaderSize + infoHeaderSize);
-
-            writer.Write(infoHeaderSize);
-            writer.Write(frame.Width);
-            writer.Write(-frame.Height);
-            writer.Write((ushort)1);
-            writer.Write((ushort)32);
-            writer.Write(0);
-            writer.Write(pixelDataSize);
-            writer.Write(0);
-            writer.Write(0);
-            writer.Write(0);
-            writer.Write(0);
-            writer.Write(frame.Pixels);
-        }
-
-        stream.Position = 0;
-        return stream;
-    }
 }

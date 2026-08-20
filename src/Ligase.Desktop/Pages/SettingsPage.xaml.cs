@@ -14,7 +14,9 @@ public sealed partial class SettingsPage : Page
 {
     private readonly HostPreferencesService _preferences;
     private readonly PairingNotificationService _notifications;
+    private readonly IVirtualDisplayControlService _virtualDisplay;
     public FirewallSettingsViewModel FirewallViewModel { get; }
+    public DataRootIdentityState DataRootIdentity { get; }
     private bool _loading;
 
     public SettingsPage()
@@ -23,20 +25,54 @@ public sealed partial class SettingsPage : Page
             .Services.GetRequiredService<HostPreferencesService>();
         _notifications = ((App)Application.Current)
             .Services.GetRequiredService<PairingNotificationService>();
+        _virtualDisplay = ((App)Application.Current)
+            .Services.GetRequiredService<IVirtualDisplayControlService>();
         FirewallViewModel = ((App)Application.Current)
             .Services.GetRequiredService<FirewallSettingsViewModel>();
+        DataRootIdentity = ((App)Application.Current)
+            .Services.GetRequiredService<DataRootIdentityService>()
+            .Read();
         InitializeComponent();
     }
 
     protected override async void OnNavigatedTo(NavigationEventArgs e)
     {
         base.OnNavigatedTo(e);
+        _notifications.StatusChanged += OnNotificationStatusChanged;
         _loading = true;
         CloseToTrayToggle.IsOn = _preferences.Current.CloseToTray;
         StartWithWindowsToggle.IsOn = _preferences.Current.StartWithWindows;
         LanguageComboBox.SelectedIndex = (int)_preferences.Current.Language;
         _loading = false;
         await FirewallViewModel.LoadAsync();
+        await RefreshVirtualDisplayAsync();
+        NotificationStatusText.Text = _notifications.StatusText;
+    }
+
+    protected override void OnNavigatedFrom(NavigationEventArgs e)
+    {
+        _notifications.StatusChanged -= OnNotificationStatusChanged;
+        base.OnNavigatedFrom(e);
+    }
+
+    private void OnNotificationStatusChanged() =>
+        DispatcherQueue.TryEnqueue(() =>
+            NotificationStatusText.Text = _notifications.StatusText);
+
+    private async void OnRefreshVirtualDisplay(object sender, RoutedEventArgs e) =>
+        await RefreshVirtualDisplayAsync();
+
+    private async Task RefreshVirtualDisplayAsync()
+    {
+        try
+        {
+            VirtualDisplayStatusText.Text =
+                (await _virtualDisplay.GetStateAsync()).StatusText;
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            VirtualDisplayStatusText.Text = $"状态读取失败：{exception.Message}";
+        }
     }
 
     private async void OnCloseToTrayToggled(object sender, RoutedEventArgs e)
@@ -114,7 +150,8 @@ public sealed partial class SettingsPage : Page
         try
         {
             _notifications.ShowTest();
-            SetSaveStatus("测试通知已发送；点击通知应返回此窗口。");
+            NotificationStatusText.Text = _notifications.StatusText;
+            SetSaveStatus("测试通知已提交；请以通知中心读回状态为准。");
         }
         catch (Exception exception)
         {

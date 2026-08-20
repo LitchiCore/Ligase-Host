@@ -28,6 +28,7 @@ public sealed partial class OverviewPage : Page
             CoreValueText.Text = ViewModel.CoreValue;
             LibraryValueText.Text = ViewModel.LibraryValue;
             DeviceValueText.Text = ViewModel.DeviceValue;
+            VirtualDisplayValueText.Text = ViewModel.VirtualDisplayValue;
             RecentSummaryText.Text = ViewModel.RecentSummary;
             StatusMessageText.Text = ViewModel.StatusMessage;
             StatusMessageText.Visibility = ViewModel.HasStatusMessage

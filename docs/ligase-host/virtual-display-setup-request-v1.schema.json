@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "required": [
     "schemaVersion", "operation", "operationIdSha256", "createdUtc",
-    "sourceHead", "helperSha256", "packageSha256", "hardwareId",
+    "sourceHead", "helperSha256", "packageSha256", "installerToolSha256", "hardwareId",
     "hardCapMilliseconds", "settleMilliseconds", "trustSelected",
     "packageSelected", "createSelected", "legacyMarkerPolicy",
     "packageOwnershipPolicy", "transport"
@@ -19,6 +19,7 @@
     "sourceHead": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
     "helperSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
     "packageSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "installerToolSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
     "hardwareId": { "const": "ROOT\\SUDOMAKER\\SUDOVDA" },
     "hardCapMilliseconds": { "const": 120000 },
     "settleMilliseconds": { "type": "integer", "minimum": 500, "maximum": 60000 },

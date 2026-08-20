@@ -34,7 +34,8 @@ internal static class Program
         string ResultFileIdentitySha256);
     private sealed record SetupRequest(int SchemaVersion, string Operation,
         string OperationIdSha256, DateTimeOffset CreatedUtc, string SourceHead,
-        string HelperSha256, string PackageSha256, string HardwareId,
+        string HelperSha256, string PackageSha256, string InstallerToolSha256,
+        string HardwareId,
         int HardCapMilliseconds, int SettleMilliseconds, bool TrustSelected,
         bool PackageSelected, bool CreateSelected, string LegacyMarkerPolicy,
         string PackageOwnershipPolicy, SetupTransport Transport);
@@ -61,6 +62,10 @@ internal static class Program
 #if SETUP_VALIDATION
             if (args.Length == 2 && args[0] == "--validate-contract-fixture")
                 return RunContractFixture(args[1]);
+            if (args.Length == 2 && args[0] == "--validate-driver-state-machine")
+                return RunDriverStateMachineFixture(args[1]);
+            if (args.Length == 4 && args[0] == "--validate-package")
+                return RunPackageValidationFixture(args[1], args[2], args[3]);
 #endif
             return 10;
         }
@@ -75,6 +80,58 @@ internal static class Program
     }
 
 #if SETUP_VALIDATION
+    private static int RunPackageValidationFixture(string root,
+        string packageSha256, string installerToolSha256)
+    {
+        try
+        {
+            ValidatePackage(root, packageSha256, installerToolSha256);
+            Console.Out.Write("{\"state\":\"validated\",\"reasonCode\":\"none\"," +
+                "\"mutationCalls\":0}");
+        }
+        catch (PackageValidationException failure)
+        {
+            Console.Out.Write(JsonSerializer.Serialize(new {
+                state = "rejected", failure.ReasonCode, mutationCalls = 0
+            }, JsonOptions()));
+        }
+        return 0;
+    }
+
+    private static int RunDriverStateMachineFixture(string mode)
+    {
+        if (mode is not ("success" or "createExit" or "installExit" or
+                "installTimeout"))
+            return 42;
+        var calls = new List<string[]>();
+        var rollbackCount = 0;
+        var outcome = ExecuteDriverCommandSequence(arguments => {
+            calls.Add(arguments.ToArray());
+            if (mode == "createExit" && calls.Count == 1)
+                throw new ToolExecutionException("exitCode", 17);
+            if (mode == "installExit" && calls.Count == 2)
+                throw new ToolExecutionException("exitCode", 23);
+            if (mode == "installTimeout" && calls.Count == 2)
+                throw new ToolExecutionException("timeout");
+        }, () => { rollbackCount++; return true; });
+        Console.Out.Write(JsonSerializer.Serialize(new {
+            schemaVersion = 1,
+            mode,
+            calls,
+            outcome.CreateCompleted,
+            outcome.InstallCompleted,
+            outcome.RollbackAttempted,
+            outcome.RollbackClosed,
+            outcome.Stage,
+            failureReason = outcome.Failure is ToolExecutionException tool ?
+                tool.Reason : "none",
+            failureCode = outcome.Failure is ToolExecutionException value ?
+                value.NativeCode : 0,
+            rollbackCount
+        }, JsonOptions()));
+        return 0;
+    }
+
     private static int RunCallerFixture(string requestValue, string resultValue,
         string mode)
     {
@@ -106,6 +163,7 @@ internal static class Program
                 "\"sourceHead\":\"" + new string('0', 40) + "\"," +
                 "\"helperSha256\":\"" + new string('0', 64) + "\"," +
                 "\"packageSha256\":\"" + new string('0', 64) + "\"," +
+                "\"installerToolSha256\":\"" + new string('0', 64) + "\"," +
                 "\"state\":\"completed\",\"code\":\"installed\"}");
             stream.Write(bytes); stream.Flush(true); return 0;
         }
@@ -243,7 +301,7 @@ internal static class Program
         });
         var expected = new[] { "schemaVersion", "operation",
             "operationIdSha256", "createdUtc", "sourceHead", "helperSha256",
-            "packageSha256", "hardwareId", "hardCapMilliseconds",
+            "packageSha256", "installerToolSha256", "hardwareId", "hardCapMilliseconds",
             "settleMilliseconds", "trustSelected", "packageSelected",
             "createSelected", "legacyMarkerPolicy",
             "packageOwnershipPolicy", "transport" };
@@ -256,6 +314,7 @@ internal static class Program
             !IsLowerHex(request.SourceHead, 40) ||
             !IsLowerHex(request.HelperSha256, 64) ||
             !IsLowerHex(request.PackageSha256, 64) ||
+            !IsLowerHex(request.InstallerToolSha256, 64) ||
             request.HardwareId != TargetHardwareId ||
             request.HardCapMilliseconds != 120000 ||
             request.SettleMilliseconds is < 500 or > 60000 ||
@@ -352,6 +411,42 @@ internal static class Program
                     healthyMarker.AcquisitionOperationIdSha256 : null,
                 certificateStores: CertificateStores(
                     healthyMarker.CertificateStores));
+        var driverRoot = Path.Combine(AppContext.BaseDirectory,
+            "Drivers", "sudovda");
+        try
+        {
+            ValidatePackage(driverRoot, request.PackageSha256,
+                request.InstallerToolSha256);
+            package = Component("verified", "validated");
+        }
+        catch (Exception failure)
+        {
+            package = Component("failed", "nativeFailure");
+            return SetupResultDocument(request, clock, "failed", "packageFailed",
+                "validatePackage", true, Inventory(devices),
+                Removal("notRequired", removed, "none", -1, false), zero,
+                trust, package, create, marker,
+                Compensation("notRequired", "none"),
+                failureDiagnostic: FailureDiagnostic(failure, "package"));
+        }
+        CertificateStoreAuthority[] trustAuthorities;
+        try
+        {
+            var trustResult = EnsureTrust(driverRoot, priorMarker);
+            trust = trustResult.Component;
+            trustAuthorities = trustResult.CertificateStores;
+            certificateStores = CertificateStores(trustAuthorities);
+        }
+        catch (Exception failure)
+        {
+            trust = Component("failed", "nativeFailure");
+            return SetupResultDocument(request, clock, "failed", "trustFailed",
+                "trustPackage", true, Inventory(devices),
+                Removal("notRequired", removed, "none", -1, false), zero,
+                trust, package, create, marker, Compensation("failed", "trust"),
+                certificateStores: certificateStores,
+                failureDiagnostic: FailureDiagnostic(failure, "trust"));
+        }
         while (devices.Count != 0)
         {
             EnsureBudget(clock, request.HardCapMilliseconds);
@@ -361,29 +456,78 @@ internal static class Program
             try { native = RemoveDevice(selected.InstanceId, out reboot); }
             catch { native = Marshal.GetLastWin32Error(); reboot = false; }
             if (native != 0)
+            {
+                var trustRollback = RollbackTrustMutation(driverRoot,
+                    trustAuthorities);
+                certificateStores = CertificateStores(
+                    trustRollback.CertificateStores);
                 return SetupResultDocument(request, clock, "failed", "removeNativeFailed",
                     "remove", true, Inventory(devices),
                     Removal("failed", removed, "nativeFailure",
                         native < 1 ? 1 : native, false), zero, trust, package,
-                    create, marker, compensation);
+                    create, marker, Compensation(trustRollback.Closed ?
+                        "completed" : "failed", "trust"),
+                    Migration(trustRollback.Closed ? "rollbackCompleted" :
+                        "rollbackFailed", "none", "notOwned",
+                        ReadCertificateOwnership(certificateStores)),
+                    OwnershipAcquisitionNone(), certificateStores:
+                    certificateStores);
+            }
             if (reboot)
+            {
+                var trustRollback = RollbackTrustMutation(driverRoot,
+                    trustAuthorities);
+                certificateStores = CertificateStores(
+                    trustRollback.CertificateStores);
                 return SetupResultDocument(request, clock, "failed", "removeRebootRequired",
                     "remove", true, Inventory(devices),
                     Removal("failed", removed, "rebootRequired", 0, true),
-                    zero, trust, package, create, marker, compensation);
+                    zero, trust, package, create, marker,
+                    Compensation(trustRollback.Closed ? "completed" : "failed",
+                        "trust"), Migration(trustRollback.Closed ?
+                        "rollbackCompleted" : "rollbackFailed", "none", "notOwned",
+                        ReadCertificateOwnership(certificateStores)),
+                    OwnershipAcquisitionNone(), certificateStores:
+                    certificateStores);
+            }
             List<Device> after;
             try { after = EnumerateMatches(EnumerateInstanceIds(
                 DigcfAllClasses | DigcfPresent)); }
-            catch { return SetupResultDocument(request, clock, "failed",
-                "removeReadbackFailed", "inventoryAfterRemove", true,
-                UnknownInventory(), Removal("failed", removed,
-                    "readbackFailure", 0, false), zero, trust, package,
-                create, marker, compensation); }
+            catch
+            {
+                var trustRollback = RollbackTrustMutation(driverRoot,
+                    trustAuthorities);
+                certificateStores = CertificateStores(
+                    trustRollback.CertificateStores);
+                return SetupResultDocument(request, clock, "failed",
+                    "removeReadbackFailed", "inventoryAfterRemove", true,
+                    UnknownInventory(), Removal("failed", removed,
+                        "readbackFailure", 0, false), zero, trust, package,
+                    create, marker, Compensation(trustRollback.Closed ?
+                        "completed" : "failed", "trust"),
+                    Migration(trustRollback.Closed ? "rollbackCompleted" :
+                        "rollbackFailed", "none", "notOwned",
+                        ReadCertificateOwnership(certificateStores)),
+                    OwnershipAcquisitionNone(), certificateStores:
+                    certificateStores);
+            }
             if (after.Count >= devices.Count)
+            {
+                var trustRollback = RollbackTrustMutation(driverRoot,
+                    trustAuthorities);
+                certificateStores = CertificateStores(
+                    trustRollback.CertificateStores);
                 return SetupResultDocument(request, clock, "failed", "removeNoProgress",
                     "inventoryAfterRemove", true, Inventory(after),
                     Removal("failed", removed, "noProgress", 0, false), zero,
-                    trust, package, create, marker, compensation);
+                    trust, package, create, marker,
+                    Compensation(trustRollback.Closed ? "completed" : "failed",
+                        "trust"), Migration(trustRollback.Closed ?
+                        "rollbackCompleted" : "rollbackFailed", "none", "notOwned",
+                        ReadCertificateOwnership(certificateStores)),
+                    OwnershipAcquisitionNone(), certificateStores:
+                    certificateStores);
+            }
             removed.Add(new Dictionary<string, object> {
                 ["nativeCode"] = 0, ["rebootRequired"] = false,
                 ["strictDecrease"] = true });
@@ -400,6 +544,11 @@ internal static class Program
                 DigcfAllClasses | DigcfPresent));
             var currentEpoch = InventoryEpoch(sample);
             if (sample.Count != 0 || (epoch is not null && epoch != currentEpoch))
+            {
+                var trustRollback = RollbackTrustMutation(driverRoot,
+                    trustAuthorities);
+                certificateStores = CertificateStores(
+                    trustRollback.CertificateStores);
                 return SetupResultDocument(request, clock, "failed", "zeroProofFailed",
                     "stableZero", true, Inventory(sample),
                     Removal(removed.Count == 0 ? "notRequired" : "completed",
@@ -407,7 +556,14 @@ internal static class Program
                         removed.Count == 0 ? -1 : 0, false),
                     ZeroProof("failed", samples, checked((int)(
                         clock.ElapsedMilliseconds - zeroStart)), false),
-                    trust, package, create, marker, compensation);
+                    trust, package, create, marker,
+                    Compensation(trustRollback.Closed ? "completed" : "failed",
+                        "trust"), Migration(trustRollback.Closed ?
+                        "rollbackCompleted" : "rollbackFailed", "none", "notOwned",
+                        ReadCertificateOwnership(certificateStores)),
+                    OwnershipAcquisitionNone(), certificateStores:
+                    certificateStores);
+            }
             epoch ??= currentEpoch;
             samples++;
         }
@@ -417,39 +573,58 @@ internal static class Program
         var successfulRemoval = Removal(removed.Count == 0 ? "notRequired" :
             "completed", removed, removed.Count == 0 ? "none" : "completed",
             removed.Count == 0 ? -1 : 0, false);
-        var driverRoot = Path.Combine(AppContext.BaseDirectory,
-            "Drivers", "sudovda");
-        try { var trustResult = EnsureTrust(driverRoot, priorMarker);
-            trust = trustResult.Component;
-            certificateStores = CertificateStores(
-                trustResult.CertificateStores); }
-        catch { trust = Component("failed", "nativeFailure"); return SetupResultDocument(
-            request, clock, "failed", "trustFailed", "trustPackage", true,
-            Inventory(Array.Empty<Device>()), successfulRemoval, zero, trust,
-            package, create, marker, Compensation("failed", "trust"),
-            certificateStores: certificateStores); }
-        try { package = EnsurePackage(driverRoot, request.PackageSha256); }
-        catch { package = Component("failed", "nativeFailure"); return SetupResultDocument(
-            request, clock, "failed", "packageFailed", "trustPackage", true,
-            Inventory(Array.Empty<Device>()), successfulRemoval, zero, trust,
-            package, create, marker, Compensation("failed", "multiple"),
-            certificateStores: certificateStores); }
         var pendingAuthority = GetProvisionAuthority(priorMarker, package,
             "notAttempted", false,
             ReadCertificateOwnership(certificateStores));
-        try { RunPinnedTool(Path.Combine(driverRoot, "nefconc.exe"), new[] {
-            "--create-device-node", "--class-name", "Display", "--class-guid",
-            "4D36E968-E325-11CE-BFC1-08002BE10318", "--hardware-id",
-            TargetHardwareId.ToLowerInvariant() }, request.HardCapMilliseconds -
-            checked((int)clock.ElapsedMilliseconds));
-            create = Component("completed", "created"); }
-        catch { create = Component("failed", "nativeFailure"); return SetupResultDocument(
-            request, clock, "failed", "createFailed", "create", true,
-            Inventory(Array.Empty<Device>()), successfulRemoval, zero, trust,
-            package, create, marker, Compensation("failed", "multiple"),
-            pendingAuthority.Migration, pendingAuthority.Acquisition,
-            pendingAuthority.HistoricalOperationIdSha256,
-            certificateStores: certificateStores); }
+        var publishedInfBefore = TryGetPublishedInf(
+            Path.Combine(driverRoot, "SudoVDA.inf"));
+        ProvisionRollback? rollback = null;
+        var toolPath = Path.Combine(driverRoot, "nefconc.exe");
+        var commands = ExecuteDriverCommandSequence(
+            arguments => RunPinnedTool(toolPath, arguments,
+                request.HardCapMilliseconds - checked((int)clock.ElapsedMilliseconds),
+                request.InstallerToolSha256, driverRoot),
+            () => {
+                rollback = RollbackProvisionMutation(driverRoot,
+                    publishedInfBefore, trustAuthorities, request, clock);
+                return rollback.Closed;
+            });
+        if (!commands.CreateCompleted)
+        {
+            create = Component("failed", "nativeFailure");
+            rollback ??= new ProvisionRollback(UnknownInventory(), false,
+                false, false, trustAuthorities);
+            certificateStores = CertificateStores(rollback.CertificateStores);
+            return SetupResultDocument(request, clock, "failed", "createFailed",
+                "create", true, rollback.Inventory,
+                successfulRemoval, zero, trust, package, create, marker,
+                Compensation(rollback.Closed ? "completed" : "failed", "multiple"),
+                Migration(rollback.Closed ? "rollbackCompleted" : "rollbackFailed",
+                    "none", "notOwned",
+                    ReadCertificateOwnership(certificateStores)),
+                OwnershipAcquisitionNone(), certificateStores: certificateStores,
+                failureDiagnostic: FailureDiagnostic(commands.Failure!, "create"));
+        }
+        create = Component("completed", "created");
+        if (!commands.InstallCompleted)
+        {
+            package = Component("failed", "nativeFailure");
+            rollback ??= new ProvisionRollback(UnknownInventory(), false,
+                false, false, trustAuthorities);
+            certificateStores = CertificateStores(rollback.CertificateStores);
+            return SetupResultDocument(request, clock, "failed", "packageFailed",
+                "installDriver", true, rollback.Inventory,
+                successfulRemoval, zero, trust, package, create, marker,
+                Compensation(rollback.Closed ? "completed" : "failed",
+                    "multiple"),
+                Migration(rollback.Closed ? "rollbackCompleted" : "rollbackFailed",
+                    "none", "notOwned",
+                    ReadCertificateOwnership(certificateStores)),
+                OwnershipAcquisitionNone(),
+                certificateStores: certificateStores,
+                failureDiagnostic: FailureDiagnostic(commands.Failure!, "package"));
+        }
+        package = Component("completed", "installed");
         List<Device> final;
         try { final = EnumerateMatches(EnumerateInstanceIds(
             DigcfAllClasses | DigcfPresent)); }
@@ -512,6 +687,37 @@ internal static class Program
             : base("ownershipReadFailed")
         { Reason = reason; MarkerSource = source; }
     }
+    private sealed class ToolExecutionException : Exception
+    {
+        public string Reason { get; }
+        public int NativeCode { get; }
+        public ToolExecutionException(string reason, int nativeCode = 0)
+            : base(reason)
+        { Reason = reason; NativeCode = nativeCode; }
+    }
+    private sealed class PackageValidationException : Exception
+    {
+        public string ReasonCode { get; }
+        public PackageValidationException(string reasonCode)
+            : base(reasonCode)
+        { ReasonCode = reasonCode; }
+    }
+    private sealed record ProvisionRollback(object Inventory, bool NodeClosed,
+        bool PackageClosed, bool TrustClosed,
+        CertificateStoreAuthority[] CertificateStores)
+    {
+        public bool Closed => NodeClosed && PackageClosed && TrustClosed;
+    }
+    private sealed record DriverCommandOutcome(bool CreateCompleted,
+        bool InstallCompleted, bool RollbackAttempted, bool RollbackClosed,
+        string Stage, Exception? Failure);
+
+    private static readonly string[] CreateDriverArguments = {
+        "--create-device-node", "--class-name", "Display", "--class-guid",
+        "4D36E968-E325-11CE-BFC1-08002BE10318", "--hardware-id",
+        "root\\sudomaker\\sudovda" };
+    private static readonly string[] InstallDriverArguments = {
+        "--install-driver", "--inf-path", "SudoVDA.inf" };
     private sealed record ProvisionAuthority(object Migration,
         object Acquisition, string? HistoricalOperationIdSha256);
 
@@ -722,7 +928,8 @@ internal static class Program
         object? migration = null, object? ownershipAcquisition = null,
         string? historicalOperationIdSha256 = null,
         object? ownershipReadFailure = null,
-        object? certificateStores = null)
+        object? certificateStores = null,
+        object? failureDiagnostic = null)
     {
         var packageState = ReadString(package, "state");
         var packageCode = ReadString(package, "code");
@@ -745,6 +952,7 @@ internal static class Program
         certificateStores ??= ReadString(migration, "certificateOwnership") ==
             "unknown" ? CertificateStoresUnavailable() :
             CertificateStoresNotAttempted();
+        failureDiagnostic ??= FailureDiagnosticNone();
         var operationIds = historicalOperationIdSha256 is null ?
             new[] { request.OperationIdSha256 } :
             new[] { request.OperationIdSha256, historicalOperationIdSha256 };
@@ -764,6 +972,7 @@ internal static class Program
         ["migration"] = migration,
         ["ownershipAcquisition"] = ownershipAcquisition,
         ["certificateStores"] = certificateStores,
+        ["failureDiagnostic"] = failureDiagnostic,
         ["inventory"] = inventory,
         ["removal"] = removal,
         ["zeroProof"] = zeroProof,
@@ -949,6 +1158,82 @@ internal static class Program
     private static Dictionary<string, object> Compensation(string state,
         string code) => new() { ["state"] = state, ["code"] = code };
 
+    private static DriverCommandOutcome ExecuteDriverCommandSequence(
+        Action<IReadOnlyList<string>> invoke, Func<bool> rollback)
+    {
+        try { invoke(CreateDriverArguments); }
+        catch (Exception failure)
+        {
+            bool closed;
+            try { closed = rollback(); }
+            catch { closed = false; }
+            return new(false, false, true, closed, "create", failure);
+        }
+        try { invoke(InstallDriverArguments); }
+        catch (Exception failure)
+        {
+            bool closed;
+            try { closed = rollback(); }
+            catch { closed = false; }
+            return new(true, false, true, closed, "installDriver", failure);
+        }
+        return new(true, true, false, false, "completed", null);
+    }
+
+    private static Dictionary<string, object?> FailureDiagnosticNone() => new()
+    {
+        ["state"] = "none",
+        ["owner"] = "none",
+        ["category"] = "none",
+        ["reasonCode"] = "none",
+        ["nativeCode"] = 0,
+        ["nativeCodeHex"] = "none",
+        ["logPath"] = null,
+        ["logPathState"] = "notApplicable"
+    };
+
+    private static Dictionary<string, object?> FailureDiagnostic(
+        Exception failure, string owner)
+    {
+        var nativeCode = failure switch {
+            Win32Exception win32 => win32.NativeErrorCode,
+            ToolExecutionException tool => tool.NativeCode,
+            _ => 0 };
+        var logPath = owner is "package" or "create" ? Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.Windows),
+            "INF", "setupapi.dev.log") : null;
+        string logState;
+        if (logPath is null)
+            logState = "notApplicable";
+        else
+        {
+            try { logState = File.Exists(logPath) ? "available" : "missing"; }
+            catch { logState = "unavailable"; }
+        }
+        return new Dictionary<string, object?>
+        {
+            ["state"] = "captured",
+            ["owner"] = owner,
+            ["category"] = owner switch {
+                "package" when failure is PackageValidationException =>
+                    "packageValidation",
+                "package" => failure is ToolExecutionException ?
+                    "nativeTool" : "setupApi",
+                "create" => "nativeTool",
+                _ => "trustChain" },
+            ["reasonCode"] = failure switch {
+                PackageValidationException validation => validation.ReasonCode,
+                ToolExecutionException tool => tool.Reason,
+                Win32Exception => "win32Failure",
+                _ => "unexpectedFailure" },
+            ["nativeCode"] = nativeCode,
+            ["nativeCodeHex"] = nativeCode == 0 ? "none" :
+                $"0x{unchecked((uint)nativeCode):X8}",
+            ["logPath"] = logPath,
+            ["logPathState"] = logState
+        };
+    }
+
     private static void EnsureBudget(Stopwatch clock, int hardCap)
     {
         if (clock.ElapsedMilliseconds >= hardCap)
@@ -1016,36 +1301,46 @@ internal static class Program
             added ? "added" : "alreadyOwned"), authorities.ToArray());
     }
 
-    private static Dictionary<string, object> EnsurePackage(string root,
-        string packageSha256)
+    private static void ValidatePackage(string root, string packageSha256,
+        string installerToolSha256)
     {
-        var inf = Path.Combine(root, "SudoVDA.inf");
+        var installer = Path.Combine(root, "nefconc.exe");
+        FileAttributes installerAttributes;
+        try { installerAttributes = File.GetAttributes(installer); }
+        catch (Exception failure) when (failure is FileNotFoundException or
+                DirectoryNotFoundException)
+        { throw new PackageValidationException("installerToolMissing"); }
+        if ((installerAttributes & FileAttributes.ReparsePoint) != 0)
+            throw new PackageValidationException("installerToolReparse");
+        if ((installerAttributes & FileAttributes.Directory) != 0 ||
+            !File.Exists(installer))
+            throw new PackageValidationException("installerToolMissing");
+        if (!StringComparer.Ordinal.Equals(
+                Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(installer)))
+                    .ToLowerInvariant(), installerToolSha256))
+            throw new PackageValidationException("installerToolHashMismatch");
+        // The sequence is a versioned part of the aggregate-hash contract.
+        // Keep it explicit and identical to Build-LigaseInstaller.ps1.
         var packageBytes = new[] { "SudoVDA.dll", "SudoVDA.inf",
                 "sudovda.cat", "sudovda.cer" }
-            .OrderBy(name => name, StringComparer.Ordinal)
-            .SelectMany(name => File.ReadAllBytes(Path.Combine(root, name)))
+            .SelectMany(name => {
+                var path = Path.Combine(root, name);
+                FileAttributes attributes;
+                try { attributes = File.GetAttributes(path); }
+                catch (Exception failure) when (failure is FileNotFoundException or
+                        DirectoryNotFoundException)
+                { throw new PackageValidationException("packageFileMissing"); }
+                if ((attributes & FileAttributes.ReparsePoint) != 0)
+                    throw new PackageValidationException("packageFileReparse");
+                if ((attributes & FileAttributes.Directory) != 0 ||
+                    !File.Exists(path))
+                    throw new PackageValidationException("packageFileMissing");
+                return File.ReadAllBytes(path);
+            })
             .ToArray();
         if (!StringComparer.Ordinal.Equals(Convert.ToHexString(
                 SHA256.HashData(packageBytes)).ToLowerInvariant(), packageSha256))
-            throw new InvalidDataException();
-        var destination = new StringBuilder(260);
-        if (SetupCopyOEMInfW(inf, null, 1, SpCopyNoOverwrite,
-                destination, destination.Capacity, out _, IntPtr.Zero))
-        {
-            if (destination.Length == 0 ||
-                !File.Exists(Path.Combine(Environment.GetFolderPath(
-                    Environment.SpecialFolder.Windows), "INF",
-                    Path.GetFileName(destination.ToString()))))
-                throw new InvalidDataException();
-            return Component("completed", "installed");
-        }
-        if (Marshal.GetLastWin32Error() == ErrorFileExists &&
-            destination.Length != 0 &&
-            File.Exists(Path.Combine(Environment.GetFolderPath(
-                Environment.SpecialFolder.Windows), "INF",
-                Path.GetFileName(destination.ToString()))))
-            return Component("verified", "alreadyOwned");
-        throw new Win32Exception(Marshal.GetLastWin32Error());
+            throw new PackageValidationException("packageHashMismatch");
     }
 
     private static bool AreMarkerCertificatesPresent(OwnershipMarker marker)
@@ -1067,24 +1362,174 @@ internal static class Program
         return true;
     }
 
+    private static string? TryGetPublishedInf(string sourceInf)
+    {
+        var value = new StringBuilder(260);
+        if (SetupGetInfPublishedNameW(sourceInf, value, value.Capacity,
+                out var required))
+        {
+            var name = Path.GetFileName(value.ToString());
+            if (string.IsNullOrWhiteSpace(name) ||
+                !name.StartsWith("oem", StringComparison.OrdinalIgnoreCase) ||
+                !name.EndsWith(".inf", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("publishedInfInvalid");
+            return name;
+        }
+        var error = Marshal.GetLastWin32Error();
+        if (error is ErrorNotFound or 2)
+            return null;
+        if (required > value.Capacity)
+        {
+            value = new StringBuilder(checked((int)required));
+            if (SetupGetInfPublishedNameW(sourceInf, value, value.Capacity,
+                    out _))
+                return Path.GetFileName(value.ToString());
+            error = Marshal.GetLastWin32Error();
+        }
+        throw new Win32Exception(error);
+    }
+
+    private static ProvisionRollback RollbackProvisionMutation(string driverRoot,
+        string? publishedInfBefore, CertificateStoreAuthority[] authorities,
+        SetupRequest request, Stopwatch clock)
+    {
+        var nodeClosed = false;
+        var packageClosed = false;
+        var trustRollback = new TrustRollback(false, authorities);
+        object inventory;
+        try
+        {
+            var matches = EnumerateMatches(EnumerateInstanceIds(
+                DigcfAllClasses | DigcfPresent));
+            foreach (var device in matches)
+            {
+                EnsureBudget(clock, request.HardCapMilliseconds);
+                var native = RemoveDevice(device.InstanceId, out var reboot);
+                if (native != 0 || reboot)
+                    throw new Win32Exception(native == 0 ? 1 : native);
+            }
+            var current = EnumerateMatches(EnumerateInstanceIds(
+                DigcfAllClasses | DigcfPresent)).ToArray();
+            inventory = Inventory(current);
+            nodeClosed = current.Length == 0;
+        }
+        catch
+        {
+            try { inventory = Inventory(EnumerateMatches(EnumerateInstanceIds(
+                DigcfAllClasses | DigcfPresent)).ToArray()); }
+            catch { inventory = UnknownInventory(); }
+        }
+        try
+        {
+            var publishedAfter = TryGetPublishedInf(Path.Combine(driverRoot,
+                "SudoVDA.inf"));
+            if (publishedAfter is null || StringComparer.OrdinalIgnoreCase.Equals(
+                    publishedAfter, publishedInfBefore))
+                packageClosed = true;
+            else
+            {
+                RunPinnedTool(Path.Combine(Environment.GetFolderPath(
+                    Environment.SpecialFolder.System), "pnputil.exe"),
+                    new[] { "/delete-driver", publishedAfter, "/uninstall" },
+                    request.HardCapMilliseconds - checked((int)clock.ElapsedMilliseconds));
+                packageClosed = TryGetPublishedInf(Path.Combine(driverRoot,
+                    "SudoVDA.inf")) is null;
+            }
+        }
+        catch { packageClosed = false; }
+        trustRollback = RollbackTrustMutation(driverRoot, authorities);
+        return new ProvisionRollback(inventory, nodeClosed, packageClosed,
+            trustRollback.Closed, trustRollback.CertificateStores);
+    }
+
+    private sealed record TrustRollback(bool Closed,
+        CertificateStoreAuthority[] CertificateStores);
+
+    private static TrustRollback RollbackTrustMutation(string driverRoot,
+        CertificateStoreAuthority[] authorities)
+    {
+        var output = new List<CertificateStoreAuthority>();
+        var closed = true;
+        string thumbprint;
+        try
+        {
+            using var certificate = new X509Certificate2(Path.Combine(driverRoot,
+                "sudovda.cer"));
+            thumbprint = certificate.Thumbprint;
+        }
+        catch
+        {
+            return new TrustRollback(false, authorities.Select(value =>
+                value.Ownership == "addedByLigase" &&
+                value.AuthoritySource == "currentOperation" ?
+                    value with { CleanupState = "failed" } :
+                    value with { CleanupState = "retained" }).ToArray());
+        }
+        foreach (var authority in authorities)
+        {
+            if (authority.Ownership != "addedByLigase" ||
+                authority.AuthoritySource != "currentOperation")
+            {
+                output.Add(authority with { CleanupState = "retained" });
+                continue;
+            }
+            try
+            {
+                var storeName = authority.Store switch {
+                    "LocalMachine\\Root" => StoreName.Root,
+                    "LocalMachine\\TrustedPublisher" => StoreName.TrustedPublisher,
+                    _ => throw new InvalidDataException() };
+                using var store = new X509Store(storeName, StoreLocation.LocalMachine);
+                store.Open(OpenFlags.ReadWrite);
+                foreach (var match in store.Certificates.Find(
+                    X509FindType.FindByThumbprint, thumbprint, false))
+                    store.Remove(match);
+                var absent = store.Certificates.Find(
+                    X509FindType.FindByThumbprint, thumbprint, false).Count == 0;
+                output.Add(authority with { CleanupState = absent ?
+                    "removed" : "failed", Readback = absent ? "absent" : "present" });
+                closed &= absent;
+            }
+            catch
+            {
+                output.Add(authority with { CleanupState = "failed" });
+                closed = false;
+            }
+        }
+        return new TrustRollback(closed, output.ToArray());
+    }
+
     private static void RunPinnedTool(string path, IEnumerable<string> args,
-        int timeoutMilliseconds)
+        int timeoutMilliseconds, string? expectedSha256 = null,
+        string? workingDirectory = null)
     {
         if (timeoutMilliseconds < 1 || !File.Exists(path) ||
             (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
             throw new InvalidDataException();
+        if (expectedSha256 is not null && !StringComparer.Ordinal.Equals(
+                Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path)))
+                    .ToLowerInvariant(), expectedSha256))
+            throw new InvalidDataException("installerToolPinMismatch");
         using var process = new Process { StartInfo = new ProcessStartInfo
         {
             FileName = path, UseShellExecute = false, CreateNoWindow = true,
-            RedirectStandardOutput = false, RedirectStandardError = false
+            RedirectStandardOutput = false, RedirectStandardError = false,
+            WorkingDirectory = workingDirectory ?? Path.GetDirectoryName(path)!
         } };
         foreach (var arg in args) process.StartInfo.ArgumentList.Add(arg);
-        if (!process.Start() || !process.WaitForExit(timeoutMilliseconds) ||
-            process.ExitCode != 0)
+        if (!process.Start())
+            throw new ToolExecutionException("startFailed");
+        if (!process.WaitForExit(timeoutMilliseconds))
         {
             try { process.Kill(true); process.WaitForExit(1000); } catch { }
-            throw new InvalidOperationException();
+            throw new ToolExecutionException("timeout");
         }
+        if (process.ExitCode != 0)
+            throw new ToolExecutionException("exitCode", process.ExitCode);
+        if (expectedSha256 is not null && !StringComparer.Ordinal.Equals(
+                Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path)))
+                    .ToLowerInvariant(), expectedSha256))
+            throw new ToolExecutionException("identityDrift");
     }
 
     private static string GetMarkerPath() => Path.Combine(
@@ -1721,11 +2166,9 @@ internal static class Program
     [DllImport("setupapi.dll", SetLastError = true)]
     private static extern bool SetupDiDestroyDeviceInfoList(IntPtr set);
     [DllImport("setupapi.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    private static extern bool SetupCopyOEMInfW(string sourceInfFileName,
-        string? oemSourceMediaLocation, uint oemSourceMediaType,
-        uint copyStyle, StringBuilder destinationInfFileName,
-        int destinationInfFileNameSize, out int requiredSize,
-        IntPtr destinationInfFileNameComponent);
+    private static extern bool SetupGetInfPublishedNameW(string driverPath,
+        StringBuilder publishedInfPath, int publishedInfPathSize,
+        out uint requiredSize);
     [DllImport("newdev.dll", SetLastError = true)]
     private static extern bool DiUninstallDevice(IntPtr hwndParent,
         IntPtr deviceInfoSet, ref SpDevinfoData deviceInfoData, uint flags,

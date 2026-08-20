@@ -20,7 +20,11 @@ if (Test-Path -LiteralPath $root) {
   New-Item -ItemType Directory -Path $root | Out-Null
 }
 $sourceRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot "../../.."))
-if (-not (Test-Path -LiteralPath (Join-Path $sourceRoot ".git") -PathType Container)) {
+if (-not (Test-Path -LiteralPath (Join-Path $sourceRoot ".git"))) {
+  throw "sourceRootInvalid"
+}
+$sourceHead = (& git -C $sourceRoot rev-parse HEAD).Trim()
+if ($LASTEXITCODE -ne 0 -or $sourceHead -notmatch '^[0-9a-f]{40}$') {
   throw "sourceRootInvalid"
 }
 
@@ -338,6 +342,127 @@ $helper = Join-Path $validationHelperRoot "Ligase.VirtualDisplay.Setup.exe"
 if (-not (Test-Path -LiteralPath $helper -PathType Leaf)) {
   throw "setupValidationHelperMissing"
 }
+$driverStateCases = @(
+  [pscustomobject]@{ mode="success"; calls=2; create=$true; install=$true; rollback=0; reason="none"; code=0 },
+  [pscustomobject]@{ mode="createExit"; calls=1; create=$false; install=$false; rollback=1; reason="exitCode"; code=17 },
+  [pscustomobject]@{ mode="installExit"; calls=2; create=$true; install=$false; rollback=1; reason="exitCode"; code=23 },
+  [pscustomobject]@{ mode="installTimeout"; calls=2; create=$true; install=$false; rollback=1; reason="timeout"; code=0 })
+foreach ($case in $driverStateCases) {
+  $run = Invoke-Bounded $helper @(
+    "--validate-driver-state-machine", $case.mode) @{} 10000
+  if ($run.exitCode -ne 0 -or $run.stderr.Length -ne 0) {
+    throw "driverStateMachineFixtureFailed:$($case.mode)"
+  }
+  $value = $run.stdout | ConvertFrom-Json
+  if (@($value.calls).Count -ne $case.calls -or
+      [bool]$value.createCompleted -ne $case.create -or
+      [bool]$value.installCompleted -ne $case.install -or
+      [int]$value.rollbackCount -ne $case.rollback -or
+      [bool]$value.rollbackAttempted -ne ($case.rollback -eq 1) -or
+      ([bool]$value.rollbackClosed -ne ($case.rollback -eq 1)) -or
+      [string]$value.failureReason -cne $case.reason -or
+      [int]$value.failureCode -ne $case.code) {
+    throw "driverStateMachineProjectionInvalid:$($case.mode)"
+  }
+  if ($case.calls -ge 1 -and
+      ((@($value.calls[0]) -join "`n") -cne (@(
+        "--create-device-node", "--class-name", "Display", "--class-guid",
+        "4D36E968-E325-11CE-BFC1-08002BE10318", "--hardware-id",
+        "root\sudomaker\sudovda") -join "`n"))) {
+    throw "driverCreateArgvInvalid:$($case.mode)"
+  }
+  if ($case.calls -eq 2 -and
+      ((@($value.calls[1]) -join "`n") -cne (@(
+        "--install-driver", "--inf-path", "SudoVDA.inf") -join "`n"))) {
+    throw "driverInstallArgvInvalid:$($case.mode)"
+  }
+}
+$packageValidationRoot = Join-Path $root "package-validation"
+$packageNames = @("SudoVDA.dll", "SudoVDA.inf", "sudovda.cat", "sudovda.cer")
+function New-PackageValidationCase([string]$Name) {
+  $caseRoot = Join-Path $packageValidationRoot $Name
+  New-Item -ItemType Directory -Path $caseRoot | Out-Null
+  [IO.File]::WriteAllBytes((Join-Path $caseRoot "nefconc.exe"), [byte[]](1,2,3,4))
+  foreach ($item in $packageNames) {
+    [IO.File]::WriteAllBytes((Join-Path $caseRoot $item),
+      [Text.Encoding]::UTF8.GetBytes("fixture:$item"))
+  }
+  return $caseRoot
+}
+function Get-PackageFixtureHash([string]$CaseRoot) {
+  $stream = [IO.MemoryStream]::new()
+  try {
+    foreach ($item in $packageNames) {
+      $bytes = [IO.File]::ReadAllBytes((Join-Path $CaseRoot $item))
+      $stream.Write($bytes, 0, $bytes.Length)
+    }
+    return Get-Sha256 $stream.ToArray()
+  } finally { $stream.Dispose() }
+}
+$packageValidationPositiveRoot = New-PackageValidationCase "positive"
+$packageValidationPositiveToolHash = (Get-FileHash (
+  Join-Path $packageValidationPositiveRoot "nefconc.exe") -Algorithm SHA256).Hash.ToLowerInvariant()
+$packageValidationPositiveHash = Get-PackageFixtureHash $packageValidationPositiveRoot
+$packageValidationPositive = Invoke-Bounded $helper @(
+  "--validate-package", $packageValidationPositiveRoot,
+  $packageValidationPositiveHash, $packageValidationPositiveToolHash) @{} 10000
+if ($packageValidationPositive.exitCode -ne 0 -or
+    $packageValidationPositive.stderr.Length -ne 0) {
+  throw "packageValidationPositiveFailed"
+}
+$packageValidationPositiveValue = $packageValidationPositive.stdout | ConvertFrom-Json
+if ([string]$packageValidationPositiveValue.state -cne "validated" -or
+    [string]$packageValidationPositiveValue.reasonCode -cne "none" -or
+    [int]$packageValidationPositiveValue.mutationCalls -ne 0) {
+  throw "packageValidationPositiveInvalid"
+}
+function Invoke-PackageValidationCase(
+    [string]$Name, [string]$Mutation, [string]$ExpectedReason) {
+  $caseRoot = New-PackageValidationCase $Name
+  $toolHash = (Get-FileHash (Join-Path $caseRoot "nefconc.exe") -Algorithm SHA256).Hash.ToLowerInvariant()
+  $packageHash = Get-PackageFixtureHash $caseRoot
+  switch ($Mutation) {
+    "toolMissing" { Remove-Item -LiteralPath (Join-Path $caseRoot "nefconc.exe") }
+    "toolHash" { $toolHash = ('0' * 64) }
+    "packageMissing" { Remove-Item -LiteralPath (Join-Path $caseRoot "SudoVDA.inf") }
+    "packageHash" { $packageHash = ('0' * 64) }
+    "toolReparse" {
+      Remove-Item -LiteralPath (Join-Path $caseRoot "nefconc.exe")
+      $target = Join-Path $caseRoot "tool-target"
+      New-Item -ItemType Directory -Path $target | Out-Null
+      New-Item -ItemType Junction -Path (Join-Path $caseRoot "nefconc.exe") `
+        -Target $target | Out-Null
+    }
+    "packageReparse" {
+      Remove-Item -LiteralPath (Join-Path $caseRoot "SudoVDA.inf")
+      $target = Join-Path $caseRoot "package-target"
+      New-Item -ItemType Directory -Path $target | Out-Null
+      New-Item -ItemType Junction -Path (Join-Path $caseRoot "SudoVDA.inf") `
+        -Target $target | Out-Null
+    }
+  }
+  $run = Invoke-Bounded $helper @(
+    "--validate-package", $caseRoot, $packageHash, $toolHash) @{} 10000
+  if ($run.exitCode -ne 0 -or $run.stderr.Length -ne 0) {
+    throw "packageValidationFixtureFailed:$Name"
+  }
+  $value = $run.stdout | ConvertFrom-Json
+  if ([string]$value.state -cne "rejected" -or
+      [string]$value.reasonCode -cne $ExpectedReason -or
+      [int]$value.mutationCalls -ne 0) {
+    throw "packageValidationReasonInvalid:$Name"
+  }
+}
+$packageValidationCases = @(
+  @("tool-missing", "toolMissing", "installerToolMissing"),
+  @("tool-reparse", "toolReparse", "installerToolReparse"),
+  @("tool-hash", "toolHash", "installerToolHashMismatch"),
+  @("package-missing", "packageMissing", "packageFileMissing"),
+  @("package-reparse", "packageReparse", "packageFileReparse"),
+  @("package-hash", "packageHash", "packageHashMismatch"))
+foreach ($case in $packageValidationCases) {
+  Invoke-PackageValidationCase $case[0] $case[1] $case[2]
+}
 $runnerRoot = Join-Path $root "runner-consumer"
 $runnerDeployment = Join-Path $runnerRoot "Deployment"
 New-Item -ItemType Directory -Path $runnerDeployment | Out-Null
@@ -358,6 +483,8 @@ $runnerManifest = [ordered]@{
     setupHelper="Deployment/Ligase.VirtualDisplay.Setup.exe"
     resultSchema="Deployment/virtual-display-setup-result-v1.schema.json"
     resultSchemaSha256=$schemaHash; packageSha256=('4' * 64)
+    installerTool="Deployment/Drivers/sudovda/nefconc.exe"
+    installerToolSha256=('5' * 64)
   }
 } | ConvertTo-Json -Depth 7 -Compress
 [IO.File]::WriteAllText((Join-Path $runnerRoot "ligase-install-manifest.json"),
@@ -739,6 +866,15 @@ if (@(Get-ChildItem -LiteralPath $root -Force -Filter ".*.tmp").Count -ne 0) {
     inventoryFixtures = $inventoryPassed
     legalRemovalTuple = $true
     authorityDriftRejected = $true
+    apolloCompatibleDriverStateCases = $driverStateCases.Count
+    exactCreateArgv = $true
+    exactInstallDriverArgv = $true
+    createFailureRollback = $true
+    installFailureRollback = $true
+    installTimeoutRollback = $true
+    packageValidationPositive = [string]$packageValidationPositiveValue.state -ceq "validated"
+    packageValidationClosedCases = $packageValidationCases.Count
+    validationMutationCalls = 0
     processStartCount = ($inventoryPassed + 2)
     systemMutation = $false
   }

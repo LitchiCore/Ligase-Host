@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using Ligase.Host.Core.Domain.Installation;
+using Ligase.Host.Core.Models;
 using Ligase.Host.Core.Services;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 
@@ -89,6 +90,36 @@ public sealed class ApolloInstanceManagerTests
         Assert.AreEqual(ApolloStopStages.GracefulWait, outcome.Stage);
         Assert.AreEqual(0, process.KillCount);
         Assert.IsTrue(process.Disposed);
+    }
+
+    [TestMethod]
+    public async Task InstallerStopUsesManagedSignalAndNeverKills()
+    {
+        var process = new FakeProcess {
+            ExitWhenGracefullySignaled = true,
+            ThrowOnIdAfterDispose = true
+        };
+        var manager = Manager(process);
+
+        var outcome = await manager.StopForInstallerAsync();
+
+        Assert.AreEqual(ApolloStopCodes.Stopped, outcome.Code);
+        Assert.AreEqual(1, process.GracefulSignalCount);
+        Assert.AreEqual(0, process.KillCount);
+        Assert.IsFalse(outcome.ProcessStillAlive);
+    }
+
+    [TestMethod]
+    public async Task InstallerStopRejectsUnavailableSignalWithoutKill()
+    {
+        var process = new FakeProcess { GracefulSignalAccepted = false };
+        var manager = Manager(process);
+
+        var outcome = await manager.StopForInstallerAsync();
+
+        Assert.AreEqual(ApolloStopCodes.GracefulSignalUnavailable, outcome.Code);
+        Assert.AreEqual(0, process.KillCount);
+        Assert.IsTrue(outcome.ProcessStillAlive);
     }
 
     [TestMethod]
@@ -250,6 +281,58 @@ public sealed class ApolloInstanceManagerTests
         Assert.IsNull(manager.StartupError);
     }
 
+    [TestMethod]
+    public async Task LibraryAuthorityAcceptsExactManagedCore()
+    {
+        var manager = Manager(new FakeProcess());
+        var endpoint = new ApolloCoreEndpoint(
+            Ligase.Host.Core.Models.LigaseEndpoint.Create(
+                Ligase.Host.Core.Models.LigaseEndpointScheme.Http,
+                "127.0.0.1",
+                48989,
+                source: Ligase.Host.Core.Models.LigaseEndpointSource.Loopback),
+            "host-id",
+            "Ligase Host");
+        var service = new LibraryAuthorityService(
+            manager,
+            _ => Task.FromResult<IReadOnlyList<ApolloCoreEndpoint>>([endpoint]),
+            (_, _, _) => Task.FromResult<AuthorityReadbackDocument?>(new(
+                1,
+                manager.AuthorityToken,
+                manager.StartNonce,
+                manager.RootFingerprint,
+                "host-id",
+                [],
+                [])));
+
+        var state = await service.GetStateAsync();
+
+        Assert.AreEqual(Ligase.Host.Core.Models.LibraryAuthorityKind.ManagedAuthoritative, state.Kind);
+        Assert.IsTrue(state.CanWrite);
+    }
+
+    [TestMethod]
+    public async Task LibraryAuthorityReportsStartingInsteadOfMultipleForZeroDiscovery()
+    {
+        var manager = Manager(new FakeProcess());
+        var discoveryCount = 0;
+        var service = new LibraryAuthorityService(
+            manager,
+            _ =>
+            {
+                discoveryCount++;
+                return Task.FromResult<IReadOnlyList<ApolloCoreEndpoint>>([]);
+            });
+
+        var state = await service.GetStateAsync();
+
+        Assert.AreEqual(Ligase.Host.Core.Models.LibraryAuthorityKind.Unavailable, state.Kind);
+        Assert.AreEqual("coreStarting", state.Code);
+        Assert.AreEqual(1, discoveryCount);
+        Assert.IsFalse(state.CanWrite);
+        Assert.IsFalse(state.Message.Contains("多个", StringComparison.Ordinal));
+    }
+
     private static ApolloInstanceManager Manager(FakeProcess? process = null)
     {
         var root = Path.Combine(
@@ -283,8 +366,11 @@ public sealed class ApolloInstanceManagerTests
             TaskCreationOptions.RunContinuationsAsynchronously);
         private static int _nextId = 1000;
 
+        private readonly int _id = Interlocked.Increment(ref _nextId);
         public event EventHandler? Exited;
-        public int Id { get; } = Interlocked.Increment(ref _nextId);
+        public int Id => Disposed && ThrowOnIdAfterDispose
+            ? throw new ObjectDisposedException(nameof(FakeProcess))
+            : _id;
         public int ExitCode { get; private set; }
         public bool HasExited { get; private set; }
         public DateTimeOffset StartedAtUtc { get; } = DateTimeOffset.UtcNow;
@@ -295,6 +381,8 @@ public sealed class ApolloInstanceManagerTests
         public Exception? KillException { get; init; }
         public int KillCount { get; private set; }
         public bool GracefulSignalAccepted { get; init; } = true;
+        public bool ExitWhenGracefullySignaled { get; init; }
+        public bool ThrowOnIdAfterDispose { get; init; }
         public int GracefulSignalCount { get; private set; }
         public bool Disposed { get; private set; }
 
@@ -315,6 +403,7 @@ public sealed class ApolloInstanceManagerTests
         public bool RequestGracefulExit()
         {
             GracefulSignalCount++;
+            if (GracefulSignalAccepted && ExitWhenGracefullySignaled) Exit();
             return GracefulSignalAccepted;
         }
 

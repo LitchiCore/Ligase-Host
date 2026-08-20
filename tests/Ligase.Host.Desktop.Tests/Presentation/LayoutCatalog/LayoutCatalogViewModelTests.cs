@@ -71,6 +71,44 @@ public sealed class LayoutCatalogViewModelTests
         StringAssert.Contains(viewModel.ErrorMessage, LayoutCatalogCodes.InvalidJson);
     }
 
+    [TestMethod]
+    public async Task ProductBindingUsesExactHostAndGameUuidAndRejectsUnavailableTarget()
+    {
+        var published = Descriptor(
+            "10000000-0000-0000-0000-000000000000",
+            2,
+            "published");
+        var repository = new RecordingRepository(
+            new LayoutCatalogSnapshot(1, [published], []));
+        var service = new LayoutCatalogService(repository);
+        var appId = Guid.Parse("60000000-0000-0000-0000-000000000000");
+
+        await service.SetBindingAsync(
+            "50000000-0000-0000-0000-000000000000",
+            appId,
+            new LayoutBindingV1(published.LayoutId, published.Revision));
+
+        var saved = repository.Snapshot.ExplicitBindings.Single();
+        Assert.AreEqual(appId.ToString("D"), saved.Instance.AppUuid);
+        Assert.AreEqual(published.LayoutId, saved.Binding.LayoutId);
+
+        await service.SetBindingAsync(
+            "50000000-0000-0000-0000-000000000000",
+            appId,
+            null);
+        Assert.AreEqual(0, repository.Snapshot.ExplicitBindings.Count);
+
+        var exception = await Assert.ThrowsExceptionAsync<LayoutCatalogException>(() =>
+            service.SetBindingAsync(
+                "50000000-0000-0000-0000-000000000000",
+                appId,
+                new LayoutBindingV1(
+                    "90000000-0000-0000-0000-000000000000",
+                    1)));
+        Assert.AreEqual(LayoutCatalogCodes.InvalidBinding, exception.Code);
+        Assert.AreEqual("targetUnavailable", exception.Detail);
+    }
+
     private static LayoutDescriptorV1 Descriptor(
         string layoutId,
         long revision,
@@ -123,5 +161,23 @@ public sealed class LayoutCatalogViewModelTests
             LayoutCatalogSnapshot value,
             CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
+    }
+
+    private sealed class RecordingRepository(LayoutCatalogSnapshot snapshot)
+        : ILayoutCatalogRepository
+    {
+        public LayoutCatalogSnapshot Snapshot { get; private set; } = snapshot;
+
+        public Task<LayoutCatalogSnapshot> LoadAsync(
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(Snapshot);
+
+        public Task SaveAsync(
+            LayoutCatalogSnapshot value,
+            CancellationToken cancellationToken = default)
+        {
+            Snapshot = value;
+            return Task.CompletedTask;
+        }
     }
 }

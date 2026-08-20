@@ -19,6 +19,7 @@ public sealed class LigasePaths
     public string CoverCacheAuthorityFile => Path.Combine(
         RootDirectory,
         "cover-cache-authority-v1.json");
+    public string LayoutCatalogFile => Path.Combine(RootDirectory, "layout-catalog.json");
     public string ApolloDirectory => Path.Combine(RootDirectory, "apollo");
     public string ApolloConfigFile => Path.Combine(ApolloDirectory, "sunshine.conf");
     public string ApolloAppsFile => Path.Combine(ApolloDirectory, "apps.json");

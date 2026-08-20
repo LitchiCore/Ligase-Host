@@ -444,6 +444,9 @@ public sealed class ExistingItemCoverUpdateTests
         public Task SetPublishedToClientsAsync(Guid id, bool published,
             CancellationToken cancellationToken = default) =>
             inner.SetPublishedToClientsAsync(id, published, cancellationToken);
+        public Task<LibraryItem> SetLayoutBindingAsync(Guid id, LayoutBindingV1? binding,
+            CancellationToken cancellationToken = default) =>
+            inner.SetLayoutBindingAsync(id, binding, cancellationToken);
         public Task<LibraryItem> UpdateSteamCoverAsync(Guid id,
             PortableGameIdentityV1 expectedPortableIdentity, string coverImagePath,
             CancellationToken cancellationToken = default) =>
@@ -473,6 +476,9 @@ public sealed class ExistingItemCoverUpdateTests
         public Task SetPublishedToClientsAsync(Guid id, bool published,
             CancellationToken cancellationToken = default) =>
             inner.SetPublishedToClientsAsync(id, published, cancellationToken);
+        public Task<LibraryItem> SetLayoutBindingAsync(Guid id, LayoutBindingV1? binding,
+            CancellationToken cancellationToken = default) =>
+            inner.SetLayoutBindingAsync(id, binding, cancellationToken);
         public async Task<LibraryItem> UpdateSteamCoverAsync(Guid id,
             PortableGameIdentityV1 expectedPortableIdentity, string coverImagePath,
             CancellationToken cancellationToken = default)

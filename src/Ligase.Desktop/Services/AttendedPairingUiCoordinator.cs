@@ -127,9 +127,17 @@ public sealed class AttendedPairingUiCoordinator : IDisposable
                     pending.InstanceKey,
                     StringComparison.Ordinal) &&
                 live.Contains(pending.RequestId))
+            {
+                _notifications.RecordActivationMatch(
+                    pending.InstanceKey, pending.RequestId, true);
                 _navigate?.Invoke(pending.RequestId);
+            }
             else
+            {
+                _notifications.RecordActivationMatch(
+                    pending.InstanceKey, pending.RequestId, false);
                 _ = ShowUnavailableAsync();
+            }
         });
 
     private void OnNotificationActivated(string instanceKey, string requestId) =>
@@ -147,9 +155,17 @@ public sealed class AttendedPairingUiCoordinator : IDisposable
                     instanceKey,
                     StringComparison.Ordinal) &&
                 current.Requests.Any(item => item.RequestId == requestId))
+            {
+                _notifications.RecordActivationMatch(
+                    instanceKey, requestId, true);
                 _navigate?.Invoke(requestId);
+            }
             else
+            {
+                _notifications.RecordActivationMatch(
+                    instanceKey, requestId, false);
                 _ = ShowUnavailableAsync();
+            }
         });
 
     private void OnTestNotificationActivated() =>

@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ligase.local/schemas/pairing-notification-evidence-v1.schema.json",
+  "title": "Ligase Host pairing notification evidence v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion", "requestCorrelationSha256", "registrationState",
+    "appNotificationSetting", "showAttempted", "showResult", "showHResult",
+    "notificationId", "tag", "group", "emittedUtc", "activationReceived",
+    "activationRequestMatch", "withdrawReason", "withdrawResult",
+    "withdrawHResult", "withdrawReadbackAbsent"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "requestCorrelationSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "registrationState": { "enum": ["uninitialized", "registered", "registrationUnavailable"] },
+    "appNotificationSetting": { "enum": ["Enabled", "DisabledForApplication", "DisabledForUser", "DisabledByGroupPolicy", "DisabledByManifest", "Unsupported"] },
+    "showAttempted": { "type": "boolean" },
+    "showResult": { "enum": ["notAttempted", "disabled", "shownReadback", "showAcceptedNotReadBack", "showFailed", "duplicate"] },
+    "showHResult": { "type": "integer", "minimum": -2147483648, "maximum": 2147483647 },
+    "notificationId": { "type": ["integer", "null"], "minimum": 0, "maximum": 4294967295 },
+    "tag": { "type": "string", "pattern": "^[0-9a-f]{16}$" },
+    "group": { "const": "ligase-pairing" },
+    "emittedUtc": { "type": ["string", "null"], "format": "date-time" },
+    "activationReceived": { "type": "boolean" },
+    "activationRequestMatch": { "type": ["boolean", "null"] },
+    "withdrawReason": { "enum": ["none", "requestRemoved"] },
+    "withdrawResult": { "enum": ["notAttempted", "withdrawnReadback", "withdrawUnproven", "withdrawFailed"] },
+    "withdrawHResult": { "type": "integer", "minimum": -2147483648, "maximum": 2147483647 },
+    "withdrawReadbackAbsent": { "type": ["boolean", "null"] }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "showResult": { "const": "shownReadback" } } },
+      "then": { "properties": { "showAttempted": { "const": true }, "showHResult": { "const": 0 }, "notificationId": { "type": "integer" }, "emittedUtc": { "type": "string" } } }
+    },
+    {
+      "if": { "properties": { "showResult": { "const": "disabled" } } },
+      "then": { "properties": { "showAttempted": { "const": false }, "notificationId": { "type": "null" }, "emittedUtc": { "type": "null" } } }
+    },
+    {
+      "if": { "properties": { "activationReceived": { "const": false } } },
+      "then": { "properties": { "activationRequestMatch": { "type": "null" } } }
+    }
+  ]
+}

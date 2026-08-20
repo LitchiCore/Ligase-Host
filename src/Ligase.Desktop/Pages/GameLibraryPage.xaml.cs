@@ -43,6 +43,11 @@ public sealed partial class GameLibraryPage : Page
 
         if (item.IsSystemEntry)
         {
+            if (item.Kind == LibraryItemKind.VirtualDesktop)
+            {
+                await ShowVirtualDesktopManagerAsync();
+                return;
+            }
             await ShowMessageAsync(
                 item.Name,
                 "这是 Ligase 的系统桌面入口，需要始终保留，不能从游戏库删除。");
@@ -64,13 +69,16 @@ public sealed partial class GameLibraryPage : Page
 
         var manageResult = await dialog.ShowAsync();
         if (manageResult == ContentDialogResult.None) return;
-        if (item.Kind == LibraryItemKind.Steam && manageResult == ContentDialogResult.Primary)
+        if (item.Kind == LibraryItemKind.Steam &&
+            manageResult == ContentDialogResult.Primary)
         {
             await ShowExistingCoverPickerAsync(item);
             return;
         }
-        if (item.Kind == LibraryItemKind.Steam && manageResult != ContentDialogResult.Secondary) return;
-        if (item.Kind != LibraryItemKind.Steam && manageResult != ContentDialogResult.Primary) return;
+        if (item.Kind == LibraryItemKind.Steam &&
+            manageResult != ContentDialogResult.Secondary) return;
+        if (item.Kind != LibraryItemKind.Steam &&
+            manageResult != ContentDialogResult.Primary) return;
         if (!await ViewModel.RemoveAsync(item)) return;
 
         await ShowMessageAsync(
@@ -140,6 +148,54 @@ public sealed partial class GameLibraryPage : Page
             await ShowMessageAsync(
                 "封面未更新",
                 $"封面事务未完成，原游戏库与同步状态已保留。{exception.Message}");
+        }
+    }
+
+    private async Task ShowVirtualDesktopManagerAsync()
+    {
+        var control = ((App)Application.Current).Services
+            .GetRequiredService<IVirtualDisplayControlService>();
+        VirtualDisplayState state;
+        try
+        {
+            state = await control.GetStateAsync();
+        }
+        catch (Exception exception)
+        {
+            await ShowMessageAsync("虚拟桌面不可用", exception.Message);
+            return;
+        }
+
+        var details = new TextBlock
+        {
+            Text = state.StatusText,
+            TextWrapping = TextWrapping.Wrap,
+            MaxWidth = 480
+        };
+        var dialog = new ContentDialog
+        {
+            XamlRoot = XamlRoot,
+            Title = "管理虚拟桌面",
+            Content = details,
+            PrimaryButtonText = state.IsEnabled ? "停用虚拟桌面" : "创建并启用",
+            SecondaryButtonText = "刷新状态",
+            CloseButtonText = "关闭",
+            DefaultButton = ContentDialogButton.Close
+        };
+        var result = await dialog.ShowAsync();
+        if (result == ContentDialogResult.None) return;
+        try
+        {
+            var updated = result == ContentDialogResult.Primary
+                ? state.IsEnabled
+                    ? await control.DisableAsync()
+                    : await control.EnableAsync()
+                : await control.GetStateAsync();
+            await ShowMessageAsync("虚拟桌面状态", updated.StatusText);
+        }
+        catch (Exception exception)
+        {
+            await ShowMessageAsync("虚拟桌面操作失败", exception.Message);
         }
     }
 

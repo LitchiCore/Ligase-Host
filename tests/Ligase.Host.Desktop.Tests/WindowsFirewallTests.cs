@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Ligase.Host.Core.Application.WindowsFirewall;
 using Ligase.Host.Core.Domain.WindowsFirewall;
 using Ligase.Host.Core.Infrastructure.Windows;
@@ -190,6 +191,91 @@ public sealed class WindowsFirewallTests
         Assert.IsFalse(names.Contains("Apollo", StringComparer.Ordinal));
         StringAssert.Contains(script, "Get-OwnedSnapshots");
         StringAssert.Contains(script, "Restore-OwnedSnapshots");
+        StringAssert.Contains(script, "Test-AllOwnedAbsent");
+        StringAssert.Contains(script, "removeReadbackMismatch");
+    }
+
+    [TestMethod]
+    public void ManifestPortsMatchProductionListenersAndAttendedPublicRoute()
+    {
+        using var document = JsonDocument.Parse(File.ReadAllBytes(ManifestFile));
+        var rules = document.RootElement.GetProperty("rules")
+            .EnumerateArray()
+            .ToDictionary(
+                item => item.GetProperty("id").GetString()!,
+                item => item.GetProperty("offsets").EnumerateArray()
+                    .Select(value => value.GetInt32()).ToArray(),
+                StringComparer.Ordinal);
+
+        var nvhttpHeader = File.ReadAllText(FindRepositoryFile("src", "nvhttp.h"));
+        var streamHeader = File.ReadAllText(FindRepositoryFile("src", "stream.h"));
+        var rtspHeader = File.ReadAllText(FindRepositoryFile("src", "rtsp.h"));
+        var nvhttpSource = File.ReadAllText(FindRepositoryFile("src", "nvhttp.cpp"));
+
+        CollectionAssert.AreEqual(
+            new[]
+            {
+                ReadConstant(nvhttpHeader, "PORT_HTTPS"),
+                ReadConstant(nvhttpHeader, "PORT_HTTP"),
+                ReadConstant(rtspHeader, "RTSP_SETUP_PORT")
+            },
+            rules["lanTcp"]);
+        CollectionAssert.AreEqual(
+            new[]
+            {
+                ReadConstant(streamHeader, "VIDEO_STREAM_PORT"),
+                ReadConstant(streamHeader, "CONTROL_PORT"),
+                ReadConstant(streamHeader, "AUDIO_STREAM_PORT")
+            },
+            rules["streamUdp"]);
+
+        StringAssert.Contains(
+            nvhttpSource,
+            "auto port_http = net::map_port(PORT_HTTP);");
+        StringAssert.Contains(
+            nvhttpSource,
+            "http_server.config.port = port_http;");
+        StringAssert.Contains(
+            nvhttpSource,
+            "http_server.resource[\"^/ligase/v1/pairing/requests$\"][\"POST\"] = attended_route;");
+        StringAssert.Contains(
+            nvhttpSource,
+            "tree.put(\"root.LigaseAttendedPairingVersion\", 1);");
+        StringAssert.Contains(
+            nvhttpSource,
+            "\"/ligase/v1/pairing/requests\"");
+    }
+
+    [TestMethod]
+    public void InstallerPinsTheSameFirewallManifestProgramAndBasePort()
+    {
+        var buildScript = File.ReadAllText(FindRepositoryFile(
+            "packaging", "windows", "ligase", "Build-LigaseInstaller.ps1"));
+        var installScript = File.ReadAllText(FindRepositoryFile(
+            "packaging", "windows", "ligase", "Manage-LigaseInstallation.ps1"));
+
+        StringAssert.Contains(
+            buildScript,
+            "manifest = \"Deployment/Firewall/ligase-firewall-v1.json\"");
+        StringAssert.Contains(
+            buildScript,
+            "script = \"Deployment/Firewall/Manage-LigaseFirewall.ps1\"");
+        StringAssert.Contains(buildScript, "basePort = 48989");
+        StringAssert.Contains(
+            installScript,
+            "-Program\", (Join-Path $installRoot \"Core/sunshine.exe\")");
+        StringAssert.Contains(
+            installScript,
+            "\"-BasePort\", ([string]$Manifest.firewall.basePort)");
+    }
+
+    private static int ReadConstant(string source, string name)
+    {
+        var match = Regex.Match(
+            source,
+            $@"constexpr\s+auto\s+{Regex.Escape(name)}\s*=\s*(-?\d+)\s*;");
+        Assert.IsTrue(match.Success, $"Missing production port constant {name}.");
+        return int.Parse(match.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture);
     }
 
     private static string WriteTemporaryManifest(string content)

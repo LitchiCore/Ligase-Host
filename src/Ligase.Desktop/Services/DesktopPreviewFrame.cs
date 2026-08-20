@@ -6,4 +6,9 @@ public sealed record DesktopPreviewFrame(
     int Height,
     int SourceWidth,
     int SourceHeight,
-    DateTimeOffset CapturedAt);
+    DateTimeOffset CapturedAt,
+    bool CursorComposited,
+    int? CursorX,
+    int? CursorY,
+    string CaptureMethod,
+    int SystemCursorMutationCalls);

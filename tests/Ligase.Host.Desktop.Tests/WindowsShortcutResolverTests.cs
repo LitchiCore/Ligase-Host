@@ -3,6 +3,7 @@ using System.Runtime.InteropServices.ComTypes;
 using System.Text;
 using Ligase.Host.Core.Models;
 using Ligase.Host.Core.Services;
+using Ligase.Host.Desktop.ViewModels;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 
 namespace Ligase.Host.Desktop.Tests;
@@ -23,6 +24,10 @@ public sealed class WindowsShortcutResolverTests
     [TestCleanup]
     public void TearDown()
     {
+        var linkedRoot = Path.Combine(_root, "linked-root");
+        if (Directory.Exists(linkedRoot) &&
+            (File.GetAttributes(linkedRoot) & FileAttributes.ReparsePoint) != 0)
+            Directory.Delete(linkedRoot);
         if (Directory.Exists(_root)) Directory.Delete(_root, true);
     }
 
@@ -140,6 +145,29 @@ public sealed class WindowsShortcutResolverTests
     }
 
     [TestMethod]
+    public void DropPreviewIsReadOnlyAndBulkOrDuplicateInputFailsClosed()
+    {
+        var executable = CreateFile("preview.exe");
+        var shortcut = Path.Combine(_root, "Preview.lnk");
+        CreateShortcut(shortcut, executable, "--preview", _root, null);
+        var viewModel = new AddApplicationViewModel(
+            null!, null!, null!, null!, null!, new WindowsShortcutResolver());
+
+        viewModel.PreviewShortcutPaths([shortcut]);
+        Assert.IsTrue(viewModel.HasShortcutPreview);
+        Assert.AreEqual(executable, viewModel.ShortcutPreview?.TargetExecutable);
+
+        viewModel.PreviewShortcutPaths([shortcut, shortcut]);
+        Assert.IsFalse(viewModel.HasShortcutPreview);
+        StringAssert.Contains(viewModel.Message, "一次只能预览一个");
+
+        viewModel.PreviewShortcutPaths([]);
+        Assert.IsFalse(viewModel.HasShortcutPreview);
+        viewModel.CancelShortcutPreview();
+        Assert.IsFalse(viewModel.HasShortcutPreview);
+    }
+
+    [TestMethod]
     public void RelativeExecutableAndWorkingDirectoryAreNormalizedFromShortcutLocation()
     {
         var executable = CreateFile("relative.exe");
@@ -172,6 +200,70 @@ public sealed class WindowsShortcutResolverTests
         Assert.AreNotEqual(original, otherArguments);
         Assert.AreEqual(64, original.Length);
         Assert.IsFalse(original.Contains("slot", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [TestMethod]
+    public void ConfirmationRejectsShortcutAndTargetDriftAfterPreview()
+    {
+        var resolver = new WindowsShortcutResolver();
+        var executable = CreateFile("drift.exe");
+        var shortcut = Path.Combine(_root, "Drift.lnk");
+        CreateShortcut(shortcut, executable, "--safe", _root, null);
+        var preview = resolver.Resolve(shortcut);
+
+        Assert.IsTrue(preview.CanConfirmExecutable);
+        Assert.AreEqual(64, preview.AuthoritySha256?.Length);
+
+        File.WriteAllBytes(executable, [1, 2, 3]);
+        var targetDrift = resolver.Revalidate(preview);
+        Assert.AreEqual(WindowsShortcutErrorCode.AuthorityChanged, targetDrift.Code);
+        Assert.IsFalse(targetDrift.CanConfirmExecutable);
+
+        File.WriteAllBytes(executable, [0]);
+        CreateShortcut(shortcut, executable, "--changed", _root, null);
+        var shortcutDrift = resolver.Revalidate(preview);
+        Assert.AreEqual(WindowsShortcutErrorCode.AuthorityChanged, shortcutDrift.Code);
+        Assert.IsFalse(shortcutDrift.CanConfirmExecutable);
+    }
+
+    [TestMethod]
+    public void ReparsePathFailsClosedWithoutExecutingTarget()
+    {
+        var real = Directory.CreateDirectory(Path.Combine(_root, "real")).FullName;
+        var executable = Path.Combine(real, "linked.exe");
+        File.WriteAllBytes(executable, [0]);
+        var link = Path.Combine(_root, "linked-root");
+        try
+        {
+            Directory.CreateSymbolicLink(link, real);
+        }
+        catch (Exception exception) when (
+            exception is UnauthorizedAccessException or IOException or PlatformNotSupportedException)
+        {
+            var start = new System.Diagnostics.ProcessStartInfo("cmd.exe")
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            };
+            start.ArgumentList.Add("/d");
+            start.ArgumentList.Add("/c");
+            start.ArgumentList.Add("mklink");
+            start.ArgumentList.Add("/J");
+            start.ArgumentList.Add(link);
+            start.ArgumentList.Add(real);
+            using var process = System.Diagnostics.Process.Start(start)!;
+            process.WaitForExit();
+            Assert.AreEqual(0, process.ExitCode, process.StandardError.ReadToEnd());
+        }
+
+        var shortcut = Path.Combine(_root, "Linked.lnk");
+        CreateShortcut(shortcut, Path.Combine(link, "linked.exe"), string.Empty, link, null);
+        var preview = new WindowsShortcutResolver().Resolve(shortcut);
+
+        Assert.AreEqual(WindowsShortcutErrorCode.ReparsePoint, preview.Code);
+        Assert.IsFalse(preview.CanConfirmExecutable);
     }
 
     private void AssertClassification(

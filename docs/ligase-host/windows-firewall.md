@@ -45,6 +45,57 @@ once through a controlled elevated helper. Cancellation or denial returns
 `requiresElevation`; Host remains usable locally, while LAN readiness must be
 shown as unavailable rather than silently weakening the rules.
 
+Apply and Readback accept `configured` only when both v1 rules match and every
+other owned v0/v1 name is absent. Remove performs a fresh exact-name readback;
+if any owned rule remains it restores the pre-operation owned snapshots and
+fails. Repeating Apply or Remove therefore converges on the same exact state,
+while rules outside the manifest remain untouched.
+
+## Attended-pairing correlation and physical toast check
+
+The manifest offsets are mechanically correlated in
+`WindowsFirewallTests.ManifestPortsMatchProductionListenersAndAttendedPublicRoute`
+with `nvhttp::PORT_HTTPS`, `nvhttp::PORT_HTTP`,
+`rtsp_stream::RTSP_SETUP_PORT`, and the three stream UDP constants. The same
+test requires the public attended-pairing POST route and advertised capability
+to be registered on the GameStream HTTP listener at `B`. This makes the P2
+firewall row an implemented installer capability; the older roadmap statement
+that automatic firewall rules had not started is stale. A real elevated
+Apply/Remove remains an installer acceptance boundary, not a unit-test claim.
+
+For a physical Windows notification click, run an already isolated Host/Core
+instance and then invoke the repository client without administrator rights:
+
+```powershell
+python scripts/ligase/test-attended-pairing-synthetic.py `
+  --base http://127.0.0.1:48989 `
+  --mode ui-toast-reject
+```
+
+Minimize or background the Host before the request becomes ready. If the banner
+is not visible, press **Win+N**, locate the Ligase notification whose displayed
+safety code matches the runner's `WAITING_FOR_TOAST_REJECT` generation, and
+click that exact notification. Confirm that the existing Host window is activated and
+navigates to that request, verify the displayed safety code against the client
+terminal, then choose **Reject**. The client accepts only the matching rejected
+terminal and verifies the request left the live list. If no decision arrives
+within 90 seconds, it sends the authenticated one-time cancel and verifies the
+cancelled terminal before emitting one structured `FAIL` JSON object with the
+same request ID, `terminalState=cancelled`, and `liveRequestRemoved=true`. Keys,
+request tokens, certificate
+bytes, and the safety code are memory-only and are never written to disk. This
+check does not emulate a physical notification click; the frontend must record
+that click separately.
+
+Before a fresh physical generation, read
+`<DataRoot>/diagnostics/pairing-notification-v1.json`. The registration state
+must be `registered`, setting `Enabled`, and the prior request must either be
+withdrawn with readback or absent. During the generation, the evidence must
+move to `shownReadback` with the same request correlation hash; after the click,
+`activationReceived=true` and `activationRequestMatch=true`. A stale activation,
+disabled setting, show failure, missing Notification Center readback, or
+unproven withdrawal blocks physical credit.
+
 The legacy installer batch entrypoints now delegate to this script for base
 port `48989`. A deployment using another base port must pass that port
 explicitly so upgrading replaces the same stable names instead of accumulating

@@ -35,6 +35,32 @@ installation, not a generic installation rollback. A separate machine code
 identifies the virtual-display failure and the UI offers a bounded repair
 action.
 
+### Installed runtime boundary
+
+Provisioning success proves only that the SudoVDA package, device node, and
+trust prerequisites passed their installer readback. Runtime display state is
+owned by the managed Core and is read independently through the loopback-only
+`/ligase/v1/virtual-display` GET/enable/disable routes. The route response uses
+[`virtual-display-runtime-state-v1.schema.json`](virtual-display-runtime-state-v1.schema.json).
+
+Core deliberately reuses Apollo's existing SudoVDA `VDISPLAY` implementation,
+including the session lifecycle in `process.cpp`; Desktop contains no parallel
+driver-control protocol. The user-managed display has a fixed Host GUID and is
+created only after the driver handle is ready. Windows display enumeration is
+the success readback. When the Apollo Virtual Display application starts while
+that display is enabled, the session reuses it; otherwise Apollo retains its
+normal per-client virtual-display creation/removal behavior. Disable is
+rejected during an active stream, and Core shutdown attempts owned-display
+cleanup only after terminating the active application. Physical desktop
+capture remains independent and available throughout.
+
+Upstream references for this boundary are Apollo's
+[virtual-display lifecycle description](https://github.com/ClassicOldSong/Apollo/blob/master/README.md#about-virtual-display)
+and its pinned in-tree `platform/windows/virtual_display` implementation. The
+intentional Ligase delta is only the loopback Host-management surface and a
+fixed Host-owned display identity; driver IOCTL semantics and streaming
+session behavior remain upstream-owned.
+
 ## Single native owner
 
 `Ligase.VirtualDisplay.Setup.exe` is one pinned, self-contained x64 native
@@ -114,16 +140,25 @@ The helper is the sole owner of domain sequencing and correlation. NSIS and
 | --- | --- | --- | --- |
 | `validateRequest` | strict schema, manifest identity, source head, hashes, budgets | `inventoryBefore` | `requestRejected` |
 | `inventoryBefore` | SetupAPI `DIGCF_ALLCLASSES`, present and non-present devnodes; full ordinal-ignore-case hardware-ID match | `readOwnership` | `inventoryUnavailable` |
-| `readOwnership` | fresh proven inventory; strict v1/v2 journal read with no inferred ownership | healthy exact-one+present+bound → `completed/alreadyInstalled`; zero → `stableZero`; otherwise `remove` | `ownershipReadFailed` |
+| `readOwnership` | fresh proven inventory; strict v1/v2 journal read with no inferred ownership | healthy exact-one+present+bound → `completed/alreadyInstalled`; otherwise `validatePackage` | `ownershipReadFailed` |
+| `validatePackage` | exact package aggregate plus the separately pinned `nefconc.exe` bytes; no package mutation | `trustPackage` | `packageFailed` |
+| `trustPackage` | pinned certificate installed/read back in LocalMachine Root and TrustedPublisher with per-store ownership | `remove` or `stableZero` | `trustFailed` |
 | `remove` | one selected exact instance from the fresh inventory epoch | `inventoryAfterRemove` | `removeNativeFailed` or `removeRebootRequired` |
 | `inventoryAfterRemove` | fresh all-devnode inventory | `remove` or `stableZero` | `removeReadbackFailed` or `removeNoProgress` |
-| `stableZero` | at least three zero samples, one identity epoch, bounded settle window | `trustPackage` | `zeroProofFailed` |
-| `trustPackage` | pinned certificate and driver package; ownership recorded only after verified operations | `create` | `trustFailed` or `packageFailed` |
-| `create` | zero proof still current; nefcon is permitted only for create if no supported direct API replaces it | `readbackAfterCreate` | `createFailed` |
+| `stableZero` | at least three zero samples, one identity epoch, bounded settle window | `create` | `zeroProofFailed` |
+| `create` | zero proof still current; pinned nefcon exact argv creates the one SudoVDA node | `installDriver` | `createFailed` |
+| `installDriver` | the same pinned nefcon, driver-root working directory, exact argv `--install-driver --inf-path SudoVDA.inf` | `readbackAfterCreate` | `packageFailed` |
 | `readbackAfterCreate` | fresh all-devnode exact inventory | `commitMarker` | `finalReadbackFailed` |
 | `commitMarker` | exact-one, present, expected bound INF, package/certificate ownership | `completed` | `markerCommitFailed` |
 | `completed` | atomic result readback | terminal | none |
 | `failed` | first failure frozen; compensation separately reported | terminal | none |
+
+`validatePackage` rejects before any certificate, nefcon, PnP or Driver Store
+mutation. Its closed diagnostic reason is exactly one of
+`installerToolMissing`, `installerToolReparse`, `installerToolHashMismatch`,
+`packageFileMissing`, `packageFileReparse`, or `packageHashMismatch`. The
+package-file reasons cover the fixed four-file SudoVDA set; they never expose a
+raw filesystem path.
 
 For every removal, the helper obtains the instance identity from its own fresh
 inventory and binds it to an operation nonce, inventory epoch, full InstanceId
@@ -132,6 +167,17 @@ helper never calls `SetupDiRemoveDevice` directly. If a future OS-gated
 `PnPUtil /remove-device <exact instance>` fallback is retained, its System32
 binary identity and typed exit are verified; localized output is never success
 authority. Fresh strict count decrease remains mandatory.
+
+Provision follows the Apollo v0.4.6 operation semantics without invoking its
+batch file: validate package/tool pins, establish and read back both certificate
+stores, remove only exact SudoVDA nodes to stable zero, run exact typed nefcon
+create argv, then run exact typed nefcon install-driver argv. Each tool launch
+uses ordered `ArgumentList`, a single remaining deadline, the pinned executable
+SHA-256 and the driver payload directory as working directory. Exit, timeout or
+tool identity drift is typed. A create or install failure enters ownership-bound
+rollback; only nodes, packages and certificate-store entries proven to have been
+created by the current operation are eligible for removal. Foreign nodes,
+preexisting packages and preexisting trust are never adopted or deleted.
 
 All present, phantom, unbound, stopped and class-unknown exact-HWID nodes count
 toward duplicate prevention. Class, friendly-name, presence and instance-text
@@ -420,10 +466,50 @@ The result records only closed metadata:
   the array length rather than a second field;
 - certificate, package, create and marker states;
 - compensation state and residual authority;
-- elapsed and hard-cap budget plus atomic result-file state.
+- elapsed and hard-cap budget plus atomic result-file state;
+- a closed `failureDiagnostic` tuple. Non-failure branches use the exact
+  `none` sentinel. Each captured failure also carries a closed `reasonCode`.
+  Trust-chain failures identify the trust owner/category and
+  preserve a typed Win32 code when one exists. Driver-package publication
+  failures identify SetupAPI, freeze its signed code and `0xXXXXXXXX` form,
+  and report the canonical `%WINDIR%\INF\setupapi.dev.log` location as
+  `available|missing|unavailable`. Raw log contents are never copied.
 
-Raw InstanceIds, raw stdout/stderr, paths, argv, certificate bytes, exception
-text, environment and unrelated PnP data are forbidden.
+Package validation hashes the exact byte concatenation in this fixed order:
+`SudoVDA.dll`, `SudoVDA.inf`, `sudovda.cat`, `sudovda.cer`. The build producer
+and setup consumer both use that literal sequence; locale or filesystem name
+sorting is not part of the contract. A validation failure is projected into
+the installer outcome with its closed `reasonCode` before any certificate,
+nefcon, PnP, or Driver Store mutation is permitted.
+
+### Upstream execution baseline
+
+Ligase keeps the working Apollo/nefcon sequence rather than substituting a
+different driver-publication mechanism:
+
+- Apollo `master` `src_assets/windows/drivers/sudovda/install.bat` imports
+  `sudovda.cer` into machine `Root` and `TrustedPublisher`, removes the old
+  `root\sudomaker\sudovda` node, creates the Display-class node, then invokes
+  `nefconc --install-driver --inf-path SudoVDA.inf` from the package directory:
+  <https://github.com/ClassicOldSong/Apollo/blob/master/src_assets/windows/drivers/sudovda/install.bat>.
+- nefcon documents `--create-device-node` for root-enumerated software devices
+  and `--install-driver` as its `DiInstallDriverW` primitive-driver path:
+  <https://github.com/nefarius/nefcon/blob/master/README.md#command-reference>.
+- Microsoft documents `DiInstallDriver`/`DiUninstallDriver` as the supported
+  Windows 10 1903+ primitive-driver lifecycle backed by the Driver Store:
+  <https://learn.microsoft.com/windows-hardware/drivers/develop/creating-a-primitive-driver>.
+
+Ligase's intentional differences are limited to fail-closed ownership,
+bounded execution, typed result evidence, and rollback of mutations proven to
+belong to the current operation. It does not call Apollo's batch file because
+the batch file does not expose per-stage typed results or ownership receipts;
+the underlying certificate stores, cwd, device identity, nefcon argv, and
+readback order remain the same.
+
+Raw InstanceIds, raw stdout/stderr, arbitrary paths, argv, certificate bytes,
+exception text, environment and unrelated PnP data are forbidden. The fixed
+SetupAPI device-log location above is the sole path exception and is diagnostic
+metadata, not log content or mutation authority.
 
 ## Caller contract
 
@@ -475,8 +561,8 @@ removed from production paths and source gates prove zero references:
   secondary readback/writer, last-resort virtual-display projection, and their
   cross-field schema validators;
 - virtual-display diagnostic file/token transfer through NSIS;
-- nefcon removal and PnPUtil text fallback (nefcon create may remain only if
-  justified and pinned);
+- nefcon removal and PnPUtil text fallback. The only production nefcon uses are
+  the pinned exact-argv create and install-driver transitions above;
 - installer rollback that treats optional virtual-display failure as failure of
   the already committed Core Host transaction;
 - D-only fixtures that exist solely to validate retired token/file/writer

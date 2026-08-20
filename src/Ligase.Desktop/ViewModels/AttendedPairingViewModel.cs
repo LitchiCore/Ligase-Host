@@ -88,6 +88,12 @@ public partial class AttendedPairingViewModel(
     public Visibility NotificationWarningVisibility =>
         NotificationWarning is null ? Visibility.Collapsed : Visibility.Visible;
 
+    public void RefreshNotificationStatus()
+    {
+        OnPropertyChanged(nameof(NotificationWarning));
+        OnPropertyChanged(nameof(NotificationWarningVisibility));
+    }
+
     public void Apply(AttendedPairingProjection projection)
     {
         var accessSelections = Items.ToDictionary(

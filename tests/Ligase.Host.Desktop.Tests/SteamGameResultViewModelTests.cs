@@ -83,6 +83,26 @@ public sealed class SteamGameResultViewModelTests
         Assert.AreEqual("可添加", result.StatusText);
     }
 
+    [TestMethod]
+    public void AccessibleNamesBindExactGameAndTrackMutationState()
+    {
+        var result = new SteamGameResultViewModel(
+            Game(42, "Exact Game"),
+            canModifyLibrary: true);
+
+        Assert.AreEqual(
+            "Exact Game，Steam App ID 42，可添加",
+            result.CardAccessibleName);
+        Assert.AreEqual("为 Exact Game 选择封面", result.CoverActionAccessibleName);
+        Assert.AreEqual("将 Exact Game 添加到 Ligase 游戏库", result.AddActionAccessibleName);
+        Assert.AreEqual("从 Ligase 游戏库移除 Exact Game", result.RemoveActionAccessibleName);
+
+        Assert.IsTrue(result.TryBeginMutation());
+        Assert.AreEqual(
+            "Exact Game，Steam App ID 42，正在添加…",
+            result.CardAccessibleName);
+    }
+
     private static SteamGame Game(uint appId, string name) =>
         new(
             appId,

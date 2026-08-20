@@ -24,6 +24,10 @@ public interface IApplicationLibrary
         Guid id,
         bool published,
         CancellationToken cancellationToken = default);
+    Task<LibraryItem> SetLayoutBindingAsync(
+        Guid id,
+        LayoutBindingV1? binding,
+        CancellationToken cancellationToken = default);
     Task<LibraryItem> UpdateSteamCoverAsync(
         Guid id,
         PortableGameIdentityV1 expectedPortableIdentity,

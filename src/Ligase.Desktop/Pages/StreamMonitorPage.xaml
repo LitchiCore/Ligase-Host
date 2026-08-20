@@ -32,6 +32,12 @@
                         TextWrapping="Wrap" />
                 </StackPanel>
                 <StackPanel Grid.Column="1" VerticalAlignment="Bottom" Orientation="Horizontal" Spacing="10">
+                    <ComboBox
+                        x:Name="PreviewSourcePicker"
+                        MinWidth="180"
+                        AutomationProperties.Name="预览显示源"
+                        DisplayMemberPath="Label"
+                        SelectionChanged="OnPreviewSourceChanged" />
                     <Button
                         Click="OnEndStream"
                         Content="结束串流"
@@ -66,6 +72,7 @@
                         CornerRadius="12">
                         <Image
                             x:Name="PreviewImage"
+                            IsHitTestVisible="False"
                             MinHeight="300"
                             MaxHeight="590"
                             HorizontalAlignment="Stretch"
@@ -135,7 +142,7 @@
                         <TextBlock
                             Foreground="{ThemeResource TextFillColorTertiaryBrush}"
                             Style="{StaticResource LigaseCaptionTextStyle}"
-                            Text="主显示器" />
+                            Text="{x:Bind ViewModel.SourceLabel, Mode=OneWay}" />
                     </StackPanel>
                 </Border>
                 <Border Grid.Column="2" Style="{StaticResource LigaseCardStyle}">

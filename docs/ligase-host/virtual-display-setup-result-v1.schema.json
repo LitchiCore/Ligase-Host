@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "required": [
     "schemaVersion", "operation", "operationIdsSha256", "sourceHead", "helperSha256",
-    "packageSha256", "state", "code", "stage", "firstFailureFrozen", "writtenUtc", "migration", "ownershipAcquisition", "certificateStores", "inventory",
+    "packageSha256", "state", "code", "stage", "firstFailureFrozen", "writtenUtc", "migration", "ownershipAcquisition", "certificateStores", "failureDiagnostic", "inventory",
     "removal", "zeroProof", "trust", "package", "create", "marker",
     "compensation", "execution"
   ],
@@ -37,7 +37,7 @@
     "stage": {
       "enum": [
         "validateRequest", "inventoryBefore", "readOwnership", "remove",
-        "inventoryAfterRemove", "stableZero", "trustPackage", "create",
+          "inventoryAfterRemove", "stableZero", "validatePackage", "trustPackage", "create", "installDriver",
         "readbackAfterCreate", "commitMarker", "cleanupOwnership", "completed"
       ]
     },
@@ -46,6 +46,7 @@
     "migration": { "$ref": "#/$defs/migration" },
     "ownershipAcquisition": { "$ref": "#/$defs/ownershipAcquisition" },
     "certificateStores": { "$ref": "#/$defs/certificateStoreAuthority" },
+    "failureDiagnostic": { "$ref": "#/$defs/failureDiagnostic" },
     "ownershipReadFailure": { "$ref": "#/$defs/ownershipReadFailure" },
     "inventory": { "$ref": "#/$defs/inventory" },
     "removal": { "$ref": "#/$defs/removal" },
@@ -58,6 +59,22 @@
     "execution": { "$ref": "#/$defs/execution" }
   },
   "allOf": [
+    {
+      "if": { "properties": { "code": { "const": "trustFailed" } } },
+      "then": { "properties": { "failureDiagnostic": { "$ref": "#/$defs/trustFailureDiagnostic" } } }
+    },
+    {
+      "if": { "properties": { "code": { "const": "packageFailed" } } },
+      "then": { "properties": { "failureDiagnostic": { "$ref": "#/$defs/packageFailureDiagnostic" } } }
+    },
+    {
+      "if": { "properties": { "code": { "const": "createFailed" } } },
+      "then": { "properties": { "failureDiagnostic": { "$ref": "#/$defs/createFailureDiagnostic" } } }
+    },
+    {
+      "if": { "properties": { "code": { "not": { "enum": ["trustFailed", "packageFailed", "createFailed"] } } } },
+      "then": { "properties": { "failureDiagnostic": { "$ref": "#/$defs/noFailureDiagnostic" } } }
+    },
     {
       "if": { "properties": { "operation": { "const": "provision" } } },
       "then": { "properties": { "code": { "enum": [
@@ -121,8 +138,16 @@
       "then": { "properties": { "certificateStores": { "$ref": "#/$defs/certificateStoresNotOwned" } } }
     },
     {
-      "if": { "properties": { "operation": { "const": "provision" }, "certificateStores": { "properties": { "state": { "const": "verified" } } } } },
+      "if": { "properties": { "operation": { "const": "provision" }, "certificateStores": { "properties": { "state": { "const": "verified" } } }, "compensation": { "$ref": "#/$defs/compensationNotRequired" } } },
       "then": { "properties": { "certificateStores": { "$ref": "#/$defs/certificateStoresCleanupNotAttempted" } } }
+    },
+    {
+      "if": { "properties": { "operation": { "const": "provision" }, "code": { "enum": ["removeNativeFailed", "removeRebootRequired", "removeReadbackFailed", "removeNoProgress", "zeroProofFailed", "packageFailed", "createFailed"] }, "certificateStores": { "properties": { "state": { "const": "verified" } } }, "compensation": { "properties": { "state": { "const": "completed" } } } } },
+      "then": { "properties": { "certificateStores": { "$ref": "#/$defs/certificateStoresCleanupCompleted" } } }
+    },
+    {
+      "if": { "properties": { "operation": { "const": "provision" }, "code": { "enum": ["removeNativeFailed", "removeRebootRequired", "removeReadbackFailed", "removeNoProgress", "zeroProofFailed", "packageFailed", "createFailed"] }, "certificateStores": { "properties": { "state": { "const": "verified" } } }, "compensation": { "properties": { "state": { "const": "failed" } } } } },
+      "then": { "properties": { "certificateStores": { "oneOf": [{ "$ref": "#/$defs/certificateStoresCleanupCompleted" }, { "$ref": "#/$defs/certificateStoresCleanupFailed" }] } } }
     },
     {
       "if": { "properties": { "operation": { "const": "uninstall" }, "trust": { "properties": { "code": { "enum": ["removed", "absentOwned", "absentNotOwned", "retainedNotOwned"] } } } } },
@@ -413,7 +438,13 @@
         "cleanupState": { "enum": ["notAttempted", "removed", "absentOwned", "retained", "failed"] }
       },
       "oneOf": [
-        { "properties": { "ownership": { "const": "addedByLigase" }, "authoritySource": { "const": "currentOperation" }, "preState": { "const": "absent" }, "mutation": { "const": "addedByThisOperation" }, "readback": { "const": "present" } } },
+        { "allOf": [
+          { "properties": { "ownership": { "const": "addedByLigase" }, "authoritySource": { "const": "currentOperation" }, "preState": { "const": "absent" }, "mutation": { "const": "addedByThisOperation" } } },
+          { "oneOf": [
+            { "properties": { "readback": { "const": "present" }, "cleanupState": { "enum": ["notAttempted", "failed"] } } },
+            { "properties": { "readback": { "const": "absent" }, "cleanupState": { "enum": ["removed", "absentOwned"] } } }
+          ] }
+        ] },
         { "properties": { "ownership": { "const": "addedByLigase" }, "authoritySource": { "const": "historicalMarker" }, "preState": { "const": "historicalMarker" }, "mutation": { "const": "none" }, "readback": { "const": "markerExact" } } },
         { "properties": { "ownership": { "const": "notOwned" }, "authoritySource": { "const": "currentObservation" }, "preState": { "const": "present" }, "mutation": { "const": "none" }, "readback": { "const": "present" } } },
         { "properties": { "ownership": { "const": "notOwned" }, "authoritySource": { "const": "currentObservation" }, "preState": { "const": "absent" }, "mutation": { "const": "none" }, "readback": { "const": "absent" } } },
@@ -500,13 +531,14 @@
       "type": "object", "additionalProperties": false,
       "required": ["state", "source", "packageOwnership", "certificateOwnership"],
       "properties": {
-        "state": { "enum": ["notRequired", "v1Read", "v1UpgradePending", "v1Upgraded", "v1UpgradeFailed", "v1RetainedUpgradeFailed", "v2Pending", "v2Committed", "v2RetainedCommitted", "v2CommitFailed", "v2RetainedCommitFailed", "v2Read", "failed"] },
+        "state": { "enum": ["notRequired", "rollbackCompleted", "rollbackFailed", "v1Read", "v1UpgradePending", "v1Upgraded", "v1UpgradeFailed", "v1RetainedUpgradeFailed", "v2Pending", "v2Committed", "v2RetainedCommitted", "v2CommitFailed", "v2RetainedCommitFailed", "v2Read", "failed"] },
         "source": { "enum": ["none", "unknown", "v1", "v2"] },
         "packageOwnership": { "enum": ["addedByLigase", "notOwned", "legacyUnknown", "unknown"] },
         "certificateOwnership": { "enum": ["owned", "notOwned", "unknown"] }
       },
       "oneOf": [
         { "properties": { "state": { "const": "notRequired" }, "source": { "const": "none" }, "packageOwnership": { "const": "notOwned" }, "certificateOwnership": { "const": "notOwned" } } },
+        { "properties": { "state": { "enum": ["rollbackCompleted", "rollbackFailed"] }, "source": { "const": "none" }, "packageOwnership": { "const": "notOwned" }, "certificateOwnership": { "enum": ["owned", "notOwned"] } } },
         { "properties": { "state": { "const": "v1Read" }, "source": { "const": "v1" }, "packageOwnership": { "const": "legacyUnknown" }, "certificateOwnership": { "enum": ["owned", "notOwned"] } } },
         { "properties": { "state": { "const": "v1UpgradePending" }, "source": { "const": "v1" }, "packageOwnership": { "const": "addedByLigase" }, "certificateOwnership": { "enum": ["owned", "notOwned"] } } },
         { "properties": { "state": { "const": "v1Upgraded" }, "source": { "const": "v1" }, "packageOwnership": { "enum": ["addedByLigase", "notOwned", "legacyUnknown"] }, "certificateOwnership": { "enum": ["owned", "notOwned"] } } },
@@ -918,7 +950,7 @@
         "state": { "enum": ["notAttempted", "notRequired", "verified", "completed", "failed"] },
         "code": {
           "enum": [
-            "none", "alreadyOwned", "added", "installed", "created",
+            "none", "alreadyOwned", "validated", "added", "installed", "created",
             "committed", "removed", "notOwned", "nativeFailure", "readbackFailure", "conflict"
           ]
         }
@@ -945,8 +977,12 @@
     "packageReady": {
       "oneOf": [
         { "$ref": "#/$defs/packageInstalled" },
-        { "$ref": "#/$defs/packageAlreadyOwned" }
+        { "$ref": "#/$defs/packageAlreadyOwned" },
+        { "properties": { "state": { "const": "verified" }, "code": { "const": "validated" } } }
       ]
+    },
+    "packageValidated": {
+      "properties": { "state": { "const": "verified" }, "code": { "const": "validated" } }
     },
     "packageAlreadyOwned": {
       "properties": { "state": { "const": "verified" }, "code": { "const": "alreadyOwned" } }
@@ -1023,6 +1059,63 @@
         "resultFileState": { "enum": ["unavailable", "verified"] }
       }
     },
+    "failureDiagnostic": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "owner", "category", "reasonCode", "nativeCode", "nativeCodeHex", "logPath", "logPathState"],
+      "properties": {
+        "state": { "enum": ["none", "captured"] },
+        "owner": { "enum": ["none", "trust", "package", "create"] },
+        "category": { "enum": ["none", "trustChain", "packageValidation", "setupApi", "nativeTool"] },
+        "reasonCode": { "enum": ["none", "installerToolMissing", "installerToolReparse", "installerToolHashMismatch", "packageFileMissing", "packageFileReparse", "packageHashMismatch", "startFailed", "timeout", "exitCode", "identityDrift", "win32Failure", "unexpectedFailure"] },
+        "nativeCode": { "type": "integer" },
+        "nativeCodeHex": { "oneOf": [{ "const": "none" }, { "type": "string", "pattern": "^0x[0-9A-F]{8}$" }] },
+        "logPath": { "oneOf": [{ "type": "string", "minLength": 1, "maxLength": 520 }, { "type": "null" }] },
+        "logPathState": { "enum": ["notApplicable", "available", "missing", "unavailable"] }
+      }
+    },
+    "noFailureDiagnostic": {
+      "properties": {
+        "state": { "const": "none" },
+        "owner": { "const": "none" },
+        "category": { "const": "none" },
+        "reasonCode": { "const": "none" },
+        "nativeCode": { "const": 0 },
+        "nativeCodeHex": { "const": "none" },
+        "logPath": { "type": "null" },
+        "logPathState": { "const": "notApplicable" }
+      }
+    },
+    "trustFailureDiagnostic": {
+      "properties": {
+        "state": { "const": "captured" },
+        "owner": { "const": "trust" },
+        "category": { "const": "trustChain" },
+        "reasonCode": { "enum": ["win32Failure", "unexpectedFailure"] },
+        "logPath": { "type": "null" },
+        "logPathState": { "const": "notApplicable" }
+      }
+    },
+    "packageFailureDiagnostic": {
+      "properties": {
+        "state": { "const": "captured" },
+        "owner": { "const": "package" },
+        "category": { "enum": ["packageValidation", "setupApi", "nativeTool"] },
+        "reasonCode": { "enum": ["installerToolMissing", "installerToolReparse", "installerToolHashMismatch", "packageFileMissing", "packageFileReparse", "packageHashMismatch", "startFailed", "timeout", "exitCode", "identityDrift", "win32Failure", "unexpectedFailure"] },
+        "logPath": { "type": "string", "minLength": 1, "maxLength": 520 },
+        "logPathState": { "enum": ["available", "missing", "unavailable"] }
+      }
+    },
+    "createFailureDiagnostic": {
+      "properties": {
+        "state": { "const": "captured" },
+        "owner": { "const": "create" },
+        "category": { "const": "nativeTool" },
+        "reasonCode": { "enum": ["startFailed", "timeout", "exitCode", "identityDrift", "unexpectedFailure"] },
+        "logPath": { "type": "string", "minLength": 1, "maxLength": 520 },
+        "logPathState": { "enum": ["available", "missing", "unavailable"] }
+      }
+    },
     "executionVerified": {
       "allOf": [
         { "$ref": "#/$defs/execution" },
@@ -1077,49 +1170,53 @@
     "removeNativeFailedResult": {
       "allOf": [
         { "$ref": "#/$defs/failureBase" },
-        { "properties": { "code": { "const": "removeNativeFailed" }, "stage": { "const": "remove" }, "inventory": { "$ref": "#/$defs/nonZeroInventory" }, "removal": { "$ref": "#/$defs/removalNativeFailure" }, "zeroProof": { "$ref": "#/$defs/zeroProofNotAttempted" }, "trust": { "$ref": "#/$defs/componentNotAttempted" }, "package": { "$ref": "#/$defs/componentNotAttempted" }, "create": { "$ref": "#/$defs/componentNotAttempted" }, "marker": { "$ref": "#/$defs/componentNotAttempted" }, "compensation": { "$ref": "#/$defs/compensationNotRequired" } } }
+        { "properties": { "code": { "const": "removeNativeFailed" }, "stage": { "const": "remove" }, "inventory": { "$ref": "#/$defs/nonZeroInventory" }, "removal": { "$ref": "#/$defs/removalNativeFailure" }, "zeroProof": { "$ref": "#/$defs/zeroProofNotAttempted" }, "trust": { "$ref": "#/$defs/trustInstalled" }, "package": { "$ref": "#/$defs/packageValidated" }, "create": { "$ref": "#/$defs/componentNotAttempted" }, "marker": { "$ref": "#/$defs/componentNotAttempted" }, "compensation": { "$ref": "#/$defs/compensationTrustOnly" } } }
       ]
     },
     "removeRebootRequiredResult": {
       "allOf": [
         { "$ref": "#/$defs/failureBase" },
-        { "properties": { "code": { "const": "removeRebootRequired" }, "stage": { "const": "remove" }, "inventory": { "$ref": "#/$defs/nonZeroInventory" }, "removal": { "$ref": "#/$defs/removalRebootRequired" }, "zeroProof": { "$ref": "#/$defs/zeroProofNotAttempted" }, "trust": { "$ref": "#/$defs/componentNotAttempted" }, "package": { "$ref": "#/$defs/componentNotAttempted" }, "create": { "$ref": "#/$defs/componentNotAttempted" }, "marker": { "$ref": "#/$defs/componentNotAttempted" }, "compensation": { "$ref": "#/$defs/compensationNotRequired" } } }
+        { "properties": { "code": { "const": "removeRebootRequired" }, "stage": { "const": "remove" }, "inventory": { "$ref": "#/$defs/nonZeroInventory" }, "removal": { "$ref": "#/$defs/removalRebootRequired" }, "zeroProof": { "$ref": "#/$defs/zeroProofNotAttempted" }, "trust": { "$ref": "#/$defs/trustInstalled" }, "package": { "$ref": "#/$defs/packageValidated" }, "create": { "$ref": "#/$defs/componentNotAttempted" }, "marker": { "$ref": "#/$defs/componentNotAttempted" }, "compensation": { "$ref": "#/$defs/compensationTrustOnly" } } }
       ]
     },
     "removeReadbackFailedResult": {
       "allOf": [
         { "$ref": "#/$defs/failureBase" },
-        { "properties": { "code": { "const": "removeReadbackFailed" }, "stage": { "const": "inventoryAfterRemove" }, "inventory": { "$ref": "#/$defs/unknownInventory" }, "removal": { "$ref": "#/$defs/removalReadbackFailure" }, "zeroProof": { "$ref": "#/$defs/zeroProofNotAttempted" }, "trust": { "$ref": "#/$defs/componentNotAttempted" }, "package": { "$ref": "#/$defs/componentNotAttempted" }, "create": { "$ref": "#/$defs/componentNotAttempted" }, "marker": { "$ref": "#/$defs/componentNotAttempted" }, "compensation": { "$ref": "#/$defs/compensationNotRequired" } } }
+        { "properties": { "code": { "const": "removeReadbackFailed" }, "stage": { "const": "inventoryAfterRemove" }, "inventory": { "$ref": "#/$defs/unknownInventory" }, "removal": { "$ref": "#/$defs/removalReadbackFailure" }, "zeroProof": { "$ref": "#/$defs/zeroProofNotAttempted" }, "trust": { "$ref": "#/$defs/trustInstalled" }, "package": { "$ref": "#/$defs/packageValidated" }, "create": { "$ref": "#/$defs/componentNotAttempted" }, "marker": { "$ref": "#/$defs/componentNotAttempted" }, "compensation": { "$ref": "#/$defs/compensationTrustOnly" } } }
       ]
     },
     "removeNoProgressResult": {
       "allOf": [
         { "$ref": "#/$defs/failureBase" },
-        { "properties": { "code": { "const": "removeNoProgress" }, "stage": { "const": "inventoryAfterRemove" }, "inventory": { "$ref": "#/$defs/nonZeroInventory" }, "removal": { "$ref": "#/$defs/removalNoProgress" }, "zeroProof": { "$ref": "#/$defs/zeroProofNotAttempted" }, "trust": { "$ref": "#/$defs/componentNotAttempted" }, "package": { "$ref": "#/$defs/componentNotAttempted" }, "create": { "$ref": "#/$defs/componentNotAttempted" }, "marker": { "$ref": "#/$defs/componentNotAttempted" }, "compensation": { "$ref": "#/$defs/compensationNotRequired" } } }
+        { "properties": { "code": { "const": "removeNoProgress" }, "stage": { "const": "inventoryAfterRemove" }, "inventory": { "$ref": "#/$defs/nonZeroInventory" }, "removal": { "$ref": "#/$defs/removalNoProgress" }, "zeroProof": { "$ref": "#/$defs/zeroProofNotAttempted" }, "trust": { "$ref": "#/$defs/trustInstalled" }, "package": { "$ref": "#/$defs/packageValidated" }, "create": { "$ref": "#/$defs/componentNotAttempted" }, "marker": { "$ref": "#/$defs/componentNotAttempted" }, "compensation": { "$ref": "#/$defs/compensationTrustOnly" } } }
       ]
     },
     "zeroProofFailedResult": {
       "allOf": [
         { "$ref": "#/$defs/failureBase" },
-        { "properties": { "code": { "const": "zeroProofFailed" }, "stage": { "const": "stableZero" }, "inventory": { "$ref": "#/$defs/provenInventory" }, "removal": { "oneOf": [{ "$ref": "#/$defs/removalNotRequired" }, { "$ref": "#/$defs/removalCompleted" }] }, "zeroProof": { "$ref": "#/$defs/zeroProofFailed" }, "trust": { "$ref": "#/$defs/componentNotAttempted" }, "package": { "$ref": "#/$defs/componentNotAttempted" }, "create": { "$ref": "#/$defs/componentNotAttempted" }, "marker": { "$ref": "#/$defs/componentNotAttempted" }, "compensation": { "$ref": "#/$defs/compensationNotRequired" } } }
+        { "properties": { "code": { "const": "zeroProofFailed" }, "stage": { "const": "stableZero" }, "inventory": { "$ref": "#/$defs/provenInventory" }, "removal": { "oneOf": [{ "$ref": "#/$defs/removalNotRequired" }, { "$ref": "#/$defs/removalCompleted" }] }, "zeroProof": { "$ref": "#/$defs/zeroProofFailed" }, "trust": { "$ref": "#/$defs/trustInstalled" }, "package": { "$ref": "#/$defs/packageValidated" }, "create": { "$ref": "#/$defs/componentNotAttempted" }, "marker": { "$ref": "#/$defs/componentNotAttempted" }, "compensation": { "$ref": "#/$defs/compensationTrustOnly" } } }
       ]
     },
     "trustFailedResult": {
       "allOf": [
         { "$ref": "#/$defs/failureBase" },
-        { "properties": { "code": { "const": "trustFailed" }, "stage": { "const": "trustPackage" }, "inventory": { "$ref": "#/$defs/zeroInventory" }, "removal": { "$ref": "#/$defs/removalBeforeProvisioning" }, "zeroProof": { "$ref": "#/$defs/zeroProofCompleted" }, "trust": { "$ref": "#/$defs/trustFailed" }, "package": { "$ref": "#/$defs/componentNotAttempted" }, "create": { "$ref": "#/$defs/componentNotAttempted" }, "marker": { "$ref": "#/$defs/componentNotAttempted" }, "compensation": { "$ref": "#/$defs/compensationTrustOnly" } } }
+        { "properties": { "code": { "const": "trustFailed" }, "stage": { "const": "trustPackage" }, "inventory": { "$ref": "#/$defs/provenInventory" }, "removal": { "$ref": "#/$defs/removalNotRequired" }, "zeroProof": { "$ref": "#/$defs/zeroProofNotAttempted" }, "trust": { "$ref": "#/$defs/trustFailed" }, "package": { "$ref": "#/$defs/packageValidated" }, "create": { "$ref": "#/$defs/componentNotAttempted" }, "marker": { "$ref": "#/$defs/componentNotAttempted" }, "compensation": { "$ref": "#/$defs/compensationTrustOnly" } } }
       ]
     },
     "packageFailedResult": {
       "allOf": [
         { "$ref": "#/$defs/failureBase" },
-        { "properties": { "code": { "const": "packageFailed" }, "stage": { "const": "trustPackage" }, "inventory": { "$ref": "#/$defs/zeroInventory" }, "removal": { "$ref": "#/$defs/removalBeforeProvisioning" }, "zeroProof": { "$ref": "#/$defs/zeroProofCompleted" }, "trust": { "$ref": "#/$defs/trustInstalled" }, "package": { "$ref": "#/$defs/packageFailed" }, "create": { "$ref": "#/$defs/componentNotAttempted" }, "marker": { "$ref": "#/$defs/componentNotAttempted" }, "compensation": { "$ref": "#/$defs/compensationTrustPackage" } } }
+        { "properties": { "code": { "const": "packageFailed" }, "package": { "$ref": "#/$defs/packageFailed" }, "marker": { "$ref": "#/$defs/componentNotAttempted" } } },
+        { "oneOf": [
+          { "properties": { "stage": { "const": "validatePackage" }, "inventory": { "$ref": "#/$defs/provenInventory" }, "removal": { "$ref": "#/$defs/removalNotRequired" }, "zeroProof": { "$ref": "#/$defs/zeroProofNotAttempted" }, "trust": { "$ref": "#/$defs/componentNotAttempted" }, "create": { "$ref": "#/$defs/componentNotAttempted" }, "compensation": { "$ref": "#/$defs/compensationNotRequired" } } },
+          { "properties": { "stage": { "const": "installDriver" }, "inventory": { "$ref": "#/$defs/inventory" }, "removal": { "$ref": "#/$defs/removalBeforeProvisioning" }, "zeroProof": { "$ref": "#/$defs/zeroProofCompleted" }, "trust": { "$ref": "#/$defs/trustInstalled" }, "create": { "$ref": "#/$defs/createCompleted" }, "compensation": { "properties": { "state": { "enum": ["completed", "failed"] }, "code": { "const": "multiple" } } } } }
+        ] }
       ]
     },
     "createFailedResult": {
       "allOf": [
         { "$ref": "#/$defs/failureBase" },
-        { "properties": { "code": { "const": "createFailed" }, "stage": { "const": "create" }, "inventory": { "$ref": "#/$defs/zeroInventory" }, "removal": { "$ref": "#/$defs/removalBeforeProvisioning" }, "zeroProof": { "$ref": "#/$defs/zeroProofCompleted" }, "trust": { "$ref": "#/$defs/trustInstalled" }, "package": { "$ref": "#/$defs/packageReady" }, "create": { "$ref": "#/$defs/createFailed" }, "marker": { "$ref": "#/$defs/componentNotAttempted" }, "compensation": { "$ref": "#/$defs/compensationPostCreate" } } }
+        { "properties": { "code": { "const": "createFailed" }, "stage": { "const": "create" }, "inventory": { "$ref": "#/$defs/inventory" }, "removal": { "$ref": "#/$defs/removalBeforeProvisioning" }, "zeroProof": { "$ref": "#/$defs/zeroProofCompleted" }, "trust": { "$ref": "#/$defs/trustInstalled" }, "package": { "$ref": "#/$defs/packageValidated" }, "create": { "$ref": "#/$defs/createFailed" }, "marker": { "$ref": "#/$defs/componentNotAttempted" }, "compensation": { "$ref": "#/$defs/compensationPostCreate" } } }
       ]
     },
     "finalReadbackFailedResult": {

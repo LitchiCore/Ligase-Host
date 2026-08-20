@@ -11,6 +11,8 @@
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
             <StackPanel Spacing="6">
                 <TextBlock Style="{StaticResource LigaseEyebrowTextStyle}" Text="HOST BEHAVIOR" />
@@ -105,6 +107,11 @@
                             Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                             Text="发送一条本机测试通知。点击通知应返回当前 Ligase Host 窗口。"
                             TextWrapping="Wrap" />
+                        <TextBlock
+                            x:Name="NotificationStatusText"
+                            AutomationProperties.Name="Windows 通知当前状态"
+                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                            TextWrapping="Wrap" />
                     </StackPanel>
                     <Button
                         Grid.Column="1"
@@ -184,6 +191,59 @@
             </Border>
 
             <Border Grid.Row="5" Style="{StaticResource LigaseCardStyle}">
+                <StackPanel Spacing="10">
+                    <TextBlock FontSize="16" FontWeight="SemiBold" Text="数据目录与实例身份" />
+                    <TextBlock
+                        AutomationProperties.Name="Ligase Host 数据目录"
+                        FontFamily="Consolas"
+                        IsTextSelectionEnabled="True"
+                        Text="{x:Bind DataRootIdentity.DataRoot, Mode=OneTime}"
+                        TextWrapping="Wrap" />
+                    <Grid ColumnSpacing="20">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Foreground="{ThemeResource TextFillColorSecondaryBrush}" Text="实例 ID" />
+                        <TextBlock
+                            Grid.Column="1"
+                            AutomationProperties.Name="Ligase Host 实例身份"
+                            FontFamily="Consolas"
+                            IsTextSelectionEnabled="True"
+                            Text="{x:Bind DataRootIdentity.InstanceIdentity, Mode=OneTime}"
+                            TextWrapping="Wrap" />
+                    </Grid>
+                    <TextBlock Text="{x:Bind DataRootIdentity.StorageStatus, Mode=OneTime}" TextWrapping="Wrap" />
+                    <TextBlock
+                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                        Text="{x:Bind DataRootIdentity.BootstrapStatus, Mode=OneTime}"
+                        TextWrapping="Wrap" />
+                    <TextBlock
+                        Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                        Style="{StaticResource LigaseCaptionTextStyle}"
+                        Text="这里只显示当前只读身份；不会显示授权令牌、启动随机数或其他秘密。"
+                        TextWrapping="Wrap" />
+                </StackPanel>
+            </Border>
+
+            <Border Grid.Row="6" Style="{StaticResource LigaseCardStyle}">
+                <StackPanel Spacing="8">
+                    <TextBlock FontSize="16" FontWeight="SemiBold" Text="虚拟桌面状态" />
+                    <TextBlock
+                        x:Name="VirtualDisplayStatusText"
+                        AutomationProperties.Name="虚拟桌面当前状态"
+                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                        Text="正在读取 SudoVDA 与 Windows 显示状态"
+                        TextWrapping="Wrap" />
+                    <Button
+                        HorizontalAlignment="Left"
+                        AutomationProperties.Name="刷新虚拟桌面状态"
+                        Click="OnRefreshVirtualDisplay"
+                        Content="刷新状态" />
+                </StackPanel>
+            </Border>
+
+            <Border Grid.Row="7" Style="{StaticResource LigaseCardStyle}">
                 <Grid ColumnSpacing="12">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto" />

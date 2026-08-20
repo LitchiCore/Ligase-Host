@@ -17,6 +17,9 @@ public partial class StreamMonitorViewModel(
     private string _resolution = "—";
 
     [ObservableProperty]
+    private string _sourceLabel = "主显示器";
+
+    [ObservableProperty]
     private string _frameRate = "—";
 
     [ObservableProperty]
@@ -63,10 +66,11 @@ public partial class StreamMonitorViewModel(
             : core.StartupError ?? "Apollo 核心未运行";
     }
 
-    public void SetPreviewStarted()
+    public void SetPreviewStarted(string sourceLabel)
     {
         IsPreviewActive = true;
-        PreviewStatus = "实时预览中 · 主显示器";
+        SourceLabel = sourceLabel;
+        PreviewStatus = $"实时预览中 · {sourceLabel}";
     }
 
     public void SetPreviewStopped()
@@ -76,12 +80,18 @@ public partial class StreamMonitorViewModel(
         FrameRate = "—";
     }
 
-    public void SetFrame(Services.DesktopPreviewFrame frame, double framesPerSecond)
+    public void SetFrame(
+        Services.DesktopPreviewFrame frame,
+        double framesPerSecond,
+        string sourceLabel)
     {
+        SourceLabel = sourceLabel;
         Resolution = $"{frame.SourceWidth} × {frame.SourceHeight}";
         FrameRate = $"{framesPerSecond:0.0} FPS";
         LastUpdated = frame.CapturedAt.ToString("HH:mm:ss");
-        PreviewStatus = "实时预览中 · 主显示器";
+        PreviewStatus = frame.CursorComposited
+            ? $"实时预览中 · {sourceLabel} · 已合成鼠标指针"
+            : $"实时预览中 · {sourceLabel} · 指针不在此显示器";
     }
 
     public void SetError(string message)

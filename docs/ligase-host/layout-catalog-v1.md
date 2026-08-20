@@ -10,13 +10,19 @@ The following remain outside H1:
 
 - TouchKit element content and Android `SharedPreferences` keys;
 - an executable/installed-content readiness claim;
-- publication payloads, hashes, previews, downloads, Sync, or public routes;
-- Desktop UI and game-identity mutation.
+- publication payloads, hashes, previews, downloads, or public routes.
 
 An `installedRevisions` item means that the exact immutable descriptor revision
 is registered in this local index. It does not mean that a compatible content
 artifact exists. No caller may use index presence as an artifact readiness
 signal.
+
+The Host product may create or clear an `explicitBindings` entry from the
+Desktop layout hall. That write is not an H1 content feature: it is the existing
+`layout-contract-v1` binding projected for one authoritative
+`(hostUniqueId, appUuid)`. The same transaction updates the canonical library
+item and Sync projection, increments library revision, and requires managed-Core
+readback. Name and numeric launch ID are never binding keys.
 
 ## Stored shape
 

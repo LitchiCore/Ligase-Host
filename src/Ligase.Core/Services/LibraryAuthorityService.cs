@@ -12,19 +12,41 @@ public interface ILibraryAuthorityService
         CancellationToken cancellationToken = default);
 }
 
-public sealed class LibraryAuthorityService(
-    ApolloInstanceManager managedCore,
-    ApolloCoreLocator coreLocator) : ILibraryAuthorityService
+public sealed class LibraryAuthorityService : ILibraryAuthorityService
 {
     private readonly HttpClient _client = new() { Timeout = TimeSpan.FromSeconds(3) };
+    private readonly ApolloInstanceManager _managedCore;
+    private readonly Func<CancellationToken, Task<IReadOnlyList<ApolloCoreEndpoint>>> _discover;
+    private readonly Func<ApolloCoreEndpoint, bool, CancellationToken,
+        Task<AuthorityReadbackDocument?>>? _readback;
+
+    public LibraryAuthorityService(
+        ApolloInstanceManager managedCore,
+        ApolloCoreLocator coreLocator)
+        : this(
+            managedCore,
+            coreLocator.DiscoverAsync)
+    {
+    }
+
+    internal LibraryAuthorityService(
+        ApolloInstanceManager managedCore,
+        Func<CancellationToken, Task<IReadOnlyList<ApolloCoreEndpoint>>> discover,
+        Func<ApolloCoreEndpoint, bool, CancellationToken,
+            Task<AuthorityReadbackDocument?>>? readback = null)
+    {
+        _managedCore = managedCore;
+        _discover = discover;
+        _readback = readback;
+    }
 
     public async Task<LibraryAuthorityState> GetStateAsync(
         CancellationToken cancellationToken = default)
     {
-        var cores = await coreLocator.DiscoverAsync(cancellationToken);
-        if (!managedCore.IsRunning ||
-            !managedCore.HasStableProcessIdentity ||
-            managedCore.BasePort == 0)
+        var cores = await _discover(cancellationToken);
+        if (!_managedCore.IsRunning ||
+            !_managedCore.HasStableProcessIdentity ||
+            _managedCore.BasePort == 0)
         {
             return cores.Count switch
             {
@@ -43,7 +65,15 @@ public sealed class LibraryAuthorityService(
             };
         }
 
-        if (cores.Count != 1)
+        if (cores.Count == 0)
+        {
+            return State(
+                LibraryAuthorityKind.Unavailable,
+                "coreStarting",
+                "Ligase 串流核心正在启动，游戏库暂时只读；接口就绪后会自动恢复。");
+        }
+
+        if (cores.Count > 1)
         {
             return State(
                 LibraryAuthorityKind.Ambiguous,
@@ -52,7 +82,7 @@ public sealed class LibraryAuthorityService(
         }
 
         var core = cores[0];
-        if (core.BasePort != managedCore.BasePort)
+        if (core.BasePort != _managedCore.BasePort)
         {
             return State(
                 LibraryAuthorityKind.Ambiguous,
@@ -62,11 +92,11 @@ public sealed class LibraryAuthorityService(
 
         var readback = await ReadbackAsync(core, reload: false, cancellationToken);
         if (readback is null ||
-            !string.Equals(readback.AuthorityToken, managedCore.AuthorityToken, StringComparison.Ordinal) ||
-            !string.Equals(readback.StartNonce, managedCore.StartNonce, StringComparison.Ordinal) ||
-            !string.Equals(readback.RootFingerprint, managedCore.RootFingerprint, StringComparison.Ordinal) ||
-            (managedCore.ExpectedUniqueId is not null &&
-             !string.Equals(readback.HostUniqueId, managedCore.ExpectedUniqueId, StringComparison.OrdinalIgnoreCase)) ||
+            !string.Equals(readback.AuthorityToken, _managedCore.AuthorityToken, StringComparison.Ordinal) ||
+            !string.Equals(readback.StartNonce, _managedCore.StartNonce, StringComparison.Ordinal) ||
+            !string.Equals(readback.RootFingerprint, _managedCore.RootFingerprint, StringComparison.Ordinal) ||
+            (_managedCore.ExpectedUniqueId is not null &&
+             !string.Equals(readback.HostUniqueId, _managedCore.ExpectedUniqueId, StringComparison.OrdinalIgnoreCase)) ||
             !string.Equals(readback.HostUniqueId, core.UniqueId, StringComparison.OrdinalIgnoreCase))
         {
             return State(
@@ -75,7 +105,7 @@ public sealed class LibraryAuthorityService(
                 "无法确认当前核心使用的是这个游戏库。请重新启动 Ligase Host。");
         }
 
-        managedCore.ExpectedUniqueId ??= readback.HostUniqueId;
+        _managedCore.ExpectedUniqueId ??= readback.HostUniqueId;
         return new LibraryAuthorityState(
             LibraryAuthorityKind.ManagedAuthoritative,
             "managedAuthoritative",
@@ -96,13 +126,16 @@ public sealed class LibraryAuthorityService(
         bool reload,
         CancellationToken cancellationToken)
     {
+        if (_readback is not null)
+            return await _readback(core, reload, cancellationToken);
+
         try
         {
             using var response = await _client.PostAsJsonAsync(
                 core.Endpoint.BuildUri(reload
                     ? "/ligase/v1/authority/reload"
                     : "/ligase/v1/authority/readback"),
-                new { token = managedCore.AuthorityToken },
+                new { token = _managedCore.AuthorityToken },
                 cancellationToken);
             if (!response.IsSuccessStatusCode) return null;
             return await response.Content.ReadFromJsonAsync<AuthorityReadbackDocument>(
