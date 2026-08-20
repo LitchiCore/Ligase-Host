@@ -1507,6 +1507,14 @@ public sealed class FreshInstallPackagingTests
             StringComparison.Ordinal));
         StringAssert.Contains(management,
             "function Get-AuthenticodeSignatureCompat(");
+        StringAssert.Contains(management,
+            "DataContractJsonSerializerSettings");
+        StringAssert.Contains(management,
+            "UseSimpleDictionaryFormat = true");
+        Assert.IsFalse(management.Contains("System.Web.Extensions.dll",
+            StringComparison.Ordinal));
+        Assert.IsFalse(management.Contains("JavaScriptSerializer",
+            StringComparison.Ordinal));
         Assert.IsFalse(Regex.IsMatch(management,
             @"(?m)^\s*\$signature\s*=\s*Get-AuthenticodeSignature\s"));
 

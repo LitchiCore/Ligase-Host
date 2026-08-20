@@ -343,16 +343,16 @@ public static class LigaseInteractiveUser
 "@
 }
 
-Add-Type -TypeDefinition @"
+$shutdownClientSource = @"
 using System;
 using System.IO;
 using System.IO.Pipes;
 using System.Runtime.InteropServices;
+using System.Runtime.Serialization.Json;
 using System.Security.Cryptography;
 using System.Text;
 using System.Diagnostics;
 using System.Collections.Generic;
-using System.Web.Script.Serialization;
 
 public sealed class LigaseProductShutdownOutcome
 {
@@ -444,8 +444,18 @@ public static class LigaseProductShutdownClient
             return false;
         try
         {
-            var value = new JavaScriptSerializer().DeserializeObject(json)
-                as Dictionary<string, object>;
+            var serializer = new DataContractJsonSerializer(
+                typeof(Dictionary<string, object>),
+                new DataContractJsonSerializerSettings
+                {
+                    UseSimpleDictionaryFormat = true
+                });
+            Dictionary<string, object> value;
+            using (var stream = new MemoryStream(Encoding.UTF8.GetBytes(json)))
+            {
+                value = serializer.ReadObject(stream)
+                    as Dictionary<string, object>;
+            }
             if (value == null ||
                 !value.ContainsKey("schemaVersion") ||
                 !value.ContainsKey("requestId") || !value.ContainsKey("state") ||
@@ -507,7 +517,16 @@ public static class LigaseProductShutdownClient
     private static extern bool GetNamedPipeServerProcessId(
         IntPtr pipe, out uint serverProcessId);
 }
-"@ -ReferencedAssemblies @("System.dll", "System.Core.dll", "System.Web.Extensions.dll")
+"@
+if ($PSVersionTable.PSEdition -eq 'Desktop') {
+  Add-Type -AssemblyName System.Runtime.Serialization
+  $serializationAssembly =
+    [System.Runtime.Serialization.Json.DataContractJsonSerializer].Assembly.Location
+  Add-Type -TypeDefinition $shutdownClientSource -ReferencedAssemblies @(
+    "System.dll", "System.Core.dll", "System.Xml.dll", $serializationAssembly)
+} else {
+  Add-Type -TypeDefinition $shutdownClientSource
+}
 
 # Restart Manager is the Windows authority for applications holding files that
 # an installer needs to replace.  Ligase's named pipe only requests its custom
