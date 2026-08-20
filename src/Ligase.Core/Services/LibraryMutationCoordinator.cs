@@ -286,7 +286,7 @@ public sealed class LibraryMutationCoordinator(
                 "当前游戏身份无效，未恢复默认封面。");
 
         var outcome = await MutateAsync(
-            async token =>
+            async (_, token) =>
             {
                 var beforeState = await repository.LoadAsync(token);
                 var beforeItem = beforeState.Items.SingleOrDefault(item =>

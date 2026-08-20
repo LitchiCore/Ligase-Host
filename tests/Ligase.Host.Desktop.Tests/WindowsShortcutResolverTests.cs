@@ -145,7 +145,7 @@ public sealed class WindowsShortcutResolverTests
     }
 
     [TestMethod]
-    public void DropPreviewIsReadOnlyAndBulkOrDuplicateInputFailsClosed()
+    public async Task DropPreviewIsReadOnlyAndBulkOrDuplicateInputFailsClosed()
     {
         var executable = CreateFile("preview.exe");
         var shortcut = Path.Combine(_root, "Preview.lnk");
@@ -153,15 +153,15 @@ public sealed class WindowsShortcutResolverTests
         var viewModel = new AddApplicationViewModel(
             null!, null!, null!, null!, null!, new WindowsShortcutResolver());
 
-        viewModel.PreviewShortcutPaths([shortcut]);
+        await viewModel.PreviewShortcutPathsAsync([shortcut]);
         Assert.IsTrue(viewModel.HasShortcutPreview);
         Assert.AreEqual(executable, viewModel.ShortcutPreview?.TargetExecutable);
 
-        viewModel.PreviewShortcutPaths([shortcut, shortcut]);
+        await viewModel.PreviewShortcutPathsAsync([shortcut, shortcut]);
         Assert.IsFalse(viewModel.HasShortcutPreview);
         StringAssert.Contains(viewModel.Message, "一次只能预览一个");
 
-        viewModel.PreviewShortcutPaths([]);
+        await viewModel.PreviewShortcutPathsAsync([]);
         Assert.IsFalse(viewModel.HasShortcutPreview);
         viewModel.CancelShortcutPreview();
         Assert.IsFalse(viewModel.HasShortcutPreview);
